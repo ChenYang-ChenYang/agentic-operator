@@ -13,7 +13,11 @@
 
 "use client";
 
-import type { TenantDetail, TenantUpdateBody } from "@agentic/contracts";
+import type {
+  TenantDetail,
+  TenantInngestDeploymentResponse,
+  TenantUpdateBody,
+} from "@agentic/contracts";
 import {
   useMutation,
   useQuery,
@@ -45,10 +49,12 @@ export interface TenantListItem {
   createdAt: number;
   updatedAt: number;
   archivedAt: number | null;
+  inngestEnabled: boolean;
+  inngestProcessScoped: boolean;
   agentCount: number;
   runs24h: number;
   openTasks: number;
-  membership: "admin" | "editor" | "viewer" | null;
+  membership: "admin" | "operator" | "viewer" | null;
 }
 
 interface TenantsListResponse {
@@ -100,6 +106,30 @@ export function useUpdateTenant() {
   const client = useQueryClient();
   return useMutation({
     mutationFn: updateTenant,
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: TENANTS_KEYS.all });
+    },
+  });
+}
+
+export function setTenantInngestDeployment(input: {
+  slug: string;
+  enabled: boolean;
+}): Promise<TenantInngestDeploymentResponse> {
+  return callV1<TenantInngestDeploymentResponse>(
+    `/v1/tenants/${encodeURIComponent(input.slug)}/inngest-deployment`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: input.enabled }),
+    },
+  );
+}
+
+export function useSetTenantInngestDeployment() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: setTenantInngestDeployment,
     onSuccess: () => {
       void client.invalidateQueries({ queryKey: TENANTS_KEYS.all });
     },

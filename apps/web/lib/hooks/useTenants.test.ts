@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { updateTenant } from "./useTenants";
+import { setTenantInngestDeployment, updateTenant } from "./useTenants";
 
 const TENANT_DETAIL = {
   id: "ten-1",
@@ -10,6 +10,8 @@ const TENANT_DETAIL = {
   createdAt: 1,
   updatedAt: 2,
   archivedAt: null,
+  inngestEnabled: true,
+  inngestProcessScoped: true,
   agentCount: 0,
   runs24h: 0,
   openTasks: 0,
@@ -21,6 +23,40 @@ const TENANT_DETAIL = {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+});
+
+describe("setTenantInngestDeployment", () => {
+  it("uses the tenant-scoped idempotent deployment endpoint", async () => {
+    const result = {
+      slug: "acme",
+      enabled: false,
+      changed: true,
+      appId: "agentic-operator-acme",
+      servePath: "/inngest/acme",
+      functionCount: 0,
+      status: "stopped",
+      brokerVerified: true,
+    } as const;
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () => JSON.stringify({ ok: true, data: result }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      setTenantInngestDeployment({ slug: "acme", enabled: false }),
+    ).resolves.toEqual(result);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/v1/tenants/acme/inngest-deployment",
+      expect.objectContaining({
+        credentials: "same-origin",
+        method: "PUT",
+        body: JSON.stringify({ enabled: false }),
+      }),
+    );
+  });
 });
 
 describe("updateTenant", () => {

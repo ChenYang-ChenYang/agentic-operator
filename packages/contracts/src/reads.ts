@@ -77,6 +77,9 @@ export const HealthReport = z.object({
     registrationOk: z.boolean().optional(),
     expectedApps: z.number().int().nonnegative().optional(),
     syncedApps: z.number().int().nonnegative().optional(),
+    /** Registered apps whose current function set is empty. They retain sync
+     * acceptance proof but require no broker dispatch session. */
+    emptyApps: z.array(z.string()).optional(),
     lastSyncAt: z.number().optional(),
   }),
   sqlite: z.object({

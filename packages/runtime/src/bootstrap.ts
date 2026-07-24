@@ -25,6 +25,8 @@ import {
   workflowVersions,
   factoryTools,
   getDb,
+  getTenantInngestDeploymentEnabledMap,
+  isTenantInngestDeploymentEnabled,
 } from "@agentic/db";
 import {
   buildDeclarativeOverlay,
@@ -642,15 +644,17 @@ export async function bootstrapTenant(spec: {
           `[bootstrap] production CodeAct handler is missing for ${spec.tenantSlug}/${agent.id}`,
         );
       }
-      const executionKind = agent.codeExecuted === true
-        ? "codeact" as const
-        : "declarative" as const;
-      const codeSha256 = agent.codeExecuted === true
-        ? crypto
-            .createHash("sha256")
-            .update(agent.typescript_code!, "utf8")
-            .digest("hex")
-        : agentManifestSha256;
+      const executionKind =
+        agent.codeExecuted === true
+          ? ("codeact" as const)
+          : ("declarative" as const);
+      const codeSha256 =
+        agent.codeExecuted === true
+          ? crypto
+              .createHash("sha256")
+              .update(agent.typescript_code!, "utf8")
+              .digest("hex")
+          : agentManifestSha256;
       const capability = await authorizeProductionGeneratedAgent({
         executionKind,
         tenantId: tenant.id,
@@ -664,10 +668,7 @@ export async function bootstrapTenant(spec: {
         workflowManifestSha256: productionWorkflowManifestSha256,
       });
       productionGeneratedAgentCapabilities.set(agent.id, capability);
-      productionGeneratedAgentManifestHashes.set(
-        agent.id,
-        agentManifestSha256,
-      );
+      productionGeneratedAgentManifestHashes.set(agent.id, agentManifestSha256);
       if (executionKind === "codeact") {
         productionCodeActCapabilities.set(agent.id, capability);
         productionCodeActManifestHashes.set(agent.id, agentManifestSha256);
@@ -1090,18 +1091,6 @@ function upsertEntityTypes(tenantId: string, loaded: LoadedModels) {
   }
 }
 
-/** Slugs that are archived (tenant-level 下线) — read once per call. */
-function archivedSlugSet(): Set<string> {
-  return new Set(
-    getDb()
-      .select({ slug: tenants.slug, archivedAt: tenants.archivedAt })
-      .from(tenants)
-      .all()
-      .filter((r) => r.archivedAt != null)
-      .map((r) => r.slug),
-  );
-}
-
 /**
  * Bootstrap every discovered tenant, returning their Inngest functions GROUPED
  * BY slug. This is the per-app boot path: one Inngest app per tenant, so the
@@ -1132,10 +1121,17 @@ export async function bootstrapAllByTenant(
   }
 
   const tenantRows = getDb()
-    .select({ slug: tenants.slug, archivedAt: tenants.archivedAt })
+    .select({
+      id: tenants.id,
+      slug: tenants.slug,
+      archivedAt: tenants.archivedAt,
+    })
     .from(tenants)
     .all();
   const knownSlugs = new Set(tenantRows.map((row) => row.slug));
+  const inngestEnabledByTenant = getTenantInngestDeploymentEnabledMap(
+    tenantRows.map((row) => row.id),
+  );
 
   // archive (tenant-level 下线): an archived tenant is taken fully offline —
   // none of its agents register, so its app serves zero functions. The rows
@@ -1143,6 +1139,11 @@ export async function bootstrapAllByTenant(
   // back. Read once per bootstrap so a re-register reflects the latest state.
   const archivedSlugs = new Set(
     tenantRows.filter((row) => row.archivedAt != null).map((row) => row.slug),
+  );
+  const operatorDisabledSlugs = new Set(
+    tenantRows
+      .filter((row) => !inngestEnabledByTenant.get(row.id))
+      .map((row) => row.slug),
   );
 
   const activeFolders = folders.filter((folder) => {
@@ -1157,6 +1158,10 @@ export async function bootstrapAllByTenant(
       console.log(
         `[bootstrap] ${folder.slug} (${folder.folder}): outside enabled tenant deployment scope — skipped`,
       );
+      return false;
+    }
+    if (operatorDisabledSlugs.has(folder.slug)) {
+      clearRuntimeScheduleStatusForTenant(folder.slug);
       return false;
     }
     return !archivedSlugs.has(folder.slug);
@@ -1177,6 +1182,16 @@ export async function bootstrapAllByTenant(
     if (archivedSlugs.has(f.slug)) {
       clearRuntimeScheduleStatusForTenant(f.slug);
       console.log(`[bootstrap] ${f.slug} (${f.folder}): archived — skipped`);
+      continue;
+    }
+    if (operatorDisabledSlugs.has(f.slug)) {
+      clearRuntimeScheduleStatusForTenant(f.slug);
+      // Keep an empty app in the process registry so startup sync removes any
+      // stale broker-side functions left from the previously deployed state.
+      byTenant.set(f.slug, []);
+      console.log(
+        `[bootstrap] ${f.slug} (${f.folder}): Inngest deployment stopped by operator — 0 functions`,
+      );
       continue;
     }
     if (!knownSlugs.has(f.slug)) continue;
@@ -1252,16 +1267,20 @@ export async function bootstrapTenantBySlug(
     clearRuntimeScheduleStatusForTenant(slug);
     return [];
   }
-  if (archivedSlugSet().has(slug)) {
-    clearRuntimeScheduleStatusForTenant(slug);
-    return [];
-  }
-  const tenantExists = getDb()
-    .select({ slug: tenants.slug })
+  const tenantState = getDb()
+    .select({
+      id: tenants.id,
+      slug: tenants.slug,
+      archivedAt: tenants.archivedAt,
+    })
     .from(tenants)
     .where(eq(tenants.slug, slug))
     .all()[0];
-  if (!tenantExists) {
+  if (
+    !tenantState ||
+    tenantState.archivedAt != null ||
+    !isTenantInngestDeploymentEnabled(tenantState.id)
+  ) {
     clearRuntimeScheduleStatusForTenant(slug);
     return [];
   }

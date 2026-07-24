@@ -80,6 +80,7 @@ import { getFactorySandboxTenantRegistryAlias } from "./services/agent-factory/s
 import { createSandboxModelProxyGateway } from "./services/agent-factory/sandbox-model-client";
 import { installProductionGeneratedAgentAuthorizationVerifier } from "./services/agent-factory/production-codeact-authorization";
 import { studioRunnerFn } from "./services/studio-runner";
+import { enabledTenantDeploymentScope } from "./services/tenant-deployment-scope";
 
 /**
  * v4 typing: TS2742 surfaces because `InngestFunction` references internal
@@ -128,13 +129,7 @@ const PRODUCTION_TENANT_REGISTRIES: TenantRegistries = {
 };
 
 function enabledTenantScope(): Set<string> | null {
-  const raw = process.env.AGENTIC_ENABLED_TENANTS?.trim();
-  if (!raw) return null;
-  const slugs = raw
-    .split(",")
-    .map((slug) => slug.trim())
-    .filter(Boolean);
-  return slugs.length ? new Set(slugs) : null;
+  return enabledTenantDeploymentScope();
 }
 
 function isTenantEnabled(slug: string, scope = enabledTenantScope()): boolean {
@@ -295,6 +290,14 @@ export async function rebuildTenantFns(
       const projected = { ...cachedExpanded, [slug]: targetRegistry };
       syncTenantReasoningConfigs(projected);
       return bootstrapTenantBySlug(slug, projected);
+    }
+    // AGENTIC_ENABLED_TENANTS is the process ownership ceiling. A scoped hot
+    // swap must honor it too; otherwise a UI/API call could make this shard
+    // start serving a tenant assigned to another process.
+    if (!isTenantEnabled(slug)) {
+      throw new Error(
+        `tenant "${slug}" is outside this process's AGENTIC_ENABLED_TENANTS deployment scope`,
+      );
     }
     // Refresh the code registry from the DB-selected tenant-code version on
     // every scoped hot swap. This is required for both deploy and rollback:

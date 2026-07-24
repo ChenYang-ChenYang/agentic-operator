@@ -1,4 +1,4 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, ne } from "drizzle-orm";
 import {
   deployments,
   getDb,
@@ -37,7 +37,14 @@ export async function listDeployments(
     .innerJoin(workflowVersions, eq(workflowVersions.id, deployments.versionId))
     .innerJoin(workflows, eq(workflows.id, workflowVersions.workflowId))
     .leftJoin(users, eq(users.id, deployments.deployedBy))
-    .where(eq(deployments.tenantId, tenantId))
+    .where(
+      and(
+        eq(deployments.tenantId, tenantId),
+        // Tenant-level Inngest selection is an internal control-plane marker,
+        // not a workflow-version history row rendered on this page.
+        ne(deployments.target, "runtime"),
+      ),
+    )
     .orderBy(desc(deployments.deployedAt))
     .all()
     .map((r) => {

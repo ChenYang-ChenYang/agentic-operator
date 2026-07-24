@@ -616,6 +616,79 @@ describe("tenant-specific Inngest configuration", () => {
     expect(stale.note).toMatch(/stale or missing/);
   });
 
+  it("treats a zero-function tenant app as trivially dispatch-ready", async () => {
+    process.env.NODE_ENV = "development";
+    process.env.INNGEST_DEV = "1";
+    process.env.INNGEST_BASE_URL = "http://127.0.0.1:8288";
+    delete process.env.INNGEST_SYNC_DISABLED;
+
+    const systemClient = getTenantInngest(SYSTEM_SLUG);
+    const systemFn = systemClient.createFunction(
+      {
+        id: "zero-function-health-system",
+        triggers: { event: `${SYSTEM_SLUG}/ZERO_FUNCTION_HEALTH` },
+      },
+      async () => ({ ok: true }),
+    );
+    const emptySlug = "zero-function-health";
+    initInngestRegistry({
+      systemBase: [systemFn],
+      systemCodeAgent: [],
+      tenants: [{ slug: emptySlug, fns: [] }],
+    });
+    const registered = listRegisteredApps();
+    for (const app of registered) {
+      __recordInngestSyncEvidenceForTests({
+        slug: app.slug,
+        appId: app.appId,
+        fnCount: app.fnCount,
+        ok: true,
+      });
+    }
+
+    const calls: string[] = [];
+    const health = await checkInngest(
+      (async (input: string | URL | Request) => {
+        const url = String(input);
+        calls.push(url);
+        if (url.endsWith("/v0/gql")) {
+          return new Response(
+            JSON.stringify({
+              data: {
+                apps: registered.map((app) => ({
+                  name: app.appId,
+                  connected: app.fnCount > 0,
+                  functionCount: app.fnCount,
+                  error: null,
+                })),
+              },
+            }),
+            {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            },
+          );
+        }
+        return new Response("ok", { status: 200 });
+      }) as typeof fetch,
+      [SYSTEM_SLUG, emptySlug],
+    );
+
+    expect(health).toMatchObject({
+      ok: true,
+      reachable: true,
+      registrationOk: true,
+      expectedApps: 2,
+      syncedApps: 2,
+      emptyApps: [appIdForTenant(emptySlug)],
+    });
+    expect(health.note).toMatch(/1 empty app\(s\) require no dispatch session/);
+    expect(calls).toEqual([
+      "http://127.0.0.1:8288/health",
+      "http://127.0.0.1:8288/v0/gql",
+    ]);
+  });
+
   it("probes a production self-host and requires current sync evidence", async () => {
     configureAcme();
     process.env.INNGEST_DEV = "0";

@@ -14,7 +14,17 @@
  * default; pass `includeArchived: true` to see them.
  */
 
-import { and, desc, eq, gte, inArray, isNull, isNotNull, ne, sql } from "drizzle-orm";
+import {
+  and,
+  desc,
+  eq,
+  gte,
+  inArray,
+  isNull,
+  isNotNull,
+  ne,
+  sql,
+} from "drizzle-orm";
 import {
   agents,
   events as eventsTable,
@@ -26,8 +36,11 @@ import {
   tenantBudgets,
   workflows,
   deployments,
+  getTenantInngestDeploymentEnabledMap,
+  isTenantInngestDeploymentEnabled,
 } from "@agentic/db";
 import type { Tenant, TenantDetail, TenantListItem } from "@agentic/contracts";
+import { isTenantInProcessDeploymentScope } from "../services/tenant-deployment-scope";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -49,7 +62,9 @@ export async function listTenantsWithCounts(
   const db = getDb();
   const since = new Date(Date.now() - DAY_MS);
 
-  const archivePred = opts.includeArchived ? undefined : isNull(tenants.archivedAt);
+  const archivePred = opts.includeArchived
+    ? undefined
+    : isNull(tenants.archivedAt);
 
   let rows;
   if (opts.forUserId) {
@@ -96,6 +111,8 @@ export async function listTenantsWithCounts(
   if (rows.length === 0) return [];
 
   const tenantIds = rows.map((r) => r.id);
+  const inngestEnabledByTenant =
+    getTenantInngestDeploymentEnabledMap(tenantIds);
 
   // Batch: agent count per tenant.
   const agentRows = db
@@ -109,7 +126,8 @@ export async function listTenantsWithCounts(
     .groupBy(workflows.tenantId)
     .all();
   const agentByTenant = new Map<string, number>();
-  for (const r of agentRows) agentByTenant.set(r.tenantId, Number(r.agentCount));
+  for (const r of agentRows)
+    agentByTenant.set(r.tenantId, Number(r.agentCount));
 
   // Batch: runs in last 24h per tenant.
   const runsRows = db
@@ -158,6 +176,8 @@ export async function listTenantsWithCounts(
     createdAt: r.createdAt.getTime(),
     updatedAt: r.updatedAt.getTime(),
     archivedAt: r.archivedAt ? r.archivedAt.getTime() : null,
+    inngestEnabled: inngestEnabledByTenant.get(r.id) ?? true,
+    inngestProcessScoped: isTenantInProcessDeploymentScope(r.slug),
     agentCount: agentByTenant.get(r.id) ?? 0,
     runs24h: runs24hByTenant.get(r.id) ?? 0,
     openTasks: tasksByTenant.get(r.id) ?? 0,
@@ -223,7 +243,13 @@ export async function getTenantDetail(
   const deploymentLiveCount = db
     .select({ n: sql<number>`COUNT(*)`.as("n") })
     .from(deployments)
-    .where(and(eq(deployments.tenantId, t.id), eq(deployments.status, "live")))
+    .where(
+      and(
+        eq(deployments.tenantId, t.id),
+        eq(deployments.status, "live"),
+        ne(deployments.target, "runtime"),
+      ),
+    )
     .all()[0]?.n;
 
   const budget = db
@@ -256,6 +282,8 @@ export async function getTenantDetail(
     createdAt: t.createdAt.getTime(),
     updatedAt: t.updatedAt.getTime(),
     archivedAt: t.archivedAt ? t.archivedAt.getTime() : null,
+    inngestEnabled: isTenantInngestDeploymentEnabled(t.id),
+    inngestProcessScoped: isTenantInProcessDeploymentScope(t.slug),
     agentCount: Number(agentCount ?? 0),
     runs24h: Number(runs24h ?? 0),
     openTasks: Number(openTasks ?? 0),
@@ -347,6 +375,7 @@ export function shapeTenantRow(row: typeof tenants.$inferSelect): Tenant {
     createdAt: row.createdAt.getTime(),
     updatedAt: row.updatedAt.getTime(),
     archivedAt: row.archivedAt ? row.archivedAt.getTime() : null,
+    inngestEnabled: isTenantInngestDeploymentEnabled(row.id),
   };
 }
 

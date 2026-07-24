@@ -18,3 +18,4 @@ export {
   DEFAULT_ROLLED_BACK_RETENTION,
   type PruneDeploymentsReport,
 } from "./prune-deployments";
+export * from "./tenant-inngest-deployment";

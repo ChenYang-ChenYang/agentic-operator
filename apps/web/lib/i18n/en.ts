@@ -3280,6 +3280,24 @@ export const en = {
     },
     subtitle:
       "Business boundaries. Each Domain is an isolated stack of agents, workflows, runs, events, budgets, and audit trail.",
+    inngestPanelTitle: "Inngest workflow deployment",
+    inngestPanelHint:
+      "Choose which tenant workflows this operator serves to Inngest. Deploy registers the tenant's enabled manifest agents immediately; Stop removes all of that tenant's functions while keeping its configuration and history.",
+    inngestSelectedCount: "{selected} / {total} selected",
+    inngestDeployConfirm:
+      'Deploy the enabled workflow agents for "{name}" to Inngest now?',
+    inngestStopConfirm:
+      'Stop the Inngest workflow for "{name}"? New events will no longer start its agents.',
+    inngestDeployedToast: "Tenant workflow deployed",
+    inngestStoppedToast: "Tenant workflow stopped",
+    inngestChangeFailedToast: "Inngest deployment change failed",
+    inngestFunctionCount: "{count} functions verified on Inngest",
+    inngestDeployed: "DEPLOYED",
+    inngestStopped: "STOPPED",
+    inngestExternal: "EXTERNAL",
+    inngestDeploy: "Deploy",
+    inngestStop: "Stop",
+    inngestChanging: "Applying…",
     countSingular: "DOMAIN",
     countPlural: "DOMAINS",
     showArchived: "Show deleted",
@@ -3302,6 +3320,7 @@ export const en = {
     colAgents: "Agents",
     colRuns24h: "Runs/24h",
     colOpenTasks: "Open tasks",
+    colInngest: "Inngest",
     colCreated: "Created",
     archivedBadge: "DELETED",
     edit: "Edit",
