@@ -43,6 +43,8 @@ export interface InspectorOverviewProps {
   evidence: OntoCodeEvidenceRecord[];
   onOpen: (artifactId: string) => void;
   onCollapse: () => void;
+  fullscreen?: boolean;
+  onToggleFullscreen?: () => void;
 }
 
 const OWNER_LABEL: Record<string, string> = {
@@ -73,6 +75,15 @@ export function InspectorOverviewView(props: InspectorOverviewProps) {
           </h3>
         </div>
         <span style={{ flex: 1 }} />
+        {props.onToggleFullscreen ? (
+          <button
+            type="button"
+            className={styles.btn}
+            onClick={props.onToggleFullscreen}
+          >
+            {props.fullscreen ? "退出全屏" : "全屏"}
+          </button>
+        ) : null}
         <button type="button" className={styles.btn} onClick={props.onCollapse}>
           收起
         </button>
@@ -107,6 +118,12 @@ export function InspectorOverviewView(props: InspectorOverviewProps) {
         ) : null}
       </div>
       <div className={styles.iBody}>
+        {primary.length === 0 && receipts > 0 ? (
+          <div className={styles.iEmpty}>
+            Agent 代码还没生成——目前只有 {receipts} 份阶段执行回执（范围/蓝图等）。
+            继续在左侧推进生成；产出的代码、契约与测试会出现在这里。
+          </div>
+        ) : null}
         {agents.length > 0 ? (
           <>
             {agents.map((a) => {
@@ -160,10 +177,12 @@ export function InspectorOverviewView(props: InspectorOverviewProps) {
           </>
         ) : null}
         {primary.length === 0 ? (
-          <div className={styles.iEmpty}>
-            还没有可查看的产物。先在左侧说一句业务目标；生成后这里会列出每个
-            agent 的代码、契约与测试，可点开逐个审查。
-          </div>
+          receipts > 0 ? null : (
+            <div className={styles.iEmpty}>
+              还没有可查看的产物。先在左侧说一句业务目标；生成后这里会列出每个
+              agent 的代码、契约与测试，可点开逐个审查。
+            </div>
+          )
         ) : (
           primary.map((item) => (
             <button
@@ -300,6 +319,8 @@ export interface ArtifactInspectorProps {
   items: OntoCodeArtifactSummaryItem[];
   evidence: OntoCodeEvidenceRecord[];
   onCollapse: () => void;
+  fullscreen?: boolean;
+  onToggleFullscreen?: () => void;
 }
 
 export function ArtifactInspectorConnected(props: ArtifactInspectorProps) {
@@ -341,6 +362,8 @@ export function ArtifactInspectorConnected(props: ArtifactInspectorProps) {
         items={props.items}
         evidence={props.evidence}
         onCollapse={props.onCollapse}
+        fullscreen={props.fullscreen}
+        onToggleFullscreen={props.onToggleFullscreen}
         onOpen={(artifactId) => {
           setOpenArtifactId(artifactId);
           setActiveVersionId(null);

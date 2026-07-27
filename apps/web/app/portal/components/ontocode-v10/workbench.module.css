@@ -431,6 +431,8 @@
 .handle:hover { color: var(--oc-t1); }
 .inspector {
   width: 432px;
+  min-width: 360px;
+  max-width: min(68vw, 860px);
   flex: none;
   background: var(--oc-panel);
   border-left: 1px solid var(--oc-border);
@@ -439,6 +441,19 @@
   min-height: 0;
 }
 .inspectorClosed { display: none; }
+.inspectorFullscreen {
+  position: fixed;
+  inset: 12px;
+  width: auto !important;
+  min-width: 0;
+  max-width: none;
+  z-index: 300;
+  border: 1px solid var(--oc-border);
+  border-radius: 14px;
+  box-shadow: 0 24px 80px rgba(23, 33, 43, 0.22);
+  overflow: hidden;
+}
+.rootDragging, .rootDragging * { cursor: col-resize !important; user-select: none !important; }
 .iHead {
   flex: none;
   display: flex;

@@ -1,7 +1,7 @@
 "use client";
 // OntoCode v10 · 会话页容器：把真实 /v1/ontocode 数据绑定到三栏工作台。
 // 本文件是唯一发请求的地方；展示组件保持纯净。零 mock：所有内容来自服务端记录。
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import type {
   OntoCodeBuildSession,
@@ -107,6 +107,7 @@ export function WorkbenchSessionConnected() {
 
   const [draft, setDraft] = useState("");
   const [inspectorOpen, setInspectorOpen] = useState(true);
+  const [inspectorFullscreen, setInspectorFullscreen] = useState(false);
 
   const session: OntoCodeBuildSession | null =
     sessionQ.data?.session ?? null;
@@ -270,10 +271,26 @@ export function WorkbenchSessionConnected() {
   const loadError =
     sessionQ.error instanceof Error ? sessionQ.error.message : null;
 
+  // 加载失败（含限流）不许成为死端：10 秒后自动重试，直到恢复。
+  useEffect(() => {
+    if (!sessionQ.isError) return;
+    const timer = setTimeout(() => {
+      void sessionQ.refetch();
+      void messagesQ.refetch();
+      void jobsQ.refetch();
+    }, 10_000);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionQ.isError, sessionQ.errorUpdatedAt]);
+
   return (
     <WorkbenchShell
       inspectorOpen={inspectorOpen}
-      onToggleInspector={() => setInspectorOpen((v) => !v)}
+      inspectorFullscreen={inspectorFullscreen}
+      onToggleInspector={() => {
+        setInspectorFullscreen(false);
+        setInspectorOpen((v) => !v);
+      }}
       rail={
         <SessionRail
           businessDomainLabel={tenant}
@@ -287,8 +304,10 @@ export function WorkbenchSessionConnected() {
             )
           }
           onCreateSession={() =>
+            // 创建流暂由旧 Hub 承担（v10 首页创建流在 M3）；?legacy=1 显式进入，
+            // 避免「两个新建入口」并存的混淆。
             router.push(
-              `/portal/${encodeURIComponent(tenant)}/ontocode-workspace`,
+              `/portal/${encodeURIComponent(tenant)}/ontocode-workspace?legacy=1&create=1`,
             )
           }
           onOpenSettings={() =>
@@ -323,8 +342,21 @@ export function WorkbenchSessionConnected() {
       flow={
         loadError ? (
           <div className={styles.card}>
-            <div className={styles.cardHead}>无法加载 Session</div>
+            <div className={styles.cardHead}>暂时无法加载 Session</div>
             <div className={styles.cardWhy}>{loadError}</div>
+            <div className={styles.cardImpact}>10 秒后自动重试；也可以点右侧按钮立即重试。</div>
+            <div className={styles.cardBtns}>
+              <button
+                type="button"
+                className={styles.btn}
+                onClick={() => {
+                  void sessionQ.refetch();
+                  void messagesQ.refetch();
+                }}
+              >
+                立即重试
+              </button>
+            </div>
           </div>
         ) : (
           <GuidedFlow goal={goal} items={flowItems} renderCard={renderCard} />
@@ -377,7 +409,12 @@ export function WorkbenchSessionConnected() {
           overview={suiteQ.data?.overview ?? null}
           items={artifactsQ.data?.items ?? []}
           evidence={evidenceQ.data?.items ?? []}
-          onCollapse={() => setInspectorOpen(false)}
+          onCollapse={() => {
+            setInspectorFullscreen(false);
+            setInspectorOpen(false);
+          }}
+          fullscreen={inspectorFullscreen}
+          onToggleFullscreen={() => setInspectorFullscreen((v) => !v)}
         />
       }
     />

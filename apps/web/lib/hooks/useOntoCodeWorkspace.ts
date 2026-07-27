@@ -370,7 +370,7 @@ export function useOntoCodeMessages(
         `/v1/ontocode/sessions/${encodeURIComponent(sessionId)}/messages?limit=200`,
       ),
     enabled: Boolean(tenant && sessionId),
-    staleTime: 500,
+    staleTime: 2_500,
   });
 }
 
@@ -402,7 +402,7 @@ export function useOntoCodeSessionEvents(
         `/v1/ontocode/sessions/${encodeURIComponent(sessionId)}/events?limit=200`,
       ),
     enabled: Boolean(tenant && sessionId),
-    staleTime: 500,
+    staleTime: 2_500,
   });
 }
 
@@ -418,7 +418,7 @@ export function useOntoCodeConfigurationTasks(
         `/v1/ontocode/sessions/${encodeURIComponent(sessionId)}/configuration-tasks?limit=100`,
       ),
     enabled: Boolean(tenant && sessionId),
-    staleTime: 500,
+    staleTime: 2_500,
   });
 }
 
@@ -440,7 +440,7 @@ export function useOntoCodeAssistantRuns(
       )
         ? 1_500
         : false,
-    staleTime: 500,
+    staleTime: 2_500,
   });
 }
 
@@ -511,7 +511,7 @@ export function useOntoCodeCommands(
         `/v1/ontocode/sessions/${encodeURIComponent(sessionId)}/commands?limit=200`,
       ),
     enabled: Boolean(tenant && sessionId),
-    staleTime: 500,
+    staleTime: 2_500,
   });
 }
 
@@ -527,7 +527,7 @@ export function useOntoCodeChangeSets(
         `/v1/ontocode/sessions/${encodeURIComponent(sessionId)}/changesets?limit=100`,
       ),
     enabled: Boolean(tenant && sessionId),
-    staleTime: 500,
+    staleTime: 2_500,
   });
 }
 
@@ -544,7 +544,7 @@ export function useOntoCodeChangeSet(
         `/v1/ontocode/changesets/${encodeURIComponent(changeSetId)}`,
       ),
     enabled: Boolean(tenant && sessionId && changeSetId),
-    staleTime: 500,
+    staleTime: 2_500,
   });
 }
 
@@ -560,7 +560,7 @@ export function useOntoCodeArtifacts(
         `/v1/ontocode/sessions/${encodeURIComponent(sessionId)}/artifacts?limit=200`,
       ),
     enabled: Boolean(tenant && sessionId),
-    staleTime: 500,
+    staleTime: 2_500,
   });
 }
 
@@ -619,7 +619,7 @@ export function useOntoCodeEvidence(
         `/v1/ontocode/sessions/${encodeURIComponent(sessionId)}/evidence?limit=200`,
       ),
     enabled: Boolean(tenant && sessionId),
-    staleTime: 500,
+    staleTime: 2_500,
   });
 }
 

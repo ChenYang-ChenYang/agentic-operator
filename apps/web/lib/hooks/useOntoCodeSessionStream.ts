@@ -55,7 +55,31 @@ export function parseOntoCodeSseFrame(frame: string): OntoCodeSseFrame | null {
   return { id, event, data: data.join("\n") };
 }
 
+/**
+ * SSE 事件的失效必须防抖：一次 Harness 作业会连发数十个事件，逐事件
+ * 全量失效 13 组查询会触发服务端读限流（每用户 600 读/分）。合批为
+ * 尾随 1.2s 一次冲刷，实时性足够（查询数据仍是权威源）。
+ */
+const INVALIDATE_DEBOUNCE_MS = 1_200;
+const pendingInvalidations = new Map<string, ReturnType<typeof setTimeout>>();
+
 export function invalidateOntoCodeEvent(
+  client: QueryClient,
+  tenant: string,
+  sessionId: string,
+): void {
+  const key = `${tenant}::${sessionId}`;
+  if (pendingInvalidations.has(key)) return;
+  pendingInvalidations.set(
+    key,
+    setTimeout(() => {
+      pendingInvalidations.delete(key);
+      flushOntoCodeInvalidations(client, tenant, sessionId);
+    }, INVALIDATE_DEBOUNCE_MS),
+  );
+}
+
+export function flushOntoCodeInvalidations(
   client: QueryClient,
   tenant: string,
   sessionId: string,

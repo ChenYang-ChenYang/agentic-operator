@@ -18,11 +18,18 @@ describe("OntoCode production entry", () => {
     "app/portal/[tenant]/(views)/ontocode-workspace/[sessionId]/page.tsx",
   );
 
-  it("opens the connected Session Hub from the production sidebar", () => {
+  it("opens the workspace entry from the production sidebar", () => {
     expect(sidebar).toContain('href={`${base}/ontocode-workspace`}');
     expect(sidebar).not.toContain('href={`${base}/ontocode`}');
     expect(sidebar).toContain('label={t("nav.ontocode")}');
     expect(sidebar).toContain("matchPrefix");
+  });
+
+  it("routes the entry page to the newest session; legacy hub only via ?legacy=1", () => {
+    // 默认入口不再渲染 Build Sessions 列表页（消除双「新建 Session」入口），
+    // 而是重定向到最近的 Session；旧 Hub 仅承担创建流。
+    expect(hubPage).toContain("router.replace");
+    expect(hubPage).toContain('searchParams?.get("legacy")');
     expect(hubPage).toContain("<OntoCodeWorkspaceHubConnected />");
   });
 

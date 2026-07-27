@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { QueryClient } from "@tanstack/react-query";
 import {
+  flushOntoCodeInvalidations,
   invalidateOntoCodeEvent,
   ontocodeStreamPath,
   parseOntoCodeSseFrame,
@@ -29,9 +30,26 @@ describe("OntoCode session stream helpers", () => {
     });
   });
 
+  it("debounces SSE bursts into a single trailing flush", () => {
+    vi.useFakeTimers();
+    try {
+      const invalidateQueries = vi.fn().mockResolvedValue(undefined);
+      const client = { invalidateQueries } as unknown as QueryClient;
+      invalidateOntoCodeEvent(client, "raas", "ocs-burst");
+      invalidateOntoCodeEvent(client, "raas", "ocs-burst");
+      invalidateOntoCodeEvent(client, "raas", "ocs-burst");
+      expect(invalidateQueries).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(1_300);
+      // 三连事件只冲刷一轮（13 组查询），而不是 39 次。
+      expect(invalidateQueries).toHaveBeenCalledTimes(13);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("invalidates every live session projection", () => {
     const invalidateQueries = vi.fn().mockResolvedValue(undefined);
-    invalidateOntoCodeEvent(
+    flushOntoCodeInvalidations(
       { invalidateQueries } as unknown as QueryClient,
       "raas",
       "ocs-1",

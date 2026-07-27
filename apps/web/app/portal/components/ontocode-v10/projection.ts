@@ -64,6 +64,11 @@ function truncate(text: string, max = 42): string {
   return t.length > max ? `${t.slice(0, max)}…` : t;
 }
 
+/** 引擎内部称谓不出现在用户可见文本（Agent Factory 等一律剥掉）。 */
+function stripEnginePrefix(text: string): string {
+  return text.replace(/^Agent Factory 需要你的回答[:：]\s*/u, "").trim();
+}
+
 export function projectSessionRow(
   session: OntoCodeBuildSession,
   facts: SessionRowFacts = {},
@@ -83,7 +88,7 @@ export function projectSessionRow(
   switch (session.activityState) {
     case "needs_user": {
       const q = facts.latestQuestion
-        ? truncate(facts.latestQuestion)
+        ? truncate(stripEnginePrefix(facts.latestQuestion))
         : "有 1 个待回答的问题";
       return { ...base, tone: "warn", label: "等你决定", sub: q, needsAttention: 1 };
     }
@@ -340,7 +345,7 @@ export function projectFlow(input: FlowInput): FlowItemVM[] {
         kind: "decision",
         refId: job.id,
         jobId: job.id,
-        title: truncate(raw.replace(/^Agent Factory 需要你的回答[:：]\s*/, ""), 180),
+        title: truncate(stripEnginePrefix(raw), 180),
         allowOther: true,
         options: [],
       },
