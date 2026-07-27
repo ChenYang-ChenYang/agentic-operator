@@ -67,6 +67,10 @@ import {
 import { createOntoCodeConfigurationTask } from "./ontocode-configuration-task-store";
 import { analyzeOntology } from "./ontocode-ontology-analyst";
 import {
+  preflightOntoCodeDeploy,
+  summarizePreflight,
+} from "./ontocode-deploy";
+import {
   completeOntoCodeSandboxAttempt,
   createOntoCodeSandboxAttempt,
   failOntoCodeSandboxAttempt,
@@ -4548,6 +4552,49 @@ export function createDefaultOntoCodeHarnessExecutors(
         outcome: "succeeded",
         receipt: receipt as unknown as Record<string, unknown>,
         message: `已分析 ${receipt.structure.counts.objects} 个对象 · ${receipt.structure.counts.links} 条真实关系边，得出 ${confirmed} 条可核查结论。`,
+      };
+    },
+    // Release preparation. Previously a promotion job died with
+    // `executor_not_available` — an internal error that told the FDE nothing.
+    // It now evaluates the real preconditions and reports precisely which ones
+    // are unmet. It never relaxes a gate and never claims a deploy happened.
+    promotion: async (context) => {
+      const preflight = preflightOntoCodeDeploy(
+        { tenantId: context.job.tenantId, actorId: null },
+        context.session.id,
+      );
+      await context.progress("harness.promotion.preflight", {
+        deployable: preflight.deployable,
+        blockers: preflight.blockers.map((b) => b.code),
+        candidate: preflight.candidate,
+        sandbox: preflight.sandbox,
+      });
+      const receipt = {
+        schema: "ontocode-release-preflight/v1",
+        ...preflight,
+      } as unknown as Record<string, unknown>;
+      if (preflight.deployable) {
+        return {
+          outcome: "succeeded",
+          receipt,
+          message: summarizePreflight(preflight),
+        };
+      }
+      // Unmet preconditions are the FDE's decision to act on, not a crash.
+      return {
+        outcome: "waiting_user",
+        receipt,
+        message: summarizePreflight(preflight),
+        question: {
+          id: `release-preflight-${context.job.id}`,
+          kind: "decision",
+          question: "上线前置条件尚未满足",
+          why: preflight.blockers.map((b) => b.detail).join(" "),
+          options: [],
+          allowOther: true,
+          impact: preflight.blockers.map((b) => b.remedy).join(" "),
+          systems: [],
+        },
       };
     },
     scope: async (context) => {
