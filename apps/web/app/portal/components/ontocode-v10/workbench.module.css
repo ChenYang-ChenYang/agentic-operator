@@ -1,5 +1,9 @@
 /* OntoCode v10 · 浅色三栏工作台（token 从 v10 mockup 移植；仅本组件树使用） */
-.root {
+/* Tokens 必须挂在每个「渲染根」上——含 position:fixed 的浮层与独立首屏，
+ * 它们是 .root 的 DOM 兄弟，CSS 变量按 DOM 祖先级联，不挂就 var() 回退透明。 */
+.root,
+.overlayBackdrop,
+.createStandalone {
   --oc-bg: #f4f6f8;
   --oc-panel: #ffffff;
   --oc-panel2: #fafbfc;
@@ -28,7 +32,9 @@
   --oc-code-bd: #e6ebf0;
   --oc-shadow: 0 1px 2px rgba(23, 33, 43, 0.04), 0 4px 14px rgba(23, 33, 43, 0.05);
   --oc-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
 
+.root {
   display: flex;
   height: calc(100vh - 0px);
   min-height: 0;
