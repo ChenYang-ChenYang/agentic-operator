@@ -2112,3 +2112,59 @@ export const OntoCodeSuiteOverviewReceiptSchema = z
 export type OntoCodeSuiteOverviewReceipt = z.infer<
   typeof OntoCodeSuiteOverviewReceiptSchema
 >;
+
+// ─── Structured waiting question (Harness → conversational action card) ───
+
+export const OntoCodeStructuredQuestionSchema = z
+  .object({
+    id: z.string().trim().min(1).max(200),
+    kind: z.enum(["config", "decision", "authorization"]),
+    question: z.string().trim().min(1).max(4_000),
+    why: z.string().max(2_000).optional(),
+    options: z
+      .array(
+        z
+          .object({
+            label: z.string().trim().min(1).max(200),
+            value: z.string().trim().min(1).max(500),
+            recommended: z.boolean().optional(),
+          })
+          .strict(),
+      )
+      .max(12)
+      .default([]),
+    allowOther: z.boolean().default(true),
+    impact: z.string().max(1_000).optional(),
+    systems: z.array(z.string().trim().min(1).max(200)).max(20).default([]),
+  })
+  .strict();
+export type OntoCodeStructuredQuestion = z.infer<
+  typeof OntoCodeStructuredQuestionSchema
+>;
+
+const WALL_CLOCK_POLICY_BY_JOB_KIND: Record<
+  OntoCodeHarnessJobKind,
+  "warn" | "kill"
+> = {
+  scope: "warn",
+  blueprint: "warn",
+  build: "warn",
+  test: "warn",
+  debug: "warn",
+  regression: "warn",
+  simulation: "kill",
+  promotion: "kill",
+  deploy: "kill",
+  production_analysis: "kill",
+};
+
+/**
+ * Generative work must not be killed by a fixed deadline — for those kinds the
+ * wall-clock budget is advisory ("warn"; spec §5.1 定案, staged checkpoint
+ * split deferred to M3), while bounded read-only/production kinds keep "kill".
+ */
+export function resolveWallClockPolicy(
+  kind: OntoCodeHarnessJobKind,
+): "warn" | "kill" {
+  return WALL_CLOCK_POLICY_BY_JOB_KIND[kind];
+}
