@@ -258,7 +258,12 @@ export function projectFlow(input: FlowInput): FlowItemVM[] {
 
   for (const job of input.jobs) {
     const doneName = JOB_KIND_DONE[job.kind] ?? "执行";
-    if (job.status === "succeeded" || job.status === "failed" || job.status === "cancelled") {
+    if (
+      job.status === "succeeded" ||
+      job.status === "failed_terminal" ||
+      job.status === "failed_recoverable" ||
+      job.status === "cancelled"
+    ) {
       const evs = stageEventsByJob.get(job.id) ?? [];
       const steps = evs
         .map((e) => asText(isRecord(e.payload) ? e.payload.stage : null))
@@ -272,7 +277,9 @@ export function projectFlow(input: FlowInput): FlowItemVM[] {
           ? `${doneName}完成${secs ? ` · ${secs}s` : ""}`
           : job.status === "cancelled"
             ? `${doneName}已取消`
-            : `${doneName}失败`;
+            : job.status === "failed_recoverable"
+              ? `${doneName}失败（可修复）`
+              : `${doneName}失败`;
       items.push({
         kind: "execGroup",
         id: `exec-${job.id}`,
@@ -280,12 +287,21 @@ export function projectFlow(input: FlowInput): FlowItemVM[] {
         steps,
         at: job.finishedAt ?? job.updatedAt,
       });
-    } else if (job.status === "running" || job.status === "queued") {
+    } else if (
+      job.status === "running" ||
+      job.status === "leased" ||
+      job.status === "queued" ||
+      job.status === "retry_scheduled"
+    ) {
       const verb = JOB_KIND_VERB[job.kind] ?? "进行中";
+      const suffix =
+        job.status === "queued" || job.status === "retry_scheduled"
+          ? "（排队中）"
+          : "";
       items.push({
         kind: "statusLine",
         id: `status-${job.id}`,
-        text: job.status === "queued" ? `${verb}（排队中）` : verb,
+        text: `${verb}${suffix}`,
         at: Number.MAX_SAFE_INTEGER, // 状态行永远排最后且只应有一个
       });
     }
@@ -339,9 +355,10 @@ export function projectFlow(input: FlowInput): FlowItemVM[] {
 
   // 只保留一条状态行（多 running 作业时取最新）。
   const statusLines = items.filter((i) => i.kind === "statusLine");
-  const rest = items.filter((i) => i.kind !== "statusLine");
+  const rest: FlowItemVM[] = items.filter((i) => i.kind !== "statusLine");
   rest.sort((a, b) => a.at - b.at);
-  if (statusLines.length > 0) rest.push(statusLines[statusLines.length - 1]);
+  const lastStatus = statusLines[statusLines.length - 1];
+  if (lastStatus !== undefined) rest.push(lastStatus);
   return rest;
 }
 
