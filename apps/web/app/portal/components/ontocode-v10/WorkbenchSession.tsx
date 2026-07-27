@@ -581,6 +581,24 @@ export function WorkbenchSessionConnected() {
             project?.domain ?? tenant,
             ...(session ? [session.title] : []),
           ]}
+          quickActions={[
+            {
+              label: "分析 Ontology",
+              run: () =>
+                sendRawTurn.mutate({
+                  text: "分析当前 Ontology：读取真实关系图，说明核心实体、事件链与自动化边界。",
+                  behavior: "execute",
+                  action: "analyze_ontology" as never,
+                  arguments: {},
+                  affectedSemanticPaths: [],
+                  requestedCapabilities: [],
+                }),
+            },
+            {
+              label: "继续下一步",
+              run: () => sendTurn.mutate({ text: "继续" }),
+            },
+          ]}
           onSend={() => {
             const text = draft.trim();
             if (!text) return;

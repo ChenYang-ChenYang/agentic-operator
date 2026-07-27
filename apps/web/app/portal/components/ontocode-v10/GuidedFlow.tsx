@@ -132,6 +132,8 @@ export interface ComposerProps {
   autonomy: string;
   onAutonomyChange: (mode: string) => void;
   contextTokens: string[];
+  /** 一行一键动作。刻意少——中栏保持极简。 */
+  quickActions?: Array<{ label: string; run: () => void }>;
 }
 
 const AUTONOMY_OPTIONS: Array<{ value: string; label: string }> = [
@@ -190,6 +192,21 @@ export function Composer(props: ComposerProps) {
           {props.sending ? "发送中…" : "发送"}
         </button>
       </div>
+      {props.quickActions && props.quickActions.length > 0 ? (
+        <div className={styles.quickRow}>
+          {props.quickActions.map((action) => (
+            <button
+              key={action.label}
+              type="button"
+              className={styles.quickChip}
+              onClick={action.run}
+              disabled={props.disabled || props.sending}
+            >
+              {action.label}
+            </button>
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }
