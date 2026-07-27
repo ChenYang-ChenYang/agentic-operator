@@ -97,6 +97,7 @@ import {
   listOntoCodeSandboxAttempts,
 } from "../../services/ontocode-sandbox-attempt-store";
 import { getOntoCodeSuiteOverview } from "../../services/ontocode-suite-overview";
+import { confirmSessionHumanBoundaries } from "../../services/ontocode-human-boundary";
 import { commitOntoCodeWorkspacePatch } from "../../services/ontocode-workspace-patch-store";
 import {
   appendOntoCodeUserMessage,
@@ -813,6 +814,26 @@ export async function ontocodeRoutes(app: FastifyInstance): Promise<void> {
       return reply.ok(
         OntoCodeSuiteOverviewReceiptSchema.parse({
           overview: getOntoCodeSuiteOverview(ctx, req.params.sessionId),
+        }),
+      );
+    },
+  );
+
+  // 确认「人工边界」：把当前等待中的 Build 阻塞里那些无已授权工具的系统写成
+  // governance.humanBoundary=true 的 System Profile（诚实、持久），并 resume Build。
+  app.post<{
+    Params: { sessionId: string };
+    Body: { waitingJobId?: string; note?: string };
+  }>(
+    "/ontocode/sessions/:sessionId/confirm-human-boundary",
+    async (req, reply) => {
+      const ctx = actorContext(req, "workflows.write");
+      const body = (req.body ?? {}) as { waitingJobId?: string; note?: string };
+      return reply.ok(
+        confirmSessionHumanBoundaries(ctx, req.params.sessionId, {
+          waitingJobId:
+            typeof body.waitingJobId === "string" ? body.waitingJobId : undefined,
+          note: typeof body.note === "string" ? body.note : undefined,
         }),
       );
     },

@@ -14,6 +14,8 @@ export interface ActionCardViewProps {
   onSecondary?: () => void;
   /** decision: 选项点击或「其它」提交 */
   onAnswer?: (answer: string) => void;
+  /** 人工边界确认（boundaryEligible 的 config 卡） */
+  onConfirmBoundary?: () => void;
 }
 
 const KIND_TAG: Record<
@@ -88,7 +90,39 @@ export function ActionCardView(props: ActionCardViewProps) {
         </div>
       ) : null}
 
-      {card.kind === "config" ? (
+      {card.kind === "config" && card.boundaryEligible ? (
+        <>
+          <div className={styles.cardBtns}>
+            <button
+              type="button"
+              className={`${styles.btn} ${styles.btnGreen}`}
+              onClick={props.onConfirmBoundary}
+              disabled={props.busy}
+            >
+              {props.busy ? "处理中…" : "确认人工边界（设计稿可继续）"}
+            </button>
+            <button
+              type="button"
+              className={styles.btn}
+              onClick={() => props.onAnswer?.("已更新，请重读")}
+              disabled={props.busy}
+            >
+              已更新 Ontology，请重读
+            </button>
+            <button
+              type="button"
+              className={styles.btn}
+              onClick={props.onPrimary}
+              disabled={props.busy}
+            >
+              去配置真实工具 →
+            </button>
+          </div>
+          <div className={styles.cardWhy}>
+            涉及系统：{(card.systems ?? []).join("、") || "—"}。确认人工边界后，设计与候选可继续；沙箱验证、交付与上线仍会拦截，直到接入真实工具。
+          </div>
+        </>
+      ) : card.kind === "config" ? (
         <div className={styles.cardBtns}>
           <button
             type="button"

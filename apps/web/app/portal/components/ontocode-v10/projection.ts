@@ -175,6 +175,10 @@ export interface ActionCardVM {
   configTaskId?: string;
   commandId?: string;
   jobId?: string;
+  /** 该阻塞涉及的系统（无已授权工具/运行时）。 */
+  systems?: string[];
+  /** true = 可确认为人工边界（config 阻塞、有系统、无真实配置任务）。 */
+  boundaryEligible?: boolean;
 }
 
 export type FlowItemVM =
@@ -230,6 +234,9 @@ function questionFromPayload(payload: unknown): ActionCardVM | null {
         ];
       })
     : [];
+  const systems = Array.isArray(q.systems)
+    ? q.systems.filter((s): s is string => typeof s === "string" && s.trim().length > 0)
+    : [];
   return {
     kind,
     refId: asText(q.id) ?? "question",
@@ -239,6 +246,9 @@ function questionFromPayload(payload: unknown): ActionCardVM | null {
     impact: asText(q.impact) ?? undefined,
     options,
     allowOther: q.allowOther !== false,
+    systems,
+    // config 阻塞 + 有涉及系统 + 来自等待问题（无真实配置任务）= 可确认人工边界
+    boundaryEligible: kind === "config" && systems.length > 0,
   };
 }
 

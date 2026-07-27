@@ -374,6 +374,42 @@ export function useOntoCodeMessages(
   });
 }
 
+export function useConfirmOntoCodeHumanBoundary(
+  tenant: string,
+  sessionId: string,
+) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { waitingJobId?: string; note?: string }) =>
+      callV1<{
+        systems: string[];
+        markedProfiles: string[];
+        resumed: boolean;
+        resumeAction: string | null;
+        waitingJobId: string;
+      }>(
+        tenant,
+        `/v1/ontocode/sessions/${encodeURIComponent(sessionId)}/confirm-human-boundary`,
+        {
+          method: "POST",
+          headers: { "Idempotency-Key": idempotencyKey("human-boundary") },
+          body: JSON.stringify(input),
+        },
+      ),
+    onSuccess: () => {
+      for (const queryKey of [
+        ONTOCODE_KEYS.messages(tenant, sessionId),
+        ONTOCODE_KEYS.jobs(tenant, sessionId),
+        ONTOCODE_KEYS.events(tenant, sessionId),
+        ONTOCODE_KEYS.session(tenant, sessionId),
+        ONTOCODE_KEYS.sessions(tenant),
+      ]) {
+        void client.invalidateQueries({ queryKey });
+      }
+    },
+  });
+}
+
 export function useOntoCodeSuiteOverview(
   tenant: string,
   sessionId: string,

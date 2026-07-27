@@ -22,6 +22,7 @@ import {
   useOntoCodeSessionEvents,
   useOntoCodeSessions,
   useOntoCodeSuiteOverview,
+  useConfirmOntoCodeHumanBoundary,
   useSendOntoCodeAssistantTurn,
   useSendOntoCodeTurn,
   useUpdateOntoCodeSession,
@@ -107,6 +108,7 @@ export function WorkbenchSessionConnected() {
   const sendRawTurn = useSendOntoCodeTurn(tenant, sessionId);
   const updateSession = useUpdateOntoCodeSession(tenant, sessionId);
   const decideCommand = useDecideOntoCodeCommand(tenant, sessionId);
+  const confirmBoundary = useConfirmOntoCodeHumanBoundary(tenant, sessionId);
 
   const [draft, setDraft] = useState("");
   const [inspectorOpen, setInspectorOpen] = useState(true);
@@ -225,6 +227,55 @@ export function WorkbenchSessionConnected() {
 
   const renderCard = (item: Extract<FlowItemVM, { kind: "actionCard" }>) => {
     const card = item.card;
+    // 人工边界可确认的 config 阻塞（来自等待问题、无真实配置任务）：
+    // 确认人工边界 → 标记系统 + resume build；已更新请重读 → resume；去配置 → 设置页。
+    if (card.kind === "config" && card.boundaryEligible && !card.configTaskId) {
+      const waitingJob = card.jobId
+        ? jobs.find((j) => j.id === card.jobId && j.status === "waiting_user")
+        : undefined;
+      return (
+        <ActionCardView
+          card={card}
+          busy={confirmBoundary.isPending || sendRawTurn.isPending}
+          errorText={
+            confirmBoundary.error instanceof Error
+              ? confirmBoundary.error.message
+              : null
+          }
+          onConfirmBoundary={() =>
+            confirmBoundary.mutate({
+              waitingJobId: waitingJob?.id ?? card.jobId,
+            })
+          }
+          onAnswer={(answer) => {
+            const resumeAction = waitingJob
+              ? resumeActionForJobKind(waitingJob.kind)
+              : null;
+            if (waitingJob && resumeAction) {
+              sendRawTurn.mutate({
+                text: answer,
+                behavior: "execute",
+                action: resumeAction as never,
+                arguments: {
+                  clarificationAnswer: answer,
+                  resumeWaitingUserJobId: waitingJob.id,
+                  source: "ontology-updated",
+                },
+                affectedSemanticPaths: [],
+                requestedCapabilities: [],
+              });
+            } else {
+              sendTurn.mutate({ text: answer });
+            }
+          }}
+          onPrimary={() =>
+            router.push(
+              `/portal/${encodeURIComponent(tenant)}/settings?section=integrations`,
+            )
+          }
+        />
+      );
+    }
     if (card.kind === "config") {
       const task = configTasks.find(
         (t) => (t as { id?: string }).id === card.configTaskId,
