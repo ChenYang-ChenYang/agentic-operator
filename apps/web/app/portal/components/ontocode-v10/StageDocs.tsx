@@ -5,11 +5,12 @@
 import React from "react";
 import styles from "./workbench.module.css";
 
-export type StageDocKind = "scope" | "blueprint";
+export type StageDocKind = "scope" | "blueprint" | "analysis";
 
 const STAGE_LABEL: Record<StageDocKind, string> = {
   scope: "范围分析",
   blueprint: "Agent 蓝图",
+  analysis: "Ontology 理解",
 };
 
 export function stageDocLabel(kind: StageDocKind): string {
@@ -18,6 +19,7 @@ export function stageDocLabel(kind: StageDocKind): string {
 
 /** 从 artifact 逻辑名判定阶段类型（harness/scope/… 或 harness/blueprint/…）。 */
 export function classifyStageDoc(logicalName: string): StageDocKind | null {
+  if (/(^|\/)ontology_analysis(\/|$)/i.test(logicalName)) return "analysis";
   if (/(^|\/)scope(\/|$)/i.test(logicalName)) return "scope";
   if (/(^|\/)blueprint(\/|$)/i.test(logicalName)) return "blueprint";
   return null;
@@ -109,6 +111,114 @@ function parseBlueprint(json: unknown): {
   };
 }
 
+interface AnalysisDoc {
+  counts: { objects: number; links: number; agentActions: number };
+  relationshipKinds: Array<{
+    kind: string;
+    count: number;
+    examples: Array<{ from: string; to: string }>;
+  }>;
+  hubs: Array<{
+    id: string;
+    inbound: number;
+    outbound: number;
+    touchedByActions: string[];
+  }>;
+  chains: Array<{
+    entryEvent: string;
+    path: string[];
+    terminalEvent: string | null;
+    cyclic: boolean;
+  }>;
+  findings: Array<{ claim: string; refs: string[]; verdict: string }>;
+  systems: string[];
+  limitations: string[];
+  narrative: string | null;
+}
+
+function parseAnalysis(json: unknown): AnalysisDoc | null {
+  if (!isRecord(json)) return null;
+  const structure = isRecord(json.structure) ? json.structure : null;
+  if (!structure) return null;
+  const counts = isRecord(structure.counts) ? structure.counts : {};
+  const num = (v: unknown): number => (typeof v === "number" ? v : 0);
+  const strList = (v: unknown): string[] =>
+    Array.isArray(v) ? v.filter((s): s is string => typeof s === "string") : [];
+  return {
+    counts: {
+      objects: num(counts.objects),
+      links: num(counts.links),
+      agentActions: num(counts.agentActions),
+    },
+    relationshipKinds: Array.isArray(structure.relationshipKinds)
+      ? structure.relationshipKinds.flatMap((k) => {
+          if (!isRecord(k) || typeof k.kind !== "string") return [];
+          return [
+            {
+              kind: k.kind,
+              count: num(k.count),
+              examples: Array.isArray(k.examples)
+                ? k.examples.flatMap((e) =>
+                    isRecord(e) &&
+                    typeof e.from === "string" &&
+                    typeof e.to === "string"
+                      ? [{ from: e.from, to: e.to }]
+                      : [],
+                  )
+                : [],
+            },
+          ];
+        })
+      : [],
+    hubs: Array.isArray(structure.hubs)
+      ? structure.hubs.flatMap((h) =>
+          isRecord(h) && typeof h.id === "string"
+            ? [
+                {
+                  id: h.id,
+                  inbound: num(h.inbound),
+                  outbound: num(h.outbound),
+                  touchedByActions: strList(h.touchedByActions),
+                },
+              ]
+            : [],
+        )
+      : [],
+    chains: Array.isArray(structure.eventChains)
+      ? structure.eventChains.flatMap((c) =>
+          isRecord(c) && typeof c.entryEvent === "string"
+            ? [
+                {
+                  entryEvent: c.entryEvent,
+                  path: strList(c.path),
+                  terminalEvent:
+                    typeof c.terminalEvent === "string" ? c.terminalEvent : null,
+                  cyclic: c.cyclic === true,
+                },
+              ]
+            : [],
+        )
+      : [],
+    findings: Array.isArray(json.findings)
+      ? json.findings.flatMap((f) =>
+          isRecord(f) && typeof f.claim === "string"
+            ? [
+                {
+                  claim: f.claim,
+                  refs: strList(f.refs),
+                  verdict:
+                    typeof f.verdict === "string" ? f.verdict : "unverifiable",
+                },
+              ]
+            : [],
+        )
+      : [],
+    systems: strList(structure.externalSystems),
+    limitations: strList(json.limitations),
+    narrative: typeof json.narrative === "string" ? json.narrative : null,
+  };
+}
+
 export interface StageDocViewProps {
   kind: StageDocKind;
   content: string | null;
@@ -161,6 +271,153 @@ export function StageDocView(props: StageDocViewProps) {
             ? ` · 置信度 ${Math.round(scope.confidence * 100)}%`
             : ""}
         </div>
+      </div>
+    );
+  }
+
+  if (props.kind === "analysis") {
+    const a = parseAnalysis(json);
+    if (!a) return <pre className={styles.codeBox}>{props.content}</pre>;
+    return (
+      <div className={styles.docWrap}>
+        {a.narrative ? <p className={styles.docSummary}>{a.narrative}</p> : null}
+        <div className={styles.ovSum}>
+          <span className={styles.ovChip}>{a.counts.objects} 对象</span>
+          <span className={styles.ovChip}>{a.counts.links} 关系边</span>
+          <span className={styles.ovChip}>{a.counts.agentActions} Agent 动作</span>
+        </div>
+        {a.relationshipKinds.length > 0 ? (
+          <>
+            <div className={styles.secTitle}>关系类型（真实边）</div>
+            <div className={styles.docTableWrap}>
+              <table className={styles.docTable}>
+                <thead>
+                  <tr>
+                    <th style={{ width: "38%" }}>类型</th>
+                    <th>数量与示例</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {a.relationshipKinds.map((k) => (
+                    <tr key={k.kind}>
+                      <td className={styles.docMono}>{k.kind}</td>
+                      <td>
+                        ×{k.count}
+                        {k.examples.length > 0 ? (
+                          <div className={styles.docSub}>
+                            {k.examples
+                              .map((e) => `${e.from} → ${e.to}`)
+                              .join("；")}
+                          </div>
+                        ) : null}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
+        ) : null}
+        {a.hubs.length > 0 ? (
+          <>
+            <div className={styles.secTitle}>核心实体</div>
+            <div className={styles.docTableWrap}>
+              <table className={styles.docTable}>
+                <thead>
+                  <tr>
+                    <th style={{ width: "38%" }}>实体</th>
+                    <th>连接度</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {a.hubs.map((h) => (
+                    <tr key={h.id}>
+                      <td className={styles.docMono}>{h.id}</td>
+                      <td>
+                        入 {h.inbound} · 出 {h.outbound}
+                        {h.touchedByActions.length > 0 ? (
+                          <div className={styles.docSub}>
+                            {h.touchedByActions.join("、")}
+                          </div>
+                        ) : null}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
+        ) : null}
+        {a.findings.length > 0 ? (
+          <>
+            <div className={styles.secTitle}>结论（含核查状态）</div>
+            <div className={styles.docTableWrap}>
+              <table className={styles.docTable}>
+                <thead>
+                  <tr>
+                    <th style={{ width: "18%" }}>核查</th>
+                    <th>结论与依据</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {a.findings.map((f, i) => (
+                    <tr key={`${f.claim}-${i}`}>
+                      <td
+                        className={
+                          f.verdict === "confirmed"
+                            ? styles.agStatOk
+                            : styles.agStatOff
+                        }
+                      >
+                        {f.verdict === "confirmed" ? "✓ 已核对" : "未验证"}
+                      </td>
+                      <td>
+                        {f.claim}
+                        {f.refs.length > 0 ? (
+                          <div className={styles.docSub}>
+                            依据：{f.refs.join("、")}
+                          </div>
+                        ) : null}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
+        ) : null}
+        {a.chains.length > 0 ? (
+          <>
+            <div className={styles.secTitle}>事件链</div>
+            <div className={styles.docTableWrap}>
+              <table className={styles.docTable}>
+                <tbody>
+                  {a.chains.map((c, i) => (
+                    <tr key={`${c.entryEvent}-${i}`}>
+                      <td className={styles.docMono}>
+                        {c.entryEvent} → {c.path.join(" → ")}
+                        {c.terminalEvent ? ` → ${c.terminalEvent}` : ""}
+                        {c.cyclic ? "（存在回环）" : ""}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
+        ) : null}
+        {a.systems.length > 0 ? (
+          <div className={styles.docMeta}>
+            外部系统：{a.systems.join("、")}
+          </div>
+        ) : null}
+        {a.limitations.length > 0 ? (
+          <div className={styles.docMeta}>
+            {a.limitations.map((l, i) => (
+              <div key={i}>· {l}</div>
+            ))}
+          </div>
+        ) : null}
       </div>
     );
   }

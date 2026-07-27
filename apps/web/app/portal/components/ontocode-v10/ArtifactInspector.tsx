@@ -357,6 +357,15 @@ export function InspectorDetailView(props: InspectorDetailProps) {
 
 /* ----------------------------- Connected 包装 ---------------------------- */
 
+export type InspectorTab = "artifacts" | "connections" | "log" | "reasoning";
+
+export const INSPECTOR_TABS: Array<{ id: InspectorTab; label: string }> = [
+  { id: "artifacts", label: "产物" },
+  { id: "connections", label: "连接" },
+  { id: "log", label: "日志" },
+  { id: "reasoning", label: "推理" },
+];
+
 export interface ArtifactInspectorProps {
   tenant: string;
   sessionId: string;

@@ -24,13 +24,22 @@ import {
   useOntoCodeSuiteOverview,
   useConfirmOntoCodeHumanBoundary,
   useDeleteOntoCodeSession,
+  useSystemCoverage,
+  useProbeSystemConnection,
+  useMarkSystemsHumanBoundary,
   useSystemConnections,
   useSendOntoCodeAssistantTurn,
   useSendOntoCodeTurn,
   useUpdateOntoCodeSession,
   useVerifyOntoCodeConfigurationTask,
 } from "@/lib/hooks/useOntoCodeWorkspace";
-import { ArtifactInspectorConnected } from "./ArtifactInspector";
+import {
+  ArtifactInspectorConnected,
+  INSPECTOR_TABS,
+  type InspectorTab,
+} from "./ArtifactInspector";
+import { ReasoningFlowView, SessionLogView } from "./SessionLog";
+import { SystemConnectionsView } from "./SystemConnections";
 import { useOntoCodeSessionStream } from "@/lib/hooks/useOntoCodeSessionStream";
 import styles from "./workbench.module.css";
 import {
@@ -112,11 +121,15 @@ export function WorkbenchSessionConnected() {
   const decideCommand = useDecideOntoCodeCommand(tenant, sessionId);
   const confirmBoundary = useConfirmOntoCodeHumanBoundary(tenant, sessionId);
   const deleteSession = useDeleteOntoCodeSession(tenant);
+  const probeSystem = useProbeSystemConnection(tenant);
+  const markBoundary = useMarkSystemsHumanBoundary(tenant);
 
   const [draft, setDraft] = useState("");
   const [inspectorOpen, setInspectorOpen] = useState(true);
   const [inspectorFullscreen, setInspectorFullscreen] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
+  const [inspectorTab, setInspectorTab] = useState<InspectorTab>("artifacts");
+  const [busySystem, setBusySystem] = useState<string | null>(null);
 
   const session: OntoCodeBuildSession | null =
     sessionQ.data?.session ?? null;
@@ -133,6 +146,10 @@ export function WorkbenchSessionConnected() {
       null,
     [projectsQ.data, session?.projectId],
   );
+
+  // Every system the bound domain references — the blocker card only ever knows
+  // about the one that stopped this build.
+  const coverageQ = useSystemCoverage(tenant, project?.domain ?? null);
 
   const runningJob = jobs.find(
     (j) => j.status === "running" || j.status === "leased",
@@ -575,7 +592,71 @@ export function WorkbenchSessionConnected() {
         />
       }
       inspector={
-        <ArtifactInspectorConnected
+        <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+          <div className={styles.tabs}>
+            {INSPECTOR_TABS.map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                className={
+                  inspectorTab === tab.id
+                    ? `${styles.tab} ${styles.tabOn}`
+                    : styles.tab
+                }
+                onClick={() => setInspectorTab(tab.id)}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+          <div style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
+            {inspectorTab === "connections" ? (
+              <SystemConnectionsView
+                domainLabel={project?.domain ?? ""}
+                rows={coverageQ.data?.systems ?? []}
+                totals={coverageQ.data?.totals}
+                loading={coverageQ.isLoading}
+                errorText={
+                  coverageQ.error instanceof Error
+                    ? `无法读取系统连接：${coverageQ.error.message}`
+                    : null
+                }
+                busySystem={busySystem}
+                onConfigure={(provider) =>
+                  router.push(
+                    `/portal/${encodeURIComponent(tenant)}/settings?section=integrations&provider=${encodeURIComponent(provider)}`,
+                  )
+                }
+                onProbe={(profileId) => {
+                  setBusySystem(profileId);
+                  probeSystem.mutate(profileId, {
+                    onSettled: () => setBusySystem(null),
+                  });
+                }}
+                onMarkBoundary={(system) => {
+                  setBusySystem(system);
+                  markBoundary.mutate(
+                    { systems: [system] },
+                    { onSettled: () => setBusySystem(null) },
+                  );
+                }}
+              />
+            ) : inspectorTab === "log" ? (
+              <SessionLogView
+                messages={messages}
+                events={events}
+                jobs={jobs}
+              />
+            ) : inspectorTab === "reasoning" ? (
+              <ReasoningFlowView jobs={jobs} events={events} />
+            ) : null}
+            <div
+              style={{
+                display: inspectorTab === "artifacts" ? "block" : "none",
+                height: "100%",
+              }}
+            >
+              <ArtifactInspectorConnected
           tenant={tenant}
           sessionId={sessionId}
           candidateLabel={
@@ -593,8 +674,11 @@ export function WorkbenchSessionConnected() {
             setInspectorOpen(false);
           }}
           fullscreen={inspectorFullscreen}
-          onToggleFullscreen={() => setInspectorFullscreen((v) => !v)}
-        />
+                onToggleFullscreen={() => setInspectorFullscreen((v) => !v)}
+              />
+            </div>
+          </div>
+        </div>
       }
     />
     </>
