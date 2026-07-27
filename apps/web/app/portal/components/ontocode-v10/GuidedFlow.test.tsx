@@ -74,6 +74,60 @@ describe("ActionCardView", () => {
     expect(html).toContain("其它");
   });
 
+  it("renders per-system connection rows with provider deep-link actions", () => {
+    const html = renderToStaticMarkup(
+      <ActionCardView
+        card={{
+          kind: "config",
+          refId: "q2",
+          title: "processResume 需要连接这些系统",
+          systems: ["GoHire_System", "Internal_Recruitment_System"],
+          boundaryEligible: true,
+        }}
+        systemLinks={[
+          {
+            system: "GoHire_System",
+            provider: "gohire",
+            configured: false,
+            probeOk: null,
+            runtimeProvided: false,
+          },
+          {
+            system: "Internal_Recruitment_System",
+            provider: null,
+            configured: false,
+            probeOk: null,
+            runtimeProvided: false,
+          },
+        ]}
+      />,
+    );
+    // 有 provider 的系统 → 指名配置按钮；没有的 → 诚实说明 + 人工边界兜底
+    expect(html).toContain("配置 gohire →");
+    expect(html).toContain("暂无连接档案");
+    expect(html).toContain("确认人工边界（仅设计稿，不可交付）");
+    expect(html).toContain("已配置完成，校验并继续");
+  });
+
+  it("renders a configured+verified system as connected", () => {
+    const html = renderToStaticMarkup(
+      <ActionCardView
+        card={{ kind: "config", refId: "q3", title: "连接检查" }}
+        systemLinks={[
+          {
+            system: "GoHire_System",
+            provider: "gohire",
+            configured: true,
+            probeOk: true,
+            runtimeProvided: false,
+          },
+        ]}
+      />,
+    );
+    expect(html).toContain("已配置 · 连接已验证");
+    expect(html).toContain("查看/重配 gohire →");
+  });
+
   it("renders authorization card with approve/reject and error text", () => {
     const html = renderToStaticMarkup(
       <ActionCardView

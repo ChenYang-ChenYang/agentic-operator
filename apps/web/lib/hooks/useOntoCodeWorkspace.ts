@@ -374,6 +374,42 @@ export function useOntoCodeMessages(
   });
 }
 
+export interface SystemConnectionRow {
+  system: string;
+  profileId: string | null;
+  humanBoundary: boolean;
+  runtimeProvided: boolean;
+  hasTool: boolean;
+  credentialProvider: string | null;
+  credentialConfigured: boolean;
+  probeOk: boolean | null;
+}
+
+/**
+ * 连接成熟度查询：某域下这些系统各自「差几步能用」——provider 映射、
+ * 凭证是否已配、探针是否通。供行动卡把「去配置」变成指到具体 provider 的深链。
+ */
+export function useSystemConnections(
+  tenant: string,
+  domain: string | null,
+  systems: string[],
+): UseQueryResult<{ systems: SystemConnectionRow[] }> {
+  const key = systems.slice().sort().join(",");
+  return useQuery({
+    queryKey: ["system-connections", tenant, domain ?? "", key] as const,
+    queryFn: () => {
+      const params = new URLSearchParams({ domain: domain ?? "" });
+      for (const s of systems) params.append("systems", s);
+      return callV1<{ systems: SystemConnectionRow[] }>(
+        tenant,
+        `/v1/system-profiles/coverage?${params.toString()}`,
+      );
+    },
+    enabled: Boolean(tenant && domain && systems.length > 0),
+    staleTime: 5_000,
+  });
+}
+
 export function useConfirmOntoCodeHumanBoundary(
   tenant: string,
   sessionId: string,

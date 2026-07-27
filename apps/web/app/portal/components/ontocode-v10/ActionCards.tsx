@@ -4,6 +4,15 @@ import React, { useState } from "react";
 import styles from "./workbench.module.css";
 import type { ActionCardVM } from "./projection";
 
+export interface SystemLinkVM {
+  system: string;
+  /** 可配置的 provider（Settings→Integrations 深链目标）；null=尚无连接档案。 */
+  provider: string | null;
+  configured: boolean;
+  probeOk: boolean | null;
+  runtimeProvided: boolean;
+}
+
 export interface ActionCardViewProps {
   card: ActionCardVM;
   busy?: boolean;
@@ -16,6 +25,9 @@ export interface ActionCardViewProps {
   onAnswer?: (answer: string) => void;
   /** 人工边界确认（boundaryEligible 的 config 卡） */
   onConfirmBoundary?: () => void;
+  /** config 卡：每个系统的连接成熟度 + 打开对应 provider 配置页 */
+  systemLinks?: SystemLinkVM[];
+  onConfigureProvider?: (provider: string) => void;
 }
 
 const KIND_TAG: Record<
@@ -90,57 +102,99 @@ export function ActionCardView(props: ActionCardViewProps) {
         </div>
       ) : null}
 
-      {card.kind === "config" && card.boundaryEligible ? (
+      {card.kind === "config" ? (
         <>
+          {props.systemLinks && props.systemLinks.length > 0 ? (
+            <div className={styles.sysLinks}>
+              {props.systemLinks.map((link) => (
+                <div key={link.system} className={styles.sysLinkRow}>
+                  <span className={styles.docMono}>{link.system}</span>
+                  {link.runtimeProvided ? (
+                    <span className={styles.agStatOk}>✓ 运行时提供，无需配置</span>
+                  ) : link.provider ? (
+                    <>
+                      {link.configured ? (
+                        <span
+                          className={
+                            link.probeOk === false
+                              ? styles.agStatBad
+                              : styles.agStatOk
+                          }
+                        >
+                          {link.probeOk === false
+                            ? "已配置 · 探针失败"
+                            : link.probeOk
+                              ? "✓ 已配置 · 连接已验证"
+                              : "✓ 已配置"}
+                        </span>
+                      ) : (
+                        <span className={styles.agStatOff}>未配置</span>
+                      )}
+                      <button
+                        type="button"
+                        className={`${styles.btn} ${link.configured ? "" : styles.btnAmber}`}
+                        onClick={() => props.onConfigureProvider?.(link.provider!)}
+                        disabled={props.busy}
+                      >
+                        {link.configured ? "查看/重配" : "配置"} {link.provider} →
+                      </button>
+                    </>
+                  ) : (
+                    <span className={styles.agStatOff}>
+                      暂无连接档案——需先建立系统档案（或确认人工边界）
+                    </span>
+                  )}
+                </div>
+              ))}
+            </div>
+          ) : null}
           <div className={styles.cardBtns}>
+            {!props.systemLinks?.length ? (
+              <button
+                type="button"
+                className={`${styles.btn} ${styles.btnAmber}`}
+                onClick={props.onPrimary}
+                disabled={props.busy}
+              >
+                去配置真实工具 →
+              </button>
+            ) : null}
             <button
               type="button"
               className={`${styles.btn} ${styles.btnGreen}`}
-              onClick={props.onConfirmBoundary}
+              onClick={props.onSecondary}
               disabled={props.busy}
             >
-              {props.busy ? "处理中…" : "确认人工边界（设计稿可继续）"}
-            </button>
-            <button
-              type="button"
-              className={styles.btn}
-              onClick={() => props.onAnswer?.("已更新，请重读")}
-              disabled={props.busy}
-            >
-              已更新 Ontology，请重读
-            </button>
-            <button
-              type="button"
-              className={styles.btn}
-              onClick={props.onPrimary}
-              disabled={props.busy}
-            >
-              去配置真实工具 →
+              {props.busy ? "重试中…" : "已配置完成，校验并继续"}
             </button>
           </div>
-          <div className={styles.cardWhy}>
-            涉及系统：{(card.systems ?? []).join("、") || "—"}。确认人工边界后，设计与候选可继续；沙箱验证、交付与上线仍会拦截，直到接入真实工具。
-          </div>
+          {card.systems && card.systems.length > 0 && !props.systemLinks?.length ? (
+            <div className={styles.cardWhy}>
+              涉及系统：{card.systems.join("、")}。配置真实工具/凭证后点「已配置完成」即可继续构建。
+            </div>
+          ) : null}
+          {card.boundaryEligible ? (
+            <div className={styles.cardBtns}>
+              <button
+                type="button"
+                className={styles.btn}
+                onClick={props.onConfirmBoundary}
+                disabled={props.busy}
+                title="这些系统没有真实工具、由人工承担。仅生成设计稿供审阅；候选/沙箱/上线仍会拦截。"
+              >
+                确认人工边界（仅设计稿，不可交付）
+              </button>
+              <button
+                type="button"
+                className={styles.btn}
+                onClick={() => props.onAnswer?.("已更新，请重读")}
+                disabled={props.busy}
+              >
+                已更新 Ontology，请重读
+              </button>
+            </div>
+          ) : null}
         </>
-      ) : card.kind === "config" ? (
-        <div className={styles.cardBtns}>
-          <button
-            type="button"
-            className={`${styles.btn} ${styles.btnAmber}`}
-            onClick={props.onPrimary}
-            disabled={props.busy}
-          >
-            去配置 →
-          </button>
-          <button
-            type="button"
-            className={styles.btn}
-            onClick={props.onSecondary}
-            disabled={props.busy}
-          >
-            {props.busy ? "校验中…" : "已配置完成，校验并继续"}
-          </button>
-        </div>
       ) : null}
 
       {card.kind === "system" && props.onPrimary ? (

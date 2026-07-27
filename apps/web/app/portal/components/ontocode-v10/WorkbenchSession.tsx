@@ -23,6 +23,7 @@ import {
   useOntoCodeSessions,
   useOntoCodeSuiteOverview,
   useConfirmOntoCodeHumanBoundary,
+  useSystemConnections,
   useSendOntoCodeAssistantTurn,
   useSendOntoCodeTurn,
   useUpdateOntoCodeSession,
@@ -136,6 +137,27 @@ export function WorkbenchSessionConnected() {
   );
   const waitingJob = jobs.find((j) => j.status === "waiting_user");
 
+  // 等待中的 config 阻塞涉及的系统（来自结构化问题）→ 查连接成熟度，
+  // 让「去配置」直接指到具体 provider 的配置表单。
+  const waitingSystems = useMemo(() => {
+    const out = new Set<string>();
+    for (const ev of events) {
+      if (!/waiting_user$/.test(ev.type)) continue;
+      const q = (ev.payload as { question?: { systems?: unknown } }).question;
+      if (q && Array.isArray(q.systems)) {
+        for (const s of q.systems) {
+          if (typeof s === "string" && s.trim()) out.add(s.trim());
+        }
+      }
+    }
+    return [...out];
+  }, [events]);
+  const connectionsQ = useSystemConnections(
+    tenant,
+    project?.domain ?? null,
+    waitingSystems,
+  );
+
   const railRows = useMemo(() => {
     return [...sessions]
       .sort((a, b) => b.updatedAt - a.updatedAt)
@@ -233,6 +255,39 @@ export function WorkbenchSessionConnected() {
       const waitingJob = card.jobId
         ? jobs.find((j) => j.id === card.jobId && j.status === "waiting_user")
         : undefined;
+      const resumeBuild = (answer: string, source: string) => {
+        const resumeAction = waitingJob
+          ? resumeActionForJobKind(waitingJob.kind)
+          : null;
+        if (waitingJob && resumeAction) {
+          sendRawTurn.mutate({
+            text: answer,
+            behavior: "execute",
+            action: resumeAction as never,
+            arguments: {
+              clarificationAnswer: answer,
+              resumeWaitingUserJobId: waitingJob.id,
+              source,
+            },
+            affectedSemanticPaths: [],
+            requestedCapabilities: [],
+          });
+        } else {
+          sendTurn.mutate({ text: answer });
+        }
+      };
+      const systemLinks = (card.systems ?? []).map((system) => {
+        const row = connectionsQ.data?.systems.find(
+          (r) => r.system === system,
+        );
+        return {
+          system,
+          provider: row?.credentialProvider ?? null,
+          configured: row?.credentialConfigured ?? false,
+          probeOk: row?.probeOk ?? null,
+          runtimeProvided: row?.runtimeProvided ?? false,
+        };
+      });
       return (
         <ActionCardView
           card={card}
@@ -240,34 +295,27 @@ export function WorkbenchSessionConnected() {
           errorText={
             confirmBoundary.error instanceof Error
               ? confirmBoundary.error.message
-              : null
+              : sendRawTurn.error instanceof Error
+                ? sendRawTurn.error.message
+                : null
+          }
+          systemLinks={systemLinks}
+          onConfigureProvider={(provider) =>
+            router.push(
+              `/portal/${encodeURIComponent(tenant)}/settings?section=integrations&provider=${encodeURIComponent(provider)}`,
+            )
           }
           onConfirmBoundary={() =>
             confirmBoundary.mutate({
               waitingJobId: waitingJob?.id ?? card.jobId,
             })
           }
-          onAnswer={(answer) => {
-            const resumeAction = waitingJob
-              ? resumeActionForJobKind(waitingJob.kind)
-              : null;
-            if (waitingJob && resumeAction) {
-              sendRawTurn.mutate({
-                text: answer,
-                behavior: "execute",
-                action: resumeAction as never,
-                arguments: {
-                  clarificationAnswer: answer,
-                  resumeWaitingUserJobId: waitingJob.id,
-                  source: "ontology-updated",
-                },
-                affectedSemanticPaths: [],
-                requestedCapabilities: [],
-              });
-            } else {
-              sendTurn.mutate({ text: answer });
-            }
-          }}
+          // 已配置完成，校验并继续：resume build——重跑会现读真实工具/凭证，
+          // 若已配好则门自动放行；未配好则如实重新提示。
+          onSecondary={() =>
+            resumeBuild("已配置真实工具，请重新校验并继续构建。", "credential-configured")
+          }
+          onAnswer={(answer) => resumeBuild(answer, "ontology-updated")}
           onPrimary={() =>
             router.push(
               `/portal/${encodeURIComponent(tenant)}/settings?section=integrations`,
