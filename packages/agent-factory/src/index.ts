@@ -45,12 +45,17 @@ export * from "./integration-profile";
 export * from "./integration-profile-authorization";
 export * from "./probe-authorization";
 export * from "./authorization-challenge";
+export * from "./sandbox-evidence-plan";
 export * from "./human-interaction";
+export * from "./generation-directive";
+export * from "./action-recommendation";
+export * from "./interaction-policy";
 export * from "./sandbox-design-review";
 export * from "./test-fixture-assets";
 export * from "./sensitive-input";
 export * from "./evidence-fingerprint";
 export * from "./sandbox-execution-plane";
+export * from "./sandbox-platform-attestation";
 export * from "./sandbox-model-usage";
 export * from "./sandbox-registration";
 export * from "./tool-catalog";
@@ -64,6 +69,7 @@ export * from "./tools";
 export * from "./test-cases";
 export * from "./report-verify";
 export * from "./conductor";
+export * from "./ontology-analysis";
 // business-flow SVG renderer (融合蓝图 P1.5 — pure swimlane visual):
 export * from "./business-flow-svg";
 // ontology-grounded blueprint model + deterministic SVG renderers (phase-flow / sequence):

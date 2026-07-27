@@ -69,6 +69,45 @@ function boundarySystemsFromEvents(
   return [];
 }
 
+/**
+ * Mark systems as deliberately human-operated. Shared by the session blocker
+ * card (confirm the systems this build parked on) and the connections panel
+ * (decide any referenced system up front). Honest by construction: the profile
+ * records planned/human_boundary + a provenance stamp, and every execution gate
+ * still treats the system as not connected.
+ */
+export function markSystemsAsHumanBoundary(
+  tenantId: string,
+  systems: string[],
+  opts: { confirmedBy?: string; note?: string } = {},
+): string[] {
+  const marked: string[] = [];
+  for (const system of systems) {
+    const trimmed = system.trim();
+    if (!trimmed) continue;
+    const profile = upsertSystemProfile(
+      tenantId,
+      {
+        id: kebabId(trimmed),
+        name: trimmed,
+        aliases: [trimmed],
+        availability: "planned",
+        plannedFallback: "human_boundary",
+        governance: {
+          humanBoundary: true,
+          notes:
+            opts.note?.trim() ||
+            "FDE 确认为人工边界（设计稿可继续；执行/交付/晋升仍 fail-closed）。",
+        },
+        provenance: { mode: "manual" },
+      },
+      { confirmedBy: opts.confirmedBy },
+    );
+    marked.push(profile.id);
+  }
+  return marked;
+}
+
 export interface ConfirmHumanBoundaryResult {
   systems: string[];
   markedProfiles: string[];
@@ -135,28 +174,12 @@ export function confirmSessionHumanBoundaries(
     );
   }
 
-  const markedProfiles: string[] = [];
-  for (const system of systems) {
-    const profile = upsertSystemProfile(
-      ctx.tenantId,
-      {
-        id: kebabId(system),
-        name: system,
-        aliases: [system],
-        availability: "planned",
-        plannedFallback: "human_boundary",
-        governance: {
-          humanBoundary: true,
-          notes:
-            opts.note?.trim() ||
-            `FDE 在 OntoCode 会话 ${sessionId} 确认为人工边界（设计稿可继续；执行/交付/晋升仍 fail-closed）。`,
-        },
-        provenance: { mode: "manual" },
-      },
-      { confirmedBy: ctx.actorId ?? undefined },
-    );
-    markedProfiles.push(profile.id);
-  }
+  const markedProfiles = markSystemsAsHumanBoundary(ctx.tenantId, systems, {
+    confirmedBy: ctx.actorId ?? undefined,
+    note:
+      opts.note?.trim() ||
+      `FDE 在 OntoCode 会话 ${sessionId} 确认为人工边界（设计稿可继续；执行/交付/晋升仍 fail-closed）。`,
+  });
 
   const resumeAction = RESUME_ACTION_BY_KIND[jobRow.kind] ?? null;
   if (resumeAction) {

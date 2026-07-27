@@ -410,6 +410,85 @@ export function useSystemConnections(
   });
 }
 
+/** One referenced system's connection maturity, straight from the server. */
+export interface SystemCoverageItem {
+  system: string;
+  referencedByActions: string[];
+  referencedVia: string[];
+  profileId: string | null;
+  humanBoundary: boolean;
+  runtimeProvided: boolean;
+  hasTool: boolean;
+  credentialProvider: string | null;
+  credentialConfigured: boolean;
+  probeOk: boolean | null;
+  probeAt: number | null;
+  availability: "live" | "planned";
+  plannedFallback: "human_boundary" | "block";
+}
+
+export interface SystemCoverageReceipt {
+  systems: SystemCoverageItem[];
+  totals: {
+    referenced: number;
+    profiled: number;
+    humanBoundary: number;
+    unprofiled: number;
+  };
+}
+
+/** Every system the bound Ontology domain references — not just the blocking one. */
+export function useSystemCoverage(
+  tenant: string,
+  domain: string | null,
+): UseQueryResult<SystemCoverageReceipt> {
+  return useQuery({
+    queryKey: ["ontocode", tenant, "system-coverage", domain] as const,
+    queryFn: () =>
+      callV1<SystemCoverageReceipt>(
+        tenant,
+        `/v1/system-profiles/coverage?domain=${encodeURIComponent(domain ?? "")}`,
+      ),
+    enabled: Boolean(tenant && domain),
+    staleTime: 5_000,
+    retry: false,
+  });
+}
+
+export function useProbeSystemConnection(tenant: string) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (profileId: string) =>
+      callV1<{ profile: unknown }>(
+        tenant,
+        `/v1/system-profiles/${encodeURIComponent(profileId)}/probe`,
+        { method: "POST" },
+      ),
+    onSuccess: () => {
+      void client.invalidateQueries({
+        queryKey: ["ontocode", tenant, "system-coverage"],
+      });
+    },
+  });
+}
+
+export function useMarkSystemsHumanBoundary(tenant: string) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { systems: string[]; note?: string }) =>
+      callV1<{ marked: string[]; systems: string[] }>(
+        tenant,
+        "/v1/system-profiles/human-boundary",
+        { method: "POST", body: JSON.stringify(input) },
+      ),
+    onSuccess: () => {
+      void client.invalidateQueries({
+        queryKey: ["ontocode", tenant, "system-coverage"],
+      });
+    },
+  });
+}
+
 export function useDeleteOntoCodeSession(tenant: string) {
   const client = useQueryClient();
   return useMutation({

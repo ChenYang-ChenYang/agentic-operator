@@ -65,6 +65,7 @@ import {
   computeOntoCodeTestSuiteHash,
 } from "./ontocode-candidate-digest";
 import { createOntoCodeConfigurationTask } from "./ontocode-configuration-task-store";
+import { analyzeOntology } from "./ontocode-ontology-analyst";
 import {
   completeOntoCodeSandboxAttempt,
   createOntoCodeSandboxAttempt,
@@ -324,6 +325,8 @@ function completedAssistantText(
 ): string {
   if (explicitMessage?.trim()) return explicitMessage.trim();
   const labels: Record<OntoCodeHarnessJobKind, string> = {
+    ontology_analysis:
+      "Ontology 分析已完成：已读取真实关系图并给出可核查的结论。可在右侧「产物」查看。",
     scope:
       "Ontology 范围分析已完成。你可以检查推荐范围，然后继续生成 Blueprint。",
     blueprint:
@@ -1465,6 +1468,9 @@ function normalizeFailure(error: unknown): NormalizedExecutionFailure {
 
 function phaseForJob(kind: OntoCodeHarnessJobKind): OntoCodeSessionPhase {
   switch (kind) {
+    // Comprehension is a read; it must not advance the delivery phase.
+    case "ontology_analysis":
+      return "intake";
     case "scope":
       return "scope";
     case "blueprint":
@@ -4516,6 +4522,34 @@ export function createDefaultOntoCodeHarnessExecutors(
   factory: OntoCodeFactoryHarnessAdapter,
 ): OntoCodeHarnessExecutorRegistry {
   return {
+    // Read-only comprehension over the bound Ontology. Runs the deterministic
+    // structural analysis (which finally exposes the compiled relationship graph
+    // instead of a bare count), probes the live source, then has the model
+    // interpret ONLY those facts — every citation is re-checked before it ships.
+    ontology_analysis: async (context) => {
+      const ontology = await factory.fetchOntology({
+        tenantId: context.job.tenantId,
+        tenantSlug: context.tenantSlug,
+        domain: context.project.domain,
+        ontologyDomainRegistrationId:
+          context.project.ontologyDomainRegistrationId,
+      });
+      const ontologyHash = requireCurrentOntology(context, ontology, {
+        requireSnapshot: false,
+      });
+      const receipt = await analyzeOntology(ontology, {
+        ontologyHash,
+        onProgress: (type, payload) => context.progress(type, payload),
+      });
+      const confirmed = receipt.findings.filter(
+        (f) => f.verdict === "confirmed",
+      ).length;
+      return {
+        outcome: "succeeded",
+        receipt: receipt as unknown as Record<string, unknown>,
+        message: `已分析 ${receipt.structure.counts.objects} 个对象 · ${receipt.structure.counts.links} 条真实关系边，得出 ${confirmed} 条可核查结论。`,
+      };
+    },
     scope: async (context) => {
       const ontology = await factory.fetchOntology({
         tenantId: context.job.tenantId,

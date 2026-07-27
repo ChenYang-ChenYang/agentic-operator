@@ -65,6 +65,7 @@ export const OntoCodeMessageTypeSchema = z.enum([
 ]);
 
 export const OntoCodeCommandTypeSchema = z.enum([
+  "analyze_ontology",
   "analyze_scope",
   "propose_blueprint",
   "create_configuration_task",
@@ -103,6 +104,10 @@ export const OntoCodeCommandStatusSchema = z.enum([
 ]);
 
 export const OntoCodeHarnessJobKindSchema = z.enum([
+  /** Read-only comprehension pass over the bound Ontology: structural graph
+   *  analysis + evidence-cited interpretation. Produces understanding, never
+   *  code, so it is safe to run at any point in a Session. */
+  "ontology_analysis",
   "scope",
   "blueprint",
   "build",
@@ -246,6 +251,15 @@ export type OntoCodeCandidateTestCase = z.infer<
  * Harness Job creation uses the same mapping to reject incompatible Commands.
  */
 export const ONTOCODE_COMMAND_POLICY = {
+  analyze_ontology: {
+    commandType: "analyze_ontology",
+    jobKind: "ontology_analysis",
+    riskClass: "read_only",
+    requiresHuman: false,
+    // Reads the graph and reasons over it; no artifact is mutated, so it gets a
+    // wider model allowance than scope but the same read-only risk class.
+    budget: { maxWallClockMs: 300_000, maxModelCalls: 12, maxToolCalls: 40 },
+  },
   analyze_scope: {
     commandType: "analyze_scope",
     jobKind: "scope",
@@ -2146,6 +2160,9 @@ const WALL_CLOCK_POLICY_BY_JOB_KIND: Record<
   OntoCodeHarnessJobKind,
   "warn" | "kill"
 > = {
+  // Comprehension is generative work: a deadline should surface as a warning,
+  // not silently discard a partially formed reading.
+  ontology_analysis: "warn",
   scope: "warn",
   blueprint: "warn",
   build: "warn",
