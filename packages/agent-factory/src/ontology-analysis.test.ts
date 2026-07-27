@@ -132,7 +132,7 @@ describe("analyzeOntologyStructure", () => {
           user_prompt: "",
         },
       ],
-    } as Partial<DomainOntology>);
+    } as unknown as Partial<DomainOntology>);
     const a = analyzeOntologyStructure(cyclic);
     const chain = a.eventChains[0];
     if (chain) expect(chain.cyclic).toBe(true);
@@ -169,7 +169,7 @@ describe("analyzeOntologyStructure", () => {
           },
         },
       ],
-    } as Partial<DomainOntology>);
+    } as unknown as Partial<DomainOntology>);
     const a = analyzeOntologyStructure(rich);
     expect(a.externalSystems).toEqual([
       "GoHire_System",
@@ -207,7 +207,7 @@ describe("analyzeOntologyStructure", () => {
           user_prompt: "",
         },
       ],
-    } as Partial<DomainOntology>);
+    } as unknown as Partial<DomainOntology>);
     const a = analyzeOntologyStructure(closed);
     expect(a.entryEvents).toEqual([]);
     expect(a.eventChains.length).toBeGreaterThan(0);
