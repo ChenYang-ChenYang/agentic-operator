@@ -577,6 +577,58 @@
 .iFootOk { display: flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--oc-green-d); font-weight: 600; }
 .iFootSub { font-size: 11px; color: var(--oc-t3); }
 
+/* 阶段产物（范围/蓝图）表格视图 */
+.secTitle {
+  padding: 12px 16px 6px;
+  font-size: 11px;
+  color: var(--oc-t3);
+  letter-spacing: 0.5px;
+}
+.docWrap { padding: 4px 4px 16px; }
+.docSummary {
+  margin: 8px 16px 12px;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--oc-t2);
+}
+.docTableWrap { overflow-x: auto; padding: 0 12px; }
+.docTable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+.docTable th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--oc-t3);
+  font-size: 11px;
+  letter-spacing: 0.3px;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--oc-border);
+  white-space: nowrap;
+}
+.docTable td {
+  padding: 9px 10px;
+  border-bottom: 1px solid var(--oc-border);
+  color: var(--oc-t1);
+  line-height: 1.65;
+  vertical-align: top;
+}
+.docTable tr:last-child td { border-bottom: none; }
+.docMono {
+  font-family: var(--oc-mono);
+  font-size: 12px;
+  color: var(--oc-green-d);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.docSub { font-family: inherit; font-weight: 400; font-size: 11px; color: var(--oc-t3); margin-top: 3px; }
+.docMeta {
+  padding: 10px 16px 0;
+  font-size: 11.5px;
+  color: var(--oc-t3);
+}
+
 /* 新建 Session 面板 */
 .overlayBackdrop {
   position: fixed;

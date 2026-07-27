@@ -13,6 +13,12 @@ import {
   type OntoCodeArtifactSummaryItem,
 } from "@/lib/hooks/useOntoCodeWorkspace";
 import styles from "./workbench.module.css";
+import {
+  classifyStageDoc,
+  stageDocLabel,
+  StageDocView,
+  type StageDocKind,
+} from "./StageDocs";
 
 const KIND_LABEL: Record<string, string> = {
   agent_code: "代码",
@@ -42,6 +48,7 @@ export interface InspectorOverviewProps {
   items: OntoCodeArtifactSummaryItem[];
   evidence: OntoCodeEvidenceRecord[];
   onOpen: (artifactId: string) => void;
+  onOpenStageDoc: (artifactId: string, kind: StageDocKind) => void;
   onCollapse: () => void;
   fullscreen?: boolean;
   onToggleFullscreen?: () => void;
@@ -62,6 +69,32 @@ export function InspectorOverviewView(props: InspectorOverviewProps) {
     (i) => i.artifact.kind !== "harness_receipt",
   );
   const receipts = props.items.length - primary.length;
+  // 阶段产物（范围分析 / 蓝图）虽以 harness_receipt 存储，但内容丰富、
+  // FDE 需要可查看——单列出来并渲染成表格，而不是折叠成计数。
+  const stageDocs = props.items
+    .map((i) => {
+      const kind = classifyStageDoc(i.artifact.logicalName);
+      return kind ? { item: i, kind } : null;
+    })
+    .filter((x): x is { item: OntoCodeArtifactSummaryItem; kind: StageDocKind } =>
+      x !== null,
+    );
+  // 同类阶段只保留最新版本一条（scope/blueprint 各一行）。
+  const latestStageByKind = new Map<
+    StageDocKind,
+    { item: OntoCodeArtifactSummaryItem; kind: StageDocKind }
+  >();
+  for (const d of stageDocs) {
+    const prev = latestStageByKind.get(d.kind);
+    if (!prev || d.item.latestVersion.createdAt > prev.item.latestVersion.createdAt) {
+      latestStageByKind.set(d.kind, d);
+    }
+  }
+  const stageRows = ["scope", "blueprint"]
+    .map((k) => latestStageByKind.get(k as StageDocKind))
+    .filter((x): x is { item: OntoCodeArtifactSummaryItem; kind: StageDocKind } =>
+      x !== undefined,
+    );
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
       <div className={styles.iHead}>
@@ -118,10 +151,30 @@ export function InspectorOverviewView(props: InspectorOverviewProps) {
         ) : null}
       </div>
       <div className={styles.iBody}>
-        {primary.length === 0 && receipts > 0 ? (
+        {stageRows.length > 0 ? (
+          <>
+            <div className={styles.secTitle}>阶段产物 · 点开查看</div>
+            {stageRows.map(({ item, kind }) => (
+              <button
+                key={item.artifact.id}
+                type="button"
+                className={styles.agRow}
+                onClick={() => props.onOpenStageDoc(item.artifact.id, kind)}
+              >
+                <span className={styles.agName}>{stageDocLabel(kind)}</span>
+                <span className={styles.agWire}>
+                  {kind === "scope" ? "已选 Action 与理由" : "各 Agent 职责与事件链"}
+                </span>
+                <span className={styles.agStatOff}>›</span>
+              </button>
+            ))}
+          </>
+        ) : null}
+        {primary.length === 0 && agents.length === 0 ? (
           <div className={styles.iEmpty}>
-            Agent 代码还没生成——目前只有 {receipts} 份阶段执行回执（范围/蓝图等）。
-            继续在左侧推进生成；产出的代码、契约与测试会出现在这里。
+            {stageRows.length > 0
+              ? "Agent 代码还没生成。上面是已完成的范围/蓝图分析——在左侧发送「继续」即可生成 Agent 代码，产出会出现在这里。"
+              : "还没有产物。先在左侧说一句业务目标；生成后这里会列出范围分析、蓝图与每个 Agent 的代码。"}
           </div>
         ) : null}
         {agents.length > 0 ? (
@@ -176,31 +229,24 @@ export function InspectorOverviewView(props: InspectorOverviewProps) {
             </div>
           </>
         ) : null}
-        {primary.length === 0 ? (
-          receipts > 0 ? null : (
-            <div className={styles.iEmpty}>
-              还没有可查看的产物。先在左侧说一句业务目标；生成后这里会列出每个
-              agent 的代码、契约与测试，可点开逐个审查。
-            </div>
-          )
-        ) : (
-          primary.map((item) => (
-            <button
-              key={item.artifact.id}
-              type="button"
-              className={styles.agRow}
-              onClick={() => props.onOpen(item.artifact.id)}
-            >
-              <span className={styles.agName}>
-                {shortName(item.artifact.logicalName)}
-              </span>
-              <span className={styles.agWire}>
-                {kindLabel(item.artifact.kind)} · v{item.latestVersion.version}
-              </span>
-              <span className={`${styles.agStat} ${styles.agStatOff}`}>›</span>
-            </button>
-          ))
-        )}
+        {primary.length > 0
+          ? primary.map((item) => (
+              <button
+                key={item.artifact.id}
+                type="button"
+                className={styles.agRow}
+                onClick={() => props.onOpen(item.artifact.id)}
+              >
+                <span className={styles.agName}>
+                  {shortName(item.artifact.logicalName)}
+                </span>
+                <span className={styles.agWire}>
+                  {kindLabel(item.artifact.kind)} · v{item.latestVersion.version}
+                </span>
+                <span className={`${styles.agStat} ${styles.agStatOff}`}>›</span>
+              </button>
+            ))
+          : null}
       </div>
     </div>
   );
@@ -327,6 +373,11 @@ export function ArtifactInspectorConnected(props: ArtifactInspectorProps) {
   const [openArtifactId, setOpenArtifactId] = useState<string | null>(null);
   const [activeVersionId, setActiveVersionId] = useState<string | null>(null);
   const [content, setContent] = useState<string | null>(null);
+  const [openStageDoc, setOpenStageDoc] = useState<{
+    artifactId: string;
+    kind: StageDocKind;
+  } | null>(null);
+  const [stageContent, setStageContent] = useState<string | null>(null);
 
   const versionsQ = useOntoCodeArtifactVersions(
     props.tenant,
@@ -354,6 +405,54 @@ export function ArtifactInspectorConnected(props: ArtifactInspectorProps) {
     });
   };
 
+  const openStageContent = (artifactId: string, kind: StageDocKind) => {
+    const item = props.items.find((i) => i.artifact.id === artifactId);
+    setOpenStageDoc({ artifactId, kind });
+    setStageContent(null);
+    if (!item) return;
+    loadContent.mutate(item.latestVersion.id, {
+      onSuccess: (receipt) => {
+        const text =
+          typeof (receipt as { content?: unknown }).content === "string"
+            ? (receipt as { content: string }).content
+            : JSON.stringify(receipt, null, 2);
+        setStageContent(text);
+      },
+    });
+  };
+
+  if (openStageDoc) {
+    return (
+      <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+        <div className={styles.iHead}>
+          <div>
+            <button
+              type="button"
+              className={styles.btn}
+              onClick={() => {
+                setOpenStageDoc(null);
+                setStageContent(null);
+              }}
+            >
+              ‹ 概览
+            </button>
+          </div>
+          <h3 className={styles.iHeadTitle} style={{ marginLeft: 4 }}>
+            {stageDocLabel(openStageDoc.kind)}
+          </h3>
+          <span style={{ flex: 1 }} />
+        </div>
+        <div className={styles.iBody}>
+          <StageDocView
+            kind={openStageDoc.kind}
+            content={stageContent}
+            loading={loadContent.isPending && stageContent === null}
+          />
+        </div>
+      </div>
+    );
+  }
+
   if (!openItem) {
     return (
       <InspectorOverviewView
@@ -364,6 +463,7 @@ export function ArtifactInspectorConnected(props: ArtifactInspectorProps) {
         onCollapse={props.onCollapse}
         fullscreen={props.fullscreen}
         onToggleFullscreen={props.onToggleFullscreen}
+        onOpenStageDoc={openStageContent}
         onOpen={(artifactId) => {
           setOpenArtifactId(artifactId);
           setActiveVersionId(null);

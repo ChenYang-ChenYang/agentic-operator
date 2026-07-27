@@ -74,6 +74,7 @@ describe("InspectorOverviewView", () => {
         ]}
         evidence={EVIDENCE}
         onOpen={() => {}}
+        onOpenStageDoc={() => {}}
         onCollapse={() => {}}
       />,
     );
@@ -91,6 +92,7 @@ describe("InspectorOverviewView", () => {
         items={[]}
         evidence={[]}
         onOpen={() => {}}
+        onOpenStageDoc={() => {}}
         onCollapse={() => {}}
       />,
     );
