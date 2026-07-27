@@ -10,9 +10,11 @@ import type {
 import {
   ontocodeConfigurationTaskSettingsHref,
   useDecideOntoCodeCommand,
+  useOntoCodeArtifacts,
   useOntoCodeCandidateHead,
   useOntoCodeCommands,
   useOntoCodeConfigurationTasks,
+  useOntoCodeEvidence,
   useOntoCodeHarnessJobs,
   useOntoCodeMessages,
   useOntoCodeProjects,
@@ -23,6 +25,7 @@ import {
   useUpdateOntoCodeSession,
   useVerifyOntoCodeConfigurationTask,
 } from "@/lib/hooks/useOntoCodeWorkspace";
+import { ArtifactInspectorConnected } from "./ArtifactInspector";
 import { useOntoCodeSessionStream } from "@/lib/hooks/useOntoCodeSessionStream";
 import styles from "./workbench.module.css";
 import {
@@ -89,6 +92,8 @@ export function WorkbenchSessionConnected() {
   const configTasksQ = useOntoCodeConfigurationTasks(tenant, sessionId);
   const commandsQ = useOntoCodeCommands(tenant, sessionId);
   const candidateHeadQ = useOntoCodeCandidateHead(tenant, sessionId);
+  const artifactsQ = useOntoCodeArtifacts(tenant, sessionId);
+  const evidenceQ = useOntoCodeEvidence(tenant, sessionId);
   useOntoCodeSessionStream(tenant, sessionId);
 
   const sendTurn = useSendOntoCodeAssistantTurn(tenant, sessionId);
@@ -320,11 +325,18 @@ export function WorkbenchSessionConnected() {
         />
       }
       inspector={
-        <div className={styles.iEmpty}>
-          {candidateHeadQ.data?.head
-            ? "产物概览接入中（C3）——候选已存在，可先在对话里继续。"
-            : "还没有生成产物。先在左侧说一句业务目标，生成后这里会显示每个 agent 的代码、测试与证据。"}
-        </div>
+        <ArtifactInspectorConnected
+          tenant={tenant}
+          sessionId={sessionId}
+          candidateLabel={
+            candidateHeadQ.data?.head
+              ? `候选 v${(candidateHeadQ.data.head as { revision?: number }).revision ?? 1}`
+              : null
+          }
+          items={artifactsQ.data?.items ?? []}
+          evidence={evidenceQ.data?.items ?? []}
+          onCollapse={() => setInspectorOpen(false)}
+        />
       }
     />
   );
