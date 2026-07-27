@@ -5,6 +5,7 @@ import {
   OntoCodeThemeBoundary,
   OntoCodeWorkspaceHubConnected,
 } from "@/app/portal/components/ontocode-workspace";
+import { CreateSessionPanel } from "@/app/portal/components/ontocode-v10/CreateSessionPanel";
 import { useOntoCodeSessions } from "@/lib/hooks/useOntoCodeWorkspace";
 
 /**
@@ -30,10 +31,6 @@ export default function OntoCodeWorkspaceEntryPage() {
       router.replace(
         `/portal/${encodeURIComponent(tenant)}/ontocode-workspace/${encodeURIComponent(newest.id)}`,
       );
-    } else {
-      router.replace(
-        `/portal/${encodeURIComponent(tenant)}/ontocode-workspace?legacy=1&create=1`,
-      );
     }
   }, [legacy, tenant, sessionsQ.data, router]);
 
@@ -42,6 +39,22 @@ export default function OntoCodeWorkspaceEntryPage() {
       <OntoCodeThemeBoundary>
         <OntoCodeWorkspaceHubConnected />
       </OntoCodeThemeBoundary>
+    );
+  }
+  const isEmpty = sessionsQ.data !== undefined && sessionsQ.data.items.length === 0;
+  if (isEmpty) {
+    // 首次使用：直接在 v10 里创建，不再绕道旧 Hub。
+    return (
+      <CreateSessionPanel
+        tenant={tenant}
+        open
+        standalone
+        onCreated={(sessionId) =>
+          router.replace(
+            `/portal/${encodeURIComponent(tenant)}/ontocode-workspace/${encodeURIComponent(sessionId)}`,
+          )
+        }
+      />
     );
   }
   return (

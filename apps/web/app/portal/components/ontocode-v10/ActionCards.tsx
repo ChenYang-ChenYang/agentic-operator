@@ -109,6 +109,19 @@ export function ActionCardView(props: ActionCardViewProps) {
         </div>
       ) : null}
 
+      {card.kind === "system" && props.onPrimary ? (
+        <div className={styles.cardBtns}>
+          <button
+            type="button"
+            className={`${styles.btn} ${styles.btnGreen}`}
+            onClick={props.onPrimary}
+            disabled={props.busy}
+          >
+            {card.options?.[0]?.label ?? "处理"}
+          </button>
+        </div>
+      ) : null}
+
       {card.kind === "authorization" || card.kind === "deploy_confirm" ? (
         <div className={styles.cardBtns}>
           <button

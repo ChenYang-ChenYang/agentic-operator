@@ -31,12 +31,15 @@ import { ArtifactInspectorConnected } from "./ArtifactInspector";
 import { useOntoCodeSessionStream } from "@/lib/hooks/useOntoCodeSessionStream";
 import styles from "./workbench.module.css";
 import {
+  isRegistrationRetiredMessage,
   projectFlow,
   projectSessionRow,
+  REGISTRATION_RETIRED_ZH,
   resumeActionForJobKind,
   type ActionCardVM,
   type FlowItemVM,
 } from "./projection";
+import { CreateSessionPanel } from "./CreateSessionPanel";
 import { WorkbenchShell } from "./WorkbenchShell";
 import { SessionRail } from "./SessionRail";
 import { ActionCardView } from "./ActionCards";
@@ -108,6 +111,7 @@ export function WorkbenchSessionConnected() {
   const [draft, setDraft] = useState("");
   const [inspectorOpen, setInspectorOpen] = useState(true);
   const [inspectorFullscreen, setInspectorFullscreen] = useState(false);
+  const [createOpen, setCreateOpen] = useState(false);
 
   const session: OntoCodeBuildSession | null =
     sessionQ.data?.session ?? null;
@@ -160,9 +164,22 @@ export function WorkbenchSessionConnected() {
 
   const activeRow = railRows.find((r) => r.id === sessionId) ?? null;
 
+  const registrationRetired = useMemo(
+    () =>
+      messages.some(
+        (m) =>
+          m.role !== "user" &&
+          typeof (m.content as { text?: unknown }).text === "string" &&
+          isRegistrationRetiredMessage(
+            (m.content as { text: string }).text,
+          ),
+      ),
+    [messages],
+  );
+
   const flowItems: FlowItemVM[] = useMemo(() => {
     if (!session) return [];
-    return projectFlow({
+    const items = projectFlow({
       session,
       messages,
       jobs,
@@ -170,7 +187,22 @@ export function WorkbenchSessionConnected() {
       configTasks,
       commands,
     });
-  }, [session, messages, jobs, events, configTasks, commands]);
+    if (registrationRetired) {
+      items.push({
+        kind: "actionCard",
+        id: "card-registration-retired",
+        card: {
+          kind: "system",
+          refId: "registration-retired",
+          title: "该 Session 已只读——绑定的 Ontology 注册项被停用",
+          why: "历史产物与证据保持可查；继续这项工作需要在当前活跃的域下新建 Session。",
+          options: [{ label: "用活跃域新建 Session", value: "create" }],
+        },
+        at: Number.MAX_SAFE_INTEGER - 1,
+      });
+    }
+    return items;
+  }, [session, messages, jobs, events, configTasks, commands, registrationRetired]);
 
   const goal = session
     ? {
@@ -187,7 +219,9 @@ export function WorkbenchSessionConnected() {
     : null;
 
   const readOnly =
-    session?.activityState === "cancelled" || session?.phase === "completed";
+    session?.activityState === "cancelled" ||
+    session?.phase === "completed" ||
+    registrationRetired;
 
   const renderCard = (item: Extract<FlowItemVM, { kind: "actionCard" }>) => {
     const card = item.card;
@@ -238,6 +272,18 @@ export function WorkbenchSessionConnected() {
     const resumeAction = waitingJobForCard
       ? resumeActionForJobKind(waitingJobForCard.kind)
       : null;
+    if (card.kind === "system") {
+      return (
+        <ActionCardView
+          card={card}
+          onPrimary={
+            card.refId === "registration-retired"
+              ? () => setCreateOpen(true)
+              : undefined
+          }
+        />
+      );
+    }
     return (
       <ActionCardView
         card={card}
@@ -284,6 +330,18 @@ export function WorkbenchSessionConnected() {
   }, [sessionQ.isError, sessionQ.errorUpdatedAt]);
 
   return (
+    <>
+    <CreateSessionPanel
+      tenant={tenant}
+      open={createOpen}
+      onClose={() => setCreateOpen(false)}
+      onCreated={(newSessionId) => {
+        setCreateOpen(false);
+        router.push(
+          `/portal/${encodeURIComponent(tenant)}/ontocode-workspace/${encodeURIComponent(newSessionId)}`,
+        );
+      }}
+    />
     <WorkbenchShell
       inspectorOpen={inspectorOpen}
       inspectorFullscreen={inspectorFullscreen}
@@ -303,13 +361,7 @@ export function WorkbenchSessionConnected() {
               `/portal/${encodeURIComponent(tenant)}/ontocode-workspace/${encodeURIComponent(id)}`,
             )
           }
-          onCreateSession={() =>
-            // 创建流暂由旧 Hub 承担（v10 首页创建流在 M3）；?legacy=1 显式进入，
-            // 避免「两个新建入口」并存的混淆。
-            router.push(
-              `/portal/${encodeURIComponent(tenant)}/ontocode-workspace?legacy=1&create=1`,
-            )
-          }
+          onCreateSession={() => setCreateOpen(true)}
           onOpenSettings={() =>
             router.push(
               `/portal/${encodeURIComponent(tenant)}/settings?section=integrations`,
@@ -369,9 +421,11 @@ export function WorkbenchSessionConnected() {
           sending={sendTurn.isPending}
           disabled={readOnly}
           disabledReason={
-            session?.phase === "completed"
-              ? "该 Session 已完成，只读"
-              : "该 Session 已结束，只读"
+            registrationRetired
+              ? REGISTRATION_RETIRED_ZH
+              : session?.phase === "completed"
+                ? "该 Session 已完成，只读"
+                : "该 Session 已结束，只读"
           }
           autonomy={session?.autonomyMode ?? "copilot"}
           onAutonomyChange={(mode) => {
@@ -418,5 +472,6 @@ export function WorkbenchSessionConnected() {
         />
       }
     />
+    </>
   );
 }

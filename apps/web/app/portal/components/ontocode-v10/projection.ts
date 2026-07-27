@@ -69,6 +69,22 @@ function stripEnginePrefix(text: string): string {
   return text.replace(/^Agent Factory 需要你的回答[:：]\s*/u, "").trim();
 }
 
+/** 服务端英文只读提示 → 人话，并暴露检测器给容器（出路=用活跃域新建）。 */
+const REGISTRATION_RETIRED_EN =
+  /read-only because its exact Ontology Domain registration is no longer active/i;
+
+export function isRegistrationRetiredMessage(text: string): boolean {
+  return REGISTRATION_RETIRED_EN.test(text);
+}
+
+export const REGISTRATION_RETIRED_ZH =
+  "该 Session 绑定的 Ontology 注册项已被停用，为保证快照与证据一致，会话已转为只读。历史产物仍可查看；要继续这项工作，请用当前活跃的域新建一个 Session。";
+
+function humanizeAssistantText(text: string): string {
+  if (isRegistrationRetiredMessage(text)) return REGISTRATION_RETIRED_ZH;
+  return text;
+}
+
 export function projectSessionRow(
   session: OntoCodeBuildSession,
   facts: SessionRowFacts = {},
@@ -249,7 +265,13 @@ export function projectFlow(input: FlowInput): FlowItemVM[] {
       continue;
     }
     // assistant / system：只渲染人话正文；指令/产物回执类噪声不进流（其信号由执行组与卡片承载）。
-    if (text) items.push({ kind: "aiText", id: m.id, text, at: m.createdAt });
+    if (text)
+      items.push({
+        kind: "aiText",
+        id: m.id,
+        text: humanizeAssistantText(text),
+        at: m.createdAt,
+      });
   }
 
   const stageEventsByJob = new Map<string, OntoCodeSessionEvent[]>();
