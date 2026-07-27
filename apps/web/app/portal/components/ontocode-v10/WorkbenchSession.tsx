@@ -23,6 +23,7 @@ import {
   useOntoCodeSessions,
   useOntoCodeSuiteOverview,
   useConfirmOntoCodeHumanBoundary,
+  useDeleteOntoCodeSession,
   useSystemConnections,
   useSendOntoCodeAssistantTurn,
   useSendOntoCodeTurn,
@@ -110,6 +111,7 @@ export function WorkbenchSessionConnected() {
   const updateSession = useUpdateOntoCodeSession(tenant, sessionId);
   const decideCommand = useDecideOntoCodeCommand(tenant, sessionId);
   const confirmBoundary = useConfirmOntoCodeHumanBoundary(tenant, sessionId);
+  const deleteSession = useDeleteOntoCodeSession(tenant);
 
   const [draft, setDraft] = useState("");
   const [inspectorOpen, setInspectorOpen] = useState(true);
@@ -461,6 +463,30 @@ export function WorkbenchSessionConnected() {
             )
           }
           onCreateSession={() => setCreateOpen(true)}
+          deletingSessionId={
+            deleteSession.isPending ? deleteSession.variables ?? null : null
+          }
+          onDeleteSession={(id) => {
+            const row = railRows.find((r) => r.id === id);
+            if (
+              !window.confirm(
+                `删除「${row?.title ?? id}」？该 Session 的对话、产物与证据会一并移除，无法恢复。`,
+              )
+            ) {
+              return;
+            }
+            deleteSession.mutate(id, {
+              onSuccess: () => {
+                if (id !== sessionId) return;
+                const next = railRows.find((r) => r.id !== id);
+                router.replace(
+                  next
+                    ? `/portal/${encodeURIComponent(tenant)}/ontocode-workspace/${encodeURIComponent(next.id)}`
+                    : `/portal/${encodeURIComponent(tenant)}/ontocode-workspace`,
+                );
+              },
+            });
+          }}
           onOpenSettings={() =>
             router.push(
               `/portal/${encodeURIComponent(tenant)}/settings?section=integrations`,

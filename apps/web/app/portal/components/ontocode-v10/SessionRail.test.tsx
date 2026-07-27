@@ -69,3 +69,24 @@ describe("SessionRail", () => {
     expect(inactive).not.toContain("sItemOn");
   });
 });
+
+describe("SessionRail delete affordance", () => {
+  it("renders a delete control per session when the handler is provided", () => {
+    const html = render({ onDeleteSession: () => {} });
+    expect(html).toContain("sItemDelete");
+    expect(html).toContain("删除 候选人筛选套件");
+  });
+
+  it("omits the delete control when no handler is provided", () => {
+    const html = render();
+    expect(html).not.toContain("sItemDelete");
+  });
+
+  it("disables the row being deleted", () => {
+    const html = render({
+      onDeleteSession: () => {},
+      deletingSessionId: "ocs-aaaa",
+    });
+    expect(html).toContain("disabled");
+  });
+});

@@ -11,6 +11,7 @@ import {
 import {
   createOntoCodeProject,
   createOntoCodeSession,
+  deleteOntoCodeSession,
 } from "../src/services/ontocode-session-store";
 import {
   clearFactoryDomainBinding,
@@ -176,6 +177,53 @@ describe("confirmSessionHumanBoundaries", () => {
     expect(resumed?.status === "queued" || resumed?.status === "leased").toBe(
       true,
     );
+  });
+
+  it("deletes a parked session outright, cascading its children", () => {
+    const { ctx, session, jobId } = seedWaitingBuild([
+      "Internal_Recruitment_System",
+    ]);
+    const db = getDb();
+    // preconditions: the session has children and is NOT idle (close would refuse)
+    expect(
+      db
+        .select()
+        .from(ontocodeHarnessJobs)
+        .where(eq(ontocodeHarnessJobs.sessionId, session.id))
+        .all().length,
+    ).toBeGreaterThan(0);
+
+    const receipt = deleteOntoCodeSession(ctx, session.id);
+    expect(receipt.deleted).toBe(true);
+    expect(receipt.cancelledJobs).toBeGreaterThan(0);
+
+    // the row and every child are gone (FK cascade + foreign_keys=ON)
+    expect(
+      db
+        .select()
+        .from(ontocodeHarnessJobs)
+        .where(eq(ontocodeHarnessJobs.id, jobId))
+        .all(),
+    ).toHaveLength(0);
+    expect(
+      db
+        .select()
+        .from(ontocodeSessionEvents)
+        .where(eq(ontocodeSessionEvents.sessionId, session.id))
+        .all(),
+    ).toHaveLength(0);
+    // deleting again is a clean 404, not a crash
+    expect(() => deleteOntoCodeSession(ctx, session.id)).toThrow();
+  });
+
+  it("refuses to delete a session from another Business Domain", () => {
+    const { session } = seedWaitingBuild(["Internal_Recruitment_System"]);
+    expect(() =>
+      deleteOntoCodeSession(
+        { tenantId: "ten-someone-else", actorId: "intruder" },
+        session.id,
+      ),
+    ).toThrow();
   });
 
   it("rejects when there is no waiting build", () => {

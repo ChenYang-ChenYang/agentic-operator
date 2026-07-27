@@ -98,11 +98,13 @@ import {
 } from "../../services/ontocode-sandbox-attempt-store";
 import { getOntoCodeSuiteOverview } from "../../services/ontocode-suite-overview";
 import { confirmSessionHumanBoundaries } from "../../services/ontocode-human-boundary";
+import { writeAudit } from "../../plugins/audit";
 import { commitOntoCodeWorkspacePatch } from "../../services/ontocode-workspace-patch-store";
 import {
   appendOntoCodeUserMessage,
   assertOntoCodeOntologyBinding,
   closeOntoCodeSession,
+  deleteOntoCodeSession,
   commitOntoCodeChangeSet,
   createOntoCodeArtifact,
   createOntoCodeArtifactVersion,
@@ -328,6 +330,30 @@ export async function ontocodeRoutes(app: FastifyInstance): Promise<void> {
           closeOntoCodeSession(ctx, req.params.sessionId, input),
         ),
       );
+    },
+  );
+
+  // Scrap a Session outright. `close` is idle-only by design, so parked
+  // needs_user / failed_recoverable sessions would otherwise be permanently
+  // stuck in the rail. The row delete cascades to every child table; the audit
+  // row is written first so the removal itself stays accountable.
+  app.delete<{ Params: { sessionId: string } }>(
+    "/ontocode/sessions/:sessionId",
+    async (req, reply) => {
+      const ctx = actorContext(req, "workflows.write");
+      const receipt = deleteOntoCodeSession(ctx, req.params.sessionId);
+      writeAudit({
+        tenantId: ctx.tenantId,
+        actorUserId: ctx.actorId ?? undefined,
+        action: "ontocode.session.deleted",
+        targetType: "ontocode_session",
+        targetId: receipt.sessionId,
+        meta: {
+          title: receipt.title,
+          cancelledJobs: receipt.cancelledJobs,
+        },
+      });
+      return reply.ok(receipt);
     },
   );
 

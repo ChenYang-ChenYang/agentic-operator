@@ -410,6 +410,29 @@ export function useSystemConnections(
   });
 }
 
+export function useDeleteOntoCodeSession(tenant: string) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (sessionId: string) =>
+      callV1<{
+        deleted: true;
+        sessionId: string;
+        title: string;
+        cancelledJobs: number;
+      }>(tenant, `/v1/ontocode/sessions/${encodeURIComponent(sessionId)}`, {
+        method: "DELETE",
+      }),
+    onSuccess: (receipt) => {
+      client.removeQueries({
+        queryKey: ONTOCODE_KEYS.session(tenant, receipt.sessionId),
+      });
+      void client.invalidateQueries({
+        queryKey: ONTOCODE_KEYS.sessions(tenant),
+      });
+    },
+  });
+}
+
 export function useConfirmOntoCodeHumanBoundary(
   tenant: string,
   sessionId: string,

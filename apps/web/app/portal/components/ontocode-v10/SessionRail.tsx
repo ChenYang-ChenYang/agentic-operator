@@ -21,6 +21,8 @@ export interface SessionRailProps {
   onSelectSession: (sessionId: string) => void;
   onCreateSession: () => void;
   onOpenSettings: () => void;
+  onDeleteSession?: (sessionId: string) => void;
+  deletingSessionId?: string | null;
 }
 
 export function SessionRail(props: SessionRailProps) {
@@ -84,29 +86,45 @@ export function SessionRail(props: SessionRailProps) {
           </div>
         ) : (
           visible.map((s) => (
-            <button
-              type="button"
-              key={s.id}
-              className={
-                s.id === props.activeSessionId
-                  ? `${styles.sItem} ${styles.sItemOn}`
-                  : styles.sItem
-              }
-              onClick={() => props.onSelectSession(s.id)}
-            >
-              {s.needsAttention > 0 ? (
-                <span className={styles.sBadge}>{s.needsAttention}</span>
+            <div key={s.id} className={styles.sItemWrap}>
+              <button
+                type="button"
+                className={
+                  s.id === props.activeSessionId
+                    ? `${styles.sItem} ${styles.sItemOn}`
+                    : styles.sItem
+                }
+                onClick={() => props.onSelectSession(s.id)}
+              >
+                {s.needsAttention > 0 ? (
+                  <span className={styles.sBadge}>{s.needsAttention}</span>
+                ) : null}
+                <h4>
+                  <span
+                    className={`${styles.dot} ${styles[DOT_CLASS[s.tone]]}`}
+                  />
+                  {s.title}
+                </h4>
+                <div className={styles.sItemSub}>
+                  {s.label} · {s.sub}
+                </div>
+              </button>
+              {props.onDeleteSession ? (
+                <button
+                  type="button"
+                  className={styles.sItemDelete}
+                  title="删除这个 Session"
+                  aria-label={`删除 ${s.title}`}
+                  disabled={props.deletingSessionId === s.id}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    props.onDeleteSession?.(s.id);
+                  }}
+                >
+                  {props.deletingSessionId === s.id ? "…" : "🗑"}
+                </button>
               ) : null}
-              <h4>
-                <span
-                  className={`${styles.dot} ${styles[DOT_CLASS[s.tone]]}`}
-                />
-                {s.title}
-              </h4>
-              <div className={styles.sItemSub}>
-                {s.label} · {s.sub}
-              </div>
-            </button>
+            </div>
           ))
         )}
       </div>
