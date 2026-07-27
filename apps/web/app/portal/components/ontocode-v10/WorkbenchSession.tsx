@@ -22,6 +22,7 @@ import {
   useOntoCodeSessionEvents,
   useOntoCodeSessions,
   useSendOntoCodeAssistantTurn,
+  useSendOntoCodeTurn,
   useUpdateOntoCodeSession,
   useVerifyOntoCodeConfigurationTask,
 } from "@/lib/hooks/useOntoCodeWorkspace";
@@ -31,6 +32,7 @@ import styles from "./workbench.module.css";
 import {
   projectFlow,
   projectSessionRow,
+  resumeActionForJobKind,
   type ActionCardVM,
   type FlowItemVM,
 } from "./projection";
@@ -97,6 +99,7 @@ export function WorkbenchSessionConnected() {
   useOntoCodeSessionStream(tenant, sessionId);
 
   const sendTurn = useSendOntoCodeAssistantTurn(tenant, sessionId);
+  const sendRawTurn = useSendOntoCodeTurn(tenant, sessionId);
   const updateSession = useUpdateOntoCodeSession(tenant, sessionId);
   const decideCommand = useDecideOntoCodeCommand(tenant, sessionId);
 
@@ -216,11 +219,38 @@ export function WorkbenchSessionConnected() {
         />
       );
     }
+    // 决策卡：若挂着等待中的作业，用低层 execute turn 确定性续跑
+    // （clarificationAnswer + resumeWaitingUserJobId，服务端取消旧作业并入队新作业）；
+    // 没有作业上下文时走常规对话。
+    const waitingJobForCard = card.jobId
+      ? jobs.find((j) => j.id === card.jobId && j.status === "waiting_user")
+      : undefined;
+    const resumeAction = waitingJobForCard
+      ? resumeActionForJobKind(waitingJobForCard.kind)
+      : null;
     return (
       <ActionCardView
         card={card}
-        busy={sendTurn.isPending}
+        busy={sendTurn.isPending || sendRawTurn.isPending}
+        errorText={
+          sendRawTurn.error instanceof Error ? sendRawTurn.error.message : null
+        }
         onAnswer={(answer) => {
+          if (waitingJobForCard && resumeAction) {
+            sendRawTurn.mutate({
+              text: answer,
+              behavior: "execute",
+              action: resumeAction as never,
+              arguments: {
+                clarificationAnswer: answer,
+                resumeWaitingUserJobId: waitingJobForCard.id,
+                source: "decision-card",
+              },
+              affectedSemanticPaths: [],
+              requestedCapabilities: [],
+            });
+            return;
+          }
           sendTurn.mutate({ text: answer });
         }}
       />

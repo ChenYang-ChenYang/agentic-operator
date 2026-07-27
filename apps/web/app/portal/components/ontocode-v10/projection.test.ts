@@ -256,3 +256,13 @@ describe("projectFlow", () => {
     expect(collectVisibleText(items)).not.toMatch(FORBIDDEN_VOCABULARY);
   });
 });
+
+describe("resumeActionForJobKind", () => {
+  it("maps waiting job kinds to their matching resume actions", async () => {
+    const { resumeActionForJobKind } = await import("./projection");
+    expect(resumeActionForJobKind("build")).toBe("generate_package");
+    expect(resumeActionForJobKind("blueprint")).toBe("propose_blueprint");
+    expect(resumeActionForJobKind("test")).toBe("run_tests");
+    expect(resumeActionForJobKind("promotion")).toBeNull();
+  });
+});

@@ -387,6 +387,29 @@ export function projectFlow(input: FlowInput): FlowItemVM[] {
 }
 
 /**
+ * waiting_user 作业的确定性续跑映射：答复以低层 execute turn 直发，
+ * action 必须与等待中作业的 kind 匹配（服务端 409 兜底校验）。
+ */
+export function resumeActionForJobKind(kind: string): string | null {
+  switch (kind) {
+    case "scope":
+      return "analyze_scope";
+    case "blueprint":
+      return "propose_blueprint";
+    case "build":
+      return "generate_package";
+    case "test":
+      return "run_tests";
+    case "debug":
+      return "debug_failure";
+    case "regression":
+      return "compare_candidate";
+    default:
+      return null;
+  }
+}
+
+/**
  * 提取所有「用户可见」文本（label/title/sub/why/impact/text/steps/选项文案）。
  * 词汇白名单守卫只对这份文本生效——id 类接线字段不属于可见面。
  */
