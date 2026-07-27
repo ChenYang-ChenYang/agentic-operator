@@ -96,6 +96,9 @@ export function invalidateOntoCodeEvent(
   void client.invalidateQueries({
     queryKey: ["ontocode", tenant, "session", sessionId, "configuration-tasks"],
   });
+  void client.invalidateQueries({
+    queryKey: ["ontocode", tenant, "session", sessionId, "suite-overview"],
+  });
 }
 
 /**

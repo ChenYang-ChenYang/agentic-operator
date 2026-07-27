@@ -42,6 +42,7 @@ import type {
   OntoCodeTurnReceipt,
   OntoCodeSessionCloseReceipt,
   OntoCodeSessionEvent,
+  OntoCodeSuiteOverview,
   PostOntoCodeMessageRequest,
   PostOntoCodeTurnRequest,
   UpdateOntoCodeSessionRequest,
@@ -310,6 +311,8 @@ export const ONTOCODE_KEYS = {
     ["ontocode", tenant, "session", sessionId, "configuration-tasks"] as const,
   events: (tenant: string, sessionId: string) =>
     ["ontocode", tenant, "session", sessionId, "events"] as const,
+  suiteOverview: (tenant: string, sessionId: string) =>
+    ["ontocode", tenant, "session", sessionId, "suite-overview"] as const,
 };
 
 export function useOntoCodeProjects(
@@ -368,6 +371,22 @@ export function useOntoCodeMessages(
       ),
     enabled: Boolean(tenant && sessionId),
     staleTime: 500,
+  });
+}
+
+export function useOntoCodeSuiteOverview(
+  tenant: string,
+  sessionId: string,
+): UseQueryResult<{ overview: OntoCodeSuiteOverview }> {
+  return useQuery({
+    queryKey: ONTOCODE_KEYS.suiteOverview(tenant, sessionId),
+    queryFn: () =>
+      callV1<{ overview: OntoCodeSuiteOverview }>(
+        tenant,
+        `/v1/ontocode/sessions/${encodeURIComponent(sessionId)}/suite-overview`,
+      ),
+    enabled: Boolean(tenant && sessionId),
+    staleTime: 1_000,
   });
 }
 

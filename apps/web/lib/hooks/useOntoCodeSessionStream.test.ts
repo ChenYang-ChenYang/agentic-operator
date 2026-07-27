@@ -36,7 +36,10 @@ describe("OntoCode session stream helpers", () => {
       "raas",
       "ocs-1",
     );
-    expect(invalidateQueries).toHaveBeenCalledTimes(12);
+    expect(invalidateQueries).toHaveBeenCalledTimes(13);
+    expect(invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ["ontocode", "raas", "session", "ocs-1", "suite-overview"],
+    });
     expect(invalidateQueries).toHaveBeenCalledWith({
       queryKey: ["ontocode", "raas", "session", "ocs-1", "events"],
     });

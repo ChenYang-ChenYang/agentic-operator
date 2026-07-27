@@ -21,6 +21,7 @@ import {
   useOntoCodeSession,
   useOntoCodeSessionEvents,
   useOntoCodeSessions,
+  useOntoCodeSuiteOverview,
   useSendOntoCodeAssistantTurn,
   useSendOntoCodeTurn,
   useUpdateOntoCodeSession,
@@ -96,6 +97,7 @@ export function WorkbenchSessionConnected() {
   const candidateHeadQ = useOntoCodeCandidateHead(tenant, sessionId);
   const artifactsQ = useOntoCodeArtifacts(tenant, sessionId);
   const evidenceQ = useOntoCodeEvidence(tenant, sessionId);
+  const suiteQ = useOntoCodeSuiteOverview(tenant, sessionId);
   useOntoCodeSessionStream(tenant, sessionId);
 
   const sendTurn = useSendOntoCodeAssistantTurn(tenant, sessionId);
@@ -142,6 +144,13 @@ export function WorkbenchSessionConnected() {
                     (t as { status?: string }).status === "open" ||
                     (t as { status?: string }).status === "verifying",
                 ).length,
+                overview: suiteQ.data?.overview
+                  ? {
+                      agents: suiteQ.data.overview.agents.length,
+                      ready: suiteQ.data.overview.readiness.ready,
+                      blocked: suiteQ.data.overview.readiness.pendingConfig,
+                    }
+                  : undefined,
               }
             : {},
         ),
@@ -359,10 +368,13 @@ export function WorkbenchSessionConnected() {
           tenant={tenant}
           sessionId={sessionId}
           candidateLabel={
-            candidateHeadQ.data?.head
-              ? `候选 v${(candidateHeadQ.data.head as { revision?: number }).revision ?? 1}`
-              : null
+            suiteQ.data?.overview.candidate
+              ? `候选 v${suiteQ.data.overview.candidate.revision}`
+              : candidateHeadQ.data?.head
+                ? `候选 v${(candidateHeadQ.data.head as { revision?: number }).revision ?? 1}`
+                : null
           }
+          overview={suiteQ.data?.overview ?? null}
           items={artifactsQ.data?.items ?? []}
           evidence={evidenceQ.data?.items ?? []}
           onCollapse={() => setInspectorOpen(false)}

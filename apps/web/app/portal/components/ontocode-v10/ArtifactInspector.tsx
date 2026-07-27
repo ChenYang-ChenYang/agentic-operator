@@ -5,6 +5,7 @@ import React, { useMemo, useState } from "react";
 import type {
   OntoCodeArtifactVersion,
   OntoCodeEvidenceRecord,
+  OntoCodeSuiteOverview,
 } from "@agentic/contracts";
 import {
   useLoadOntoCodeArtifactVersionContent,
@@ -37,15 +38,23 @@ function shortName(logicalName: string): string {
 
 export interface InspectorOverviewProps {
   candidateLabel: string | null;
+  overview?: OntoCodeSuiteOverview | null;
   items: OntoCodeArtifactSummaryItem[];
   evidence: OntoCodeEvidenceRecord[];
   onOpen: (artifactId: string) => void;
   onCollapse: () => void;
 }
 
+const OWNER_LABEL: Record<string, string> = {
+  declarative_manifest: "声明式",
+  codeact: "代码执行",
+};
+
 export function InspectorOverviewView(props: InspectorOverviewProps) {
   const passCount = props.evidence.filter((e) => e.outcome === "passed").length;
   const failCount = props.evidence.filter((e) => e.outcome === "failed").length;
+  const agents = props.overview?.agents ?? [];
+  const readiness = props.overview?.readiness ?? null;
   // 回执类产物在概览里折叠——FDE 来看的是产物本体，不是回执文件。
   const primary = props.items.filter(
     (i) => i.artifact.kind !== "harness_receipt",
@@ -69,6 +78,21 @@ export function InspectorOverviewView(props: InspectorOverviewProps) {
         </button>
       </div>
       <div className={styles.ovSum}>
+        {readiness ? (
+          <>
+            <span className={`${styles.ovChip} ${styles.ovChipOk}`}>
+              {readiness.ready} 就绪
+            </span>
+            {readiness.pendingConfig > 0 ? (
+              <span className={`${styles.ovChip} ${styles.ovChipWarn}`}>
+                {readiness.pendingConfig} 待配置
+              </span>
+            ) : null}
+            {readiness.verifying > 0 ? (
+              <span className={styles.ovChip}>{readiness.verifying} 验证中</span>
+            ) : null}
+          </>
+        ) : null}
         <span className={`${styles.ovChip} ${styles.ovChipOk}`}>
           {passCount} 项证据通过
         </span>
@@ -83,6 +107,58 @@ export function InspectorOverviewView(props: InspectorOverviewProps) {
         ) : null}
       </div>
       <div className={styles.iBody}>
+        {agents.length > 0 ? (
+          <>
+            {agents.map((a) => {
+              const firstArtifact = a.artifacts[0];
+              return (
+                <button
+                  key={a.name}
+                  type="button"
+                  className={styles.agRow}
+                  onClick={() => {
+                    if (firstArtifact) props.onOpen(firstArtifact.artifactId);
+                  }}
+                >
+                  <span className={styles.agName}>{a.name}</span>
+                  <span className={styles.agWire}>
+                    {OWNER_LABEL[a.executionOwner] ?? a.executionOwner} ·{" "}
+                    {a.artifacts.length} 个文件
+                  </span>
+                  {a.blocking ? (
+                    <span className={`${styles.agStat} ${styles.agStatBad}`}>
+                      {a.blocking.slice(0, 18)}
+                    </span>
+                  ) : a.test ? (
+                    <span
+                      className={
+                        a.test.failed > 0
+                          ? `${styles.agStat} ${styles.agStatBad}`
+                          : `${styles.agStat} ${styles.agStatOk}`
+                      }
+                    >
+                      {a.test.failed > 0
+                        ? `✗ ${a.test.failed} 失败`
+                        : `✓ ${a.test.passed}/${a.test.passed}`}
+                    </span>
+                  ) : a.qualification ? (
+                    <span className={`${styles.agStat} ${styles.agStatOk}`}>
+                      沙箱可信
+                    </span>
+                  ) : (
+                    <span className={`${styles.agStat} ${styles.agStatOff}`}>
+                      待验证
+                    </span>
+                  )}
+                  <span className={styles.agStatOff}>›</span>
+                </button>
+              );
+            })}
+            <div className={styles.railSec} style={{ padding: "12px 16px 4px" }}>
+              全部产物文件
+            </div>
+          </>
+        ) : null}
         {primary.length === 0 ? (
           <div className={styles.iEmpty}>
             还没有可查看的产物。先在左侧说一句业务目标；生成后这里会列出每个
@@ -220,6 +296,7 @@ export interface ArtifactInspectorProps {
   tenant: string;
   sessionId: string;
   candidateLabel: string | null;
+  overview?: OntoCodeSuiteOverview | null;
   items: OntoCodeArtifactSummaryItem[];
   evidence: OntoCodeEvidenceRecord[];
   onCollapse: () => void;
@@ -260,6 +337,7 @@ export function ArtifactInspectorConnected(props: ArtifactInspectorProps) {
     return (
       <InspectorOverviewView
         candidateLabel={props.candidateLabel}
+        overview={props.overview}
         items={props.items}
         evidence={props.evidence}
         onCollapse={props.onCollapse}
