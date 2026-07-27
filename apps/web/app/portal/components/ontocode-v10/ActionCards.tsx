@@ -1,6 +1,7 @@
 "use client";
 // OntoCode v10 · 行动卡片：纯展示 + 回调。数据绑定（hooks）由容器完成。
 import React, { useState } from "react";
+import { HelpTip } from "@/app/portal/components";
 import styles from "./workbench.module.css";
 import type { ActionCardVM } from "./projection";
 
@@ -56,8 +57,10 @@ export function ActionCardView(props: ActionCardViewProps) {
           {tag.label}
         </span>
         {card.title}
+        {/* The reasoning behind the question is available on demand rather than
+            as a paragraph the reader must scan past to reach the buttons. */}
+        {card.why ? <HelpTip>{card.why}</HelpTip> : null}
       </div>
-      {card.why ? <div className={styles.cardWhy}>为什么问：{card.why}</div> : null}
       {card.impact ? (
         <div className={styles.cardImpact}>影响范围:{card.impact}</div>
       ) : null}
@@ -170,7 +173,10 @@ export function ActionCardView(props: ActionCardViewProps) {
           </div>
           {card.systems && card.systems.length > 0 && !props.systemLinks?.length ? (
             <div className={styles.cardWhy}>
-              涉及系统：{card.systems.join("、")}。配置真实工具/凭证后点「已配置完成」即可继续构建。
+              涉及系统：{card.systems.join("、")}
+              <HelpTip>
+                配置真实工具或凭证后，点「已配置完成，校验并继续」会重新执行构建；届时会重新读取工具与凭证，通过即继续。
+              </HelpTip>
             </div>
           ) : null}
           {card.boundaryEligible ? (

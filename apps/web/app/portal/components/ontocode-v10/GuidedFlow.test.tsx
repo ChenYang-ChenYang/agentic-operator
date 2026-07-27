@@ -4,6 +4,12 @@ import { describe, expect, it } from "vitest";
 import type { FlowItemVM } from "./projection";
 import { ActionCardView } from "./ActionCards";
 import { Composer, GuidedFlow } from "./GuidedFlow";
+import { PreferencesProvider } from "@/app/portal/lib/preferences-context";
+
+/** ActionCardView renders HelpTip, which reads i18n preferences. */
+function renderCard(node: React.ReactElement): string {
+  return renderToStaticMarkup(<PreferencesProvider>{node}</PreferencesProvider>);
+}
 
 const ITEMS: FlowItemVM[] = [
   { kind: "user", id: "m1", text: "基于 RAAS-v1 生成整套 agent", at: 1 },
@@ -38,7 +44,7 @@ describe("GuidedFlow", () => {
 
 describe("ActionCardView", () => {
   it("renders a config card with deep-link and verify affordances", () => {
-    const html = renderToStaticMarkup(
+    const html = renderCard(
       <ActionCardView
         card={{
           kind: "config",
@@ -55,7 +61,7 @@ describe("ActionCardView", () => {
   });
 
   it("renders decision options with recommended mark and other-input", () => {
-    const html = renderToStaticMarkup(
+    const html = renderCard(
       <ActionCardView
         card={{
           kind: "decision",
@@ -75,7 +81,7 @@ describe("ActionCardView", () => {
   });
 
   it("renders per-system connection rows with provider deep-link actions", () => {
-    const html = renderToStaticMarkup(
+    const html = renderCard(
       <ActionCardView
         card={{
           kind: "config",
@@ -110,7 +116,7 @@ describe("ActionCardView", () => {
   });
 
   it("renders a configured+verified system as connected", () => {
-    const html = renderToStaticMarkup(
+    const html = renderCard(
       <ActionCardView
         card={{ kind: "config", refId: "q3", title: "连接检查" }}
         systemLinks={[
@@ -129,7 +135,7 @@ describe("ActionCardView", () => {
   });
 
   it("renders authorization card with approve/reject and error text", () => {
-    const html = renderToStaticMarkup(
+    const html = renderCard(
       <ActionCardView
         card={{ kind: "authorization", refId: "c1", title: "写入外部系统需要授权" }}
         errorText="revision 冲突，请刷新"

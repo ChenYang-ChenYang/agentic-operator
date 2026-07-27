@@ -9,6 +9,7 @@ import {
   useCreateOntoCodeSession,
   useOntoCodeProjects,
 } from "@/lib/hooks/useOntoCodeWorkspace";
+import { HelpTip } from "@/app/portal/components";
 import styles from "./workbench.module.css";
 
 const SOURCE_LABEL: Record<string, string> = {
@@ -104,6 +105,10 @@ export function CreateSessionPanel(props: CreateSessionPanelProps) {
       <h2 className={styles.goalTitle}>你想构建什么？</h2>
       <label className={styles.createLabel} htmlFor="oc-create-domain">
         Ontology 域
+        <HelpTip>
+          只列出当前 Business Domain 下活跃的注册项。需要新增或上传域时，去「Business
+          Domains」页注册一次即可长期复用。
+        </HelpTip>
       </label>
       <select
         id="oc-create-domain"
@@ -160,10 +165,6 @@ export function CreateSessionPanel(props: CreateSessionPanelProps) {
             取消
           </button>
         ) : null}
-      </div>
-      <div className={styles.createHint}>
-        域列表来自当前 Business Domain 的活跃注册项；需要新增或上传域时，去
-        「Business Domains」页注册一次即可长期复用。
       </div>
     </div>
   );
