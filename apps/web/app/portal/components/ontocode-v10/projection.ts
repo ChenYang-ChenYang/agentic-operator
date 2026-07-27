@@ -309,6 +309,7 @@ export function projectFlow(input: FlowInput): FlowItemVM[] {
 
   // 结构化提问（waiting_user 事件）→ 行动卡
   const seenQuestionIds = new Set<string>();
+  const jobsWithStructuredQuestion = new Set<string>();
   for (const ev of input.events) {
     if (!/waiting_user$/.test(ev.type)) continue;
     const card = questionFromPayload(ev.payload);
@@ -316,11 +317,34 @@ export function projectFlow(input: FlowInput): FlowItemVM[] {
     const key = card.questionId ?? ev.id;
     if (seenQuestionIds.has(key)) continue;
     seenQuestionIds.add(key);
+    if (ev.harnessJobId) jobsWithStructuredQuestion.add(ev.harnessJobId);
     items.push({
       kind: "actionCard",
       id: `card-${ev.id}`,
       card: { ...card, jobId: ev.harnessJobId ?? undefined },
       at: ev.createdAt,
+    });
+  }
+
+  // 兜底：waiting_user 作业没有结构化事件时（旧数据/后端未升级），
+  // 把作业上的提问原文投影成可回答的决策卡——问题永远不能只躺在错误字段里。
+  for (const job of input.jobs) {
+    if (job.status !== "waiting_user") continue;
+    if (jobsWithStructuredQuestion.has(job.id)) continue;
+    const raw = asText(job.errorMessage);
+    if (!raw) continue;
+    items.push({
+      kind: "actionCard",
+      id: `card-jobq-${job.id}`,
+      card: {
+        kind: "decision",
+        refId: job.id,
+        jobId: job.id,
+        title: truncate(raw.replace(/^Agent Factory 需要你的回答[:：]\s*/, ""), 180),
+        allowOther: true,
+        options: [],
+      },
+      at: job.updatedAt,
     });
   }
 
