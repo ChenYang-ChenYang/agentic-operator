@@ -140,3 +140,29 @@ describe("analyzeOntology", () => {
     expect(receipt.structure.counts.links).toBe(1);
   });
 });
+
+describe("ontology_analysis wiring", () => {
+  it("is a registered executor kind, so a queued job actually runs", async () => {
+    const { createDefaultOntoCodeHarnessExecutors } = await import(
+      "../src/services/ontocode-harness-worker"
+    );
+    const executors = createDefaultOntoCodeHarnessExecutors({
+      fetchOntology: async () => ontology(),
+      runBuild: async () => {
+        throw new Error("not used");
+      },
+      runCandidateTest: async () => {
+        throw new Error("not used");
+      },
+    } as never);
+    expect(typeof executors.ontology_analysis).toBe("function");
+  });
+
+  it("maps to a read_only command policy that needs no human approval", async () => {
+    const { ONTOCODE_COMMAND_POLICY } = await import("@agentic/contracts");
+    const policy = ONTOCODE_COMMAND_POLICY.analyze_ontology;
+    expect(policy.jobKind).toBe("ontology_analysis");
+    expect(policy.riskClass).toBe("read_only");
+    expect(policy.requiresHuman).toBe(false);
+  });
+});
