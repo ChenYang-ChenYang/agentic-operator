@@ -70,6 +70,7 @@ export * from "./test-cases";
 export * from "./report-verify";
 export * from "./conductor";
 export * from "./ontology-analysis";
+export * from "./ontology-tool-requirements";
 // business-flow SVG renderer (融合蓝图 P1.5 — pure swimlane visual):
 export * from "./business-flow-svg";
 // ontology-grounded blueprint model + deterministic SVG renderers (phase-flow / sequence):

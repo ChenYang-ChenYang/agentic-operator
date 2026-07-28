@@ -23,11 +23,16 @@
 //     having no interpretation rather than inventing one
 import {
   analyzeOntologyStructure,
+  analyzeToolRequirements,
   chatJson,
   isGatewayConfigured,
   renderAnalysisForModel,
+  renderToolRequirementsForModel,
   type DomainOntology,
+  type IntegrationCapabilityProvider,
   type OntologyStructuralAnalysis,
+  type RealTool,
+  type ToolRequirementAnalysis,
 } from "@agentic/agent-factory";
 
 export type SubstrateState =
@@ -54,7 +59,15 @@ export interface OntologyAnalysisReceipt {
     relationshipGraph: SubstrateState;
     instances: SubstrateState;
     interpretation: SubstrateState;
+    /** #TOOL-REQ — whether we could read the tool catalogue at all. */
+    toolCatalogue: SubstrateState;
   };
+  /**
+   * #TOOL-REQ — per-Action: which integrations this domain declares, which real
+   * tools cover them, and what is genuinely missing. `null` means the catalogue
+   * could not be read — which is NOT the same as "nothing is missing".
+   */
+  toolRequirements: ToolRequirementAnalysis | null;
   probes: Array<{
     probe: string;
     target: string;
@@ -78,6 +91,15 @@ export interface AnalystDeps {
     objectType: string,
     opts: { limit: number },
   ) => Promise<{ items: unknown[] }>;
+  /**
+   * #TOOL-REQ — the same execution surfaces Build reads. Absent means the
+   * requirement facet is skipped and reported as `not_configured`.
+   */
+  listExecutionResources?: () => Promise<{
+    tools: RealTool[];
+    capabilityProviders: IntegrationCapabilityProvider[];
+    systemAliasGroups: string[][];
+  }>;
   /** Injectable so tests never reach a real gateway. */
   interpret?: (system: string, user: string) => Promise<unknown>;
   gatewayConfigured?: () => boolean;
@@ -203,9 +225,80 @@ export async function analyzeOntology(
       "该来源没有提供已编译的关系图，实体关联只能从动作的 target_objects 推断。",
     );
   }
+
+  // ── PROBE: 工具需求 ───────────────────────────────────────────────────────
+  // 本体的 Action 不声明固定工具，所以「要哪些工具、我们有没有」必须推出来。
+  // 用的是 Build 期同一套能力匹配，只是前移到这里，且只读。
+  let toolRequirements: ToolRequirementAnalysis | null = null;
+  let toolCatalogue: SubstrateState = "not_configured";
+  if (opts.listExecutionResources) {
+    try {
+      const resources = await opts.listExecutionResources();
+      toolRequirements = analyzeToolRequirements(ontology, resources.tools, {
+        systemAliasGroups: resources.systemAliasGroups,
+        capabilityProviders: resources.capabilityProviders,
+      });
+      toolCatalogue = resources.tools.length > 0 ? "available" : "empty";
+      probes.push({
+        probe: "tool_requirements",
+        target: `${resources.tools.length} 个工具`,
+        ok: true,
+        detail:
+          `${toolRequirements.total} 条集成需求：已覆盖 ${toolRequirements.covered}`
+          + ` · 待配置 ${toolRequirements.needsConfig} · 待探针 ${toolRequirements.needsProbe}`
+          + ` · 待人工选择 ${toolRequirements.ambiguous} · 缺工具 ${toolRequirements.gaps}`
+          + (toolRequirements.unknown ? ` · 无法判定 ${toolRequirements.unknown}` : "")
+          + ` · 人工环节 ${toolRequirements.humanSteps}`,
+      });
+      if (toolCatalogue === "empty") {
+        limitations.push(
+          "工具目录读到 0 个工具，因此「缺哪些工具」的结论无效——这是读取问题，不代表没有可用工具。",
+        );
+      }
+      if (toolRequirements.unknown > 0) {
+        limitations.push(
+          `${toolRequirements.unknown} 条集成需求没能完成匹配（引擎报错），既不算已覆盖也不算缺工具。`,
+        );
+      }
+      if (toolRequirements.ambiguous > 0) {
+        limitations.push(
+          `${toolRequirements.ambiguous} 条集成需求有多个同分工具，必须由人来选；这里不替你挑。`,
+        );
+      }
+    } catch (error) {
+      // 读不到就说读不到。绝不把「没查成」显示成「不缺工具」。
+      toolCatalogue = "unsupported_by_source";
+      probes.push({
+        probe: "tool_requirements",
+        target: "工具目录",
+        ok: false,
+        detail: error instanceof Error ? error.message : String(error),
+      });
+      limitations.push(
+        "本次没能读到工具目录，无法判断这个域缺哪些工具。",
+      );
+    }
+  } else {
+    limitations.push(
+      "未接入工具目录，本次不含工具需求分析。",
+    );
+  }
+
   await opts.onProgress?.("harness.ontology_analysis.observation", {
     probes: probes.length,
     instances,
+    toolCatalogue,
+    ...(toolRequirements
+      ? {
+          toolRequirements: {
+            total: toolRequirements.total,
+            covered: toolRequirements.covered,
+            gaps: toolRequirements.gaps,
+            ambiguous: toolRequirements.ambiguous,
+            gapSystems: toolRequirements.gapSystems,
+          },
+        }
+      : {}),
     limitations: limitations.length,
   });
 
@@ -220,6 +313,10 @@ export async function analyzeOntology(
     const probeText = probes.length
       ? `\n\n实测探针：\n${probes.map((p) => `- ${p.probe} ${p.target}：${p.ok ? p.detail : `失败（${p.detail}）`}`).join("\n")}`
       : "";
+    // 工具事实交给模型，让「自动化边界在哪」有据可依，而不是凭动作名猜。
+    const toolText = toolRequirements
+      ? `\n\n${renderToolRequirementsForModel(toolRequirements)}`
+      : "";
     const call =
       opts.interpret ??
       ((system: string, user: string) =>
@@ -229,7 +326,7 @@ export async function analyzeOntology(
           purpose: "ontology_analysis",
         }));
     try {
-      const raw = await call(INTERPRET_SYSTEM, `${rendered}${probeText}`);
+      const raw = await call(INTERPRET_SYSTEM, `${rendered}${probeText}${toolText}`);
       const parsed = raw as
         | { findings?: unknown; narrative?: unknown }
         | null
@@ -303,7 +400,9 @@ export async function analyzeOntology(
       relationshipGraph: structure.hasLinkGraph ? "available" : "empty",
       instances,
       interpretation,
+      toolCatalogue,
     },
+    toolRequirements,
     probes,
     findings,
     limitations,

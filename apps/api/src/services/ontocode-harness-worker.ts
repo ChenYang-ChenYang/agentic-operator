@@ -35,6 +35,8 @@ import {
   type FactoryGenerationDirective,
   type FactoryScopeRecommendation,
   type GeneratedAgentSpec,
+  type IntegrationCapabilityProvider,
+  type RealTool,
   type SandboxDeployResult,
 } from "@agentic/agent-factory";
 import {
@@ -232,6 +234,25 @@ export interface OntoCodeFactoryHarnessAdapter {
     ontologyDomainRegistrationId: string | null;
     actionName: string;
   }): Promise<unknown[]>;
+  /**
+   * #TOOL-REQ — the same tool catalogue and matching inputs Build uses, read at
+   * analysis time. This is what lets the Analyst answer "which tools does this
+   * Action need, do we have them, which ones, what is missing" BEFORE the FDE
+   * commits to a Build, instead of discovering it mid-generation.
+   *
+   * Optional so a stubbed adapter degrades to "we did not check" — never to
+   * "there is nothing missing".
+   */
+  listExecutionResources?(input: {
+    tenantId: string;
+    tenantSlug: string;
+    domain: string;
+    ontologyDomainRegistrationId: string | null;
+  }): Promise<{
+    tools: RealTool[];
+    capabilityProviders: IntegrationCapabilityProvider[];
+    systemAliasGroups: string[][];
+  }>;
 }
 
 export interface OntoCodeHarnessWorkerOptions {
@@ -4175,6 +4196,27 @@ export function createDefaultOntoCodeFactoryAdapter(): OntoCodeFactoryHarnessAda
         input.ontologyDomainRegistrationId,
       ).ontology.fetchActionRules(input.domain, input.actionName);
     },
+    // #TOOL-REQ — exactly the surfaces Build reads, read at analysis time.
+    // A port that is absent (older tenant scope) yields an empty list for that
+    // surface; the Analyst reports the catalogue size so a thin read is visible
+    // as a thin read rather than as "nothing is missing".
+    async listExecutionResources(input) {
+      const ports = makeFactoryPorts(
+        input.tenantSlug,
+        input.tenantId,
+        input.domain,
+        undefined,
+        input.ontologyDomainRegistrationId,
+      );
+      const [tools, capabilityProviders, systemAliasGroups] = await Promise.all([
+        ports.toolRegistry ? ports.toolRegistry.list() : Promise.resolve([]),
+        ports.integrationCapabilities
+          ? ports.integrationCapabilities.list()
+          : Promise.resolve([]),
+        ports.systemAliases ? ports.systemAliases.list() : Promise.resolve([]),
+      ]);
+      return { tools, capabilityProviders, systemAliasGroups };
+    },
   };
 }
 
@@ -4756,6 +4798,19 @@ export function createDefaultOntoCodeHarnessExecutors(
                 }),
             }
           : {}),
+        // #TOOL-REQ — 工具需求分析用 Build 期同一套目录与匹配，只是前移且只读。
+        ...(factory.listExecutionResources
+          ? {
+              listExecutionResources: () =>
+                factory.listExecutionResources!({
+                  tenantId: context.job.tenantId,
+                  tenantSlug: context.tenantSlug,
+                  domain: context.project.domain,
+                  ontologyDomainRegistrationId:
+                    context.project.ontologyDomainRegistrationId,
+                }),
+            }
+          : {}),
       });
       const confirmed = receipt.findings.filter(
         (f) => f.verdict === "confirmed",
@@ -4763,7 +4818,11 @@ export function createDefaultOntoCodeHarnessExecutors(
       return {
         outcome: "succeeded",
         receipt: receipt as unknown as Record<string, unknown>,
-        message: `已分析 ${receipt.structure.counts.objects} 个对象 · ${receipt.structure.counts.links} 条真实关系边，得出 ${confirmed} 条可核查结论。`,
+        message:
+          `已分析 ${receipt.structure.counts.objects} 个对象 · ${receipt.structure.counts.links} 条真实关系边，得出 ${confirmed} 条可核查结论。`
+          + (receipt.toolRequirements
+            ? ` 工具需求 ${receipt.toolRequirements.total} 条：已覆盖 ${receipt.toolRequirements.covered}，待配置 ${receipt.toolRequirements.needsConfig}，待选 ${receipt.toolRequirements.ambiguous}，真缺 ${receipt.toolRequirements.gaps}${receipt.toolRequirements.gaps ? `（${receipt.toolRequirements.gapSystems.join("、")}）` : ""}。`
+            : " 本次未读到工具目录，缺哪些工具未作判断。")
       };
     },
     // Release preparation. Previously a promotion job died with
