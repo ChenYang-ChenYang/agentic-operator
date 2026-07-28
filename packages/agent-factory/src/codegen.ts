@@ -39,6 +39,62 @@ function camel(s: string): string {
   return s ? s[0]!.toLowerCase() + s.slice(1) : "agent";
 }
 
+// ── #SLOT-1 fieldMapping(确定性填实)────────────────────────────────────────────
+/** 从 inputSchema 渲染真实的 mapFields:声明字段显式提取 + source 路径回退 + 类型规整,
+ *  其余键透传。无 schema 时诚实透传(注释说明,而不是假装映射过)。 */
+export function renderMapFields(fields: IoField[] | undefined): string {
+  const fs = (fields ?? []).filter((f) => f && f.field);
+  const header = [
+    `// ──────────────────────────────────────────────────────────────────────────`,
+    `// #SLOT-1 fieldMapping — 事件 payload 的松散字段 → 本 agent 需要的形状/文本。`,
+    `//   黄金范例:create-jd.buildPromptFromRequirement(40+ 字段)、match-resume.buildResumeTextFromParsed。`,
+    fs.length
+      ? `//   已按本体输入 schema 确定性填实:声明字段显式提取 + 源路径回退 + 类型规整,其余键透传。`
+      : `//   本体未声明输入 schema——诚实透传(不假装映射);补充 inputSchema 后重渲染即可填实。`,
+  ];
+  if (!fs.length) {
+    return [
+      ...header,
+      `function mapFields(raw: Record<string, unknown>): Record<string, unknown> {`,
+      `  return raw;`,
+      `}`,
+    ].join("\n");
+  }
+  // #G7 —— 真实信封把业务字段放在 payload 之下、锚点放在同级 entity_id。以前只有 source
+  // 一种来源，于是 required 锚点在每个真实事件上都解析成 undefined；设计端其实推导出了正确的
+  // 优先级顺序，却没有一个结构化的地方放它，最后落成了 systemPrompt 里的散文。
+  const usesPick = fs.some((f) => (f.source && f.source.includes(".")) || (f.eventPaths?.length ?? 0) > 0);
+  const usesNum = fs.some((f) => /^(num|int|float|double)/i.test(f.type ?? ""));
+  const usesBool = fs.some((f) => /^bool/i.test(f.type ?? ""));
+  const lines: string[] = [
+    ...header,
+    `function mapFields(raw: Record<string, unknown>): Record<string, unknown> {`,
+  ];
+  if (usesPick) lines.push(`  const pick = (path: string): unknown => path.split(".").reduce<unknown>((c, k) => (c != null && typeof c === "object" ? (c as Record<string, unknown>)[k] : undefined), raw);`);
+  if (usesNum) lines.push(`  const num = (v: unknown): number | undefined => (v == null || v === "" || Number.isNaN(Number(v)) ? undefined : Number(v));`);
+  if (usesBool) lines.push(`  const bool = (v: unknown): boolean | undefined => (v == null ? undefined : v === true || v === "true" || v === 1 || v === "1");`);
+  // 空串/纯空白算未命中：裸 ?? 会把只有空格的字段当成有值收下，然后 required 守卫放行一个空锚点。
+  if (usesPick) lines.push(`  const firstPresent = (...vals: unknown[]): unknown => vals.find((v) => v != null && (typeof v !== "string" || v.trim() !== ""));`);
+  lines.push(`  const out: Record<string, unknown> = { ...raw };`);
+  for (const f of fs) {
+    const key = JSON.stringify(f.field);
+    // 探测顺序：声明的信封位置（高→低）→ 平铺字段名 → 本体 source 路径。
+    // 平铺位置永远保留在链上，所以已经在用平铺信封的租户不受影响。
+    const probes = [
+      ...(f.eventPaths ?? []).filter((path) => typeof path === "string" && path.trim()).map((path) => `pick(${JSON.stringify(path)})`),
+      `raw[${key}]`,
+      ...(f.source && f.source.includes(".") ? [`pick(${JSON.stringify(f.source)})`] : []),
+    ];
+    const deduped = [...new Set(probes)];
+    const base = deduped.length > 1 ? `firstPresent(${deduped.join(", ")})` : deduped[0]!;
+    const coerced = /^(num|int|float|double)/i.test(f.type ?? "") ? `num(${base})` : /^bool/i.test(f.type ?? "") ? `bool(${base})` : base;
+    const note = [f.description, f.source ? `源: ${f.source}` : ""].filter(Boolean).join(" | ").replace(/\s+/g, " ").slice(0, 100);
+    lines.push(`  out[${key}] = ${coerced};${note ? ` // ${note}` : ""}`);
+  }
+  lines.push(`  return out;`, `}`);
+  return lines.join("\n");
+}
+
 function tsType(t: string): string {
   const x = (t || "").toLowerCase();
   if (x.startsWith("str")) return "string";

@@ -255,6 +255,42 @@ describe("#TRUE-CODE renderTsFunctionModule — 槽位真执行(经 harness)", (
     expect(reused.emitNames).toEqual(["MATCH_FAILED"]);
   });
 
+  it("#G7 按声明的信封位置取锚点——真实事件把业务字段放在 payload 之下", async () => {
+    const code = renderTsFunctionModule(spec({
+      inputSchema: [
+        // 真实 RAAS 信封：锚点在同级 entity_id，业务字段在 payload 之下。
+        { field: "job_requisition_id", type: "string", required: true, eventPaths: ["entity_id", "payload.requirement_id"] },
+        { field: "client_id", type: "string", eventPaths: ["payload.raw_input_data.client_id"] },
+      ],
+      tools: [],
+      plan: [],
+    }));
+    const calls: unknown[] = [];
+    await loadHarnessed(code)(
+      { data: { entity_type: "Job_Requisition", entity_id: "JR-9101", payload: { requirement_id: "REQ-1", raw_input_data: { client_id: "C-7" } } } },
+      { tool: async () => ({}), reason: async (_sp, input) => { calls.push(input); return { ok: true }; } },
+    );
+    const seen = (calls[0] as { input: Record<string, unknown> }).input;
+    expect(seen.job_requisition_id).toBe("JR-9101");
+    expect(seen.client_id).toBe("C-7");
+
+    // 平铺信封仍然可读：探测链把平铺字段名保留在中间，已在用平铺的租户不受影响。
+    const flat: unknown[] = [];
+    await loadHarnessed(code)(
+      { data: { job_requisition_id: "JR-FLAT", client_id: "C-FLAT" } },
+      { tool: async () => ({}), reason: async (_sp, input) => { flat.push(input); return { ok: true }; } },
+    );
+    expect((flat[0] as { input: Record<string, unknown> }).input.job_requisition_id).toBe("JR-FLAT");
+
+    // 只有空格的锚点不算有值——否则 required 守卫会放行一个空锚点。
+    await expect(
+      loadHarnessed(code)(
+        { data: { entity_id: "   ", payload: {} } },
+        { tool: async () => ({}), reason: async () => ({ ok: true }) },
+      ),
+    ).resolves.toMatchObject({ error: expect.stringContaining("missing required input anchors") });
+  });
+
   it("#G2 路由条件真的决定终态——算完就丢弃的条件等于这段逻辑不存在", async () => {
     const plan: PlanStep[] = [
       {

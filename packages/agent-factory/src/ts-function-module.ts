@@ -15,7 +15,7 @@
 // 本模块【纯确定性】:同 spec 同 opts 逐字节同输出。真部署(把它注册进 -sb / 生产 Inngest)是 P1b。
 
 import type { GeneratedAgentSpec, IoField, PlanStep } from "./spec-types";
-import { EVAL_CONDITION_SRC, failEmitOf } from "./codegen";
+import { EVAL_CONDITION_SRC, failEmitOf, renderMapFields } from "./codegen";
 import { ERROR_POLICY_RUNTIME_SRC } from "./error-policy-code";
 import {
   assertPlanDataflowRenderable,
@@ -45,50 +45,6 @@ function stepId(verb: string, anchor: string): string {
   return `${verb}-${a || "x"}`;
 }
 
-
-// ── #SLOT-1 fieldMapping(确定性填实)────────────────────────────────────────────
-/** 从 inputSchema 渲染真实的 mapFields:声明字段显式提取 + source 路径回退 + 类型规整,
- *  其余键透传。无 schema 时诚实透传(注释说明,而不是假装映射过)。 */
-function renderMapFields(fields: IoField[] | undefined): string {
-  const fs = (fields ?? []).filter((f) => f && f.field);
-  const header = [
-    `// ──────────────────────────────────────────────────────────────────────────`,
-    `// #SLOT-1 fieldMapping — 事件 payload 的松散字段 → 本 agent 需要的形状/文本。`,
-    `//   黄金范例:create-jd.buildPromptFromRequirement(40+ 字段)、match-resume.buildResumeTextFromParsed。`,
-    fs.length
-      ? `//   已按本体输入 schema 确定性填实:声明字段显式提取 + 源路径回退 + 类型规整,其余键透传。`
-      : `//   本体未声明输入 schema——诚实透传(不假装映射);补充 inputSchema 后重渲染即可填实。`,
-  ];
-  if (!fs.length) {
-    return [
-      ...header,
-      `function mapFields(raw: Record<string, unknown>): Record<string, unknown> {`,
-      `  return raw;`,
-      `}`,
-    ].join("\n");
-  }
-  const usesPick = fs.some((f) => f.source && f.source.includes("."));
-  const usesNum = fs.some((f) => /^(num|int|float|double)/i.test(f.type ?? ""));
-  const usesBool = fs.some((f) => /^bool/i.test(f.type ?? ""));
-  const lines: string[] = [
-    ...header,
-    `function mapFields(raw: Record<string, unknown>): Record<string, unknown> {`,
-  ];
-  if (usesPick) lines.push(`  const pick = (path: string): unknown => path.split(".").reduce<unknown>((c, k) => (c != null && typeof c === "object" ? (c as Record<string, unknown>)[k] : undefined), raw);`);
-  if (usesNum) lines.push(`  const num = (v: unknown): number | undefined => (v == null || v === "" || Number.isNaN(Number(v)) ? undefined : Number(v));`);
-  if (usesBool) lines.push(`  const bool = (v: unknown): boolean | undefined => (v == null ? undefined : v === true || v === "true" || v === 1 || v === "1");`);
-  lines.push(`  const out: Record<string, unknown> = { ...raw };`);
-  for (const f of fs) {
-    const key = JSON.stringify(f.field);
-    const fallback = f.source && f.source.includes(".") ? ` ?? pick(${JSON.stringify(f.source)})` : "";
-    const base = `raw[${key}]${fallback}`;
-    const coerced = /^(num|int|float|double)/i.test(f.type ?? "") ? `num(${base})` : /^bool/i.test(f.type ?? "") ? `bool(${base})` : base;
-    const note = [f.description, f.source ? `源: ${f.source}` : ""].filter(Boolean).join(" | ").replace(/\s+/g, " ").slice(0, 100);
-    lines.push(`  out[${key}] = ${coerced};${note ? ` // ${note}` : ""}`);
-  }
-  lines.push(`  return out;`, `}`);
-  return lines.join("\n");
-}
 
 // ── #SLOT-2 errorTaxonomy(确定性填实)────────────────────────────────────────────
 const CLASSIFY_ERROR_SRC = [
