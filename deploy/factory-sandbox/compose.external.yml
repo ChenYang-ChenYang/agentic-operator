@@ -45,6 +45,15 @@ services:
       SANDBOX_RUNNER_KEY_ID: "${EXTERNAL_SANDBOX_KEY_ID:?set the versioned HMAC key id}"
       SANDBOX_RUNNER_BUILD_ID: "${EXTERNAL_SANDBOX_RUNNER_BUILD_ID:?set the immutable runner build id}"
       SANDBOX_RUNNER_RUNTIME_IMAGE_DIGEST: "${EXTERNAL_SANDBOX_RUNTIME_IMAGE_DIGEST:?set the attested sha256 runtime image id}"
+      # This document is signed offline by a distinct deployment attestor.
+      # Neither the runner nor the primary API receives the private key.
+      SANDBOX_RUNNER_PLATFORM_ATTESTATION: ""
+      SANDBOX_RUNNER_PLATFORM_ATTESTATION_FILE: /run/attestations/execution-plane.json
+      SANDBOX_RUNNER_PLATFORM_ATTESTOR_KEY_ID: "${EXTERNAL_SANDBOX_PLATFORM_ATTESTOR_KEY_ID:?set the allowlisted platform attestor key id}"
+      SANDBOX_RUNNER_PLATFORM_ATTESTOR_PUBLIC_KEY: ""
+      SANDBOX_RUNNER_PLATFORM_ATTESTOR_PUBLIC_KEY_FILE: /run/attestations/platform-attestor-public.pem
+      SANDBOX_PRIMARY_HOST_IDENTITY_HASH: "${EXTERNAL_SANDBOX_PRIMARY_HOST_IDENTITY_HASH:?set the domain-separated primary host hash}"
+      SANDBOX_PRIMARY_DOCKER_DAEMON_IDENTITY_HASH: "${EXTERNAL_SANDBOX_PRIMARY_DOCKER_DAEMON_IDENTITY_HASH:?set the domain-separated primary daemon hash}"
       SANDBOX_RUNNER_REQUEST_HMAC: ""
       SANDBOX_RUNNER_REQUEST_HMAC_FILE: /run/secrets/shared-with-primary/request-hmac
       SANDBOX_RUNNER_RESULT_HMAC: ""
@@ -87,6 +96,18 @@ services:
       - type: bind
         source: "${EXTERNAL_SANDBOX_HOST_ID_SOURCE_FILE:-/etc/machine-id}"
         target: /run/agentic/host-machine-id
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${EXTERNAL_SANDBOX_ATTESTATION_ROOT:?set the absolute attestation document root}/execution-plane.json"
+        target: /run/attestations/execution-plane.json
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${EXTERNAL_SANDBOX_ATTESTATION_ROOT:?set the absolute attestation document root}/platform-attestor-public.pem"
+        target: /run/attestations/platform-attestor-public.pem
         read_only: true
         bind:
           create_host_path: false
@@ -465,6 +486,11 @@ services:
         read_only: true
         bind:
           create_host_path: false
+    # redis 官方入口以 root 启动 redis-server 时会 gosu 降权，降权会重建补充组，
+    # 容器随后读不到 0640 的 ACL 文件（实测 Aborting Redis startup because of ACL errors）。
+    # 直接以 redis 的 uid + secret-reader 组启动：入口看到自己非 root 就不再降权，
+    # 既保住最小权限（仍非 root），也拿得到密钥。
+    user: "999:${EXTERNAL_SANDBOX_SECRET_GID:?set the dedicated host secret-reader group id}"
     group_add:
       - "${EXTERNAL_SANDBOX_SECRET_GID:?set the dedicated host secret-reader group id}"
     tmpfs:
