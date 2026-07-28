@@ -152,10 +152,41 @@ colima delete --profile agentic-sandbox --force
 
 ---
 
+## 真实 attempt 跑到哪里为止（2026-07-28 实测）
+
+主 API 已用 `~/.agentic/sandbox-primary/launch-api-external.mjs` 带外部 runner 配置启动，
+并调用了仓库自带的端到端探针 `POST /internal/factory-sandbox/probe`
+（`factory-sandbox-probe.ts`：经真实 remote 路径部署探针 agent、真跑一次、验清理，
+其通过条件包含 `executionPlaneIssues.length === 0` 与
+`functionTester.every(e => e.qualification === "promotable")`）。
+
+**探针被一个此前未预料到的门挡住**，返回：
+
+```
+Inngest configuration for tenant 'raas' is degraded:
+development/test shared Inngest configuration; production requires tenant env refs
+```
+
+根因（`packages/runtime/src/client.ts:866`）：
+
+```ts
+const production = process.env.NODE_ENV === "production";
+...
+readiness: production ? "ready" : "degraded"
+```
+
+**在开发模式下每个租户都必然被判 degraded**（本机四个租户全部如此），探针据此拒绝执行。
+要越过它需要真正的生产姿态：`NODE_ENV=production` + `INNGEST_TENANT_CONFIG_REFS`
+（按租户给出 env 变量【名】）+ 该租户真实的 Inngest event/signing key
+（长度 ≥16 且不匹配 `PLACEHOLDER_SECRET_RE`——编造的值会被当场拒绝）。
+
+这不是沙箱 runner 的问题：runner 侧四项要求均已达成，主 API 侧连接配置与证明比对也已通过。
+**这是一条独立的、属于租户provisioning 的前置**，需要真实凭据，本次不予伪造。
+
 ## 这仍然没有证明什么
 
-- **没有跑过一次真实 attempt**。证明门与 TLS 链路都已逐项验证，但端到端拿到一份
-  `qualification: promotable` 的回执，需要 API 带上述 env 启动后真跑一次。
+- **端到端 `qualification: promotable` 回执仍未取得**。阻塞点已定位到上面那条生产 Inngest 前置，
+  而非沙箱侧。
 - **物理主机独立性**（见开头）。
 - **独立 attestor 保管**。
 - **公网可验证的 TLS**：信任根是本机生成的 CA，无证书透明度、无外部吊销。
