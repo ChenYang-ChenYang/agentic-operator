@@ -147,21 +147,30 @@ describe("specToAgentCode — rendered handler REALLY executes", () => {
     expect(t.emits).toHaveLength(0); // no fake success emit after a terminal failure
   });
 
-  it("multi-emit really selects: decision.emit wins; failed decision routes to the last event", async () => {
+  // #G1/#G19 —— 与 ts-function-module 同构。终态由判定决定：LLM 点名要发的事件不算数，
+  // 失败也绝不复用某条业务终态（"REJECTED" 是对候选人的处置结论，不是运行错误的出口）。
+  it("multi-emit: the verdict picks the event, an LLM's decision.emit does not", async () => {
     const s = spec({ emit: ["MATCHED", "REVIEW_NEEDED", "REJECTED"] });
     const code = specToAgentCode(s);
 
     const picked = makeCtx({ reason: { ok: true, emit: "REVIEW_NEEDED" } });
     await loadRendered(code).handler({}, picked.ctx);
-    expect(picked.emits[0]!.event).toBe("REVIEW_NEEDED");
+    expect(picked.emits[0]!.event).toBe("MATCHED");
 
+    // 三个声明事件都是业务判定，没有失败形态的可复用项 → 合成 MATCHED_FAILED。
     const failed = makeCtx({ reason: { ok: false } });
     await loadRendered(code).handler({}, failed.ctx);
-    expect(failed.emits[0]!.event).toBe("REJECTED");
+    expect(failed.emits[0]!.event).toBe("MATCHED_FAILED");
 
     const passed = makeCtx({ reason: { pass: true } });
     await loadRendered(code).handler({}, passed.ctx);
     expect(passed.emits[0]!.event).toBe("MATCHED");
+
+    // 声明了失败形态事件时复用它，而不是再合成一个下游没订阅的新名字。
+    const withFailure = specToAgentCode(spec({ emit: ["MATCHED", "MATCH_FAILED"] }));
+    const reused = makeCtx({ reason: { pass: false } });
+    await loadRendered(withFailure).handler({}, reused.ctx);
+    expect(reused.emits[0]!.event).toBe("MATCH_FAILED");
   });
 
   it("decision core FAIL-CLOSES: _reasonFailed throws instead of emitting a fake pass", async () => {

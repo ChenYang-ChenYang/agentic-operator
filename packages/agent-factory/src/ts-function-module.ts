@@ -15,7 +15,7 @@
 // 本模块【纯确定性】:同 spec 同 opts 逐字节同输出。真部署(把它注册进 -sb / 生产 Inngest)是 P1b。
 
 import type { GeneratedAgentSpec, IoField, PlanStep } from "./spec-types";
-import { EVAL_CONDITION_SRC } from "./codegen";
+import { EVAL_CONDITION_SRC, failEmitOf } from "./codegen";
 import { ERROR_POLICY_RUNTIME_SRC } from "./error-policy-code";
 import {
   assertPlanDataflowRenderable,
@@ -45,19 +45,6 @@ function stepId(verb: string, anchor: string): string {
   return `${verb}-${a || "x"}`;
 }
 
-/** 从 spec 推导「运行失败」事件名。
- *
- * #G19 — 只有本身就是失败形态的已声明事件(_FAILED/_ERROR/_REJECTED/_DENIED)才可以复用。
- * 以前这里对多 emit 的 agent 一律取【最后一个】声明事件，于是一次 HTTP 401 或一处接线 bug
- * 会被当成业务终态发出去：候选人被永久拒绝、锁冲突被凭空报告，而事件里没有任何支撑这个
- * 判定的证据。运行错误不是业务结论，拿不准就合成一个 _FAILED。 */
-function failEmitOf(spec: GeneratedAgentSpec): string {
-  const emits = (spec.emit ?? []).filter(Boolean);
-  const failureShaped = emits.find((name) => /_(FAILED|ERROR|REJECTED|DENIED)$/.test(name));
-  if (failureShaped) return failureShaped;
-  const base = (emits[0] ?? spec.trigger?.[0] ?? spec.actionName ?? "TASK").toUpperCase().replace(/[^A-Z0-9]+/g, "_").replace(/_(PROCESSED|DONE|GENERATED|SENT|PASSED|OK)$/, "");
-  return `${base}_FAILED`;
-}
 
 // ── #SLOT-1 fieldMapping(确定性填实)────────────────────────────────────────────
 /** 从 inputSchema 渲染真实的 mapFields:声明字段显式提取 + source 路径回退 + 类型规整,

@@ -21,6 +21,20 @@ import {
 import { ERROR_POLICY_RUNTIME_SRC } from "./error-policy-code";
 import { generatedSpecExecutionOwnership } from "./execution-ownership";
 
+/** 从 spec 推导「运行失败」事件名。
+ *
+ * #G19 — 只有本身就是失败形态的已声明事件(_FAILED/_ERROR/_REJECTED/_DENIED)才可以复用。
+ * 以前这里对多 emit 的 agent 一律取【最后一个】声明事件，于是一次 HTTP 401 或一处接线 bug
+ * 会被当成业务终态发出去：候选人被永久拒绝、锁冲突被凭空报告，而事件里没有任何支撑这个
+ * 判定的证据。运行错误不是业务结论，拿不准就合成一个 _FAILED。 */
+export function failEmitOf(spec: GeneratedAgentSpec): string {
+  const emits = (spec.emit ?? []).filter(Boolean);
+  const failureShaped = emits.find((name) => /_(FAILED|ERROR|REJECTED|DENIED)$/.test(name));
+  if (failureShaped) return failureShaped;
+  const base = (emits[0] ?? spec.trigger?.[0] ?? spec.actionName ?? "TASK").toUpperCase().replace(/[^A-Z0-9]+/g, "_").replace(/_(PROCESSED|DONE|GENERATED|SENT|PASSED|OK)$/, "");
+  return `${base}_FAILED`;
+}
+
 function camel(s: string): string {
   return s ? s[0]!.toLowerCase() + s.slice(1) : "agent";
 }
@@ -397,15 +411,19 @@ function codegenFailureLines(step: PlanStep, id: string, lastVar: string): strin
     : step.onError === "soft"
       ? "null"
       : "undefined";
+  // #G16 —— 与 ts-function-module.policyFailureLines 保持同一顺序：先发声明的失败事件，
+  // 再抛。放在抛出之后它在每条终态路径上都是死代码——唯一能把事故升级给人的消费方永远
+  // 收不到，运行悄无声息地退休。两个渲染器在这一点上必须一致，否则同一份 spec 在
+  // CodeAct 与声明式两条路上的失败语义不同。
   return [
     `const _resolution = _afResolveFailure(${policySource(step)}, e, ${fallback});`,
+    `if (_resolution.suppressEmit) _suppressImplicitEmit = true;`,
+    `if (_resolution.emitEvent && !_resolution.suppressEmit) { await ctx.emit(_resolution.emitEvent, _afFailurePayload(_resolution)); _explicitEmitCount++; }`,
     `if (_resolution.disposition !== "continue") {`,
     `  const _tag = _resolution.disposition === "terminal" ? "terminal" : (_resolution.policyAction === "park" ? "park" : "retry");`,
     `  ctx.log?.("error", ${JSON.stringify(`步骤 ${id} 按错误策略终止`)}, { action: _resolution.policyAction, facts: _resolution.facts });`,
     `  throw new Error("[" + _tag + "] step ${id}: " + _resolution.facts.message);`,
     `}`,
-    `if (_resolution.suppressEmit) _suppressImplicitEmit = true;`,
-    `if (_resolution.emitEvent) { await ctx.emit(_resolution.emitEvent, _afFailurePayload(_resolution)); _explicitEmitCount++; }`,
     `${lastVar} = _resolution.defaultResult;`,
   ];
 }
@@ -591,6 +609,11 @@ function renderPlanStep(step: PlanStep, opts: { triggers: string[] }): string {
       body = [
         `_cond[${JSON.stringify(id)}] = evalCondition(${JSON.stringify(step.condition ?? "")}, ${scopeExpr});`,
         `results[${JSON.stringify(id)}] = { evaluated: _cond[${JSON.stringify(id)}] };`,
+        // #G2 —— 与 ts-function-module 同构：声明了 routes 的条件把判定绑到终态事件上，
+        // 否则它算完就被丢弃，路由规则等于不存在。
+        ...(step.routes?.onTrue && step.routes.onFalse
+          ? [`_route = _cond[${JSON.stringify(id)}] ? ${JSON.stringify(step.routes.onTrue)} : ${JSON.stringify(step.routes.onFalse)};`]
+          : []),
       ];
       break;
     case "tool": {
@@ -689,11 +712,14 @@ export function specToAgentCode(spec: GeneratedAgentSpec): string {
           `      await ctx.emit(${JSON.stringify(emits[0] ?? "DONE")}, { ...carry(), ...decision });`,
         ].join("\n")
       : [
-          `      // 真实事件选择：优先决策核心显式选择的 emit；否则按 pass/ok 走首个(成功)或末个(失败)分支`,
+          // #G1/#G19 —— 与 ts-function-module 同构：终态由计算出的判定决定（路由条件优先），
+          // LLM 的自由文本 decision.emit 不能改写它；失败事件也绝不复用「最后一个声明事件」，
+          // 那会把一次 401 发成对候选人的业务终态。
+          `      // 真实事件选择：路由条件优先；否则按 pass/ok 二分（失败走失败形态事件）`,
           `      const _declared = ${JSON.stringify(emits)};`,
           `      const _failed = decision.pass === false || decision.ok === false;`,
-          `      let _chosen = _failed ? _declared[_declared.length - 1]! : _declared[0]!;`,
-          `      if (typeof decision.emit === "string" && _declared.includes(decision.emit)) _chosen = decision.emit;`,
+          `      let _chosen = _failed ? ${JSON.stringify(failEmitOf(spec))} : _declared[0]!;`,
+          `      if (typeof _route === "string" && _declared.includes(_route)) _chosen = _route;`,
           `      await ctx.emit(_chosen, { ...carry(), ...decision });`,
         ].join("\n");
 
@@ -756,6 +782,8 @@ export function specToAgentCode(spec: GeneratedAgentSpec): string {
     `      const carry = (): Record<string, unknown> => ({ ...$in, ...(last && typeof last === "object" ? (last as Record<string, unknown>) : {}), results: { ...results } });`,
     `      let _explicitEmitCount = 0;`,
     `      let _suppressImplicitEmit = false;`,
+    // #G2 —— 路由条件选中的终态事件。
+    `      let _route: string | undefined = undefined;`,
     ...(gatingDecls ? [gatingDecls] : []),
     stepLines,
     `      // 决策核心（fail-close）：LLM 不可用/失败时绝不伪造通过`,

@@ -227,6 +227,9 @@ describe("same-spec renderer parity", () => {
         { when: "status==429", do: "park", suppressEmit: true },
         { when: "status>=500", do: "retry", suppressEmit: true },
         { when: "kind==schema_mismatch", do: "terminal", suppressEmit: true },
+        // #G16 —— 终态 + 声明失败事件。这条向量是本文件此前缺的那一半：原有 ladder 里唯一带
+        // emitEvent 的规则落在 continue 上，于是「先抛后发」这个缺陷在两个渲染器里都看不见。
+        { when: "status==418", do: "terminal", emitEvent: "WORK_REJECTED" },
         { when: "status==400", do: "continue", defaultResult: { accepted: false }, emitEvent: "WORK_REJECTED" },
         { when: "code==DROP", do: "continue", defaultResult: null, suppressEmit: true },
         { default: "terminal", suppressEmit: true },
@@ -266,15 +269,41 @@ describe("same-spec renderer parity", () => {
     expect(dropped.codeEmits).toEqual([]);
     expect(dropped.fn.emitNames).toEqual([]);
 
+    // #G16 —— 终态路径上声明的失败事件必须真的发得出去。放在 throw 之后它是死代码，
+    // 运行悄无声息地退休，唯一能升级给人的消费方永远收不到。两个渲染器都要满足。
+    const terminalEmit = await outcome({ status: 418 });
+    expect(terminalEmit.codeError).toMatch(/^\[terminal\]/);
+    expect(terminalEmit.codeEmits).toEqual(["WORK_REJECTED"]);
+    expect(terminalEmit.fn.error).toMatch(/terminal action failure/);
+    expect(terminalEmit.fn.emitNames).toEqual(["WORK_REJECTED"]);
+
     expect(projectPlanToActions(shared)[0]!.on_error).toEqual([
       { when: "status==429", do: "park", suppress_emit: true },
       { when: "status>=500", do: "retry", suppress_emit: true },
       { when: "kind==schema_mismatch", do: "terminal", suppress_emit: true },
+      { when: "status==418", do: "terminal", emit_event: "WORK_REJECTED" },
       { when: "status==400", do: "continue", default_result: { accepted: false }, emit_event: "WORK_REJECTED" },
       { when: "code==DROP", do: "continue", default_result: null, suppress_emit: true },
       { default: "terminal", suppress_emit: true },
     ]);
     expect(await probeAgentModule(renderedCode)).toMatchObject({ loads: false });
+  });
+
+  // #G1 —— 终态事件由计算出的判定决定。两个渲染器都不能让 LLM 的自由文本 decision.emit
+  // 改写它：一个候选人是被拒绝还是被推进，不能取决于一次生成的措辞。
+  it("ignores an LLM-chosen emit in both renderers", async () => {
+    const shared = spec({ plan: [], tools: [], emit: ["WORK_DONE", "WORK_REJECTED"] });
+    const code = codeCtx(async () => ({}));
+    await loadCodeAct(specToAgentCode(shared))(
+      { work_id: "W-1" },
+      { ...code.ctx, reason: async () => ({ ok: true, emit: "WORK_REJECTED" }) },
+    );
+    const fn = await loadFunction(renderTsFunctionModule(shared))(
+      { data: { work_id: "W-1" } },
+      { tool: async () => ({}), reason: async () => ({ ok: true, emit: "WORK_REJECTED" }) },
+    );
+    expect(code.emitNames).toEqual(["WORK_DONE"]);
+    expect(fn.emitNames).toEqual(code.emitNames);
   });
 
   it("gives a codeExecuted spec exactly one logic execution owner", () => {
