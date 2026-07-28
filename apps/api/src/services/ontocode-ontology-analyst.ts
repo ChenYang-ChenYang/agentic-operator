@@ -103,7 +103,11 @@ export interface AnalystDeps {
   /** Injectable so tests never reach a real gateway. */
   interpret?: (system: string, user: string) => Promise<unknown>;
   gatewayConfigured?: () => boolean;
-  onProgress?: (type: string, payload: Record<string, unknown>) => Promise<void>;
+  onProgress?: (
+    type: string,
+    payload: Record<string, unknown>,
+    visibility?: "user" | "debug" | "audit",
+  ) => Promise<void>;
 }
 
 const MAX_RULE_PROBES = 6;
@@ -325,8 +329,16 @@ export async function analyzeOntology(
           maxTokens: 3000,
           purpose: "ontology_analysis",
         }));
+    const material = `${rendered}${probeText}${toolText}`;
+    // #HARNESS-TELEMETRY — 这一步是真的在调模型。以前它无声无息，看板上
+    // 「理解 Ontology」只有开头结尾两个标记，中间那次真实推理没有任何痕迹。
+    await opts.onProgress?.(
+      "harness.ontology_analysis.interpret_started",
+      { materialChars: material.length, probes: probes.length },
+      "debug",
+    );
     try {
-      const raw = await call(INTERPRET_SYSTEM, `${rendered}${probeText}${toolText}`);
+      const raw = await call(INTERPRET_SYSTEM, material);
       const parsed = raw as
         | { findings?: unknown; narrative?: unknown }
         | null
@@ -365,6 +377,15 @@ export async function analyzeOntology(
           ? narrativeRaw.trim()
           : null;
       interpretation = findings.length > 0 || narrative ? "available" : "empty";
+      await opts.onProgress?.(
+        "harness.ontology_analysis.interpret_completed",
+        {
+          findings: findings.length,
+          confirmed: findings.filter((f) => f.verdict === "confirmed").length,
+          narrativeChars: narrative?.length ?? 0,
+        },
+        "debug",
+      );
       const downgraded = findings.filter(
         (f) => f.verdict === "unverifiable",
       ).length;

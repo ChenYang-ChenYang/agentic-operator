@@ -573,7 +573,10 @@ export function useOntoCodeSessionEvents(
     queryFn: () =>
       callV1<Page<OntoCodeSessionEvent>>(
         tenant,
-        `/v1/ontocode/sessions/${encodeURIComponent(sessionId)}/events?limit=200`,
+        // visibility 是下限而非精确匹配：debug 返回 user+debug，一次拿到完整
+        // 有序轨迹。以前不带这个参数，默认 user，于是 harness 的推理与工具帧
+        // 一条也到不了前端——「显示全部」按钮筛的列表里根本没有非 user 事件。
+        `/v1/ontocode/sessions/${encodeURIComponent(sessionId)}/events?limit=200&visibility=debug`,
       ),
     enabled: Boolean(tenant && sessionId),
     staleTime: 2_500,

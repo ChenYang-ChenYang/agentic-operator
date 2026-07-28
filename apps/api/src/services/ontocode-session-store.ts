@@ -3053,6 +3053,19 @@ export function listOntoCodeEvents(
   hasMore: boolean;
 } {
   requireSessionRow(getDb(), ctx, sessionId);
+  // Visibility is a FLOOR, not an exact match. It used to be `eq(...)`, which
+  // meant asking for `debug` returned ONLY debug rows — never the user-visible
+  // ones interleaved with them — so a caller could not get a complete ordered
+  // trace at any level, and the workspace's「显示全部」toggle filtered a list
+  // that by construction contained nothing but `user` rows: a dead control.
+  const VISIBILITY_AT_OR_BELOW: Record<
+    string,
+    Array<"user" | "debug" | "audit">
+  > = {
+    user: ["user"],
+    debug: ["user", "debug"],
+    audit: ["user", "debug", "audit"],
+  };
   const rows = getDb()
     .select()
     .from(ontocodeSessionEvents)
@@ -3063,7 +3076,10 @@ export function listOntoCodeEvents(
       )(
         and(
           eq(ontocodeSessionEvents.sessionId, sessionId),
-          eq(ontocodeSessionEvents.visibility, input.visibility),
+          inArray(
+            ontocodeSessionEvents.visibility,
+            VISIBILITY_AT_OR_BELOW[input.visibility] ?? ["user"],
+          ),
           gt(ontocodeSessionEvents.seq, input.after),
         ),
       ),

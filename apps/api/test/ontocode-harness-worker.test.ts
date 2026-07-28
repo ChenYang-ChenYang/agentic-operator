@@ -1085,6 +1085,105 @@ describe("OntoCode Harness Worker Adapter", () => {
     ]);
   });
 
+  it("bridges the brain's real harness loop into Session events (#HARNESS-TELEMETRY)", async () => {
+    // The gap this closes: the Factory brain streams reasoning tokens, tool
+    // calls with their stated reason, and tool results — and this bridge used
+    // to forward only stage markers plus the rare readiness-bearing result. A
+    // Session therefore recorded a handful of coarse phase events, and the
+    // workbench's reasoning panel had nothing to show while the brain was in
+    // fact thinking and calling tools.
+    const fixture = makeQueuedJob({ kind: "build" });
+    const runtime = {
+      startRun: vi.fn(() => ({})),
+      subscribeRun: vi.fn(
+        (
+          _runId: string,
+          callback: (event: Record<string, unknown>) => void,
+        ) => {
+          callback({ t: "think", delta: "先读本体，" });
+          callback({ t: "think", delta: "确认 createJD 的集成需求。" });
+          callback({
+            t: "tool.call",
+            id: "c1",
+            name: "read_ontology",
+            reasoning: "需要真实动作清单才能定范围",
+            input: { domain: "Agents-generation" },
+          });
+          callback({
+            t: "tool.result",
+            id: "c1",
+            name: "read_ontology",
+            ok: true,
+            summary: "16 actions, 24 events",
+          });
+          callback({ t: "message", text: "范围已确认，开始设计。" });
+          callback({
+            t: "done",
+            status: "incomplete",
+            completionKind: "answer",
+            reachedTerminal: false,
+            tokensUsed: 100,
+            turns: 2,
+          });
+          return vi.fn();
+        },
+      ),
+      abortRun: vi.fn(() => true),
+    } as unknown as OntoCodeFactoryRunRuntime;
+    const worker = new OntoCodeHarnessWorkerAdapter({
+      tenantId,
+      factory: fakeFactory({
+        runBuild: vi.fn((input) => runFactoryBuild(input, runtime)),
+      }),
+    });
+    await worker.runNext();
+
+    const emitted = getDb()
+      .select({
+        type: ontocodeSessionEvents.type,
+        payloadJson: ontocodeSessionEvents.payloadJson,
+        visibility: ontocodeSessionEvents.visibility,
+      })
+      .from(ontocodeSessionEvents)
+      .where(
+        and(
+          eq(ontocodeSessionEvents.tenantId, tenantId),
+          eq(ontocodeSessionEvents.harnessJobId, fixture.job.id),
+        ),
+      )
+      .all();
+    const byType = new Map(emitted.map((row) => [row.type, row]));
+
+    // Reasoning deltas are coalesced into one frame per burst — not one row
+    // per token, and not discarded.
+    const thinking = byType.get("harness.build.thinking");
+    expect(thinking).toBeTruthy();
+    expect(JSON.parse(thinking!.payloadJson).text).toBe(
+      "先读本体，确认 createJD 的集成需求。",
+    );
+
+    // The tool call carries the brain's own stated reason. That sentence is
+    // the single most useful line in the trace.
+    const call = byType.get("harness.build.tool_call");
+    expect(call).toBeTruthy();
+    expect(JSON.parse(call!.payloadJson)).toMatchObject({
+      tool: "read_ontology",
+      reasoning: "需要真实动作清单才能定范围",
+    });
+
+    // Every result is recorded, not only readiness-bearing ones.
+    expect(JSON.parse(byType.get("harness.build.tool_result")!.payloadJson))
+      .toMatchObject({ tool: "read_ontology", ok: true });
+
+    // Intermediate narration used to be captured only as the final message.
+    expect(JSON.parse(byType.get("harness.build.narration")!.payloadJson).text)
+      .toBe("范围已确认，开始设计。");
+
+    // High-volume frames land as `debug` so the default「只看关键」log stays
+    // readable; the reasoning panel and「显示全部」read them via the floor.
+    expect(thinking!.visibility).toBe("debug");
+  });
+
   it("treats a legacy Factory answer as waiting input, never as a Build delivery", async () => {
     const fixture = makeQueuedJob({ kind: "build" });
     const finalQuestion =

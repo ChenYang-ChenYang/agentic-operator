@@ -53,10 +53,33 @@ export function eventLabel(type: string): string {
       plan: "分析 · 读取结构",
       observation: "分析 · 探针观察",
       synthesis: "分析 · 归纳结论",
+      interpret_started: "分析 · 开始解释（调模型）",
+      interpret_completed: "分析 · 解释完成",
     };
     return phases[phase] ?? `分析 · ${phase}`;
   }
-  if (/^harness\.[a-z_]+\.stage$/.test(type)) return "阶段进展";
+  // #HARNESS-TELEMETRY —— 大脑真实回合的帧。以前这些事件根本没被桥接过来，
+  // 「推理」页只能显示阶段标记，看上去像什么都没发生。
+  const step = type.match(/^harness\.[a-z_]+\.([a-z_]+)$/)?.[1];
+  const steps: Record<string, string> = {
+    stage: "阶段进展",
+    thinking: "思考",
+    tool_call: "调用工具",
+    tool_progress: "工具执行中",
+    tool_result: "工具结果",
+    plan: "制定计划",
+    validation: "校验",
+    ontology_read: "读取 Ontology",
+    narration: "说明",
+    brain_error: "出错",
+    telemetry_truncated: "明细记录已达上限",
+    agent_created: "生成 Agent",
+    readiness: "就绪度评估",
+    test_cases: "测试用例",
+    sandbox: "沙箱执行",
+    clarification: "需要你决定",
+  };
+  if (step && steps[step]) return steps[step]!;
   return type;
 }
 
@@ -91,6 +114,17 @@ function eventDetail(event: OntoCodeSessionEvent): string {
     if (typeof value === "string" && value.trim()) bits.push(`${label}${value}`);
     else if (typeof value === "number") bits.push(`${label}${value}`);
   };
+  // 工具帧：工具名 + 大脑自陈的调用理由/结果摘要，这是整条轨迹里最有用的一行。
+  if (typeof p?.tool === "string") {
+    bits.push(p.tool);
+    if (p.ok === false) bits.push("失败");
+    push("", p.reasoning);
+    push("", p.note);
+  }
+  if (typeof p?.text === "string" && p.text.trim()) {
+    const text = p.text.trim().replace(/\s+/g, " ");
+    bits.push(text.length > 160 ? `${text.slice(0, 160)}…` : text);
+  }
   push("", p?.stage);
   push("", p?.summary);
   push("", p?.message);
@@ -224,9 +258,12 @@ const STATUS_TEXT: Record<string, string> = {
   retry_scheduled: "待重试",
 };
 
+const MAX_FLOW_STEPS = 60;
+
 /**
- * 简化的推理流程：每个 Harness 作业是一个节点，节点内是它真实走过的步骤
- * （来自阶段事件），按时间纵向连成一条链。不编造中间步骤。
+ * 推理流程：每个 Harness 作业是一个节点，节点内是它真实走过的步骤，按时间
+ * 纵向连成一条链。不编造中间步骤，也不省略——步骤来自后端桥接过来的大脑
+ * 事件（思考burst / 工具调用与理由 / 工具结果 / 校验 / 出错）。
  */
 export function ReasoningFlowView(props: ReasoningFlowViewProps) {
   const stepsByJob = useMemo(() => {
@@ -276,14 +313,16 @@ export function ReasoningFlowView(props: ReasoningFlowViewProps) {
               </div>
               {steps.length > 0 ? (
                 <div className={styles.flowSteps}>
-                  {steps.slice(0, 8).map((s, i) => (
+                  {/* 现在这里是大脑真实的回合流（思考 / 调工具 / 结果），
+                      不再只有阶段标记，所以 8 步的旧上限会把整条轨迹截没。 */}
+                  {steps.slice(0, MAX_FLOW_STEPS).map((s, i) => (
                     <div key={i} className={styles.flowStep}>
                       {s}
                     </div>
                   ))}
-                  {steps.length > 8 ? (
+                  {steps.length > MAX_FLOW_STEPS ? (
                     <div className={styles.flowStep}>
-                      … 另有 {steps.length - 8} 步
+                      … 另有 {steps.length - MAX_FLOW_STEPS} 步
                     </div>
                   ) : null}
                 </div>

@@ -491,9 +491,14 @@ export async function ontocodeRoutes(app: FastifyInstance): Promise<void> {
     "/ontocode/sessions/:sessionId/events",
     async (req, reply) => {
       const query = ListOntoCodeEventsQuerySchema.parse(req.query);
+      // A Session's own harness trace (reasoning bursts, tool calls, their
+      // results) is workspace content, not audit material: it is the thing the
+      // FDE is here to read. Gating it on the admin-only `audit.read` meant the
+      // workbench's reasoning panel was empty for everyone below admin. `audit`
+      // visibility stays admin-gated — that tier does carry audit records.
       const ctx = actorContext(
         req,
-        query.visibility === "user" ? "workflows.read" : "audit.read",
+        query.visibility === "audit" ? "audit.read" : "workflows.read",
       );
       reply.header("Cache-Control", "no-store");
       return reply.ok(

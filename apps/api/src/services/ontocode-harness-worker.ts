@@ -171,7 +171,13 @@ export interface OntoCodeFactoryBuildInput {
   interactionPolicy: "strict" | "autopilot";
   directive: FactoryGenerationDirective;
   signal: AbortSignal;
-  onProgress(type: string, payload: Record<string, unknown>): Promise<void>;
+  /** `visibility` lets the high-volume reasoning/tool telemetry land as `debug`
+   *  so the默认「只看关键」视图不被淹没, while「显示全部」still shows every turn. */
+  onProgress(
+    type: string,
+    payload: Record<string, unknown>,
+    visibility?: "user" | "debug" | "audit",
+  ): Promise<void>;
 }
 
 export interface OntoCodeFactoryBuildResult {
@@ -3860,13 +3866,88 @@ export async function runFactoryBuild(
     const queueProgress = (
       type: string,
       payload: Record<string, unknown>,
+      visibility?: "user" | "debug" | "audit",
     ): void => {
       progressTail = progressTail
-        .then(() => input.onProgress(type, payload))
+        .then(() => input.onProgress(type, payload, visibility))
         .catch((error) => {
           runtime.abortRun(runId, input.tenantId);
           fail(error);
         });
+    };
+
+    // ── #HARNESS-TELEMETRY ───────────────────────────────────────────────────
+    // The Factory brain streams a real harness loop: reasoning tokens, tool
+    // calls with their stated reason, heartbeats, tool results. Until now this
+    // bridge forwarded only stage markers, agent.created, sandbox and the rare
+    // readiness-bearing tool.result — so an OntoCode Session recorded a handful
+    // of coarse phase events and the reasoning panel had nothing to show. The
+    // work was happening; the evidence was being thrown away at this boundary.
+    //
+    // Two constraints shape what follows:
+    //  · `think` arrives per token. Persisting each delta as a row would be
+    //    absurd, so deltas are buffered and flushed at a real boundary (a tool
+    //    call, a result, or a size threshold) — one row per reasoning burst.
+    //  · Everything is bounded, and a hit bound SAYS SO. A silently truncated
+    //    trace reads as "the brain did this little", which is a lie about the
+    //    run. When the budget runs out we emit one explicit notice and stop.
+    const TELEMETRY_BUDGET = 400;
+    const THINK_FLUSH_CHARS = 1_200;
+    let telemetryEmitted = 0;
+    let telemetryExhausted = false;
+    let thinkBuffer = "";
+    let thinkTurns = 0;
+
+    /** Bounded emit. Returns false once the budget is spent, having said so once. */
+    const emitTelemetry = (
+      type: string,
+      payload: Record<string, unknown>,
+    ): boolean => {
+      if (telemetryExhausted) return false;
+      if (telemetryEmitted >= TELEMETRY_BUDGET) {
+        telemetryExhausted = true;
+        queueProgress(
+          `harness.${input.operation}.telemetry_truncated`,
+          {
+            factoryRunId: runId,
+            emitted: telemetryEmitted,
+            note: "本次运行的推理/工具明细超过单次记录上限，后续步骤不再逐条记录；作业结论与产物不受影响。",
+          },
+          "user",
+        );
+        return false;
+      }
+      telemetryEmitted += 1;
+      queueProgress(type, payload, "debug");
+      return true;
+    };
+
+    /** Flush the buffered reasoning burst as one frame. */
+    const flushThinking = (): void => {
+      const text = thinkBuffer.trim();
+      thinkBuffer = "";
+      if (!text) return;
+      thinkTurns += 1;
+      emitTelemetry(`harness.${input.operation}.thinking`, {
+        factoryRunId: runId,
+        turn: thinkTurns,
+        text: text.slice(0, 4_000),
+        truncated: text.length > 4_000,
+      });
+    };
+
+    /** Compact a tool argument blob to something a human can read in a log row.
+     *  Never the full payload: a resume base64 would bury the trace. */
+    const compactToolInput = (value: unknown): string | null => {
+      if (value == null) return null;
+      let text: string;
+      try {
+        text = typeof value === "string" ? value : JSON.stringify(value);
+      } catch {
+        return null;
+      }
+      if (!text) return null;
+      return text.length > 600 ? `${text.slice(0, 600)}…（已截断）` : text;
     };
     const onAbort = (): void => {
       runtime.abortRun(runId, input.tenantId);
@@ -3889,7 +3970,69 @@ export async function runFactoryBuild(
       runId,
       (event) => {
         if (settled || waitingForUser || event.t === "run.started") return;
+        // #HARNESS-TELEMETRY — the real loop, bridged. Reasoning first: buffer
+        // the token stream and let a tool boundary decide where a burst ends.
+        if (event.t === "think") {
+          thinkBuffer += event.delta;
+          if (thinkBuffer.length >= THINK_FLUSH_CHARS) flushThinking();
+          return;
+        }
+        if (event.t === "tool.call") {
+          flushThinking();
+          emitTelemetry(`harness.${input.operation}.tool_call`, {
+            factoryRunId: runId,
+            callId: event.id,
+            tool: event.name,
+            // The brain states WHY before it calls. That sentence is the most
+            // useful thing in the whole trace — it is never dropped.
+            reasoning: event.reasoning?.slice(0, 1_000) ?? null,
+            input: compactToolInput(event.input),
+            forAgent: event.forAgent ?? null,
+            role: event.role ?? null,
+          });
+          return;
+        }
+        if (event.t === "tool.progress") {
+          // Heartbeats fire every ~15s; only the escalation notes carry news.
+          // The rest would be pure noise in a persisted log.
+          if (!event.note) return;
+          emitTelemetry(`harness.${input.operation}.tool_progress`, {
+            factoryRunId: runId,
+            callId: event.id,
+            tool: event.name,
+            elapsedS: event.elapsedS,
+            note: event.note,
+          });
+          return;
+        }
+        if (event.t === "plan") {
+          emitTelemetry(`harness.${input.operation}.plan`, {
+            factoryRunId: runId,
+            plan: event.plan,
+          });
+          return;
+        }
+        if (event.t === "validation") {
+          emitTelemetry(`harness.${input.operation}.validation`, {
+            factoryRunId: runId,
+            ok: event.ok,
+            issues: event.issues.slice(0, 20),
+            issueCount: event.issues.length,
+          });
+          return;
+        }
+        if (event.t === "catalog") {
+          emitTelemetry(`harness.${input.operation}.ontology_read`, {
+            factoryRunId: runId,
+            domain: event.domain,
+            actions: event.actions,
+            events: event.events,
+            agentActions: event.agentActions,
+          });
+          return;
+        }
         if (event.t === "stage") {
+          flushThinking();
           queueProgress(`harness.${input.operation}.stage`, {
             factoryRunId: runId,
             stage: event.stage,
@@ -3935,6 +4078,18 @@ export async function runFactoryBuild(
           return;
         }
         if (event.t === "tool.result") {
+          flushThinking();
+          // Every result is recorded, not just the readiness-bearing ones. The
+          // previous behaviour meant a run could make forty tool calls and
+          // leave zero trace of thirty-nine of them.
+          emitTelemetry(`harness.${input.operation}.tool_result`, {
+            factoryRunId: runId,
+            callId: event.id,
+            tool: event.name,
+            ok: event.ok,
+            summary: event.summary?.slice(0, 1_000) ?? null,
+            forAgent: event.forAgent ?? null,
+          });
           const nextReadiness = compactFactoryReadiness(event);
           if (nextReadiness) {
             readiness = nextReadiness;
@@ -3946,6 +4101,7 @@ export async function runFactoryBuild(
           return;
         }
         if (event.t === "clarify" && event.awaitingAnswer) {
+          flushThinking();
           waitingForUser = true;
           const options = (event.options ?? []).map((option) => ({
             ...option,
@@ -3984,15 +4140,33 @@ export async function runFactoryBuild(
           return;
         }
         if (event.t === "error") {
+          flushThinking();
           lastError = event.message.slice(0, 2_000);
+          // A brain-level error used to be captured for the failure message and
+          // otherwise vanish, so an FDE watching a run saw nothing go wrong
+          // until the whole job ended.
+          emitTelemetry(`harness.${input.operation}.brain_error`, {
+            factoryRunId: runId,
+            message: lastError,
+          });
           return;
         }
         if (event.t === "message") {
+          flushThinking();
           const text = event.text.trim();
-          if (text) lastMessage = text.slice(0, 8_000);
+          if (text) {
+            lastMessage = text.slice(0, 8_000);
+            // The brain's own narration. Only the final one used to survive,
+            // as the job message; every intermediate explanation was dropped.
+            emitTelemetry(`harness.${input.operation}.narration`, {
+              factoryRunId: runId,
+              text: lastMessage,
+            });
+          }
           return;
         }
         if (event.t !== "done") return;
+        flushThinking();
 
         void progressTail
           .then(async () => {
@@ -4733,7 +4907,8 @@ async function executeFactoryIteration(
         : "strict",
     directive,
     signal: context.signal,
-    onProgress: (type, payload) => context.progress(type, payload),
+    onProgress: (type, payload, visibility) =>
+          context.progress(type, payload, visibility),
   });
   return {
     outcome: result.outcome,
@@ -4782,7 +4957,8 @@ export function createDefaultOntoCodeHarnessExecutors(
       });
       const receipt = await analyzeOntology(ontology, {
         ontologyHash,
-        onProgress: (type, payload) => context.progress(type, payload),
+        onProgress: (type, payload, visibility) =>
+          context.progress(type, payload, visibility),
         // Live rule bindings, when the bound source can serve them. Absent is
         // reported as "could not check", never as "there are no rules".
         ...(factory.fetchActionRules
@@ -5405,7 +5581,8 @@ export function createDefaultOntoCodeHarnessExecutors(
             : "strict",
         directive,
         signal: context.signal,
-        onProgress: (type, payload) => context.progress(type, payload),
+        onProgress: (type, payload, visibility) =>
+          context.progress(type, payload, visibility),
       });
       return {
         outcome: result.outcome,
