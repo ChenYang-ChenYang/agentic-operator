@@ -32,7 +32,57 @@ export interface ErrorPolicyOutcome {
   emitPayload?: Record<string, unknown>;
   /** Suppress the runtime's historical implicit/default terminal emit. */
   suppressEmit?: boolean;
+  /** #G14 —— 补偿写。生产里反复出现的不变量是「把伙伴系统的状态行标成终态失败（尽力而为），
+   *  再把原错误原样抛出去」。没有它，那一行永远停在 pending，上游会反复重推一份永远处理不了
+   *  的文档。补偿自身失败被吞掉，原错误不变——这正是 markResumeUploadFailed 的 catch 分支语义。 */
+  compensate?: PlanCompensation;
+  /** #G17 —— 依赖健康归因。只挂在【命中的具体规则】上，绝不挂在兜底 default 上：
+   *  "供应商的 401/429/5xx 记到供应商头上，我们自己发的 400 不记"——这个不对称本身就是那条保证。 */
+  dependencySignal?: DependencySignal;
 }
+
+/** #G14 —— 终态前的尽力补偿写。 */
+export interface PlanCompensation {
+  tool: string;
+  toolArguments?: Record<string, PlanToolArgument>;
+  /** 恒为真：补偿失败绝不能掩盖原错误。保留字段是为了让意图在 spec 里可读。 */
+  bestEffort?: boolean;
+}
+
+/** #G17 —— 一次外部依赖故障的归因事实。 */
+export type DependencyReason =
+  | "quota"
+  | "auth"
+  | "rate_limit"
+  | "empty"
+  | "server"
+  | "network";
+export interface DependencySignal {
+  provider: string;
+  op: string;
+  reason: DependencyReason;
+  /** 真正把信号送出去的工具。没有绑定真实工具时不渲染投递调用——
+   *  写进一个没有读者的地方，只是让断言变绿，没人会被告警。 */
+  viaTool?: string;
+}
+
+/** #G15 —— 成功路径上的健康判定。
+ *  错误策略只在 catch 里跑，所以设计端写的「200 但正文为空 → park」这类规则从来没被执行过：
+ *  一个 2xx 空响应、一个供应商阶段降级，全都当成功流过去了。 */
+export interface HealthSignalRule {
+  when: string;
+  signal: string;
+  detail?: string;
+  /** 致命信号走既有的错误策略阶梯，不引入第二套处置词汇。 */
+  fatal?: boolean;
+}
+
+/** #G23 —— foreach 集合为空时的显式分支。
+ *  没有它，零个可匹配项会跑零轮循环，然后落到无条件的成功 emit——
+ *  一个从没被检查过的候选人，和"全部检查通过"在下游看来一模一样。 */
+export type PlanForeachEmpty =
+  | { emitEvent: string; emitPayload?: Record<string, unknown> }
+  | { suppressEmit: true; reason: string };
 export type ErrorPolicyRule =
   | ({ when: string; do: ErrorPolicyAction } & ErrorPolicyOutcome)
   | ({ default: ErrorPolicyAction } & ErrorPolicyOutcome);
@@ -53,12 +103,38 @@ export type PlanJsonValue =
  * cannot guess from a tool parameter name. */
 export type PlanToolArgument =
   | { from: string; required?: boolean }
+  /** #G13 —— 有序合取：取第一个非空候选。
+   *  真实场景：去重键先取事件自带的 etag，事件没带（手工上传就是这样）时改用下载步骤
+   *  已经算出来的内容哈希。以前这是【无法表达】的——只能绑一个可空字段，一旦为空就没有
+   *  去重键，重投递直接产生重复行。
+   *  语义差异是刻意的：单 `from` 只把 undefined 当未命中，`fromFirst` 把 null 也当未命中，
+   *  因为 null 正是"事件带了这个字段但它是空的"，而那恰恰是要走回退的情形。 */
+  | { fromFirst: string[]; required?: boolean }
   | { const: PlanJsonValue };
+
+/** #G12 —— 一个结果字段的取法。
+ *
+ *  裸字符串是必需字段：路径取不到就终态失败。这对必需字段是对的，对可选字段是灾难——
+ *  供应商 200 但没带某个可选字段（niceToHave / qrcode_url / 说明性 warning），整条本来
+ *  成功的路径会被杀掉；而一个"可空分数"因为取不到而无法表达，agent 自己的
+ *  MISSING→PASSED 判定行就永远触发不了。
+ *  对象形态补上：可选、默认值、按序回退到别的路径或常量。 */
+export type PlanResultField =
+  | string
+  | {
+      from: string;
+      /** false：路径取不到就跳过这个字段，而不是终止。 */
+      required?: boolean;
+      default?: PlanJsonValue;
+      /** 按序回退路径，第一个非空者胜出。 */
+      fallbackFrom?: string[];
+      fallbackConst?: PlanJsonValue;
+    };
 
 /** Deterministic projection of a tool's raw return value into named plan data.
  * Paths are rooted at `result` (for example `result.candidate.id`). */
 export interface PlanResultMap {
-  fields: Record<string, string>;
+  fields: Record<string, PlanResultField>;
   /** Preserve the complete tool return under the reserved `_raw` field. */
   includeRaw?: boolean;
 }
@@ -102,6 +178,10 @@ export interface PlanStep {
   /** failure policy: "terminal" fails the run, "soft" logs + continues with defaultResult,
    *  "park" retries (Inngest). Default "terminal". */
   onError?: "terminal" | "soft" | "park";
+  /** #G15 —— 对【成功】的映射结果求值的健康判定。命中 fatal 的信号走 errorPolicy 阶梯。 */
+  healthSignals?: HealthSignalRule[];
+  /** #G23 —— foreach 集合为空时走哪条路。零项不能落到无条件的成功 emit。 */
+  onEmpty?: PlanForeachEmpty;
   /** Ordered first-match error classifier. When present it supersedes the
    * legacy onError label and is projected to manifest `on_error[]`. */
   errorPolicy?: ErrorPolicyRule[];
@@ -258,6 +338,9 @@ export interface GeneratedToolExecutionPolicy {
     | "requires_attempt_grant";
 }
 
+/** #G20 —— 开关变量名的合法形态。渲染期校验，避免把任意字符串拼进生成代码。 */
+export const KILL_SWITCH_ENV_RE = /^[A-Z][A-Z0-9_]{1,63}$/;
+
 export interface GeneratedAgentSpec {
   /** stable selection id = ontology action name (PK) */
   key: string;
@@ -275,6 +358,10 @@ export interface GeneratedAgentSpec {
   emit: string[];
   /** registry tool names — the generation-time scoped toolbox */
   tools: string[];
+  /** #G20 —— 本 agent 的开关环境变量名。设为 "0"/"false" 时 handler 直接返回 skipped，
+   *  不分配 run、不调工具、不发事件。以前本体里「这个能力先关着」这类事实只能落到某个
+   *  logic 步骤的 prompt 散文里，等于没有开关。 */
+  killSwitchEnv?: string;
   /** Exact side-effect metadata captured from the selected registry/profile.
    * Every generated tool must have an entry before deployment. */
   toolSideEffects?: Record<string, GeneratedToolSideEffect>;
@@ -388,8 +475,19 @@ export interface IoField {
   description?: string;
   /** false means the field is validated only when present. */
   required?: boolean;
-  /** the DataObject.property this field maps to (e.g. "Candidate.candidate_id"). */
+  /** ONTOLOGY provenance —— 这个字段对应哪个 DataObject 属性（如 "Candidate.candidate_id"）。
+   *  它不是运行时取值路径。 */
   source?: string;
+  /** #G3 EXECUTION provenance —— 运行时从哪里取这个值：
+   *  input.x | results.<stepId>.<alias> | lastResult.x | decision.x。 */
+  from?: string;
+  /** #G3 这个输出字段由哪个已声明事件承载。多 emit agent 上必须写，
+   *  否则六个真实 spec 那样的「所有事件字段并成一张平表」会让每个事件都要求别的事件的字段。 */
+  event?: string;
+  /** #G7 在 event.data 上按序探测的信封位置，优先级从高到低。
+   *  真实信封把业务字段放在 payload 之下、锚点放在同级 entity_id；只有 source 一种来源时，
+   *  required 锚点在每个真实事件上都解析成 undefined。 */
+  eventPaths?: string[];
 }
 
 export interface ValidationReport {

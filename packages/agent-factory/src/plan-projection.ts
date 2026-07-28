@@ -5,6 +5,7 @@
 // the deployer's heavy deps; mapToManifest (apps/api) calls it.
 
 import type {
+  DependencyReason,
   ErrorPolicyAction,
   ErrorPolicyRule,
   GeneratedAgentSpec,
@@ -173,6 +174,39 @@ function parseErrorPolicy(raw: unknown): ErrorPolicyRule[] | undefined {
       ...(typeof (row.suppressEmit ?? row.suppress_emit) === "boolean"
         ? { suppressEmit: Boolean(row.suppressEmit ?? row.suppress_emit) }
         : {}),
+      // #G14 —— 终态前的补偿写。半残的描述符不收：宁可 undefined 让校验报出来，
+      // 也不要半填充地存进去，那会让「已声明」和「会执行」悄悄脱节。
+      ...(() => {
+        const raw = row.compensate;
+        if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+        const c = raw as Record<string, unknown>;
+        if (typeof c.tool !== "string" || !c.tool.trim()) return {};
+        const args = c.toolArguments ?? c.tool_arguments;
+        return {
+          compensate: {
+            tool: c.tool.trim(),
+            ...(args && typeof args === "object" && !Array.isArray(args)
+              ? { toolArguments: args as Record<string, PlanToolArgument> }
+              : {}),
+            bestEffort: true,
+          },
+        };
+      })(),
+      // #G17 —— 依赖归因。只有具体规则能带；default 上的会被 validatePlan 判错。
+      ...(() => {
+        const raw = row.dependencySignal ?? row.dependency_signal;
+        if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+        const d = raw as Record<string, unknown>;
+        if (typeof d.provider !== "string" || typeof d.op !== "string" || typeof d.reason !== "string") return {};
+        return {
+          dependencySignal: {
+            provider: d.provider,
+            op: d.op,
+            reason: d.reason as DependencyReason,
+            ...(typeof (d.viaTool ?? d.via_tool) === "string" ? { viaTool: String(d.viaTool ?? d.via_tool) } : {}),
+          },
+        };
+      })(),
     };
     if (typeof row.when === "string" && row.when.trim()) {
       rules.push({ when: row.when.trim(), do: outcome, ...shared });
@@ -212,9 +246,19 @@ export function parsePlan(raw: unknown): PlanStep[] {
       stepId,
       kind,
       tool: o.tool != null ? String(o.tool) : undefined,
+      // #G13 —— manifest 侧写作 from_first；读回来统一成 camelCase，否则设计端能写、
+      // 投影能存，运行时却看不见——比没有这个字段更糟。
       toolArguments:
         rawToolArguments && typeof rawToolArguments === "object" && !Array.isArray(rawToolArguments)
-          ? (rawToolArguments as Record<string, PlanToolArgument>)
+          ? (Object.fromEntries(
+              Object.entries(rawToolArguments as Record<string, unknown>).map(([name, raw]) => {
+                if (!raw || typeof raw !== "object" || Array.isArray(raw)) return [name, raw];
+                const v = raw as Record<string, unknown>;
+                if (!("from_first" in v)) return [name, v];
+                const { from_first: fromFirst, ...rest } = v;
+                return [name, { ...rest, fromFirst }];
+              }),
+            ) as Record<string, PlanToolArgument>)
           : undefined,
       resultMap: (() => {
         if (!rawResultMap || typeof rawResultMap !== "object" || Array.isArray(rawResultMap)) return undefined;
@@ -222,11 +266,62 @@ export function parsePlan(raw: unknown): PlanStep[] {
         const fields = value.fields;
         if (!fields || typeof fields !== "object" || Array.isArray(fields)) return undefined;
         return {
-          fields: fields as Record<string, string>,
+          // #G12 —— 同理：对象形态字段的 snake_case 键读回 camelCase。
+          fields: Object.fromEntries(
+            Object.entries(fields as Record<string, unknown>).map(([field, raw]) => {
+              if (typeof raw === "string" || !raw || typeof raw !== "object" || Array.isArray(raw)) return [field, raw];
+              const v = raw as Record<string, unknown>;
+              const { fallback_from: fallbackFrom, fallback_const: fallbackConst, ...rest } = v;
+              return [field, {
+                ...rest,
+                ...(fallbackFrom !== undefined ? { fallbackFrom } : {}),
+                ...(fallbackConst !== undefined ? { fallbackConst } : {}),
+              }];
+            }),
+          ) as PlanResultMap["fields"],
           ...(typeof (value.includeRaw ?? value.include_raw) === "boolean"
             ? { includeRaw: Boolean(value.includeRaw ?? value.include_raw) }
             : {}),
         } satisfies PlanResultMap;
+      })(),
+      // #G15 —— 对成功结果求值的健康判定。
+      healthSignals: (() => {
+        const raw = o.healthSignals ?? o.health_signals;
+        if (!Array.isArray(raw)) return undefined;
+        const rules = raw.flatMap((entry) => {
+          if (!entry || typeof entry !== "object" || Array.isArray(entry)) return [];
+          const r = entry as Record<string, unknown>;
+          if (typeof r.when !== "string" || !r.when.trim()) return [];
+          if (typeof r.signal !== "string" || !r.signal.trim()) return [];
+          return [{
+            when: r.when.trim(),
+            signal: r.signal.trim(),
+            ...(typeof r.detail === "string" ? { detail: r.detail } : {}),
+            ...(typeof r.fatal === "boolean" ? { fatal: r.fatal } : {}),
+          }];
+        });
+        return rules.length ? rules : undefined;
+      })(),
+      // #G23 —— 集合为空时的显式分支。
+      onEmpty: (() => {
+        const raw = o.onEmpty ?? o.on_empty;
+        if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+        const e = raw as Record<string, unknown>;
+        const emitEvent = e.emitEvent ?? e.emit_event;
+        if (typeof emitEvent === "string" && emitEvent.trim()) {
+          const payload = e.emitPayload ?? e.emit_payload;
+          return {
+            emitEvent: emitEvent.trim(),
+            ...(payload && typeof payload === "object" && !Array.isArray(payload)
+              ? { emitPayload: payload as Record<string, unknown> }
+              : {}),
+          };
+        }
+        const suppress = e.suppressEmit ?? e.suppress_emit;
+        if (suppress === true && typeof e.reason === "string" && e.reason.trim()) {
+          return { suppressEmit: true as const, reason: e.reason.trim() };
+        }
+        return undefined;
       })(),
       condition: rawCondition ? normalizeConditionReferences(rawCondition, priorStepIds) : undefined,
       // #G2 — the two declared events this condition routes to.
@@ -317,15 +412,26 @@ export function validatePlan(
         }
         const value = template as unknown as Record<string, unknown>;
         const hasFrom = Object.prototype.hasOwnProperty.call(value, "from");
+        const hasFromFirst = Object.prototype.hasOwnProperty.call(value, "fromFirst");
         const hasConst = Object.prototype.hasOwnProperty.call(value, "const");
-        if (hasFrom === hasConst || Object.keys(value).some((key) => !["from", "required", "const"].includes(key))) {
-          errors.push(`${at}: toolArguments.${argument} must choose exactly one of {from} or {const}`);
+        if ([hasFrom, hasFromFirst, hasConst].filter(Boolean).length !== 1
+          || Object.keys(value).some((key) => !["from", "fromFirst", "required", "const"].includes(key))) {
+          errors.push(`${at}: toolArguments.${argument} must choose exactly one of {from}, {fromFirst} or {const}`);
           continue;
         }
-        if (hasFrom) {
-          const path = typeof value.from === "string" ? value.from : "";
-          if (!VALUE_PATH_RE.test(path) || !/^(event(?:\.|$)|input(?:\.|$)|lastResult(?:\.|$)|results(?:\.|$)|locals(?:\.|$))/.test(path)) {
-            errors.push(`${at}: toolArguments.${argument}.from must be a safe path rooted at event/input/lastResult/results/locals`);
+        if (hasFrom || hasFromFirst) {
+          // #G13 —— 每条候选路径都过同一套根/形状检查。
+          const candidates = hasFrom
+            ? [typeof value.from === "string" ? value.from : ""]
+            : Array.isArray(value.fromFirst) ? value.fromFirst : [];
+          if (hasFromFirst && candidates.length < 2) {
+            errors.push(`${at}: toolArguments.${argument}.fromFirst needs at least two candidates — with one it is just {from}`);
+          }
+          for (const candidate of candidates) {
+            const path = typeof candidate === "string" ? candidate : "";
+            if (!VALUE_PATH_RE.test(path) || !/^(event(?:\.|$)|input(?:\.|$)|lastResult(?:\.|$)|results(?:\.|$)|locals(?:\.|$))/.test(path)) {
+              errors.push(`${at}: toolArguments.${argument} must be a safe path rooted at event/input/lastResult/results/locals`);
+            }
           }
           if (value.required !== undefined && typeof value.required !== "boolean") {
             errors.push(`${at}: toolArguments.${argument}.required must be boolean`);
@@ -344,8 +450,34 @@ export function validatePlan(
           if (!/^[A-Za-z_$][A-Za-z0-9_$-]*$/.test(field) || ["__proto__", "prototype", "constructor", "_raw"].includes(field)) {
             errors.push(`${at}: resultMap field "${field}" is not a safe named field`);
           }
-          if (typeof path !== "string" || !VALUE_PATH_RE.test(path) || !/^result(?:\.|$)/.test(path)) {
-            errors.push(`${at}: resultMap.${field} must be a safe path rooted at result`);
+          // #G12 —— 裸路径（必需）或对象形态（可选/默认值/回退）。
+          if (typeof path === "string") {
+            if (!VALUE_PATH_RE.test(path) || !/^result(?:\.|$)/.test(path)) {
+              errors.push(`${at}: resultMap.${field} must be a safe path rooted at result`);
+            }
+          } else if (!path || typeof path !== "object" || Array.isArray(path)) {
+            errors.push(`${at}: resultMap.${field} must be a path string or a {from,...} descriptor`);
+          } else {
+            const descriptor = path as unknown as Record<string, unknown>;
+            const allowed = ["from", "required", "default", "fallbackFrom", "fallbackConst"];
+            if (Object.keys(descriptor).some((key) => !allowed.includes(key))) {
+              errors.push(`${at}: resultMap.${field} has an unknown key (allowed: ${allowed.join(", ")})`);
+            }
+            const paths = [descriptor.from, ...(Array.isArray(descriptor.fallbackFrom) ? descriptor.fallbackFrom : [])];
+            for (const candidate of paths) {
+              const p = typeof candidate === "string" ? candidate : "";
+              if (!VALUE_PATH_RE.test(p) || !/^result(?:\.|$)/.test(p)) {
+                errors.push(`${at}: resultMap.${field} must be a safe path rooted at result`);
+              }
+            }
+            if (descriptor.required !== undefined && typeof descriptor.required !== "boolean") {
+              errors.push(`${at}: resultMap.${field}.required must be boolean`);
+            }
+            for (const key of ["default", "fallbackConst"] as const) {
+              if (descriptor[key] !== undefined && !isSafePlanJson(descriptor[key])) {
+                errors.push(`${at}: resultMap.${field}.${key} must be safe finite JSON`);
+              }
+            }
           }
         }
       }
@@ -520,14 +652,44 @@ function actionForStep(step: PlanStep, order: number): ManifestAction {
       name,
       "from" in value
         ? { from: value.from, ...(value.required === false ? { required: false } : {}) }
-        : { const: value.const },
+        // #G13 —— 有序合取原样往返，manifest 侧用 snake_case。
+        : "fromFirst" in value
+          ? { from_first: value.fromFirst, ...(value.required === false ? { required: false } : {}) }
+          : { const: value.const },
     ]));
   }
   if (step.resultMap) {
     a.result_map = {
-      fields: step.resultMap.fields,
+      // #G12 —— 对象形态字段按 snake_case 往返；裸路径保持原样，旧 plan 逐字节不变。
+      fields: Object.fromEntries(Object.entries(step.resultMap.fields).map(([field, value]) => [
+        field,
+        typeof value === "string"
+          ? value
+          : {
+              from: value.from,
+              ...(value.required === false ? { required: false } : {}),
+              ...(value.default !== undefined ? { default: value.default } : {}),
+              ...(value.fallbackFrom?.length ? { fallback_from: value.fallbackFrom } : {}),
+              ...(value.fallbackConst !== undefined ? { fallback_const: value.fallbackConst } : {}),
+            },
+      ])),
       ...(step.resultMap.includeRaw ? { include_raw: true } : {}),
     };
+  }
+  // #G15/#G23 —— 往返。真正执行它们的运行时补丁另行落地；在那之前 projectPlanToActions
+  // 会对声明了这些保证的 spec 直接失败（见下），而不是投出一个悄悄丢掉保证的 manifest。
+  if (step.healthSignals?.length) {
+    a.health_signals = step.healthSignals.map((r) => ({
+      when: r.when,
+      signal: r.signal,
+      ...(r.detail ? { detail: r.detail } : {}),
+      ...(r.fatal ? { fatal: true } : {}),
+    }));
+  }
+  if (step.onEmpty) {
+    a.on_empty = "emitEvent" in step.onEmpty
+      ? { emit_event: step.onEmpty.emitEvent, ...(step.onEmpty.emitPayload ? { emit_payload: step.onEmpty.emitPayload } : {}) }
+      : { suppress_emit: true, reason: step.onEmpty.reason };
   }
   if (step.dependsOn?.length) a.depends_on = step.dependsOn;
   if (step.idempotencyKeyFrom) a.idempotency_key_from = step.idempotencyKeyFrom;
@@ -575,8 +737,37 @@ function actionForStep(step: PlanStep, order: number): ManifestAction {
 
 /** Build the ordered manifest actions for a spec: an optional HITL manual gate, then either the
  *  projected plan steps or the legacy single-logic action (back-compat, no plan). */
+/** #G14/#G15 —— 声明了但声明式运行时还执行不了的保证。
+ *
+ *  这些字段在评审产物（生成的 TS 模块）里是真的会执行的；但部署路径走的是 manifest，
+ *  而运行时的规则 schema 是 strict 的、失败处置又是同步的，拿不到 step/tool 句柄。
+ *  两种做法里必须选一种：投出一个悄悄丢掉保证的 manifest，或者当场失败并说清楚缺什么。
+ *  丢掉保证的那份会一路绿到生产，然后在某个真实故障上安静地不补偿——所以这里 fail closed。 */
+function unhonouredGuarantees(plan: PlanStep[] | undefined): string[] {
+  const found: string[] = [];
+  const walk = (steps: PlanStep[]): void => {
+    for (const step of steps) {
+      for (const rule of step.errorPolicy ?? []) {
+        if (rule.compensate) found.push(`${step.stepId}.errorPolicy.compensate`);
+      }
+      if (step.healthSignals?.length) found.push(`${step.stepId}.healthSignals`);
+      if (step.body?.length) walk(step.body);
+    }
+  };
+  walk(plan ?? []);
+  return found;
+}
+
 export function projectPlanToActions(spec: GeneratedAgentSpec): ManifestAction[] {
   assertGeneratedSpecExecutionOwner(spec);
+  const unhonoured = unhonouredGuarantees(spec.plan);
+  if (unhonoured.length) {
+    throw new Error(
+      `agent "${spec.slug}" declares execution guarantees the declarative runtime cannot honour yet `
+      + `(${unhonoured.join("; ")}). 需要先落地 runtime 侧：manifest 规则 schema 放开对应字段、`
+      + `失败处置改为可执行补偿（异步 + step/tool 句柄）、以及成功路径的求值挂点。`,
+    );
+  }
   const actions: ManifestAction[] = [];
   let order = 1;
 

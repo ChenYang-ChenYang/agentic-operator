@@ -28,13 +28,24 @@ export function assertPlanDataflowRenderable(step: PlanStep, id: string): void {
       const record = source as unknown as Record<string, unknown>;
       const hasFrom = Object.prototype.hasOwnProperty.call(record, "from");
       const hasConst = Object.prototype.hasOwnProperty.call(record, "const");
-      if (hasFrom === hasConst || Object.keys(record).some((key) => !["from", "required", "const"].includes(key))) {
-        throw new Error(`cannot render tool step "${id}": argument ${argument} must choose exactly one of from/const`);
+      // #G13 —— 三选一：from / fromFirst / const。
+      const hasFromFirst = Object.prototype.hasOwnProperty.call(record, "fromFirst");
+      const chosen = [hasFrom, hasFromFirst, hasConst].filter(Boolean).length;
+      if (chosen !== 1 || Object.keys(record).some((key) => !["from", "fromFirst", "required", "const"].includes(key))) {
+        throw new Error(`cannot render tool step "${id}": argument ${argument} must choose exactly one of from/fromFirst/const`);
       }
-      if (hasFrom) {
-        const from = typeof record.from === "string" ? record.from : "";
-        if (!SAFE_PATH_RE.test(from) || !/^(event(?:\.|$)|input(?:\.|$)|lastResult(?:\.|$)|results(?:\.|$)|locals(?:\.|$))/.test(from)) {
-          throw new Error(`cannot render tool step "${id}": argument ${argument} has an unsafe/unrooted path`);
+      if (hasFrom || hasFromFirst) {
+        const candidates = hasFrom
+          ? [typeof record.from === "string" ? record.from : ""]
+          : Array.isArray(record.fromFirst) ? record.fromFirst.map((v) => (typeof v === "string" ? v : "")) : [];
+        // 一条候选也不能放松：可选性放宽的是「取不到怎么办」，不是「能取哪里」。
+        if (hasFromFirst && candidates.length < 2) {
+          throw new Error(`cannot render tool step "${id}": argument ${argument}.fromFirst needs at least two candidates`);
+        }
+        for (const from of candidates) {
+          if (!SAFE_PATH_RE.test(from) || !/^(event(?:\.|$)|input(?:\.|$)|lastResult(?:\.|$)|results(?:\.|$)|locals(?:\.|$))/.test(from)) {
+            throw new Error(`cannot render tool step "${id}": argument ${argument} has an unsafe/unrooted path`);
+          }
         }
         if (record.required !== undefined && typeof record.required !== "boolean") throw new Error(`cannot render tool step "${id}": argument ${argument}.required must be boolean`);
       } else if (!safeJson(record.const)) {
@@ -44,9 +55,16 @@ export function assertPlanDataflowRenderable(step: PlanStep, id: string): void {
   }
   if (step.resultMap) {
     if (!Object.keys(step.resultMap.fields ?? {}).length) throw new Error(`cannot render tool step "${id}": resultMap.fields is empty`);
-    for (const [field, path] of Object.entries(step.resultMap.fields)) {
+    for (const [field, value] of Object.entries(step.resultMap.fields)) {
       if (!SAFE_NAME_RE.test(field) || UNSAFE_KEYS.has(field) || field === "_raw") throw new Error(`cannot render tool step "${id}": unsafe resultMap field "${field}"`);
-      if (!SAFE_PATH_RE.test(path) || !/^result(?:\.|$)/.test(path)) throw new Error(`cannot render tool step "${id}": resultMap.${field} has an unsafe/unrooted path`);
+      // #G12 —— 字段值可以是裸路径（必需）或对象形态（可选/默认值/回退）。
+      // 每一条候选路径都要过同一套安全检查：可选性放宽的是「取不到怎么办」，绝不放宽「能取哪里」。
+      const paths = typeof value === "string"
+        ? [value]
+        : [value.from, ...(value.fallbackFrom ?? [])];
+      for (const path of paths) {
+        if (!SAFE_PATH_RE.test(path) || !/^result(?:\.|$)/.test(path)) throw new Error(`cannot render tool step "${id}": resultMap.${field} has an unsafe/unrooted path`);
+      }
     }
   }
 }
@@ -55,8 +73,19 @@ export function assertPlanDataflowRenderable(step: PlanStep, id: string): void {
  * deliberately consumes only authored templates; it never derives arguments
  * from a tool name or merges the carry when toolArguments is present. */
 export const PLAN_DATAFLOW_RUNTIME_SRC = `
-type _AfToolArgument = { from: string; required?: boolean } | { const: unknown };
-type _AfResultMap = { fields: Record<string, string>; includeRaw?: boolean };
+type _AfToolArgument = { from: string; required?: boolean } | { fromFirst: string[]; required?: boolean } | { const: unknown };
+type _AfResultField = string | { from: string; required?: boolean; default?: unknown; fallbackFrom?: string[]; fallbackConst?: unknown };
+type _AfResultMap = { fields: Record<string, _AfResultField>; includeRaw?: boolean };
+// #G12/#G13 —— 唯一的"取第一个可用值"实现。空串与纯空白算未命中：一个只有空格的字段
+// 不是一个值，而裸 ?? 会把它当成有值收下。
+function _afFirstPresent(values: unknown[]): unknown {
+  for (const v of values) {
+    if (v === undefined || v === null) continue;
+    if (typeof v === "string" && v.trim() === "") continue;
+    return v;
+  }
+  return undefined;
+}
 function _afCloneJson(value: unknown, seen = new Set<object>()): unknown {
   if (value === null || typeof value === "string" || typeof value === "boolean") return value;
   if (typeof value === "number") { if (!Number.isFinite(value)) throw new Error("[terminal] tool argument is not finite JSON"); return value; }
@@ -71,14 +100,25 @@ function _afToolArguments(template: Record<string, _AfToolArgument>, scope: Reco
   const out: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
   for (const [argument, source] of Object.entries(template)) {
     const hasFrom = Object.prototype.hasOwnProperty.call(source, "from");
+    const hasFromFirst = Object.prototype.hasOwnProperty.call(source, "fromFirst");
     const hasConst = Object.prototype.hasOwnProperty.call(source, "const");
-    if (hasFrom === hasConst) throw new Error("[terminal] tool argument " + argument + " must choose exactly one of from/const");
+    if ([hasFrom, hasFromFirst, hasConst].filter(Boolean).length !== 1) throw new Error("[terminal] tool argument " + argument + " must choose exactly one of from/fromFirst/const");
     if (hasFrom) {
       const path = String((source as { from: string }).from ?? "");
       const value = readConditionPath(scope, path);
       if (value === undefined) {
         if ((source as { required?: boolean }).required === false) continue;
         throw new Error("[terminal] required tool argument path did not resolve: " + argument + " <- " + path);
+      }
+      out[argument] = _afCloneJson(value);
+    } else if (hasFromFirst) {
+      // #G13 —— 这里把 null 也算未命中（单 from 不会）。null 正是"事件带了这个字段但它是空的"，
+      // 而那恰恰是应该走回退的情形；把它当值收下就等于没有回退。
+      const paths = (source as { fromFirst: string[] }).fromFirst ?? [];
+      const value = _afFirstPresent(paths.map((path) => readConditionPath(scope, String(path))));
+      if (value === undefined) {
+        if ((source as { required?: boolean }).required === false) continue;
+        throw new Error("[terminal] no candidate resolved for required tool argument: " + argument + " <- " + paths.join(" | "));
       }
       out[argument] = _afCloneJson(value);
     } else {
@@ -98,10 +138,22 @@ function _afInvokeInput(template: Record<string, unknown>, scope: Record<string,
   for (const [argument, source] of Object.entries(template)) {
     if (!source || typeof source !== "object" || Array.isArray(source)) { out[argument] = source; continue; }
     const hasFrom = Object.prototype.hasOwnProperty.call(source, "from");
+    const hasFromFirst = Object.prototype.hasOwnProperty.call(source, "fromFirst");
     const hasConst = Object.prototype.hasOwnProperty.call(source, "const");
-    if (!hasFrom && !hasConst) { out[argument] = source; continue; }
-    if (hasFrom && hasConst) throw new Error("[terminal] invoke input " + argument + " must choose exactly one of from/const");
+    const chosen = [hasFrom, hasFromFirst, hasConst].filter(Boolean).length;
+    if (chosen === 0) { out[argument] = source; continue; }
+    if (chosen > 1) throw new Error("[terminal] invoke input " + argument + " must choose exactly one of from/fromFirst/const");
     if (hasConst) { out[argument] = _afCloneJson((source as { const: unknown }).const); continue; }
+    if (hasFromFirst) {
+      const paths = (source as { fromFirst: string[] }).fromFirst ?? [];
+      const picked = _afFirstPresent(paths.map((path) => readConditionPath(scope, String(path))));
+      if (picked === undefined) {
+        if ((source as { required?: boolean }).required === false) continue;
+        throw new Error("[terminal] no candidate resolved for required invoke input: " + argument + " <- " + paths.join(" | "));
+      }
+      out[argument] = _afCloneJson(picked);
+      continue;
+    }
     const path = String((source as { from: string }).from ?? "");
     const value = readConditionPath(scope, path);
     if (value === undefined) {
@@ -114,9 +166,25 @@ function _afInvokeInput(template: Record<string, unknown>, scope: Record<string,
 }
 function _afMapToolResult(raw: unknown, map: _AfResultMap): Record<string, unknown> {
   const out: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
-  for (const [field, path] of Object.entries(map.fields)) {
-    const value = path === "result" ? raw : readPath(raw, path.slice("result.".length));
-    if (value === undefined) throw new Error("[terminal] tool result path did not resolve: " + field + " <- " + path);
+  const read = (path: string): unknown => (path === "result" ? raw : readPath(raw, path.slice("result.".length)));
+  for (const [field, source] of Object.entries(map.fields)) {
+    // 裸字符串 = 必需：取不到就终态失败。旧 plan 的语义逐字节不变。
+    if (typeof source === "string") {
+      const value = read(source);
+      if (value === undefined) throw new Error("[terminal] tool result path did not resolve: " + field + " <- " + source);
+      out[field] = value;
+      continue;
+    }
+    // #G12 —— 对象形态：按序 from → fallbackFrom → fallbackConst → default。
+    // 一个 200 但没带可选字段的响应不应该杀掉整条本来成功的路径。
+    const candidates = [source.from].concat(source.fallbackFrom ?? []);
+    let value = _afFirstPresent(candidates.map(read));
+    if (value === undefined && source.fallbackConst !== undefined) value = source.fallbackConst;
+    if (value === undefined && source.default !== undefined) value = source.default;
+    if (value === undefined) {
+      if (source.required === false) continue;
+      throw new Error("[terminal] tool result path did not resolve: " + field + " <- " + candidates.join(" | "));
+    }
     out[field] = value;
   }
   if (map.includeRaw === true) out._raw = raw;

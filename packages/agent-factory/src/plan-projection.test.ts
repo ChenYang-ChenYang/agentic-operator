@@ -541,3 +541,106 @@ describe("validatePlan — enforces production discipline (Phase 1)", () => {
     expect(invalid.errors.join(" ")).toMatch(/rooted|bare values|_raw/);
   });
 });
+
+// #G12/#G13 —— 新 IR 的完整往返。设计端能写、投影能存、运行时读不回来，比没有这个字段更糟：
+// 它会让一条被声明的保证在部署路径上悄悄消失。所以每个字段都要 parse → validate → project
+// → 再 parse 后逐字节相等，并且半残的描述符必须【校验失败】，而不是被半填充地收下。
+describe("#G12/#G13 IR round-trip", () => {
+  const withDataflow = (step: Partial<PlanStep>): PlanStep => ({
+    stepId: "call-vendor", kind: "tool", tool: "vendor.call", ...step,
+  } as PlanStep);
+
+  it("carries fromFirst through parse → project → parse unchanged", () => {
+    const step = withDataflow({
+      toolArguments: {
+        dedupe_key: { fromFirst: ["input.etag", "results.download.sha256"] },
+        mode: { const: "strict" },
+      },
+    });
+    const actions = projectPlanToActions({
+      ...({ actionName: "processResume", slug: "s", short: "S", tools: ["vendor.call"] } as unknown as GeneratedAgentSpec),
+      plan: [step],
+    } as GeneratedAgentSpec);
+    // manifest 侧是 snake_case
+    expect(actions[0]!.tool_arguments).toEqual({
+      dedupe_key: { from_first: ["input.etag", "results.download.sha256"] },
+      mode: { const: "strict" },
+    });
+    // 读回来是 camelCase，且与原值一致
+    const back = parsePlan(actions.map((a) => ({ ...a, stepId: a.name, kind: "tool", tool: "vendor.call" })));
+    expect(back[0]!.toolArguments).toEqual(step.toolArguments);
+  });
+
+  it("carries an optional result field with fallbacks through the same round-trip", () => {
+    const step = withDataflow({
+      resultMap: {
+        fields: {
+          score: { from: "result.data.score", required: false, default: null },
+          title: { from: "result.title", fallbackFrom: ["result.data.title"], fallbackConst: "未命名岗位" },
+          id: "result.id",
+        },
+      },
+    });
+    const actions = projectPlanToActions({
+      ...({ actionName: "createJD", slug: "s", short: "S", tools: ["vendor.call"] } as unknown as GeneratedAgentSpec),
+      plan: [step],
+    } as GeneratedAgentSpec);
+    expect(actions[0]!.result_map).toEqual({
+      fields: {
+        score: { from: "result.data.score", required: false, default: null },
+        title: { from: "result.title", fallback_from: ["result.data.title"], fallback_const: "未命名岗位" },
+        id: "result.id",
+      },
+    });
+    const back = parsePlan(actions.map((a) => ({ ...a, stepId: a.name, kind: "tool", tool: "vendor.call" })));
+    expect(back[0]!.resultMap).toEqual(step.resultMap);
+  });
+
+  it("fails closed on half-formed descriptors instead of half-populating them", () => {
+    // 一个候选的 fromFirst 就是 {from}，多出来的语义只会误导读者
+    expect(validatePlan([withDataflow({ toolArguments: { k: { fromFirst: ["input.a"] } } })]).errors.join(" "))
+      .toMatch(/at least two candidates/);
+    // 三选一
+    expect(validatePlan([withDataflow({ toolArguments: { k: { from: "input.a", fromFirst: ["input.a", "input.b"] } as never } })]).ok).toBe(false);
+    // 可选性放宽的是「取不到怎么办」，不是「能取哪里」
+    expect(validatePlan([withDataflow({ toolArguments: { k: { fromFirst: ["input.a", "process.env.SECRET"] } } })]).errors.join(" "))
+      .toMatch(/safe path rooted/);
+    expect(validatePlan([withDataflow({ resultMap: { fields: { s: { from: "data.score" } } } })]).errors.join(" "))
+      .toMatch(/rooted at result/);
+    expect(validatePlan([withDataflow({ resultMap: { fields: { s: { from: "result.a", nope: 1 } as never } } })]).errors.join(" "))
+      .toMatch(/unknown key/);
+  });
+});
+
+// #G14/#G15 —— 声明式部署路径还执行不了补偿写和成功路径健康判定。投出一个悄悄丢掉这些
+// 保证的 manifest，会一路绿到生产然后在真实故障上安静地不补偿；所以投影当场失败并说清缺什么。
+describe("#G14/#G15 fail-closed projection", () => {
+  const withGuarantee = (step: Partial<PlanStep>): GeneratedAgentSpec =>
+    spec({ actionName: "processResume", plan: [{ stepId: "s", kind: "tool", tool: "vendor.call", ...step } as PlanStep] });
+
+  it("refuses to project a compensating write the runtime cannot perform", () => {
+    expect(() => projectPlanToActions(withGuarantee({
+      errorPolicy: [{ when: "status>=500", do: "terminal", compensate: { tool: "records.upsert", bestEffort: true } }],
+    }))).toThrow(/compensate/);
+  });
+
+  it("refuses to project success-path health signals the runtime never evaluates", () => {
+    expect(() => projectPlanToActions(withGuarantee({
+      healthSignals: [{ when: "status == 200", signal: "empty_body", fatal: true }],
+    }))).toThrow(/healthSignals/);
+  });
+
+  it("still projects a plan that declares neither", () => {
+    expect(projectPlanToActions(withGuarantee({}))).toHaveLength(1);
+  });
+
+  it("looks inside a foreach body — a nested guarantee is just as unhonoured", () => {
+    expect(() => projectPlanToActions(spec({
+      actionName: "ruleCheck",
+      plan: [{
+        stepId: "each", kind: "foreach", itemsFrom: "input.items", itemKeyFrom: "item.id",
+        body: [{ stepId: "one", kind: "tool", tool: "vendor.call", healthSignals: [{ when: "status == 200", signal: "empty" }] }],
+      }],
+    }))).toThrow(/one\.healthSignals/);
+  });
+});
