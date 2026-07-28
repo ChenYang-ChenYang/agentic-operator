@@ -52,6 +52,18 @@ import {
   bindHumanInteractionEvent,
   closeHumanInteraction,
 } from "./human-interaction";
+import {
+  factoryGenerationDirectiveFingerprint,
+  factoryGenerationScopedAgentActionNames,
+  type FactoryGenerationDirective,
+  type FactoryInteractionPolicy,
+} from "./generation-directive";
+import {
+  autopilotTestApprovalBlockReason,
+  recordFactoryAssumption,
+  resolveFactoryConversationInteractionPolicy,
+  resolveAutopilotClarification,
+} from "./interaction-policy";
 
 // ── auto-compaction ───────────────────────────────────────────────────────────
 // Keep the context bounded on long runs WITHOUT turn-capping: once the transcript
@@ -215,8 +227,11 @@ function buildStateSummary(ctx: BrainCtx): string {
     // #3 FIX (memory): keep the real action/event NAMES inside the folded summary — counts alone
     // let the brain hallucinate forgotten symbols after compaction. Cap with a "+N" tail.
     const cap = (arr: string[], n: number) => (arr.length > n ? `${arr.slice(0, n).join("、")}…(+${arr.length - n})` : arr.join("、"));
-    const agentActs = ctx.ontology.actions.filter((a) => a.actor.includes("Agent")).map((a) => a.name);
-    lines.push(`本体快照(只能用这些真名，别脑补) · Agent动作: ${cap(agentActs, 30)} · 事件: ${cap(ctx.ontology.events.map((e) => e.name), 40)}`);
+    const agentActs = factoryGenerationScopedAgentActionNames(
+      ctx.ontology,
+      ctx.generationDirective,
+    );
+    lines.push(`本次 generation scope(只能用这些真名，别脑补) · Agent动作: ${cap(agentActs, 30)} · 事件: ${cap(ctx.ontology.events.map((e) => e.name), 40)}`);
     // #3/#4 (memory): ALSO keep DataObject + rule NAMES in the fold — object property detail and
     // rule text are recoverable via describe_object / fetchActionRules, but the NAMES must survive
     // so the brain knows what exists to recall.
@@ -278,7 +293,10 @@ function buildStateSummary(ctx: BrainCtx): string {
     const done = new Set(ctx.specs.map((s) => s.actionName));
     const partial = ctx.planScope?.kind === "partial";
     const outOfScope = new Set(partial ? (ctx.planScope?.missedActions ?? []) : []);
-    const agentActions = ctx.ontology.actions.filter((a) => a.actor.includes("Agent")).map((a) => a.name);
+    const agentActions = factoryGenerationScopedAgentActionNames(
+      ctx.ontology,
+      ctx.generationDirective,
+    );
     const uncovered = agentActions.filter((n) => !done.has(n) && !outOfScope.has(n));
     if (uncovered.length) open.push(`还没设计的 Agent 动作: ${uncovered.join("、")}`);
     if (partial && outOfScope.size) {
@@ -507,6 +525,7 @@ function freshCtx(domain: string, goal: string, ports: FactoryPorts, emit: (e: B
     goal,
     emit,
     ports,
+    interactionPolicy: "strict",
     specs: [],
     ontology: null,
     budget: { maxTokens: MAX_TOKENS, maxTurns: MAX_TURNS },
@@ -547,6 +566,8 @@ async function runSubBrain(
       isSubAgent: true,
       depth: (ctx.subagentDepth ?? 0) + 1,
       budgetLedger: ctx.budgetLedger,
+      interactionPolicy: ctx.interactionPolicy,
+      generationDirective: ctx.generationDirective,
       ...(member.scopedTools?.length ? { tools: member.scopedTools } : {}),
     })) {
       if (ev.t === "message") summary = ev.text;
@@ -824,8 +845,23 @@ const designFleetTool: BrainTool = {
     const designAgent = FACTORY_TOOLS.find((t) => t.name === "design_agent");
     if (!designAgent) return { ok: false, summary: "design_agent 工具不可用。" };
 
-    const agentActionNames = new Set(ctx.ontology.actions.filter((a) => a.actor.includes("Agent")).map((a) => a.name));
+    const agentActionNames = new Set(
+      factoryGenerationScopedAgentActionNames(
+        ctx.ontology,
+        ctx.generationDirective,
+      ),
+    );
     const requested = [...new Set((Array.isArray(args.actions) ? (args.actions as unknown[]) : []).map((a) => String(a).trim()).filter(Boolean))];
+    const serverScope = ctx.generationDirective?.requestedActionNames;
+    const outsideScope = serverScope?.length
+      ? requested.filter((action) => !serverScope.includes(action))
+      : [];
+    if (outsideScope.length) {
+      return {
+        ok: false,
+        summary: `这些动作超出本次服务端生成范围：${outsideScope.join("、")}。只允许：${serverScope!.join("、")}。`,
+      };
+    }
     const unknown = requested.filter((a) => !agentActionNames.has(a));
     if (unknown.length) return { ok: false, summary: `这些不是本体里的 Agent 动作：${unknown.join("、")}。用 read_ontology agentActions[].name 里的准确名字。` };
     const designed = new Set(ctx.specs.filter((s) => !s.isSubAgent).map((s) => s.actionName));
@@ -854,7 +890,7 @@ const designFleetTool: BrainTool = {
       blocking: ctx.ontologyReadiness?.blocking,
     });
     const memberTaskTemplate = (action: string) =>
-      `你是「${action}」这个本体动作的专职设计成员。下面的【动作简报】已包含设计所需的完整切片（事件契约/对象字段/规则/工具候选/就绪缺口）——【以简报为准直接设计】，只有简报里确实缺的信息才用只读工具（describe_object / search_tools / read_ontology）定点补查，不要全量重读本体。\n\n${briefFor(action)}${sharedGuidance ? `\n\n【共同要求】${sharedGuidance}` : ""}\n\n【产出要求】最后【只输出一个 JSON 对象】（不要多余文字）：\n{"system_prompt":"中文系统提示(必填,亲自写:职责/边界/每个分支事件的触发条件;规则校验类动作必须写成运行时动态抓规则,绝不写死规则)","decision_logic":"分支决策逻辑(必填,说清何时 emit 哪个事件)","tools":["真实工具名——只能用 Ontology action.tool_use 声明的或工具库(search_tools)里真实存在的名字;拿不准就留空数组"],"plan":[{"stepId":"若 execution_plan_requirement.required=true 必须覆盖 action_steps 的稳定 stepId","kind":"tool|logic|condition|invoke|foreach|emit","tool":"kind=tool 时的真实工具","toolArguments":{"参数名":{"from":"input/lastResult/results/locals 开头的精确路径或改用 const","required":true}},"resultMap":{"fields":{"稳定字段名":"result 开头的精确路径"},"includeRaw":false},"dependsOn":["前置 stepId"],"emitEvent":"kind=emit 时【必填】:本体 triggered_event 真名","emitPayloadFrom":"event/input/lastResult/results/locals 开头的精确路径","invoke":"kind=invoke 时的子 agent","invokeInput":{"字段":"精确值"},"itemsFrom":"kind=foreach 时的集合路径","itemAs":"循环局部变量名","itemKeyFrom":"每层 foreach 的稳定业务键","body":"foreach 内可递归嵌套 foreach/invoke","idempotencyKeyFrom":"顶层副作用步的可重放业务键路径","timeoutS":30,"onError":"terminal|soft|park","description":"这步做什么"}],"input_schema":[{"field":"","type":"","required":true}],"output_schema":[{"field":"","type":""}],"role_name":"≤12字显示名"}\n【plan 何时给】只在 execution_plan_requirement.required=true、或有外部集成/多步副作用/循环子任务时才给 plan；简单的单步 LLM 判断型动作（没有 action_steps、没有外部系统）请【整体省略 plan 字段】——运行时会按 prompt+decision_logic 直接执行并自动 emit 声明的事件，不需要手写 emit 步。\ntoolArguments/resultMap 必须逐字段声明真实数据流，缺映射就先定点查证或 ask_user，禁止把整份 event/lastResult 默认塞给外部工具。嵌套每一层都要有业务键，invoke/tool 都要写 timeout 与错误策略。绝不编造工具名/事件名/字段名——全部用你研究到的真名。`;
+      `你是「${action}」这个本体动作的专职设计成员。下面的【动作简报】已包含设计所需的完整切片（事件契约/对象字段/规则/工具候选/就绪缺口）——【以简报为准直接设计】，只有简报里确实缺的信息才用只读工具（read_action_contract / describe_object / search_tools）定点补查，不要全量重读本体。\n\n${briefFor(action)}${sharedGuidance ? `\n\n【共同要求】${sharedGuidance}` : ""}\n\n【产出要求】最后【只输出一个 JSON 对象】（不要多余文字）：\n{"system_prompt":"中文系统提示(必填,亲自写:职责/边界/每个分支事件的触发条件;规则校验类动作必须写成运行时动态抓规则,绝不写死规则)","decision_logic":"分支决策逻辑(必填,说清何时 emit 哪个事件)","tools":["真实工具名——只能用 Ontology action.tool_use 声明的或工具库(search_tools)里真实存在的名字;拿不准就留空数组"],"plan":[{"stepId":"若 execution_plan_requirement.required=true 必须覆盖 action_steps 的稳定 stepId","kind":"tool|logic|condition|invoke|foreach|emit","tool":"kind=tool 时的真实工具","toolArguments":{"参数名":{"from":"input/lastResult/results/locals 开头的精确路径或改用 const","required":true}},"resultMap":{"fields":{"稳定字段名":"result 开头的精确路径"},"includeRaw":false},"dependsOn":["前置 stepId"],"emitEvent":"kind=emit 时【必填】:本体 triggered_event 真名","emitPayloadFrom":"event/input/lastResult/results/locals 开头的精确路径","invoke":"kind=invoke 时的子 agent","invokeInput":{"字段":"精确值"},"itemsFrom":"kind=foreach 时的集合路径","itemAs":"循环局部变量名","itemKeyFrom":"每层 foreach 的稳定业务键","body":"foreach 内可递归嵌套 foreach/invoke","idempotencyKeyFrom":"顶层副作用步的可重放业务键路径","timeoutS":30,"onError":"terminal|soft|park","description":"这步做什么"}],"input_schema":[{"field":"","type":"","required":true}],"output_schema":[{"field":"","type":""}],"role_name":"≤12字显示名"}\n【plan 何时给】只在 execution_plan_requirement.required=true、或有外部集成/多步副作用/循环子任务时才给 plan；简单的单步 LLM 判断型动作（没有 action_steps、没有外部系统）请【整体省略 plan 字段】——运行时会按 prompt+decision_logic 直接执行并自动 emit 声明的事件，不需要手写 emit 步。\ntoolArguments/resultMap 必须逐字段声明真实数据流，缺映射就先定点查证或 ask_user，禁止把整份 event/lastResult 默认塞给外部工具。嵌套每一层都要有业务键，invoke/tool 都要写 timeout 与错误策略。绝不编造工具名/事件名/字段名——全部用你研究到的真名。`;
     const memberTask = (action: string) => memberTaskTemplate(action).replace(
       '"body":"foreach 内可递归嵌套 foreach/invoke"',
       '"body":[{"stepId":"子步骤稳定 id","kind":"invoke","invoke":"子 agent 名","timeoutS":30,"onError":"terminal"}]',
@@ -1105,10 +1141,10 @@ const refineFleetTool: BrainTool = {
 export const __reviewFleetToolForTest = reviewFleetTool;
 export const __refineFleetToolForTest = refineFleetTool;
 
-const AUTHORIZATION_CONTEXT = /^(?:probe|integration_profile|sandbox_design_review)_authorization:v\d+:/i;
-const AUTHORIZATION_TOKEN = /authorize_(?:probe|integration_profile|sandbox_design_review):v\d+:[a-f0-9]{64}/i;
-const AUTHORIZATION_TOKEN_GLOBAL = /authorize_(?:probe|integration_profile|sandbox_design_review):v\d+:[a-f0-9]{64}/gi;
-const AUTHORIZATION_DECLINE_GLOBAL = /decline_(?:probe|integration_profile|sandbox_design_review):v\d+:[a-f0-9]{64}/gi;
+const AUTHORIZATION_CONTEXT = /^(?:probe|integration_profile|sandbox_evidence_plan|sandbox_design_review)_authorization:v\d+:/i;
+const AUTHORIZATION_TOKEN = /authorize_(?:probe|integration_profile|sandbox_evidence_plan|sandbox_design_review):v\d+:[a-f0-9]{64}/i;
+const AUTHORIZATION_TOKEN_GLOBAL = /authorize_(?:probe|integration_profile|sandbox_evidence_plan|sandbox_design_review):v\d+:[a-f0-9]{64}/gi;
+const AUTHORIZATION_DECLINE_GLOBAL = /decline_(?:probe|integration_profile|sandbox_evidence_plan|sandbox_design_review):v\d+:[a-f0-9]{64}/gi;
 const CHECKPOINT_AUTH_CONFIRM = "$factory_authorization_confirmed";
 const CHECKPOINT_AUTH_DECLINE = "$factory_authorization_declined";
 
@@ -1280,8 +1316,8 @@ async function persistHumanDecision(
   // A write-probe approval is deliberately one-shot. Persisting it as reusable
   // human memory would silently authorize a later conversation.
   if (
-    /^authorize_(?:probe|integration_profile|sandbox_design_review):v\d+:/i.test(input.answer) ||
-    /^(?:probe|integration_profile|sandbox_design_review)_authorization:v\d+:/i.test(input.context ?? "")
+    /^authorize_(?:probe|integration_profile|sandbox_evidence_plan|sandbox_design_review):v\d+:/i.test(input.answer) ||
+    /^(?:probe|integration_profile|sandbox_evidence_plan|sandbox_design_review)_authorization:v\d+:/i.test(input.context ?? "")
   ) return;
   await ctx.ports.humanMemory.upsert(ctx.domain, {
     questionKey: humanMemoryQuestionKey(input.kind, input.question),
@@ -1316,6 +1352,11 @@ export async function* runBrain(opts: {
   budgetLedger?: BudgetLedger;
   /** Trusted control-plane recovery reason. Never infer this from goal text. */
   continuationMode?: "crash_resume" | "human_gate_resume";
+  /** Explicitly opted-in interaction behavior. Omitted preserves a resumed
+   * conversation's policy; a fresh run defaults to legacy strict mode. */
+  interactionPolicy?: FactoryInteractionPolicy;
+  /** Server-validated Action scope / virtual Action overlay. */
+  generationDirective?: FactoryGenerationDirective;
 }): AsyncGenerator<BrainEvent> {
   const depth = opts.depth ?? 0;
   const MAX_SUBAGENT_DEPTH = envInt("FACTORY_MAX_SUBAGENT_DEPTH", 2);
@@ -1366,6 +1407,26 @@ export async function* runBrain(opts: {
   interactionCtx = ctx;
   ctx.emit = emit;
   ctx.ports = opts.ports;
+  if (saved && opts.generationDirective) {
+    const savedFingerprint = factoryGenerationDirectiveFingerprint(
+      ctx.generationDirective,
+    );
+    const requestedFingerprint = factoryGenerationDirectiveFingerprint(
+      opts.generationDirective,
+    );
+    if (savedFingerprint !== requestedFingerprint) {
+      throw new Error(
+        "generation scope is immutable within a Factory conversation; start a new task",
+      );
+    }
+  }
+  ctx.generationDirective =
+    opts.generationDirective ?? ctx.generationDirective;
+  ctx.interactionPolicy = resolveFactoryConversationInteractionPolicy({
+    saved: Boolean(saved),
+    savedPolicy: ctx.interactionPolicy,
+    requestedPolicy: opts.interactionPolicy,
+  });
   // A recovery steer is not a new business goal. Keep the checkpointed goal so
   // acceptance, summaries and subsequent model turns retain the original task.
   if (!saved || !isRecoveryResume) ctx.goal = opts.goal;
@@ -1405,6 +1466,28 @@ export async function* runBrain(opts: {
           : []),
         { role: "user", content: redactAuthorizationText(opts.goal) },
       ];
+  const CONTROL_POLICY_PREFIX = "[控制平面交互策略]";
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index];
+    if (
+      message?.role === "system" &&
+      typeof message.content === "string" &&
+      message.content.startsWith(CONTROL_POLICY_PREFIX)
+    ) {
+      messages.splice(index, 1);
+    }
+  }
+  messages.splice(1, 0, {
+    role: "system",
+    content:
+      `${CONTROL_POLICY_PREFIX} 当前为 ${ctx.interactionPolicy}。` +
+      (ctx.interactionPolicy === "autopilot"
+        ? "一般低风险澄清和唯一边界分类会由控制平面采用推荐/只读安全默认并记录 assumption.applied；测试用例与沙箱审查只有在覆盖完整、无待处理授权且无外部写时才会自动批准。不要输出逐步思考、chain-of-thought 或长篇自言自语；只发一句决策摘要和必要的阶段/结果状态，然后调用工具。任何凭证、权威事实缺口、服务端 authorization challenge、外部副作用批准或生产写授权仍必须等待真人，绝不能自行回答或伪造确认。"
+        : "保持旧 Agent Factory 严格交互：人工门必须等待真人提交。") +
+      (ctx.generationDirective
+        ? ` 本次只允许生成 Action：${ctx.generationDirective.requestedActionNames.join("、")}；不得扩展到其它 Action。这些选中 Action 就是本次完整验收全集：create_plan 按 full 规划，全部生成代码、测试并真实 sandbox_run 后可直接 finish；全域未选 Action 不算遗漏，也不得把本次任务降级成旧 partial/save_draft。${ctx.generationDirective.mode === "virtual_scenario" ? "其中 Virtual Action 是非权威会话覆盖层，禁止当成已写回 Ontology；可沙箱验证并交付草稿，但生产晋升必须等权威 Ontology 真正建模后重新生成。" : ""}`
+        : ""),
+  });
   // On RESUME, messages[0] is the system prompt frozen when the conversation started.
   // Refresh it so prompt improvements (the routing 铁律) apply to ongoing conversations
   // too, not just brand-new ones — otherwise the brain keeps obeying the old prompt.
@@ -1529,7 +1612,7 @@ export async function* runBrain(opts: {
     ].filter(Boolean);
     const guide =
       policy.pipeline === "analyze"
-        ? "[前置分诊·事实与建议] 意图门把用户这次的表态读成【只读分析/答疑】。这是一次【基于用户原话的快速分诊，不是命令】——你在对话里看到的东西比它多，判断不符就按你自己的判断走，不必迁就它。\n可用的手段（供你选，不是清单）：用 read_ontology/understand_ontology 取真实事实；用 select_strategy 真跑 cot（有争议/高风险可 debate）推导答案，而不是凭印象直接说；用户要的是【流程图/事件流/蓝图】这类图而非可运行 agent 时，build_blueprint 会逐阶段跑 cot 细化业务逻辑并渲染成图（要只画其中几个动作就传 actions），要存档再 generate_report。\n一条来自用户的、始终有效的原则（不是本路线特有的）：【没被要求生成/部署时，别自作主张跑生成流水线去造用户没要的东西】。反过来，用户一旦表达出要开始做，那就是授权，立即转生成路线（只点名一部分动作时 create_plan 传 scope=partial + scope_reason 引用用户原话）——授权看【意思】不看字面：「继续」「开始生成」「按你建议的做」是授权；【用户在你刚给出的选项/方案里选定了其中一个】（哪怕只回一个「A」「第一个」「就这个」）同样是授权，你自己提的选项自己认账，别把用户的选定重新解释成「他想继续分析」。拿不准他选的是哪个，就 ask_user 复述选项确认，别自己挑一个解释。"
+        ? "[前置分诊·事实与建议] 意图门把用户这次的表态读成【只读分析/答疑】。这是一次【基于用户原话的快速分诊，不是命令】——你在对话里看到的东西比它多，判断不符就按你自己的判断走，不必迁就它。\n可用的手段（供你选，不是清单）：用 read_ontology/understand_ontology 取真实事实；用 select_strategy 真跑 cot（有争议/高风险可 debate）推导答案，而不是凭印象直接说；用户要的是【流程图/事件流/蓝图】这类图而非可运行 agent 时，build_blueprint 会逐阶段跑 cot 细化业务逻辑并渲染成图（要只画其中几个动作就传 actions），要存档再 generate_report。\n一条来自用户的、始终有效的原则（不是本路线特有的）：【没被要求生成/部署时，别自作主张跑生成流水线去造用户没要的东西】。反过来，用户一旦表达出要开始做，那就是授权，立即转生成路线。服务端 generation scope（actionIds/scenario）就是本次完整验收全集，create_plan 按 full 规划并在测试、沙箱跑通后 finish；只有无 generation scope 的旧对话临时只做部分设计稿时才用 scope=partial + save_draft。授权看【意思】不看字面：「继续」「开始生成」「按你建议的做」是授权；【用户在你刚给出的选项/方案里选定了其中一个】（哪怕只回一个「A」「第一个」「就这个」）同样是授权，你自己提的选项自己认账，别把用户的选定重新解释成「他想继续分析」。拿不准他选的是哪个，就 ask_user 复述选项确认，别自己挑一个解释。"
         : policy.pipeline === "skinny"
           ? "[前置分诊·事实与建议] 意图门把这次读成【修改请求】，且本次会话已有设计成果（不是从零开始）。这是分诊的判断，不是命令——不符就按你自己的判断走。\n通常更省事的做法：定位目标 agent → refine_agent 定点修 → validate_graph（必要时 sandbox_run）验证；返工类子问题可以 select_strategy 真跑 reflection（产出→自评→重写）。既然已有成果，create_plan 全量重造多半是浪费——但如果你判断这次改动确实动了整体分解（比如要增删 agent、事件链变了），那就该重新规划，别为了迁就这条建议硬做定点修。"
           : policy.pipeline === "ask_first"
@@ -1602,6 +1685,15 @@ export async function* runBrain(opts: {
   // so only a genuinely stuck brain hits the cap.
   let incompleteNudges = 0;
   let nudgeBaselineSpecs = 0;
+  // A server generation directive is an explicit Build contract, not an
+  // informational chat.  Before the first spec exists, a model can still try
+  // to end the run with a prose report/question (including punctuation-free
+  // endings such as “等你。”).  Give it a small, bounded opportunity to enter
+  // the deterministic readiness/authoring path; if it keeps refusing, stop
+  // honestly instead of misclassifying the run as a completed answer.
+  let preAuthoringTextRefusals = 0;
+  const MAX_PRE_AUTHORING_TEXT_REFUSALS = 3;
+  let generationStalledBeforeAuthoring = false;
   // #ASK-PARK v2 — 纯文本以开放问题收尾时【合成一次真正的澄清挂起】（不再只提醒一次就让运行继续/
   // 收尾 incomplete）。autoParkCount 是上限，避免模型反复空问导致死挂。
   let autoParkCount = 0;
@@ -1610,6 +1702,13 @@ export async function* runBrain(opts: {
   // per run, so an intent-driven reasoning shape (not raw react) actually produces the answer.
   let answerDeliberated = false;
   let erroredOut = false;
+  // #LEARN-NONFATAL — 学习类收尾（技能评估 / 自动反思 / 记忆整合 / 策略统计）失败
+  // 不再把整次运行判为 errored。这四处原本都置 erroredOut=true，本意是「不许声称
+  // 学到了其实没落库的东西」——但代价下错了：它们全部跑在【交付之后】，一次快档
+  // 摘要调用抖动就能把一个已设计、已落盘、沙箱已验证的 build 翻成 errored，
+  // 上游 OntoCode 随即按 factory_build_incomplete 丢掉候选包。
+  // 保留响亮（照旧发 error 事件、计数并在 done 里报出），但不改判交付事实。
+  const learningFailures: string[] = [];
   let budgetStopped = false;
   let finishRefusals = 0;
   let sawReflect = false;
@@ -1693,6 +1792,177 @@ export async function* runBrain(opts: {
     return kind === "test_approval" ? "approval" : kind;
   };
 
+  /** Resolve only the low-risk interaction classes that OntoCode explicitly
+   * delegated. Dedicated authorization challenges and credential/production
+   * side-effect questions are rejected by resolveAutopilotClarification and
+   * remain normal durable human gates. */
+  const applyPendingAutopilotGate = (): boolean => {
+    if (opts.isSubAgent || ctx.interactionPolicy !== "autopilot") return false;
+    const gate = activeHumanGate();
+    if (gate === "clarify" && ctx.clarifyPrompt) {
+      const prompt = ctx.clarifyPrompt;
+      const automatic = resolveAutopilotClarification(ctx, prompt);
+      if (!automatic) return false;
+      const resolved = closeHumanInteraction(ctx, "clarify");
+      ctx.awaitingClarify = false;
+      ctx.clarifyPrompt = undefined;
+      ctx.pendingIntegrationBoundaryAsk = undefined;
+      (ctx.askedQuestions ??= {})[normalizeQuestion(prompt.question)] =
+        automatic.answer;
+      messages.push({
+        role: "system",
+        content: `[Autopilot assumption ${automatic.assumption.id}] 针对「${prompt.question}」采用：${automatic.answer}。这是可审计默认，不是人工授权；不得据此启用凭证、外部副作用或生产写入。`,
+      });
+      emit({
+        t: "clarify",
+        question: prompt.question,
+        options: prompt.options,
+        context: prompt.context,
+        awaitingAnswer: false,
+        interactionId: resolved?.interactionId,
+      });
+      if (
+        isTestFixtureClarification(prompt.question, prompt.context ?? "") &&
+        automatic.answer === "用占位"
+      ) {
+        ctx.testDataSupplementPending = false;
+        const testApprovalBlock = autopilotTestApprovalBlockReason(ctx);
+        ctx.awaitingApproval = testApprovalBlock !== null;
+        if (testApprovalBlock === null) {
+          const assumption = recordFactoryAssumption(ctx, {
+            gate: "test_approval",
+            subject: `沿用当前测试用例集（${(ctx.testCases ?? []).map((testCase) => testCase.id).join(",")}）`,
+            value: "approve",
+            source: "safe_default",
+            detail:
+              "测试联系/ID 字段沿用 sandbox 占位值；覆盖完整、无待处理授权、无外部写。",
+          });
+          emit({
+            t: "test.cases",
+            cases: ctx.testCases ?? [],
+            awaitingApproval: false,
+            coverage: ctx.testCoverage,
+          });
+          emit({
+            t: "test.decision",
+            decision: "approve",
+            note: `autopilot assumption ${assumption.id}`,
+          });
+        } else {
+          emit({
+            t: "test.cases",
+            cases: ctx.testCases ?? [],
+            awaitingApproval: true,
+            coverage: ctx.testCoverage,
+          });
+          messages.push({
+            role: "system",
+            content: `[Autopilot safety gate] 占位测试数据已采用，但测试执行仍需人工确认（${testApprovalBlock}）；不得创建覆盖豁免或继续 sandbox_run。`,
+          });
+        }
+      }
+      return true;
+    }
+    if (
+      gate === "approval" &&
+      ctx.awaitingApproval &&
+      !ctx.testDataSupplementPending
+    ) {
+      const block = autopilotTestApprovalBlockReason(ctx);
+      if (block) return false;
+      const interaction = closeHumanInteraction(ctx, "test_approval");
+      ctx.awaitingApproval = false;
+      const assumption = recordFactoryAssumption(ctx, {
+        gate: "test_approval",
+        subject: `执行当前测试用例集（${(ctx.testCases ?? []).map((testCase) => testCase.id).join(",")}）`,
+        value: "approve",
+        source: "safe_default",
+        detail: "覆盖矩阵完整、无待处理授权、无外部写",
+      });
+      emit({
+        t: "test.cases",
+        cases: ctx.testCases ?? [],
+        awaitingApproval: false,
+        interactionId: interaction?.interactionId,
+        coverage: ctx.testCoverage,
+      });
+      emit({
+        t: "test.decision",
+        decision: "approve",
+        interactionId: interaction?.interactionId,
+        note: `autopilot assumption ${assumption.id}`,
+      });
+      messages.push({
+        role: "system",
+        content: `[Autopilot assumption ${assumption.id}] 当前测试用例集已按安全默认批准，可继续 sandbox_run；这不构成任何独立授权挑战或生产写授权。`,
+      });
+      return true;
+    }
+    if (gate === "boundary") {
+      const proposals = ctx.boundaryProposals ?? [];
+      const unique =
+        proposals.length > 0 &&
+        new Set(proposals.map((proposal) => proposal.event)).size ===
+          proposals.length &&
+        proposals.every(
+          (proposal) =>
+            proposal.suggestedKind === "external" ||
+            proposal.suggestedKind === "terminal",
+        );
+      if (!unique) return false;
+      const interaction = closeHumanInteraction(ctx, "boundary");
+      const decided: BoundaryEvent[] = proposals.map((proposal) => ({
+        event: proposal.event,
+        kind: proposal.suggestedKind,
+        ...(proposal.consumer ? { consumer: proposal.consumer } : {}),
+        ...(proposal.payloadContract
+          ? { payloadContract: proposal.payloadContract }
+          : {}),
+        note: `Autopilot 采用唯一建议分类：${proposal.why}`.slice(0, 500),
+      }));
+      const byEvent = new Map(
+        (ctx.boundaryEvents ?? []).map((boundary) => [
+          boundary.event,
+          boundary,
+        ]),
+      );
+      for (const boundary of decided) byEvent.set(boundary.event, boundary);
+      ctx.boundaryEvents = [...byEvent.values()];
+      ctx.awaitingBoundary = false;
+      ctx.boundaryProposals = undefined;
+      ctx.lastValidation = null;
+      const assumption = recordFactoryAssumption(ctx, {
+        gate: "boundary",
+        subject: `边界事件分类：${decided.map((boundary) => boundary.event).join("、")}`,
+        value: JSON.stringify(
+          decided.map((boundary) => ({
+            event: boundary.event,
+            kind: boundary.kind,
+          })),
+        ),
+        source: "recommended",
+        detail: "只自动采用唯一 external/terminal 建议；break 保持人工门。",
+      });
+      emit({
+        t: "boundary.cases",
+        proposals,
+        awaitingDecision: false,
+        interactionId: interaction?.interactionId,
+      });
+      emit({
+        t: "boundary.decided",
+        events: decided,
+        interactionId: interaction?.interactionId,
+      });
+      messages.push({
+        role: "system",
+        content: `[Autopilot assumption ${assumption.id}] 已采用唯一边界分类并使旧校验证据失效；现在重新 validate_graph。`,
+      });
+      return true;
+    }
+    return false;
+  };
+
   try {
     // #W2 — duplicate-call breaker state (consecutive same tool+args).
     let lastToolSig = "";
@@ -1705,6 +1975,9 @@ export async function* runBrain(opts: {
       // global; per-turn re-assert + per-call entry snapshot bounds misattribution to a same-instant race).
       setLlmCallContext({ conversationId: opts.conversationId, domain: opts.domain });
       if (opts.signal?.aborted) break;
+      if (applyPendingAutopilotGate()) {
+        await checkpointConversation();
+      }
 
       // Upgrade a legacy checkpoint that predates addressed interactions by
       // re-emitting its still-pending card with a fresh one-shot id. No answer
@@ -2298,7 +2571,10 @@ export async function* runBrain(opts: {
       // Constrained decoding: ground design/refine schemas to the REAL action + tool names.
       const groundedSchemas = ctx.ontology
         ? injectGroundingEnums(toolSchemas, {
-            actionNames: ctx.ontology.actions.filter((a) => a.actor.includes("Agent")).map((a) => a.name),
+            actionNames: factoryGenerationScopedAgentActionNames(
+              ctx.ontology,
+              ctx.generationDirective,
+            ),
             toolNames: ctx.toolCatalog ?? [],
           })
         : toolSchemas;
@@ -2381,7 +2657,15 @@ export async function* runBrain(opts: {
             models: modelChain(tier),
             maxTokens: providerBudget.completionTokenCap,
           })) {
-        if (ev.t === "think") yield { t: "think", delta: ev.delta };
+        if (ev.t === "think") {
+          // The deliberation stream used to be suppressed under autopilot. That
+          // is exactly backwards: autopilot is the UNATTENDED mode, where an
+          // after-the-fact record is the ONLY record anyone will ever have of
+          // why the run did what it did. (Measured: an autopilot OntoCode build
+          // emitted 0 think frames out of 40 events; the copilot builds emitted
+          // 327/574/695.) Consumers coalesce and bound this stream themselves.
+          yield { t: "think", delta: ev.delta };
+        }
         else if (ev.t === "model") yield { t: "model", model: ev.model, tier, turn: turn + 1 };
         else if (ev.t === "usage") {
           ctx.spent.tokens += ev.promptTokens + ev.completionTokens;
@@ -2483,6 +2767,48 @@ export async function* runBrain(opts: {
           }
         }
         if (text) yield { t: "message", text };
+        const structuredHumanGatePending =
+          ctx.awaitingClarify === true
+          || ctx.awaitingApproval === true
+          || ctx.awaitingBoundary === true
+          || activeHumanInteractionKind(ctx) !== null;
+        const activeGenerationDirective = ctx.generationDirective;
+        const mustEnterGenerationPath =
+          !opts.isSubAgent
+          && activeGenerationDirective !== undefined
+          && ctx.ontology !== null
+          && ctx.specs.length === 0
+          && !finishedOk
+          && !structuredHumanGatePending
+          && !budgetStopped
+          && !erroredOut;
+        if (mustEnterGenerationPath && activeGenerationDirective) {
+          preAuthoringTextRefusals += 1;
+          if (preAuthoringTextRefusals < MAX_PRE_AUTHORING_TEXT_REFUSALS) {
+            const nextStep = preAuthoringTextRefusals === 1
+              ? "现在调用 inspect_all_action_readiness 做服务端范围的只读全量预检；不要再用纯文本结束。"
+              : "根据已经取得的 readiness 证据，立即调用 inspect_action_readiness / create_plan / design_agent 中合适的下一步；若确有权威输入缺口，必须通过返回 next=ask_user 的结构化工具挂起，不能只在正文里提问。";
+            messages.push({
+              role: "system",
+              content:
+                `[服务端生成守卫] generationDirective 已锁定 ${activeGenerationDirective.requestedActionNames.join("、")}，Ontology 已读取，但当前仍是 0 个 spec。` +
+                `这是 Build，不是普通答疑；本轮纯文本不能作为终态（第 ${preAuthoringTextRefusals}/${MAX_PRE_AUTHORING_TEXT_REFUSALS} 次）。${nextStep}`,
+            });
+            yield {
+              t: "message",
+              text: `↪ Build 尚未进入 authoring；Harness 已要求先完成 readiness/authoring（${preAuthoringTextRefusals}/${MAX_PRE_AUTHORING_TEXT_REFUSALS}）。`,
+            };
+            continue;
+          }
+          generationStalledBeforeAuthoring = true;
+          yield {
+            t: "message",
+            text:
+              `generation_stalled_before_authoring：服务端生成范围已锁定且 Ontology 已读取，但模型连续 ${preAuthoringTextRefusals} 次只返回文本，` +
+              "未进入 readiness/authoring 工具；本次 Build 已诚实停止，未生成 Agent。",
+          };
+          break;
+        }
         // COMPLETION GUARD — don't let a generation stop mid-way on a chatty turn. If the
         // brain committed to generating (made a plan / designed ≥1 agent) but the ontology's
         // Agent actions aren't all covered and it hasn't successfully finished, tell it
@@ -2501,7 +2827,10 @@ export async function* runBrain(opts: {
         const partialScope = ctx.planScope?.kind === "partial";
         const guardExempt = ["analyze", "ask_first", "skinny"].includes(String(ctx.policy?.pipeline ?? "")) || ctx.delivered === true;
         if (!opts.isSubAgent && !finishedOk && !guardExempt && ctx.ontology && ctx.specs.length > 0) {
-          const allAgentActions = ctx.ontology.actions.filter((a) => a.actor.includes("Agent")).map((a) => a.name);
+          const allAgentActions = factoryGenerationScopedAgentActionNames(
+            ctx.ontology,
+            ctx.generationDirective,
+          );
           const outOfScope = new Set(partialScope ? (ctx.planScope?.missedActions ?? []) : []);
           const agentActions = allAgentActions.filter((a) => !outOfScope.has(a));
           const covered = new Set(ctx.specs.map((s) => s.actionName));
@@ -2694,10 +3023,10 @@ export async function* runBrain(opts: {
             : "工具返回了不可显示的摘要。",
           ...(result.output !== undefined ? { output: sanitizedResult.output } : {}),
         };
-        const clarification = structuredClarification(result);
-        if (clarification) {
-          const questionKey = normalizeQuestion(clarification.question);
-          const priorAnswer = (ctx.askedQuestions ??= {})[questionKey];
+          const clarification = structuredClarification(result);
+          if (clarification) {
+            const questionKey = normalizeQuestion(clarification.question);
+            const priorAnswer = (ctx.askedQuestions ??= {})[questionKey];
           if (typeof priorAnswer === "string" && priorAnswer.length > 0) {
             // A tool may rediscover the same blocker after resume. Replaying
             // the durable answer is idempotent; resetting it to pending would
@@ -2711,6 +3040,30 @@ export async function* runBrain(opts: {
               };
             }
           } else {
+            const automatic = resolveAutopilotClarification(
+              ctx,
+              clarification,
+            );
+            if (automatic) {
+              ctx.askedQuestions[questionKey] = automatic.answer;
+              result.summary = `${result.summary}（Autopilot 已采用${automatic.source === "recommended" ? "推荐项" : "安全默认"}「${automatic.answer}」，记录假设 ${automatic.assumption.id}，不挂起。）`;
+              if (
+                result.output &&
+                typeof result.output === "object" &&
+                !Array.isArray(result.output)
+              ) {
+                result.output = {
+                  ...(result.output as Record<string, unknown>),
+                  next: "continue",
+                  autopilotAnswer: automatic.answer,
+                  assumptionId: automatic.assumption.id,
+                };
+              }
+              messages.push({
+                role: "system",
+                content: `[Autopilot assumption ${automatic.assumption.id}] 工具提出「${clarification.question}」，控制平面采用：${automatic.answer}。这不是人工授权。`,
+              });
+            } else {
             ctx.askedQuestions[questionKey] = "";
             ctx.clarifyPrompt = clarification;
             ctx.awaitingClarify = true;
@@ -2727,6 +3080,7 @@ export async function* runBrain(opts: {
               });
             }
             result.summary = `${result.summary}（系统已按 next=ask_user 强制暂停，等待用户回答。）`;
+            }
           }
         }
         // drain events the tool emitted (agent.created / validation / sandbox / plan / reflect)
@@ -2746,7 +3100,17 @@ export async function* runBrain(opts: {
 
         // Settle the stage once its tool returns. For `finish` only a PASSED gate (result.ok)
         // is a real 交付; a refused finish stays "error" so the rail never falsely shows shipped.
-        if (stage) yield { t: "stage", stage, status: result.ok ? "ok" : "error", role: roleOfTool(call.name) };
+        // `detail` was never set here, so EVERY settled stage row read
+        // `detail: null` — five distinct design rejections rendered as five
+        // identical lines, and the one that actually blocked the session was
+        // indistinguishable from the four that did not. The tool's own summary
+        // is already sanitized above; carry its head so the rows differ.
+        if (stage) {
+          const settleDetail = result.summary
+            ? `${call.name}：${result.summary.slice(0, 200)}`
+            : call.name;
+          yield { t: "stage", stage, status: result.ok ? "ok" : "error", role: roleOfTool(call.name), detail: settleDetail };
+        }
 
         const toolBody = result.output !== undefined ? { summary: result.summary, output: result.output } : { ok: result.ok, summary: result.summary };
         const toolContent = serializeToolResultForContext(
@@ -2770,7 +3134,10 @@ export async function* runBrain(opts: {
         // Re-inject the REAL names from ctx.ontology (which survives compaction in memory) so the
         // next turn can self-correct without a wasted re-read. Cheap: no extra LLM/tool call.
         if (!result.ok && ctx.ontology && /design_agent|refine_agent|create_agent/.test(call.name) && /未知|不存在|unknown|not found|没有该|无效|invalid/.test(String(result.summary ?? ""))) {
-          const acts = ctx.ontology.actions.filter((a) => a.actor.includes("Agent")).map((a) => a.name);
+          const acts = factoryGenerationScopedAgentActionNames(
+            ctx.ontology,
+            ctx.generationDirective,
+          );
           const evs = ctx.ontology.events.map((e) => e.name);
           messages.push({ role: "system", content: `[名称纠偏] 你引用了本体里不存在的名称。只能用这些真名(别脑补)：可用 Agent 动作: ${acts.join("、")}；可用事件: ${evs.join("、")}。据此改正后重试。` });
         }
@@ -2856,8 +3223,8 @@ export async function* runBrain(opts: {
           await ctx.ports.skills.recordEval(s.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, ""), ok);
         }
       } catch (error) {
-        erroredOut = true;
-        yield { t: "error", message: `技能评估保存失败：${safeDiagnostic(error)}` };
+        learningFailures.push(`技能评估保存失败：${safeDiagnostic(error)}`);
+        yield { t: "error", message: `技能评估保存失败：${safeDiagnostic(error)}（学习类收尾失败，不改判本次交付结果）` };
       }
     }
   }
@@ -2878,8 +3245,8 @@ export async function* runBrain(opts: {
       });
       yield { t: "reflect", kind: "caveat", lesson: "(自动) 退出前留下了一条警示反思" };
     } catch (error) {
-      erroredOut = true;
-      yield { t: "error", message: `运行反思保存失败：${safeDiagnostic(error)}` };
+      learningFailures.push(`运行反思保存失败：${safeDiagnostic(error)}`);
+      yield { t: "error", message: `运行反思保存失败：${safeDiagnostic(error)}（学习类收尾失败，不改判本次交付结果）` };
     }
   }
 
@@ -2908,8 +3275,8 @@ export async function* runBrain(opts: {
         if (res.written > 0) yield { t: "message", text: `🗂 记忆整合（Mem0 式）：提取 ${res.extracted} 条事实 → ${res.written} 次 ADD/UPDATE/DELETE 写入长期记忆。` };
       }
     } catch (error) {
-      erroredOut = true;
-      yield { t: "error", message: `运行学习结果保存失败：${safeDiagnostic(error)}` };
+      learningFailures.push(`运行学习结果保存失败：${safeDiagnostic(error)}`);
+      yield { t: "error", message: `运行学习结果保存失败：${safeDiagnostic(error)}（学习类收尾失败，不改判本次交付结果）` };
     }
   }
 
@@ -2927,8 +3294,8 @@ export async function* runBrain(opts: {
       });
       await ctx.ports.policyStats.save(opts.domain, next);
     } catch (error) {
-      erroredOut = true;
-      yield { t: "error", message: `策略统计保存失败：${safeDiagnostic(error)}` };
+      learningFailures.push(`策略统计保存失败：${safeDiagnostic(error)}`);
+      yield { t: "error", message: `策略统计保存失败：${safeDiagnostic(error)}（学习类收尾失败，不改判本次交付结果）` };
     }
   }
   const status: Extract<BrainEvent, { t: "done" }>["status"] = erroredOut
@@ -2942,10 +3309,18 @@ export async function* runBrain(opts: {
         : ctx.spent.turns >= MAX_TURNS
           ? "turns_exhausted"
           : "incomplete";
+  // 学习类收尾失败不改判交付，但必须说出来——否则「学到了什么」这件事会
+  // 在无人察觉的情况下悄悄断档。
+  if (learningFailures.length > 0) {
+    yield {
+      t: "message",
+      text: `⚠️ 本次运行的学习结果有 ${learningFailures.length} 项未能落库（${learningFailures.join("；")}）。交付结果不受影响，但这次的经验没有沉淀下来。`,
+    };
+  }
   const completionKind: Extract<BrainEvent, { t: "done" }>["completionKind"] =
     status === "finished"
       ? "delivery"
-      : status === "incomplete" && ctx.specs.length === 0 && !ctx.lastSandbox
+      : status === "incomplete" && ctx.specs.length === 0 && !ctx.lastSandbox && !generationStalledBeforeAuthoring
         ? "answer"
         : "incomplete";
   yield {

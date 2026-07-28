@@ -100,6 +100,8 @@ export interface SessionLogViewProps {
   messages: OntoCodeMessage[];
   events: OntoCodeSessionEvent[];
   jobs: OntoCodeHarnessJob[];
+  /** 事件超过取回上限：显示的不是全部，必须说出来。 */
+  truncated?: boolean;
 }
 
 type LogEntry =
@@ -178,7 +180,9 @@ export function SessionLogView(props: SessionLogViewProps) {
           hiding debug events also hides the control that brings them back. */}
       <div className={styles.ovSum}>
         <span className={styles.ovChip}>{props.messages.length} 条消息</span>
-        <span className={styles.ovChip}>{props.events.length} 个事件</span>
+        <span className={styles.ovChip}>
+          {props.events.length} 个事件{props.truncated ? "（未取完）" : ""}
+        </span>
         <button
           type="button"
           className={styles.mini}
@@ -232,6 +236,8 @@ export function SessionLogView(props: SessionLogViewProps) {
 export interface ReasoningFlowViewProps {
   jobs: OntoCodeHarnessJob[];
   events: OntoCodeSessionEvent[];
+  /** 事件超过取回上限：这条链是不完整的，别让人以为看到了全部。 */
+  truncated?: boolean;
 }
 
 const STATUS_TONE: Record<string, string> = {
@@ -296,6 +302,11 @@ export function ReasoningFlowView(props: ReasoningFlowViewProps) {
 
   return (
     <div className={styles.flowWrap}>
+      {props.truncated ? (
+        <div className={styles.iEmpty}>
+          事件数超过单次取回上限，下面这条链不完整——较早的步骤未列出。
+        </div>
+      ) : null}
       {ordered.map((job, index) => {
         const steps = stepsByJob.get(job.id) ?? [];
         const tone = STATUS_TONE[job.status] ?? "flowIdle";

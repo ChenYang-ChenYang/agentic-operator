@@ -664,9 +664,14 @@ export function WorkbenchSessionConnected() {
                 messages={messages}
                 events={events}
                 jobs={jobs}
+                truncated={eventsQ.data?.truncated ?? false}
               />
             ) : inspectorTab === "reasoning" ? (
-              <ReasoningFlowView jobs={jobs} events={events} />
+              <ReasoningFlowView
+                jobs={jobs}
+                events={events}
+                truncated={eventsQ.data?.truncated ?? false}
+              />
             ) : null}
             <div
               style={{

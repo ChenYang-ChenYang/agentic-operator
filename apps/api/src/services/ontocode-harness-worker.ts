@@ -3863,16 +3863,38 @@ export async function runFactoryBuild(
       cleanup();
       resolve(result);
     };
+    // A failed progress write used to abort the run, unconditionally. That was
+    // defensible when a build wrote ~14 progress rows, all of them carrying job
+    // outcome. With the telemetry bridge below it writes up to four hundred, and
+    // an observability row is not worth a live build: losing the trace of a
+    // successful build is bad, killing the build to protect the trace is worse.
+    //
+    // So the policy splits by what the row MEANS, not by how it failed. Rows
+    // that carry outcome (stage, agent_created, sandbox, clarification,
+    // readiness, and every non-telemetry caller) still abort — if we cannot
+    // record that a sandbox ran, we must not proceed as though it did. Pure
+    // telemetry counts the loss and reports it at the end. Never silently.
+    let telemetryWritesLost = 0;
     const queueProgress = (
       type: string,
       payload: Record<string, unknown>,
       visibility?: "user" | "debug" | "audit",
+      opts: { telemetryOnly?: boolean } = {},
     ): void => {
       progressTail = progressTail
         .then(() => input.onProgress(type, payload, visibility))
         .catch((error) => {
-          runtime.abortRun(runId, input.tenantId);
-          fail(error);
+          // Losing the lease is a correctness signal, not a write failure: this
+          // worker no longer owns the job and must stop regardless of the row.
+          if (
+            !opts.telemetryOnly ||
+            error instanceof OntoCodeHarnessLostLeaseError
+          ) {
+            runtime.abortRun(runId, input.tenantId);
+            fail(error);
+            return;
+          }
+          telemetryWritesLost += 1;
         });
     };
 
@@ -3911,6 +3933,7 @@ export async function runFactoryBuild(
           {
             factoryRunId: runId,
             emitted: telemetryEmitted,
+            lost: telemetryWritesLost,
             note: "本次运行的推理/工具明细超过单次记录上限，后续步骤不再逐条记录；作业结论与产物不受影响。",
           },
           "user",
@@ -3918,7 +3941,7 @@ export async function runFactoryBuild(
         return false;
       }
       telemetryEmitted += 1;
-      queueProgress(type, payload, "debug");
+      queueProgress(type, payload, "debug", { telemetryOnly: true });
       return true;
     };
 
@@ -4167,6 +4190,19 @@ export async function runFactoryBuild(
         }
         if (event.t !== "done") return;
         flushThinking();
+        // A dropped telemetry row is reported, never swallowed. Otherwise a
+        // partial trace reads as a complete one — the same lie as a silent cap.
+        if (telemetryWritesLost > 0) {
+          queueProgress(
+            `harness.${input.operation}.telemetry_incomplete`,
+            {
+              factoryRunId: runId,
+              lost: telemetryWritesLost,
+              note: "部分推理/工具明细写入失败，本次轨迹不完整；作业结论与产物不受影响。",
+            },
+            "user",
+          );
+        }
 
         void progressTail
           .then(async () => {

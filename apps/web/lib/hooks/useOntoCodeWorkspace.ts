@@ -564,20 +564,48 @@ export function useOntoCodeSuiteOverview(
   });
 }
 
+/** 事件端点的真实返回形状（不是通用 Page：它按 seq 游标翻页）。 */
+interface EventPage {
+  items: OntoCodeSessionEvent[];
+  lastSeq: number;
+  hasMore: boolean;
+}
+
+const EVENTS_PAGE_SIZE = 500;
+/** 翻页上限。命中即如实上报，绝不悄悄只显示开头一段。 */
+const EVENTS_MAX_PAGES = 8;
+
 export function useOntoCodeSessionEvents(
   tenant: string,
   sessionId: string,
-): UseQueryResult<Page<OntoCodeSessionEvent>> {
+): UseQueryResult<EventPage & { truncated: boolean }> {
   return useQuery({
     queryKey: ONTOCODE_KEYS.events(tenant, sessionId),
-    queryFn: () =>
-      callV1<Page<OntoCodeSessionEvent>>(
-        tenant,
-        // visibility 是下限而非精确匹配：debug 返回 user+debug，一次拿到完整
-        // 有序轨迹。以前不带这个参数，默认 user，于是 harness 的推理与工具帧
-        // 一条也到不了前端——「显示全部」按钮筛的列表里根本没有非 user 事件。
-        `/v1/ontocode/sessions/${encodeURIComponent(sessionId)}/events?limit=200&visibility=debug`,
-      ),
+    queryFn: async () => {
+      // 以前是「取前 200 条，忽略 hasMore」。事件按 seq 升序，所以一旦超过
+      // 200 条，看到的永远是最早的 200 条——恰好把结论丢在视野外。接入真实
+      // harness 轨迹后一次 Build 就能写几百条，第二次 Build 必然踩到。
+      //
+      // visibility 是下限而非精确匹配：debug 返回 user+debug，一次拿到完整
+      // 有序轨迹（以前不带这个参数默认 user，推理与工具帧一条也到不了前端，
+      // 「显示全部」按钮筛的列表里根本没有非 user 事件）。
+      const items: OntoCodeSessionEvent[] = [];
+      let after = 0;
+      let hasMore = true;
+      let pages = 0;
+      while (hasMore && pages < EVENTS_MAX_PAGES) {
+        const page = await callV1<EventPage>(
+          tenant,
+          `/v1/ontocode/sessions/${encodeURIComponent(sessionId)}/events` +
+            `?limit=${EVENTS_PAGE_SIZE}&visibility=debug&after=${after}`,
+        );
+        items.push(...page.items);
+        hasMore = page.hasMore;
+        after = page.lastSeq;
+        pages += 1;
+      }
+      return { items, lastSeq: after, hasMore, truncated: hasMore };
+    },
     enabled: Boolean(tenant && sessionId),
     staleTime: 2_500,
   });
