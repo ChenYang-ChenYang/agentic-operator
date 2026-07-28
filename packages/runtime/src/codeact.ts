@@ -859,14 +859,18 @@ export async function runGeneratedCodeIsolated(
         const operation = async (): Promise<unknown> => {
           if (hostRuntime?.invoke)
             return hostRuntime.invoke(agentRef, args[1], { timeoutMs });
-          if (!sandbox)
-            throw new Error(
-              `production invoke '${agentRef}' has no durable host binding`,
-            );
-          const child = await spawn(`执行 ${agentRef}`, args[1] ?? input);
-          if (!child.ok)
-            throw new Error(child.error ?? `invoke '${agentRef}' failed`);
-          return child.data;
+          // No host binding means no child to call — in the sandbox exactly as
+          // in production. The sandbox used to fall through to
+          // `spawn("执行 <ref>", …)`, i.e. it asked an LLM to improvise an agent
+          // that does whatever the ref is named, and returned that as if the
+          // real child had answered. Sandbox evidence is what gates promotion,
+          // so a hallucinated stand-in could certify a working child that does
+          // not exist. An unbound invoke must fail, and fail identically in
+          // both environments — otherwise the sandbox is not testing the thing
+          // that will run.
+          throw new Error(
+            `invoke '${agentRef}' has no durable host binding`,
+          );
         };
         if (timeoutMs === undefined) return operation();
         let timer: ReturnType<typeof setTimeout> | undefined;

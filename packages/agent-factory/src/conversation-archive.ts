@@ -44,11 +44,25 @@ export interface FactoryConversationArchive {
   count(conversationId: string): Promise<number>;
 }
 
-const CONTENT_CAP = 4_000;
+// 归档存在的唯一理由，是让一次【不可逆的折叠】仍然可恢复。上限设成 4,000 字时，
+// 它恰好把最值得留的东西砍掉：实测一条真实会话 189 条归档里有 58 条被截断，
+// 其中包括四份权威 Action 契约——折叠之后原文就没了，截断即永久损失。
+//
+// 存储在文件系统（FsConversationArchiveStore，NDJSON），磁盘不是瓶颈；
+// 这里对齐系统在别处已经接受的最大单体（FACTORY_UI_OUTPUT_CAP 默认 64,000）。
+// 仍然保留上限：一条 400KB 的工具输出进归档也不合理，但截断必须被【报出来】。
+const DEFAULT_CONTENT_CAP = 64_000;
+function contentCap(): number {
+  const configured = Number(process.env.FACTORY_ARCHIVE_CONTENT_CAP);
+  return Number.isFinite(configured) && configured >= 1_000
+    ? Math.floor(configured)
+    : DEFAULT_CONTENT_CAP;
+}
 
 /** Serialize dropped ChatMsgs into archive entries. Tool calls/results keep their JSON payloads
  * (capped) so a recall can show real arguments/outputs, not just "called a tool". */
 export function archiveEntriesFromDropped(dropped: ChatMsg[], foldSeq: number, now: number): ConversationArchiveEntry[] {
+  const cap = contentCap();
   return dropped.map((message, i) => {
     let content: string;
     if (typeof message.content === "string") {
@@ -69,7 +83,7 @@ export function archiveEntriesFromDropped(dropped: ChatMsg[], foldSeq: number, n
     return {
       at: now + i, // preserve intra-batch order under identical clock reads
       role: message.role,
-      content: content.length > CONTENT_CAP ? `${content.slice(0, CONTENT_CAP)}…[截断，原文 ${content.length} 字]` : content,
+      content: content.length > cap ? `${content.slice(0, cap)}…[截断，原文 ${content.length} 字]` : content,
       foldSeq,
     };
   });
@@ -150,3 +164,16 @@ export const recallConversationTool: BrainTool = {
     }
   },
 };
+
+/** 本批归档里被截断的条数与原文总字数。折叠是不可逆的，所以「这次归档是有损的」
+ *  必须是一个可见事实，而不是埋在某条 content 字符串末尾的一句话。 */
+export function archiveTruncationReport(
+  entries: readonly ConversationArchiveEntry[],
+): { truncated: number; cap: number } {
+  const cap = contentCap();
+  return {
+    truncated: entries.filter((entry) => entry.content.endsWith("字]")
+      && entry.content.includes("…[截断，原文 ")).length,
+    cap,
+  };
+}

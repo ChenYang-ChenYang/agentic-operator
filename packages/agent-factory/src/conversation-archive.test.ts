@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   archiveEntriesFromDropped,
+  archiveTruncationReport,
   recallConversationTool,
   searchArchiveEntries,
   type ConversationArchiveEntry,
@@ -26,12 +27,34 @@ describe("#CONV-ARCHIVE — entry serialization", () => {
     expect(entries[2]!.content).toContain("已提交"); // non-string content JSON-serialized
   });
 
-  it("caps oversized content and says so honestly (never silent truncation)", () => {
+  it("keeps content the old 4,000-char cap would have destroyed", () => {
+    // 归档的唯一职责是让不可逆折叠可恢复。上限曾是 4,000 字，恰好砍掉最值得留
+    // 的东西——实测一条真实会话 189 条里 58 条被截断，含四份权威 Action 契约。
     const big = "x".repeat(9_000);
     const [entry] = archiveEntriesFromDropped([{ role: "assistant", content: big }], 1, 0);
-    expect(entry!.content.length).toBeLessThan(4_200);
+    expect(entry!.content).toBe(big);
+    expect(entry!.content).not.toContain("截断");
+  });
+
+  it("still caps, and says so honestly, beyond the configured limit", () => {
+    const huge = "x".repeat(70_000);
+    const [entry] = archiveEntriesFromDropped([{ role: "assistant", content: huge }], 1, 0);
+    expect(entry!.content.length).toBeLessThan(70_000);
     expect(entry!.content).toContain("截断");
-    expect(entry!.content).toContain("9000");
+    expect(entry!.content).toContain("70000");
+  });
+
+  it("reports a lossy batch as a fact, not just as text buried in one entry", () => {
+    const entries = archiveEntriesFromDropped(
+      [
+        { role: "assistant", content: "x".repeat(70_000) },
+        { role: "assistant", content: "short" },
+      ],
+      1,
+      0,
+    );
+    expect(archiveTruncationReport(entries)).toMatchObject({ truncated: 1 });
+    expect(archiveTruncationReport(entries).cap).toBeGreaterThanOrEqual(64_000);
   });
 });
 

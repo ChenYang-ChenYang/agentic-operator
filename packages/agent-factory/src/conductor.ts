@@ -30,7 +30,7 @@ import { consolidateRunMemory, digestFromMessages, renderMemoryRecall, MEMORY_RE
 import { GENERAL_MEMORY_SUBJECT } from "./ports";
 import { induceSkillsFromRun, kebab as kebabSkill } from "./skill-induction";
 import { humanMemoryQuestionKey, renderHumanMemorySeed } from "./human-memory";
-import { archiveEntriesFromDropped } from "./conversation-archive";
+import { archiveEntriesFromDropped, archiveTruncationReport } from "./conversation-archive";
 import { isSideEffectTool } from "./side-effect-tools";
 import { coverageWaiverMatches, normalizeCoverageCells, parseCoverageWaiverTag } from "./coverage-waiver";
 import { isTestCaseDecisionTaggedMessage, parseTestCaseDecision } from "./test-case-decision";
@@ -353,13 +353,37 @@ async function maybeCompact(messages: ChatMsg[], ctx: BrainCtx): Promise<boolean
   // by design; the archive is what makes the loss recoverable (recall_conversation). A configured
   // archive that fails DEFERS the fold — context grows until the write path recovers, but folded
   // conversation is never silently destroyed. No archive configured → legacy summary-only fold.
-  if (ctx.ports.conversationArchive && ctx.conversationId) {
+  //
+  // 三种情况必须分开处理。此处原本是一个合取判断
+  // `if (archive && conversationId)`，于是「配了归档但这条会话不可寻址」会
+  // 悄悄落进 else 分支走宽松折叠 —— 子大脑正是这种情况（继承父进程的 ports
+  // 却没有 conversationId），它的每一次折叠都在无声销毁原文。
+  if (!ctx.ports.conversationArchive) {
+    // 没配归档：历史行为，摘要式折叠。使用者知道自己没开归档。
+  } else if (!ctx.conversationId) {
+    // 配了归档却写不进去，和写失败是同一件事：推迟折叠、明说原因。
+    // 上下文会继续增长，但绝不静默销毁已配置要保留的原文。
+    ctx.emit({
+      t: "reflect",
+      kind: "compact-archive-unaddressable",
+      lesson: "已配置会话归档，但这条会话没有 conversationId，原文无处可写——本次压缩已推迟，不做无归档折叠。",
+    });
+    return false;
+  } else {
     ctx.compactionFolds = (ctx.compactionFolds ?? 0) + 1;
+    const entries = archiveEntriesFromDropped(dropped, ctx.compactionFolds, Date.now());
     try {
-      await ctx.ports.conversationArchive.append(
-        ctx.conversationId,
-        archiveEntriesFromDropped(dropped, ctx.compactionFolds, Date.now()),
-      );
+      await ctx.ports.conversationArchive.append(ctx.conversationId, entries);
+      // 折叠不可逆，所以「这次归档是有损的」必须是可见事实，而不是埋在某条
+      // content 末尾的一句话。
+      const lossy = archiveTruncationReport(entries);
+      if (lossy.truncated > 0) {
+        ctx.emit({
+          t: "reflect",
+          kind: "compact-archive-lossy",
+          lesson: `本次归档有 ${lossy.truncated}/${entries.length} 条超过 ${lossy.cap} 字被截断——这部分原文在折叠后不可恢复。需要更完整的归档可调高 FACTORY_ARCHIVE_CONTENT_CAP。`,
+        });
+      }
     } catch (error) {
       ctx.compactionFolds -= 1;
       ctx.emit({ t: "reflect", kind: "compact-archive-failed", lesson: `会话归档写入失败（${(error as Error).message}）——本次压缩已推迟，折叠原文不会被静默丢弃。` });
@@ -568,6 +592,16 @@ async function runSubBrain(
       budgetLedger: ctx.budgetLedger,
       interactionPolicy: ctx.interactionPolicy,
       generationDirective: ctx.generationDirective,
+      // 给子大脑一个派生的会话 id。没有它，子大脑继承了父进程的归档端口却
+      // 无处可写，压缩时要么静默销毁原文（旧行为），要么被迫推迟（新守卫）。
+      // 派生 id 让子大脑的转录和父会话一样可归档、可 recall。
+      ...(ctx.conversationId
+        ? {
+            conversationId: member.groupId
+              ? `${ctx.conversationId}:sub:${member.groupId}:${member.role ?? "member"}`
+              : `${ctx.conversationId}#sub-${(ctx.subagentDepth ?? 0) + 1}`,
+          }
+        : {}),
       ...(member.scopedTools?.length ? { tools: member.scopedTools } : {}),
     })) {
       if (ev.t === "message") summary = ev.text;
