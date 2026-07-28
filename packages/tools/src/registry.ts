@@ -390,7 +390,9 @@ const REGISTRATIONS: ToolRegistration[] = [
       argsSchema: {},
       argsExample: {},
       configSchema: GOHIRE_CONFIG_SCHEMA,
-      capabilities: [{ systems: ["RoboHire", "GoHire", "RoboHire_System", "GoHire_System"], kinds: ["external_api"], roles: ["read", "reads", "calls"], operations: ["health"], probeRequired: true }],
+      // MIGRATION-DEBT(system-profiles 2026-07-22): "RAAS"/"RAAS_System" 为档案体系上线前的应急别名。
+      // 租户确认 raas-platform 系统档案后应从此处移除——System Profile 是别名的唯一权威。
+      capabilities: [{ systems: ["RoboHire", "GoHire", "RoboHire_System", "GoHire_System", "RAAS", "RAAS_System"], kinds: ["external_api"], roles: ["read", "reads", "calls"], operations: ["health"], probeRequired: true }],
       configExample: GOHIRE_CONFIG_EXAMPLE,
       returnsSchema: {
         data: { type: "object", description: "Upstream JSON, e.g. { status: 'ok' }" },
@@ -432,7 +434,7 @@ const REGISTRATIONS: ToolRegistration[] = [
           "Senior Backend Engineer\n\nResponsibilities: design and own production services in Go/TypeScript ...",
       },
       configSchema: GOHIRE_CONFIG_SCHEMA,
-      capabilities: [{ systems: ["RoboHire", "GoHire", "RoboHire_System", "GoHire_System"], kinds: ["external_api"], roles: ["calls"], operations: ["parse-jd"], objectTypes: ["Job_Posting", "Job_Requisition"], probeRequired: true }],
+      capabilities: [{ systems: ["RoboHire", "GoHire", "RoboHire_System", "GoHire_System", "RAAS", "RAAS_System"], kinds: ["external_api"], roles: ["calls"], operations: ["parse-jd"], objectTypes: ["Job_Posting", "Job_Requisition"], probeRequired: true }],
       returnsSchema: {
         data: {
           type: "object",
@@ -479,7 +481,7 @@ const REGISTRATIONS: ToolRegistration[] = [
       credentialPosture: "environment_reference_only",
       probeRequired: true,
       capabilities: [{
-        systems: ["RoboHire", "GoHire", "RoboHire_System", "GoHire_System"],
+        systems: ["RoboHire", "GoHire", "RoboHire_System", "GoHire_System", "RAAS", "RAAS_System"],
         kinds: ["external_api"],
         roles: ["calls"],
         operations: ["generate-jd", "jobs/generate-jd"],
@@ -544,7 +546,7 @@ const REGISTRATIONS: ToolRegistration[] = [
       },
       argsExample: {},
       configSchema: GOHIRE_CONFIG_SCHEMA,
-      capabilities: [{ systems: ["RoboHire", "GoHire", "RoboHire_System", "GoHire_System"], kinds: ["external_api"], roles: ["calls"], operations: ["parse-resume"], objectTypes: ["Resume", "Candidate"], probeRequired: true }],
+      capabilities: [{ systems: ["RoboHire", "GoHire", "RoboHire_System", "GoHire_System", "RAAS", "RAAS_System"], kinds: ["external_api"], roles: ["calls"], operations: ["parse-resume"], objectTypes: ["Resume", "Candidate"], probeRequired: true }],
       returnsSchema: {
         data: {
           type: "object",
@@ -598,7 +600,7 @@ const REGISTRATIONS: ToolRegistration[] = [
         jd: "Senior Backend Engineer — Must have Postgres OLTP expertise ...",
       },
       configSchema: GOHIRE_CONFIG_SCHEMA,
-      capabilities: [{ systems: ["RoboHire", "GoHire", "RoboHire_System", "GoHire_System"], kinds: ["external_api"], roles: ["calls"], operations: ["match-resume"], objectTypes: ["Resume", "Job_Posting", "Job_Requisition", "Candidate_Match_Result"], probeRequired: true }],
+      capabilities: [{ systems: ["RoboHire", "GoHire", "RoboHire_System", "GoHire_System", "RAAS", "RAAS_System"], kinds: ["external_api"], roles: ["calls"], operations: ["match-resume"], objectTypes: ["Resume", "Job_Posting", "Job_Requisition", "Candidate_Match_Result"], probeRequired: true }],
       returnsSchema: {
         matchScore: {
           type: "number | null",
@@ -694,7 +696,7 @@ const REGISTRATIONS: ToolRegistration[] = [
       configSchema: GOHIRE_CONFIG_SCHEMA,
       credentialPosture: "server_managed",
       probeRequired: true,
-      capabilities: [{ systems: ["RoboHire", "GoHire", "RoboHire_System", "GoHire_System"], kinds: ["external_api"], roles: ["write", "writes", "calls"], operations: ["invite-candidate"], objectTypes: ["Candidate", "Job_Requisition", "Interview_Record", "Communication_Log"], probeRequired: true }],
+      capabilities: [{ systems: ["RoboHire", "GoHire", "RoboHire_System", "GoHire_System", "RAAS", "RAAS_System"], kinds: ["external_api"], roles: ["write", "writes", "calls"], operations: ["invite-candidate"], objectTypes: ["Candidate", "Job_Requisition", "Interview_Record", "Communication_Log"], probeRequired: true }],
       returnsSchema: {
         success: { type: "boolean", description: "True only when RoboHire issued/reused a real invitation." },
         error_code: { type: "string | null", description: "Stable terminal business-failure classification; null on success." },
@@ -825,6 +827,16 @@ const REGISTRATIONS: ToolRegistration[] = [
         bytesWritten: 1247,
       },
       aliases: ["writeJdToDisk"],
+      // 本地容器磁盘写入。刻意【不】声明 Object_Storage_System：这些工具写的是
+      // 容器盘，谎称覆盖对象存储会让能力匹配用一次本地写去满足 S3/MinIO 需求，
+      // 生成的 agent 会静默地写错地方。当前没有 Agent 动作需要它，属预防性声明。
+      capabilities: [{
+        systems: ["local filesystem"],
+        kinds: ["file_store"],
+        roles: ["write", "writes"],
+        operations: ["write-file"],
+        objectTypes: ["*"],
+      }],
       sourcePath: "packages/tools/src/fs/write-markdown-to-archive.ts",
     },
   },
@@ -873,6 +885,16 @@ const REGISTRATIONS: ToolRegistration[] = [
         bytesWritten: 2762,
       },
       aliases: ["writeReportToDisk", "writeBriefToDisk"],
+      // 本地容器磁盘写入。刻意【不】声明 Object_Storage_System：这些工具写的是
+      // 容器盘，谎称覆盖对象存储会让能力匹配用一次本地写去满足 S3/MinIO 需求，
+      // 生成的 agent 会静默地写错地方。当前没有 Agent 动作需要它，属预防性声明。
+      capabilities: [{
+        systems: ["local filesystem"],
+        kinds: ["file_store"],
+        roles: ["write", "writes"],
+        operations: ["write-file"],
+        objectTypes: ["*"],
+      }],
       sourcePath: "packages/tools/src/fs/write-html-to-archive.ts",
     },
   },
@@ -922,6 +944,16 @@ const REGISTRATIONS: ToolRegistration[] = [
         line: "2026-05-27T17:46:48.591Z  event=AGENT_TEST1_DONE  agent=agent-test2  subject=REQ-123",
       },
       aliases: ["writeWorkflowLog"],
+      // 本地容器磁盘写入。刻意【不】声明 Object_Storage_System：这些工具写的是
+      // 容器盘，谎称覆盖对象存储会让能力匹配用一次本地写去满足 S3/MinIO 需求，
+      // 生成的 agent 会静默地写错地方。当前没有 Agent 动作需要它，属预防性声明。
+      capabilities: [{
+        systems: ["local filesystem"],
+        kinds: ["file_store"],
+        roles: ["write", "writes"],
+        operations: ["write-file"],
+        objectTypes: ["*"],
+      }],
       sourcePath: "packages/tools/src/fs/append-to-log.ts",
     },
   },
@@ -1033,6 +1065,9 @@ const REGISTRATIONS: ToolRegistration[] = [
         headers: { "content-type": "application/json" },
         body: { id: 4892, url: "https://api.example.com/v1/issues/4892" },
       },
+      // 【刻意不声明 capabilities】通用 HTTP 传输。给它声明能力，就等于让一个通用
+      // 取数器宣称覆盖任意 external_api 需求——绑定门就此失效。需要真实外部集成时，
+      // 走 fetch_doc → extract_api_schema → create_tool 造具名适配器。
       sourcePath: "packages/tools/src/http/fetch.ts",
     },
   },
@@ -1080,6 +1115,8 @@ const REGISTRATIONS: ToolRegistration[] = [
       // silently degrade to this diagnostic probe when a tenant registration
       // is missing. Keep only the semantically equivalent legacy probe name.
       aliases: ["pingProbe"],
+      // 【刻意不声明 capabilities】诊断探针。绝不让诊断工具满足真实业务操作——
+      // 缺集成必须 fail closed（把真实业务操作别名到探针上曾是本仓明令禁止的事）。
       sourcePath: "packages/tools/src/meta/ping.ts",
     },
   },
@@ -1127,6 +1164,7 @@ const REGISTRATIONS: ToolRegistration[] = [
       },
       returnsExample: { svg: "<svg xmlns=…></svg>", width: 640, height: 94 },
       chainsWith: ["fs.writeHtmlToArchive", "report.htmlToPdf"],
+      // 【刻意不声明 capabilities】纯渲染，不触达任何外部系统。
       sourcePath: "packages/tools/src/viz/svg-chart.ts",
     },
   },
@@ -1174,6 +1212,16 @@ const REGISTRATIONS: ToolRegistration[] = [
         bytes: 48213,
       },
       chainsWith: ["viz.svgChart"],
+      // 本地容器磁盘写入。刻意【不】声明 Object_Storage_System：这些工具写的是
+      // 容器盘，谎称覆盖对象存储会让能力匹配用一次本地写去满足 S3/MinIO 需求，
+      // 生成的 agent 会静默地写错地方。当前没有 Agent 动作需要它，属预防性声明。
+      capabilities: [{
+        systems: ["local filesystem"],
+        kinds: ["file_store"],
+        roles: ["write", "writes"],
+        operations: ["write-file"],
+        objectTypes: ["*"],
+      }],
       sourcePath: "packages/tools/src/report/pdf.ts",
     },
   },
@@ -1207,7 +1255,8 @@ const REGISTRATIONS: ToolRegistration[] = [
         domain: "RAAS-v1",
         action: "ruleCheckForMatchResume",
       },
-      capabilities: [{ systems: ["Allmeta", "本体/规则库"], kinds: ["rulebase", "datastore"], roles: ["reads"], operations: ["fetch-action-rules"], objectTypes: ["Rule"], probeRequired: true }],
+      // MIGRATION-DEBT(system-profiles 2026-07-22): "Allmeta_Ontology_System" 同上——档案跑通后移除。
+      capabilities: [{ systems: ["Allmeta", "Allmeta_Ontology_System", "本体/规则库"], kinds: ["rulebase", "datastore"], roles: ["reads"], operations: ["fetch-action-rules"], objectTypes: ["Rule"], probeRequired: true }],
       profileScope: {
         exact: [
           { configKey: "domain", source: "domain" },
@@ -2180,6 +2229,7 @@ const REGISTRATIONS: ToolRegistration[] = [
             "True when any returned source content exceeded a per-result or aggregate content budget.",
         },
       },
+      // 【刻意不声明 capabilities】通用检索传输，理由同 http.fetch。
       sourcePath: "packages/tools/src/search/web.ts",
       sideEffect: "read",
       testPolicy: "allow",
@@ -2274,6 +2324,26 @@ const REGISTRATIONS: ToolRegistration[] = [
         count: { type: "number" },
         truncated: { type: "boolean" },
       },
+      // A declared capability is the ONLY thing that can satisfy an Ontology
+      // integration requirement — semantic similarity may recommend a tool, but
+      // it can never bind one. This entry had none, so a domain declaring
+      // `Allmeta_Ontology_System / graph_db / read` (the rule-gate actions do)
+      // could not bind the read-only Neo4j Query API tool we already ship: the
+      // action blocked, and the FDE was told to go build a tool that exists.
+      // `ontology.fetchActionRules` does not cover it (kinds rulebase/datastore)
+      // and `ontology.writeInstance` is write-only; kind matching is exact.
+      //
+      // `operations` are taken verbatim from this entry's own argsSchema union —
+      // an invented spelling would simply fail to match. `systems` mirrors
+      // ontology.writeInstance: same Allmeta boundary, opposite direction.
+      capabilities: [{
+        systems: ["Allmeta", "AllmetaOntology", "Allmeta_Ontology_System", "Neo4j ontology gateway"],
+        kinds: ["graph_db", "graph_database", "ontology", "datastore"],
+        roles: ["read", "reads", "query"],
+        operations: ["query", "search_nodes", "get_node", "neighbors", "find_paths", "schema"],
+        objectTypes: ["*"],
+        probeRequired: true,
+      }],
       sourcePath: "packages/tools/src/ontology/query.ts",
       sideEffect: "read",
       testPolicy: "allow",

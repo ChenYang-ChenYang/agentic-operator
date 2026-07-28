@@ -6050,7 +6050,7 @@ const fetch_doc: BrainTool = {
 const create_tool: BrainTool = {
   name: "create_tool",
   description:
-    "Tool-Smith：当本体工具库缺一个 agent 真正需要的工具时，【声明式】造一个 HTTP adapter（契约+精确 capabilities+读写副作用）。它永不 eval，运行时由受防护的 fetch 执行。新建/编辑后状态一律 required，不能直接满足 integration；还要 probe_tool 取得与当前 definition 绑定的真实证据。敏感 header 只允许 {config_key} 占位符，禁止把 secret 写进定义。",
+    "Tool-Smith：当本体工具库缺一个 agent 真正需要的工具时，【声明式】造一个 HTTP adapter（契约+精确 capabilities+读写副作用）。它永不 eval，运行时由受防护的 fetch 执行。新建/编辑后状态一律 required，不能直接满足 integration；还要 probe_tool 取得与当前 definition 绑定的真实证据。敏感 header 只允许 {config_key} 占位符，禁止把 secret 写进定义。【只能造 HTTP(S) 适配器】：数据库、消息队列、gRPC、SFTP、进程内能力都造不出来（非 http(s) 的 url_template 会被直接拒），碰到这类需求别在这里试，去 ask_user 或用已有的传输工具。",
   parameters: params(
     {
       name: { type: "string", description: "工具名（带命名空间，如 acme.createTicket）" },
@@ -7358,6 +7358,112 @@ const search_tools: BrainTool = {
       ok: true,
       summary: `命中 ${hits.length} 个：${hits.map((h) => `${h.name}(${h.sideEffect})`).join("、")}。design_agent 用真名绑定；缺凭证看每个的 configKeys。`,
       output: { query, results: hits },
+    };
+  },
+};
+
+// #DESCRIBE-TOOL —— 大脑手上一直握着每个工具的完整契约（argsSchema / returnsSchema /
+// configSchema / capabilities / credentialEnv / 探针状态，都在 ctx.realTools 里），
+// 却没有任何一个工具能把它读出来。search_tools 只回摘要行。
+//
+// 这一个缺口的实际代价，是三处「只能猜」：
+//   1. probe_tool 的 args 被要求「符合工具 params schema」——而那个 schema 读不到；
+//   2. plan 的 toolArguments 只校验形状不校验字段名，于是把 {file: …} 绑到只认
+//      扁平 filename、且拒绝斜杠的 fs.readFromInbox 上，能渲染、能过类型、能部署，
+//      到沙箱才炸；而 inspect_run 只报 degraded，refine_agent 于是去改系统提示词
+//      ——修错了地方，下一次沙箱以同样方式失败。
+//   3. 判断 create_tool 会不会和现有工具重复。
+//
+// 成本是一次对已在内存中的数据的只读查表：不新增端口、不新增数据、不写任何东西。
+// 不含密钥：configSchema 里放的是 *_env 变量【名】，从不是值。
+const describe_tool: BrainTool = {
+  name: "describe_tool",
+  description:
+    "读一个已注册工具的完整契约：参数 schema、返回 schema、配置项、能力声明、凭证 env 名、沙箱策略、探针状态、已确认的集成 profile。" +
+    "在给 plan 写 toolArguments、给 probe_tool 造参数、或判断某个需求是否已被现有工具覆盖之前，必须先读——" +
+    "search_tools 只给摘要行，照着摘要猜参数名是沙箱失败最常见的来源。只读，无副作用。",
+  parameters: params(
+    {
+      name: { type: "string", description: "工具名或别名（如 fs.readFromInbox / readResumeFromDisk）" },
+    },
+    ["name"],
+  ),
+  async execute(args, ctx) {
+    const wanted = String(args.name ?? "").trim();
+    if (!wanted) return { ok: false, summary: "describe_tool 需要 name（要读哪个工具的契约）。" };
+
+    let pool = ctx.realTools ?? [];
+    if (!pool.length && ctx.ports.toolRegistry) pool = await ctx.ports.toolRegistry.list();
+    if (ctx.ports.tools) {
+      const created = await ctx.ports.tools.list(ctx.domain);
+      const have = new Set(pool.map((t) => t.name));
+      for (const dt of created) if (!have.has(dt.name)) pool = [...pool, persistedToolAsRealTool(dt)];
+    }
+
+    const tool =
+      pool.find((candidate) => candidate.name === wanted) ??
+      pool.find((candidate) => (candidate.aliases ?? []).includes(wanted));
+    if (!tool) {
+      // 未命中就给最接近的几个真名，绝不编一个契约出来。
+      const near = searchRealTools(wanted, pool, { limit: 5 }).map((t) => t.name);
+      return {
+        ok: false,
+        summary: near.length
+          ? `工具库里没有「${wanted}」。最接近的真名：${near.join("、")}。用真名重读，别照着猜的名字写 toolArguments。`
+          : `工具库里没有「${wanted}」，也没有相近的名字。先 search_tools 找，或 fetch_doc + extract_api_schema + create_tool 造。`,
+        output: { requested: wanted, found: false, nearest: near, catalogSize: pool.length },
+      };
+    }
+
+    // 直接透出目录/声明式定义原文，不重塑形状——重塑就等于又造了一份可能失真的副本。
+    const definition = tool.catalogDefinition ?? tool.declarativeDefinition ?? null;
+    const contract = {
+      name: tool.name,
+      aliases: tool.aliases ?? [],
+      category: tool.category ?? null,
+      summary: tool.summary ?? null,
+      sideEffect: tool.sideEffect ?? null,
+      operation: tool.operation ?? null,
+      effectScope: tool.effectScope ?? null,
+      sandboxPolicy: tool.sandboxPolicy ?? null,
+      argsSchema: (definition as { argsSchema?: unknown; paramsSchema?: unknown } | null)?.argsSchema
+        ?? (definition as { paramsSchema?: unknown } | null)?.paramsSchema
+        ?? null,
+      returnsSchema: (definition as { returnsSchema?: unknown } | null)?.returnsSchema ?? null,
+      configSchema: (definition as { configSchema?: unknown } | null)?.configSchema ?? null,
+      configKeys: tool.configKeys ?? [],
+      credentialEnv: tool.credentialEnv ?? [],
+      capabilities: tool.capabilities ?? [],
+      probeStatus: tool.probeStatus ?? null,
+      probeEvidenceMode: tool.probeEvidenceMode ?? null,
+      // profile 里只有非密文配置（值是 *_env 变量名），仍然只透 id/key/config。
+      integrationProfiles: (tool.integrationProfiles ?? []).map((profile) => ({
+        id: profile.id,
+        profileKey: profile.profileKey,
+        config: profile.config,
+      })),
+      successRate: tool.successRate ?? null,
+      invoked: tool.invoked ?? null,
+    };
+
+    const missing: string[] = [];
+    if (!contract.argsSchema) missing.push("参数 schema");
+    if (!contract.returnsSchema) missing.push("返回 schema");
+    if (!contract.capabilities.length) missing.push("能力声明");
+    // 缺什么就说缺什么：没有 schema 时「照着猜」仍然是错的，只是这次你知道自己在猜。
+    const caveat = missing.length
+      ? `注意：这个工具没有声明 ${missing.join("、")}——缺 schema 时参数仍不可猜，用 probe_tool 先验证，或 ask_user 要真实样例。`
+      : "";
+
+    return {
+      ok: true,
+      summary:
+        `${tool.name}（${tool.sideEffect ?? "?"}${tool.category ? " · " + tool.category : ""}）：`
+        + `参数 schema ${contract.argsSchema ? "有" : "无"} · 返回 schema ${contract.returnsSchema ? "有" : "无"}`
+        + ` · 能力声明 ${contract.capabilities.length} 条 · 探针 ${contract.probeStatus ?? "未知"}`
+        + `${contract.credentialEnv.length ? ` · 需凭证 ${contract.credentialEnv.join("、")}` : ""}`
+        + `${caveat ? "。" + caveat : "。"}`,
+      output: contract,
     };
   },
 };
@@ -9410,6 +9516,7 @@ export const FACTORY_TOOLS: BrainTool[] = [
   list_agents,
   web_search,
   search_tools,
+  describe_tool,
   fetch_doc,
   extract_api_schema,
   create_tool,
@@ -9438,4 +9545,4 @@ export const __ruleTestHelpers = {
 // R9: subagents are still read-only for AGENT/tool authoring, but gain scoped SKILL authoring
 // (create_skill persists to the shared store so the parent + future runs absorb it) and
 // constraint introspection. spawn_subagent is added by the conductor under a depth cap.
-export const SUBAGENT_TOOLS: BrainTool[] = [read_ontology, query_links, read_action_contract, list_domains, describe_domain, describe_object, list_agents, read_spec, inspect_run, web_search, search_tools, fetch_doc, extract_api_schema, analyze_failure, create_skill, resolve_capability_ladder, select_strategy, describe_design_constraints];
+export const SUBAGENT_TOOLS: BrainTool[] = [read_ontology, query_links, read_action_contract, list_domains, describe_domain, describe_object, list_agents, read_spec, inspect_run, web_search, search_tools, describe_tool, fetch_doc, extract_api_schema, analyze_failure, create_skill, resolve_capability_ladder, select_strategy, describe_design_constraints];

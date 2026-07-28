@@ -76,6 +76,7 @@ export const ROLE_OF_TOOL: Record<string, string> = {
   create_signed_fixture: "沙箱证据协调员",
   prepare_sandbox_evidence_plan: "沙箱证据协调员",
   search_tools: "工具工程师",
+  describe_tool: "工具工程师",
   extract_api_schema: "工具工程师",
   create_skill: "技能工程师",
   use_skill: "技能工程师",
