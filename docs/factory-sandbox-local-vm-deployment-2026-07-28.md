@@ -99,15 +99,35 @@ runner 自报 `SANDBOX_RUNNER_ACTUAL_ISOLATION_TIER=remote_vm`。
 
 ---
 
-## 还差一步（需要主机管理员权限）
+## 主 API 接入（不需要提权）
 
-`/etc/hosts` 需要一条记录，把证书主机名指向 Lima 的端口转发：
+把 `~/.agentic/sandbox-primary/primary.env` 加载进原生 api 进程即可。
 
-```bash
-echo "127.0.0.1 sandbox.factory.internal" | sudo tee -a /etc/hosts
-```
+`FACTORY_SB_RUNNER_URL` 用的是 `https://127.0.0.1:3570` 而不是 `sandbox.factory.internal`，
+只为免去一条需要 root 的 `/etc/hosts` 记录。runner 证书**同时带 DNS 与 IP 两个 SAN**，
+两种写法都通过严格校验；将来加了 hosts 记录，改这一行即可切换，不用重签。
 
-之后把 `~/.agentic/sandbox-primary/primary.env` 加载进原生 api 进程即可。
+这不削弱任何保证：防「同宿主冒充」靠的是入口脚本重算 machine-id、签名证明里的
+`remote_vm` 与三个互异身份哈希、以及镜像 digest 绑定，**都与本机侧 URL 无关**；
+URL 只决定把字节发到哪，而 Lima 拓扑下 Mac 确实是经回环端口转发到达 VM 的。
+代价是审计可读性——只看本机侧配置的人无法从 URL 分辨它与同宿主 runner，靠本文与
+`primary.env` 里的注释补齐。
+
+### 已用主 API 自身代码验证过的部分
+
+- `loadRemoteSandboxConnectionConfig()` 接受全套配置，且**平台证明比对面已配置**
+  （未配置时 `verifySandboxExecutionPlaneReceipt` 会以 `execution_plane_attestation_unconfigured` 拒绝促升）。
+- `sandboxExecutionPlaneAttestationIssues()` 对签出的证明返回 **0 问题**，`isolationTier = remote_vm`。
+- node + `NODE_EXTRA_CA_CERTS` 走真实客户端路径（IP 与 SNI 两种）均通过严格 TLS 校验，
+  runner 返回 401（要求控制令牌，正确行为）。
+
+### qualification 的判定链
+
+`qualification: "promotable"` 由 runner 内部无条件写入回执
+（`sandbox-runner-executor.ts` 的 `ManifestSandboxDeployer` 选项）。
+**真正的门在主 API 侧**：`sandboxExecutionReceiptIssues()` 检查回执的 `isolationTier`，
+若为 `same_host_container` 即返回「sandbox isolation tier is not promotable」并拒绝。
+本部署的 runner 声明 `remote_vm`，且该声明写在已验签的证明里 —— 决定 qualification 的每一环都已逐项验证。
 
 **注意：主 API 一次只能配一个 runner**（`FACTORY_SB_RUNNER_URL` 是标量）。
 加载后 API 改用外部 runner；同宿主诊断 runner（`127.0.0.1:3560`）继续运行但不再被使用。
