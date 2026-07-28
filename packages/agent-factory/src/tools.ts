@@ -17,6 +17,7 @@ import type { OntologyAction, DomainOntology } from "./ontology-types";
 import type { DeclarativeTool, FactorySignedFixtureExchange } from "./ports";
 import { SandboxLifecycleBlockedError } from "./ports";
 import { compileGraph, verifyGraph, coverageGap } from "./graph";
+import { analyzeOntologyStructure } from "./ontology-analysis";
 import { acceptanceGate, assessCompleteSuite, assessIntegrationBindings } from "./acceptance";
 import { parsePlan, validatePlan } from "./plan-projection";
 import { analyzeExecutionPlanRequirement, validatePlanAgainstOntology } from "./ontology-execution";
@@ -83,6 +84,7 @@ import {
 } from "./integration-profile";
 import {
   createIntegrationProfileAuthorizationBinding,
+  integrationProfileConfigDigest,
   integrationProfileScopeIssues,
   validateGeneratedSpecIntegrationProfiles,
   type IntegrationProfileExecutionScope,
@@ -117,6 +119,10 @@ import type {
 } from "./authorization-challenge";
 import { factoryExecutionScope } from "./authorization-challenge";
 import { sandboxDesignReviewSubjectDigest } from "./sandbox-design-review";
+import type {
+  SandboxEvidencePlanBindingRequest,
+  SandboxEvidencePlanReceipt,
+} from "./sandbox-evidence-plan";
 import { sandboxExecutionReceiptIssues } from "./sandbox-execution-plane";
 import {
   FACTORY_TEST_FIXTURE_ASSET_SCHEMA,
@@ -125,12 +131,23 @@ import {
 } from "./test-fixture-assets";
 import {
   assessRuleGate,
-  ontologyActionHasRulebaseRequirement,
   ontologyActionIsRuleGate,
   resolveActionRuleReferences,
   toolReadsRulebase,
 } from "./rule-gate-evidence";
 import { recallConversationTool } from "./conversation-archive";
+import {
+  applyFactoryGenerationOverlay,
+  factoryGenerationAcceptanceOntology,
+  factoryGenerationScopedAgentActionNames,
+  factoryGenerationScopedAgentActions,
+} from "./generation-directive";
+import {
+  autopilotClarificationHardBlockReason,
+  autopilotTestApprovalBlockReason,
+  recordFactoryAssumption,
+  resolveAutopilotClarification,
+} from "./interaction-policy";
 
 export { ontologyContentHash, sandboxEvidenceFingerprint, specsFingerprint } from "./evidence-fingerprint";
 
@@ -337,6 +354,7 @@ export function persistedToolAsRealTool(tool: DeclarativeTool): RealTool {
     verifiedDefinitionHashes: tool.verifiedDefinitionHashes,
     productionVerifiedDefinitionHashes: tool.productionVerifiedDefinitionHashes,
     probeEvidenceMode: tool.probeEvidenceMode,
+    integrationProfiles: tool.integrationProfiles ?? [],
     declarativeDefinition: {
       name: tool.name,
       method: tool.method,
@@ -543,6 +561,74 @@ function refreshCurrentIntegrationBindings(
  * candidate adapter from the binding report ahead of fuzzy recommendations so
  * auto-flooring cannot omit PostgreSQL/object-store/Allmeta simply because a
  * parser shares more name tokens with the action. */
+function ontologyDeclaredExecutionTools(action: OntologyAction): string[] {
+  const stepTools = analyzeExecutionPlanRequirement(action).ontologySteps
+    .map((step) => step.tool)
+    .filter((name): name is string => Boolean(name));
+  const integration = action.integration
+    && typeof action.integration === "object"
+    && !Array.isArray(action.integration)
+    ? action.integration as Record<string, unknown>
+    : {};
+  const integrationTools = Array.isArray(integration.systems)
+    ? integration.systems.flatMap((entry) => {
+        if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+          return [];
+        }
+        const row = entry as Record<string, unknown>;
+        const name = String(
+          row.via_tool ?? row.viaTool ?? row.tool ?? "",
+        ).trim();
+        return name ? [name] : [];
+      })
+    : [];
+  return [...new Set([...stepTools, ...integrationTools])];
+}
+
+function canonicalExecutionToolName(
+  name: string,
+  catalog: string[],
+): string {
+  const grounded = groundToolPicks([name], catalog);
+  return grounded.unresolved.length === 0
+    ? (grounded.resolved[0] ?? name)
+    : name;
+}
+
+function canonicalizePlanExecutionTools(
+  steps: PlanStep[],
+  catalog: string[],
+): PlanStep[] {
+  return steps.map((step) => ({
+    ...step,
+    ...(step.tool
+      ? { tool: canonicalExecutionToolName(step.tool, catalog) }
+      : {}),
+    ...(step.body
+      ? { body: canonicalizePlanExecutionTools(step.body, catalog) }
+      : {}),
+  }));
+}
+
+function canonicalizeOntologyExecutionTools(
+  action: OntologyAction,
+  catalog: string[],
+): OntologyAction {
+  if (!action.action_steps?.length) return action;
+  return {
+    ...action,
+    action_steps: action.action_steps.map((step) => {
+      const raw = String(step.tool ?? "").trim();
+      return raw
+        ? {
+            ...step,
+            tool: canonicalExecutionToolName(raw, catalog),
+          }
+        : step;
+    }),
+  };
+}
+
 function executableToolSuggestions(
   action: OntologyAction,
   resources: CurrentExecutionResources,
@@ -564,6 +650,7 @@ function executableToolSuggestions(
     })
     .slice(0, 2);
   return [...new Set([
+    ...ontologyDeclaredExecutionTools(action),
     ...(action.tool_use ?? []).filter(Boolean),
     ...bindingTools,
     ...safeUtilities,
@@ -864,8 +951,11 @@ function selectedToolDeploymentEvidence(input: {
       sandboxReasons: ["tool_not_in_current_registry"],
       promotionReasons: ["tool_not_in_current_registry"],
     }];
-    const required = toolRequiresProbeEvidence(tool);
-    if (!required) return [];
+    // Remote disposable sandboxes replay every selected tool from an attested
+    // cassette, including sandbox-local tools such as fs.readFromInbox.
+    // Production live evidence remains required only for external/write-risk
+    // surfaces.
+    const promotionRequired = toolRequiresProbeEvidence(tool);
     const verifiedDefinitionHashes = new Set(tool.verifiedDefinitionHashes ?? []);
     const stagedTool = tool as RealTool & {
       productionVerifiedDefinitionHashes?: string[];
@@ -899,22 +989,25 @@ function selectedToolDeploymentEvidence(input: {
           tool.catalogDefinition?.probeSafety ?? tool.declarativeDefinition?.probeSafety,
         )
       : undefined;
-    const safetyReasons = [
+    const liveSafetyReasons = [
       ...(safety?.status === "needs_config" ? safety.missing : []),
       ...(safety && safety.status !== "ready" && safety.status !== "needs_config" ? ["probe_safety_invalid"] : []),
     ];
+    const sandboxSafetyReasons = stagedTool.probeEvidenceMode === "signed-fixture"
+      ? []
+      : liveSafetyReasons;
     const sandboxReasons = [
       ...(!sandboxExpectedHash ? ["sandbox_probe_definition_unavailable"] : []),
       ...(!hasVerifiedEvidence ? ["probe_not_verified"] : []),
       ...(!currentDefinitionMatches ? ["probe_definition_changed"] : []),
-      ...safetyReasons,
+      ...sandboxSafetyReasons,
     ];
-    const promotionReasons = [
+    const promotionReasons = promotionRequired ? [
       ...(!productionExpectedHash ? ["production_probe_definition_unavailable"] : []),
       ...(!hasProductionEvidence ? ["live_probe_required_for_promotion"] : []),
       ...(!currentProductionDefinitionMatches ? ["production_probe_definition_changed"] : []),
-      ...safetyReasons,
-    ];
+      ...liveSafetyReasons,
+    ] : [];
     return sandboxReasons.length || promotionReasons.length
       ? [{
           tool: toolName,
@@ -1305,6 +1398,85 @@ async function renderExecutableCode(spec: GeneratedAgentSpec): Promise<void> {
 
 // ── tools ───────────────────────────────────────────────────────────────────
 
+function scopedOntologyReadiness(
+  readiness: ReturnType<typeof analyzeOntologyReadiness>,
+  actions: OntologyAction[],
+): ReturnType<typeof analyzeOntologyReadiness> {
+  const unique = (issues: OntologyReadinessIssue[]) => {
+    const seen = new Set<string>();
+    return actions
+      .flatMap((action) => blockingIssuesForAction(issues, action))
+      .filter((issue) => {
+        const key = JSON.stringify(issue);
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      })
+      .map((issue) => ({ ...issue }));
+  };
+  const blocking = unique(readiness.blocking);
+  const warnings = unique(readiness.warnings);
+  return {
+    ready: blocking.length === 0,
+    blocking,
+    warnings,
+    issues: [...blocking, ...warnings],
+    counts: {
+      ...readiness.counts,
+      actions: actions.length,
+      actionSteps: actions.reduce(
+        (total, action) => total + (action.action_steps?.length ?? 0),
+        0,
+      ),
+      blocking: blocking.length,
+      warnings: warnings.length,
+    },
+  };
+}
+
+function compactSentence(value: unknown, maxLength = 220): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const text = value.replace(/\s+/g, " ").trim();
+  if (!text) return undefined;
+  const firstSentence = text.match(/^.*?[。！？!?](?:\s|$)/)?.[0]?.trim() ?? text;
+  return firstSentence.length <= maxLength
+    ? firstSentence
+    : `${firstSentence.slice(0, maxLength - 1)}…`;
+}
+
+function ontologyReadinessGapKey(issue: OntologyReadinessIssue): string {
+  const scope = [
+    issue.domain && `domain=${issue.domain}`,
+    issue.action && `action=${issue.action}`,
+    issue.event && `event=${issue.event}`,
+    issue.object && `object=${issue.object}`,
+    issue.step && `step=${issue.step}`,
+    issue.rule && `rule=${issue.rule}`,
+    issue.link && `link=${issue.link}`,
+    issue.field && `field=${issue.field}`,
+  ].filter(Boolean);
+  return [issue.code, ...scope].join("|");
+}
+
+const catalogRowIdentity = (
+  row: Record<string, unknown>,
+  fallback: string,
+): { id: string; name?: string } => {
+  const id = ["id", "rule_id", "ruleId", "name", "businessLogicRuleName"]
+    .map((key) => row[key])
+    .find((value): value is string => typeof value === "string" && value.trim().length > 0)
+    ?.trim() ?? fallback;
+  const name = ["name", "businessLogicRuleName", "display_name", "displayName"]
+    .map((key) => row[key])
+    .find((value): value is string => typeof value === "string" && value.trim().length > 0)
+    ?.trim();
+  return { id, ...(name && name !== id ? { name } : {}) };
+};
+
+function actionContractHash(value: unknown): string {
+  return `sha256:${createHash("sha256").update(stableJson(value), "utf8").digest("hex")}`;
+}
+
 const read_ontology: BrainTool = {
   name: "read_ontology",
   description:
@@ -1314,7 +1486,10 @@ const read_ontology: BrainTool = {
     let ont: DomainOntology;
     try {
       const rootOntology = await ctx.ports.ontology.fetchOntology(ctx.domain);
-      ont = await resolveOntologyReferences(rootOntology, ctx.ports.ontology);
+      ont = applyFactoryGenerationOverlay(
+        await resolveOntologyReferences(rootOntology, ctx.ports.ontology),
+        ctx.generationDirective,
+      );
     } catch (e) {
       // #NATIVE — 未命中【不写死话术、不写死分支】：把事实摆全（哪个域、底层错误、当前各来源
       // 合并后的可用域清单、平台支持上传本体 JSON 建新域），怎么向用户解释/引导由你推理决定。
@@ -1371,8 +1546,7 @@ const read_ontology: BrainTool = {
     ont = heal.ontology;
     const healNote = heal.changes.length ? `🔧 已按 Ontology 内部唯一事实归一化 ${heal.changes.length} 处主键、Event 输入绑定或输出路由（事件拓扑未自动合并）。 ` : "";
     ctx.ontology = ont;
-    const readiness = analyzeOntologyReadiness(ont);
-    ctx.ontologyReadiness = readiness;
+    const fullReadiness = analyzeOntologyReadiness(ont);
     // #KNOW-PACK (P1-A) — 新会话开局即受益：读到本体后按当前【归一化后】内容哈希预载历史沉淀的
     // 分析包。状态摘要 / 本体锚点 / 前置路由的歧义读数随 ctx 自动携带，即使本会话从不调
     // understand_ontology。哈希必须取 post-heal 的 ont（与 understand 的 curUnderstandSig 同源）——
@@ -1403,7 +1577,19 @@ const read_ontology: BrainTool = {
     const realTools = resources.realTools;
     ctx.realTools = realTools;
     ctx.toolCatalog = [...new Set([...buildToolCatalog(ont), ...realTools.map((t) => t.name)])];
-    const agentActions = ont.actions.filter((a) => a.actor.includes("Agent"));
+    const allAgentActions = ont.actions.filter((a) => a.actor.includes("Agent"));
+    const requestedActionNames = ctx.generationDirective
+      ? new Set(ctx.generationDirective.requestedActionNames)
+      : null;
+    const agentActions = requestedActionNames
+      ? allAgentActions.filter((action) =>
+          requestedActionNames.has(action.name),
+        )
+      : allAgentActions;
+    const readiness = requestedActionNames
+      ? scopedOntologyReadiness(fullReadiness, agentActions)
+      : fullReadiness;
+    ctx.ontologyReadiness = readiness;
     // Resolve action→rule grounding only through exact action_steps rule IDs/names.
     // Prefixes, action/target text and semantic similarity are not evidence.
     const ruleRows = (ont.rules ?? []) as Array<Record<string, unknown>>;
@@ -1421,100 +1607,391 @@ const read_ontology: BrainTool = {
       ? `⚠ ${unresolvedRuleReferenceCount} 条 action_steps 规则引用无法唯一解析；对应动作已标记 next=ask_user，确认准确 rule id/名称前不能设计。 `
       : "";
     // event-flow digest
-    const graph = compileGraph(ont.actions, { domainId: ctx.domain });
+    const graph = compileGraph(
+      ctx.generationDirective ? agentActions : ont.actions,
+      { domainId: ctx.domain },
+    );
     const skills = ctx.ports.skills ? await ctx.ports.skills.list(ctx.domain) : [];
     ctx.emit({ t: "catalog", domain: ctx.domain, actions: ont.actions.length, events: ont.events.length, agentActions: agentActions.length });
+    const scopeNote = requestedActionNames
+      ? `本次范围 ${agentActions.length} / 全域 ${allAgentActions.length} 个 Agent Action`
+      : `全域 ${allAgentActions.length} 个 Agent Action`;
     return {
       ok: true,
-      summary: `${degradedNote ? degradedNote + " " : ""}${drift ? drift + " " : ""}${ruleResolutionNote}${healNote}本体已读：${ont.actions.length} 动作（${agentActions.length} 个要造 agent）· ${ont.events.length} 事件 · ${ont.objects.length} 对象 · ${ont.rules.length} 规则 · 工具库 ${ctx.toolCatalog.length} 个 · 技能库 ${skills.length} 个（source=${ont.source}）。${readiness.ready ? `✅ Ontology 可执行性闸门通过（${readiness.warnings.length} 个非阻塞警告）——下一步 understand_ontology。` : `🛑 Ontology 可执行性闸门未通过：${readiness.blocking.length} 个阻塞缺口、${readiness.warnings.length} 个警告。先用 inspect_action_readiness 看清每个动作的真实缺口；revise_ontology 只能整理修订提案，不会修改工作副本或 Allmeta。需要修订时请 ask_user，并在 AllmetaOntology 更新后重新读取；只有动作切片本身已经就绪时才可继续 design_agent。`}`,
+      summary: `${degradedNote ? degradedNote + " " : ""}${drift ? drift + " " : ""}${ruleResolutionNote}${healNote}本体已读：${ont.actions.length} 动作 · ${scopeNote} · ${ont.events.length} 事件 · ${ont.objects.length} 对象 · ${ont.rules.length} 规则 · 工具库 ${ctx.toolCatalog.length} 个 · 技能库 ${skills.length} 个（source=${ont.source}）。${readiness.ready ? `✅ 本次范围 Ontology 可执行性闸门通过（${readiness.warnings.length} 个非阻塞警告）——下一步 understand_ontology。` : `🛑 本次范围 Ontology 可执行性闸门未通过：${readiness.blocking.length} 个阻塞缺口、${readiness.warnings.length} 个警告。先用 inspect_action_readiness 看清范围内每个动作的真实缺口；revise_ontology 只能整理修订提案，不会修改工作副本或 Allmeta。需要修订时请 ask_user，并在 AllmetaOntology 更新后重新读取；只有动作切片本身已经就绪时才可继续 design_agent。`}`,
       output: {
         domain: ctx.domain,
-        agentActions: agentActions.map((a) => ({
-          name: a.name,
-          description: a.description,
-          trigger: a.trigger,
-          triggered_event: a.triggered_event,
-          target_objects: a.target_objects,
-          inputs: a.inputs,
-          outputs: a.outputs,
-          is_rule_check: ontologyActionIsRuleGate(a),
-          // #C: ontology-declared tools FIRST, then top semantically-ranked REAL tools.
-          suggested_tools: executableToolSuggestions(a, resources),
-          // #C: for each ranked real tool, what config the FDE must supply (api_key_env, subdir…) —
-          // so the brain can ask_user for the right integration instead of silently mocking.
-          tool_hints: rankRealTools(a, realTools).map((name) => {
-            const rt = realTools.find((t) => t.name === name);
-            const envs = rt?.credentialEnv ?? [];
-            // #KEY-GAP — surface the credential posture early so the brain reasons about it while
-            // designing. keyConfigured: undefined = no credential needed; true = env is set;
-            // false = REQUIRED but currently UNSET (a candidate for ask_user, brain decides).
-            const missing = detectMissingToolCredentials([name], realTools);
-            return {
-              name,
-              summary: rt?.summary,
-              configKeys: rt?.configKeys ?? [],
-              credentialEnv: envs,
-              keyConfigured: envs.length ? missing.length === 0 : undefined,
-              missingEnv: missing[0]?.missingEnv ?? [],
-              integrationProfiles: (rt?.integrationProfiles ?? []).map((profile) => {
-                const validation = rt ? validateIntegrationToolConfig(rt, profile.config) : undefined;
-                return {
-                  id: profile.id,
-                  profileKey: profile.profileKey,
-                  config: profile.config,
-                  confirmedAt: profile.confirmedAt,
-                  ready: validation?.ready ?? false,
-                  missingEnvRefs: validation?.missingEnvRefs ?? [],
-                };
-              }),
-            };
-          }),
-          // R3: forward the action's preconditions so design_agent compiles them into the prompt.
-          submission_criteria: a.submission_criteria,
-          instruction: a.instruction,
-          on_success: a.on_success,
-          on_failure: a.on_failure,
-          // Execution-bearing ontology facts. These used to be preserved by storage but dropped
-          // from the brain's view, causing a five-step action to collapse into one opaque logic row.
-          action_steps: a.action_steps,
-          integration: a.integration,
-          integration_binding: resolveIntegrationBindings(a, realTools, {
-            capabilityProviders: resources.capabilityProviders,
-            systemAliasGroups: resources.systemAliasGroups,
-          }),
-          execution_plan_requirement: analyzeExecutionPlanRequirement(a),
-          side_effects: a.side_effects,
-          // Exact action_steps references only. Any missing/ambiguous reference
-          // becomes an explicit ask_user handoff instead of a guessed match.
-          relevant_rules: ctx.rulesByAction?.[a.name] ?? [],
-          rule_resolution: {
-            evidence: {
-              action_step_rule_references: ruleResolutionByAction.get(a.name)?.explicitReferenceCount ?? 0,
-              integration_rulebase: ontologyActionHasRulebaseRequirement(a),
-            },
-            unresolved: ruleResolutionByAction.get(a.name)?.unresolved ?? [],
-            needs_user_input: ruleResolutionByAction.get(a.name)?.needsUserInput ?? false,
-            ...(ruleResolutionByAction.get(a.name)?.next ? { next: ruleResolutionByAction.get(a.name)?.next } : {}),
-            ...(ruleResolutionByAction.get(a.name)?.question ? { question: ruleResolutionByAction.get(a.name)?.question } : {}),
+        source: ont.source,
+        ontology_hash: ontologyContentHash(ont),
+        source_scope: {
+          mode: ctx.generationDirective?.mode ?? "full_ontology",
+          action_ids:
+            ctx.generationDirective?.requestedActionIds ??
+            allAgentActions.map((action) => action.id),
+          action_names: agentActions.map((action) => action.name),
+          selected_agent_actions: agentActions.length,
+          all_agent_actions: allAgentActions.length,
+        },
+        domain_summary: {
+          counts: {
+            objects: ont.objects.length,
+            actions: ont.actions.length,
+            agentActions: allAgentActions.length,
+            events: ont.events.length,
+            rules: ont.rules.length,
+            workflow: ont.workflow.length,
+            // Only a count — the compiled edges themselves come from
+            // query_links. This number is not grounds for any relationship claim.
+            links: ont.links?.length ?? 0,
           },
-        })),
-        data_objects: ont.objects.map((o) => ({ id: o.id, name: o.name, primary_key: o.primary_key, properties: o.properties })),
-        events: ont.events.map((e) => ({
-          name: e.name,
-          // R1: the authoritative payload contract — agents/test-cases ground on these, not guesses.
-          payload_fields: (e.payload?.event_data ?? []).map((f) => ({
-            name: f.name,
-            type: f.type,
-            source_object: f.target_object,
-            ...(typeof f.required === "boolean" ? { required: f.required } : {}),
+          objects: ont.objects.map((object) => ({
+            id: object.id,
+            ...(object.name && object.name !== object.id ? { name: object.name } : {}),
           })),
-          state_mutations: e.payload?.state_mutations ?? [],
+          events: ont.events.map((event) => event.name),
+          rules: ont.rules.map((rule, index) =>
+            catalogRowIdentity(rule, `rule:${index + 1}`)),
+          workflow: ont.workflow.map((item, index) =>
+            catalogRowIdentity(item, `workflow:${index + 1}`)),
+          event_flow: {
+            entryEvents: graph.entryEvents,
+            terminalEvents: graph.terminalEvents,
+            branchActions: graph.branchActions,
+            hitlActions: graph.hitlActions,
+          },
+          ...(ont.degraded ? { degraded: { ...ont.degraded } } : {}),
+        },
+        // Inventory only. Full inputs/outputs/steps/rules/integrations are
+        // intentionally disclosed one Action at a time by read_action_contract.
+        agentActions: allAgentActions.map((action) => ({
+          id: action.id,
+          name: action.name,
+          actor: [...action.actor],
+          trigger: [...action.trigger],
+          triggered_event: [...action.triggered_event],
+          description: compactSentence(action.description),
+          selected: requestedActionNames
+            ? requestedActionNames.has(action.name)
+            : true,
+          scope_status: requestedActionNames && !requestedActionNames.has(action.name)
+            ? "excluded"
+            : "selected",
         })),
-        event_flow: { entryEvents: graph.entryEvents, terminalEvents: graph.terminalEvents, branchActions: graph.branchActions, hitlActions: graph.hitlActions },
-        ontology_readiness: readiness,
-        available_tools: ctx.toolCatalog,
-        runtime_capabilities: resources.capabilityProviders,
-        reusable_skills: skills.map((s) => ({ slug: s.slug, name: s.name, purpose: s.purpose, useCount: s.useCount })),
+        ontology_readiness: {
+          ready: readiness.ready,
+          counts: { ...readiness.counts },
+          blocking: {
+            count: readiness.blocking.length,
+            gapKeys: readiness.blocking.map(ontologyReadinessGapKey),
+          },
+          warnings: {
+            count: readiness.warnings.length,
+            gapKeys: readiness.warnings.map(ontologyReadinessGapKey),
+          },
+        },
+        tool_index: {
+          count: realTools.length,
+          tools: realTools.map((tool) => ({
+            name: tool.name,
+            ...(tool.category ? { category: tool.category } : {}),
+            ...(tool.operation ? { operation: tool.operation } : {}),
+            ...(tool.effectScope ? { effectScope: tool.effectScope } : {}),
+            ...(tool.sandboxPolicy ? { sandboxPolicy: tool.sandboxPolicy } : {}),
+          })),
+          byAction: agentActions.map((action) => ({
+            action: action.name,
+            suggested: executableToolSuggestions(action, resources).slice(0, 12),
+          })),
+          runtimeCapabilities: resources.capabilityProviders.map((provider) => ({
+            id: provider.id,
+            status: provider.status,
+          })),
+        },
+        skill_index: {
+          count: skills.length,
+          skills: skills.map((skill) => ({
+            slug: skill.slug,
+            name: skill.name,
+            purpose: compactSentence(skill.purpose, 140),
+          })),
+        },
+        progressive_disclosure: {
+          nextTool: "read_action_contract",
+          instruction:
+            "在 design_agent 前，对本次 selected 的每个 Action 按需读取一次完整权威 contract；不要从 inventory 猜 inputs/outputs/steps/rules/integration。",
+        },
+      },
+    };
+  },
+};
+
+/** #LINK-GRAPH — read_ontology reports `links: <count>` to keep its payload small,
+ * which meant the compiled typed relationship graph (the one thing that states how
+ * Objects, Actions, Events and Rules actually connect) was fetched and then thrown
+ * away. This tool hands the brain the real edges, filtered, so it can ground a
+ * design in relationships instead of inferring them from names. */
+const query_links: BrainTool = {
+  name: "query_links",
+  description:
+    "【关系图查询】查本体编译出的真实关系边（object-fk / action-targets-object / event-carries-object / rule-references-object 等）。不带参数时给出关系类型分布、枢纽实体和事件链概览；带 node 时给出该节点的入边/出边。read_ontology 只报边的【总数】，设计前要靠这里看清对象之间到底怎么连、一个动作真正碰哪些对象、一个事件搬运什么数据。只读。",
+  parameters: params({
+    node: {
+      type: "string",
+      description:
+        "可选。对象/动作/事件/规则的准确 id 或 name；给了就只返回与它相连的边",
+    },
+    kind: {
+      type: "string",
+      description: "可选。只看某一种关系类型，例如 object-fk",
+    },
+    direction: {
+      type: "string",
+      enum: ["in", "out", "both"],
+      description: "可选。配合 node 使用，默认 both",
+    },
+    limit: {
+      type: "number",
+      description: "可选。返回边数上限，默认 60",
+    },
+  }),
+  async execute(args, ctx) {
+    if (!ctx.ontology) {
+      return {
+        ok: false,
+        summary: "还没有 Ontology。请先调用 read_ontology；不会凭名字猜关系。",
+        output: { reason: "ontology_not_loaded", next: "read_ontology" },
+      };
+    }
+    const links = ctx.ontology.links ?? [];
+    if (links.length === 0) {
+      return {
+        ok: true,
+        summary:
+          "这个域的来源没有提供编译好的关系图（links 为空）。对象之间的关联只能从 action 的 target_objects 和 event 的 payload 推断，不要当成已证实的外键关系。",
+        output: { hasLinkGraph: false, links: [], next: "read_action_contract" },
+      };
+    }
+    const limit = Math.max(1, Math.min(200, Number(args.limit) || 60));
+    const kindFilter = String(args.kind ?? "").trim();
+    const nodeFilter = String(args.node ?? "").trim();
+    const direction = ["in", "out", "both"].includes(String(args.direction))
+      ? (String(args.direction) as "in" | "out" | "both")
+      : "both";
+
+    const matchesNode = (endpoint: { id?: string; name?: string }) =>
+      endpoint.id === nodeFilter || endpoint.name === nodeFilter;
+    const selected = links.filter((link) => {
+      if (kindFilter && link.kind !== kindFilter) return false;
+      if (!nodeFilter) return true;
+      const from = matchesNode(link.from as { id?: string; name?: string });
+      const to = matchesNode(link.to as { id?: string; name?: string });
+      if (direction === "in") return to;
+      if (direction === "out") return from;
+      return from || to;
+    });
+
+    // A node filter that matches nothing is a real answer, not an empty page:
+    // say so and name what the graph does contain, so the brain corrects the id
+    // instead of quietly designing against a relationship that does not exist.
+    if (nodeFilter && selected.length === 0) {
+      const known = [
+        ...new Set(
+          links.flatMap((link) => [
+            String((link.from as { id?: string }).id ?? ""),
+            String((link.to as { id?: string }).id ?? ""),
+          ]),
+        ),
+      ]
+        .filter(Boolean)
+        .slice(0, 40);
+      return {
+        ok: false,
+        summary: `关系图里没有节点「${nodeFilter}」${kindFilter ? `（关系类型 ${kindFilter}）` : ""}。请用准确 id；不会按相似度替换。`,
+        output: { reason: "unknown_node", node: nodeFilter, knownNodes: known },
+      };
+    }
+
+    const edges = selected.slice(0, limit).map((link) => ({
+      id: link.id,
+      kind: link.kind,
+      from: (link.from as { id?: string }).id ?? null,
+      fromType: (link.from as { type?: string }).type ?? null,
+      to: (link.to as { id?: string }).id ?? null,
+      toType: (link.to as { type?: string }).type ?? null,
+      ...(link.status ? { status: link.status } : {}),
+    }));
+
+    if (nodeFilter || kindFilter) {
+      const byKind = new Map<string, number>();
+      for (const link of selected) {
+        byKind.set(link.kind, (byKind.get(link.kind) ?? 0) + 1);
+      }
+      const kindNote = [...byKind.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .map(([kind, count]) => `${kind} ×${count}`)
+        .join("、");
+      return {
+        ok: true,
+        summary: `${nodeFilter ? `「${nodeFilter}」` : ""}匹配 ${selected.length} 条边${selected.length > edges.length ? `（返回前 ${edges.length} 条）` : ""}：${kindNote}。`,
+        output: {
+          hasLinkGraph: true,
+          node: nodeFilter || null,
+          kind: kindFilter || null,
+          direction,
+          matched: selected.length,
+          returned: edges.length,
+          edges,
+        },
+      };
+    }
+
+    const analysis = analyzeOntologyStructure(ctx.ontology);
+    return {
+      ok: true,
+      summary: `关系图 ${analysis.counts.links} 条边 / ${analysis.relationshipKinds.length} 种类型：${analysis.relationshipKinds
+        .slice(0, 6)
+        .map((k) => `${k.kind} ×${k.count}`)
+        .join(
+          "、",
+        )}。枢纽：${analysis.hubs.slice(0, 4).map((h) => `${h.id}(${h.inbound + h.outbound})`).join("、") || "无"}。用 node 参数深入某个对象。`,
+      output: {
+        hasLinkGraph: true,
+        counts: analysis.counts,
+        relationshipKinds: analysis.relationshipKinds,
+        hubs: analysis.hubs.slice(0, 12),
+        isolatedEntities: analysis.isolatedEntities,
+        eventChains: analysis.eventChains.slice(0, 8),
+        externalSystems: analysis.externalSystems,
+        gaps: analysis.gaps,
+      },
+    };
+  },
+};
+
+/** Progressive disclosure for one selected Action. read_ontology keeps the
+ * full Ontology server-side but exposes only inventories; this tool returns the
+ * exact execution-bearing slice immediately before design. */
+const read_action_contract: BrainTool = {
+  name: "read_action_contract",
+  description:
+    "【单 Action 权威契约】按 read_ontology inventory 中的准确 Action.name，读取本次 selected 范围内一个 actor=Agent Action 的完整 inputs/outputs/action_steps/rules/integration/side_effects、关联 Event/Object 契约与 provenance/hash。只读，不创建 plan/spec、不探针、不部署。read_ontology 为了节省上下文只给摘要；提交 design_agent 前应对目标 Action 按需调用本工具，禁止从摘要猜字段或步骤。",
+  parameters: params(
+    {
+      action: {
+        type: "string",
+        description: "read_ontology.agentActions 中 selected=true 的准确 Action.name",
+      },
+    },
+    ["action"],
+  ),
+  async execute(args, ctx) {
+    if (!ctx.ontology) {
+      return {
+        ok: false,
+        summary: "还没有 Ontology。请先调用 read_ontology；不会凭 Action 名猜契约。",
+        output: { reason: "ontology_not_loaded", next: "read_ontology" },
+      };
+    }
+    const actionName = String(args.action ?? "").trim();
+    const action = ctx.ontology.actions.find((candidate) => candidate.name === actionName);
+    const allAgentActions = ctx.ontology.actions.filter((candidate) =>
+      candidate.actor.includes("Agent"));
+    if (!action) {
+      return {
+        ok: false,
+        summary: `找不到 Action「${actionName}」。请使用 read_ontology.agentActions 中的准确 name；不会按相似度替换。`,
+        output: {
+          reason: "unknown_action",
+          action: actionName,
+          knownAgentActions: allAgentActions.map((candidate) => candidate.name),
+        },
+      };
+    }
+    if (!action.actor.includes("Agent")) {
+      return {
+        ok: false,
+        summary: `Action「${actionName}」的 actor=${action.actor.join("、") || "未声明"}，不是 Agent 生成契约。`,
+        output: {
+          reason: "action_actor_not_agent",
+          action: actionName,
+          actor: [...action.actor],
+        },
+      };
+    }
+    const allowed = ctx.generationDirective?.requestedActionNames;
+    if (allowed?.length && !allowed.includes(actionName)) {
+      return {
+        ok: false,
+        summary: `Action「${actionName}」不在本次服务端锁定的生成范围内；不会读取或设计范围外动作。`,
+        output: {
+          reason: "action_outside_generation_scope",
+          action: actionName,
+          allowedActionNames: [...allowed],
+        },
+      };
+    }
+
+    const ruleResolution = resolveActionRuleReferences(
+      action,
+      (ctx.ontology.rules ?? []) as Array<Record<string, unknown>>,
+    );
+    const eventNames = new Set([
+      ...(action.trigger ?? []),
+      ...(action.triggered_event ?? []),
+    ]);
+    const objectNames = new Set(action.target_objects ?? []);
+    const relatedEvents = ctx.ontology.events.filter((event) =>
+      eventNames.has(event.name));
+    const relatedObjects = ctx.ontology.objects.filter((object) =>
+      objectNames.has(object.id) || objectNames.has(object.name));
+    const contract = {
+      action: structuredClone(action),
+      rules: {
+        relevant: structuredClone(ruleResolution.relevantRules),
+        unresolved: structuredClone(ruleResolution.unresolved),
+        explicitReferenceCount: ruleResolution.explicitReferenceCount,
+        needsUserInput: ruleResolution.needsUserInput,
+      },
+      events: structuredClone(relatedEvents),
+      objects: structuredClone(relatedObjects),
+      integrationRequirements: deriveIntegrationRequirements(action),
+      executionPlanRequirement: analyzeExecutionPlanRequirement(action),
+    };
+    const ontologyBlockers = blockingIssuesForAction(
+      analyzeOntologyReadiness(ctx.ontology).blocking,
+      action,
+    );
+    const sliceHash = actionContractHash(contract);
+    return {
+      ok: true,
+      summary: `已读取 Action「${actionName}」的完整权威契约：${action.inputs?.length ?? 0} inputs · ${action.outputs?.length ?? 0} outputs · ${action.action_steps?.length ?? 0} steps · ${ruleResolution.relevantRules.length} resolved rules · ${deriveIntegrationRequirements(action).length} integrations。设计时以 contract 与 sliceHash 为准。`,
+      output: {
+        readOnly: true,
+        provenance: {
+          schema: "agent-factory-action-contract/v1",
+          domainId: ctx.domain,
+          ontologySource: ctx.ontology.source,
+          ontologyHash: ontologyContentHash(ctx.ontology),
+          actionId: action.id,
+          actionName: action.name,
+          selected: true,
+          scopeMode: ctx.generationDirective?.mode ?? "full_ontology",
+          authoritative: action.factoryProvenance ? false : true,
+          ...(action.factoryProvenance
+            ? { sessionOverlay: { ...action.factoryProvenance } }
+            : {}),
+          sliceHash,
+        },
+        readiness: {
+          ontologyReady: ontologyBlockers.length === 0,
+          ontologyBlockers: ontologyBlockers.map((issue) => ({
+            key: ontologyReadinessGapKey(issue),
+            code: issue.code,
+            message: issue.message,
+          })),
+          rulesReady: !ruleResolution.needsUserInput,
+        },
+        contract,
       },
     };
   },
@@ -1522,7 +1999,7 @@ const read_ontology: BrainTool = {
 
 const create_plan: BrainTool = {
   name: "create_plan",
-  description: "提交 BuildPlan：按事件链排序，每个 agent 的职责/触发/产出/候选工具/边界情况 + 跨 agent 注意点。会自检计划 vs 本体（未知动作、漏掉的 Agent 动作、未知工具）。设计前规划一次，发现计划错了可再调（version+1）。【范围】用户只要求生成某个/部分动作的 function 时，传 scope:\"partial\"+scope_reason（引用用户原话）——未纳入的动作是【意图】不是遗漏，不再警告；这种部分范围最终用 save_draft 存设计稿草稿（finish 仍要求全覆盖）。别为凑覆盖去设计用户没要的动作。",
+  description: "提交 BuildPlan：按事件链排序，每个 agent 的职责/触发/产出/候选工具/边界情况 + 跨 agent 注意点。会自检计划 vs 本体（未知动作、漏掉的 Agent 动作、未知工具）。设计前规划一次，发现计划错了可再调（version+1）。【范围】若服务端已给 actionIds/scenario generation scope，该范围就是本次完整验收全集，必须全部生成、测试、sandbox_run 并 finish；不得为未选的全域 Action 补齐。只有旧版无 generation scope、且用户临时要求部分设计稿时，才传 scope:\"partial\"+scope_reason 并走 save_draft。",
   parameters: params(
     {
       summary: { type: "string" },
@@ -1535,8 +2012,22 @@ const create_plan: BrainTool = {
   ),
   async execute(args, ctx) {
     const version = (ctx.currentPlan?.version ?? 0) + 1;
-    const scope: "full" | "partial" = args.scope === "partial" ? "partial" : "full";
-    const scopeReason = typeof args.scope_reason === "string" && args.scope_reason.trim() ? args.scope_reason.trim() : undefined;
+    const serverScope = generationScopedAgentActionNames(ctx);
+    const structuredScope = Boolean(ctx.generationDirective);
+    const forcedPartial = false;
+    const scope: "full" | "partial" =
+      structuredScope
+        ? "full"
+        : forcedPartial || args.scope === "partial"
+          ? "partial"
+          : "full";
+    const requestedScopeReason =
+      typeof args.scope_reason === "string" && args.scope_reason.trim()
+        ? args.scope_reason.trim()
+        : undefined;
+    const scopeReason = structuredScope
+      ? `服务端 actionIds/scenario 生成范围：${serverScope.join("、")}`
+      : requestedScopeReason;
     if (scope === "partial" && !scopeReason) {
       return { ok: false, summary: "scope=partial 需要 scope_reason（引用用户要求缩小范围的原话/依据）——范围收窄必须可追溯到用户意图，不能是 AI 自作主张。", output: { version: ctx.currentPlan?.version ?? 0 } };
     }
@@ -1549,13 +2040,38 @@ const create_plan: BrainTool = {
       ...(scopeReason ? { scopeReason } : {}),
     };
     ctx.currentPlan = plan;
-    ctx.emit({ t: "plan", plan });
     // self-validate vs ontology
     const warns: string[] = [];
     let missed: string[] = [];
     if (ctx.ontology) {
       const known = new Set(ctx.ontology.actions.map((a) => a.name));
-      const agentActions = ctx.ontology.actions.filter((a) => a.actor.includes("Agent")).map((a) => a.name);
+      if (structuredScope && serverScope.length) {
+        const allowed = new Set(serverScope);
+        const outside = plan.agents
+          .map((agent) => agent.actionName)
+          .filter((actionName) => !allowed.has(actionName));
+        if (outside.length) {
+          ctx.currentPlan = null;
+          return {
+            ok: false,
+            summary: `计划超出服务端生成范围：${[...new Set(outside)].join("、")}。本次只允许 ${serverScope.join("、")}。`,
+            output: { allowedActions: serverScope },
+          };
+        }
+        const omitted = serverScope.filter(
+          (actionName) =>
+            !plan.agents.some((agent) => agent.actionName === actionName),
+        );
+        if (omitted.length) {
+          ctx.currentPlan = null;
+          return {
+            ok: false,
+            summary: `计划没有覆盖本次选定的 Action：${omitted.join("、")}。`,
+            output: { allowedActions: serverScope },
+          };
+        }
+      }
+      const agentActions = generationScopedAgentActionNames(ctx);
       const planned = new Set(plan.agents.map((a) => a.actionName));
       const unknown = plan.agents.map((a) => a.actionName).filter((n) => !known.has(n));
       missed = agentActions.filter((n) => !planned.has(n));
@@ -1565,8 +2081,11 @@ const create_plan: BrainTool = {
       // never asked for. Full scope keeps the warning (a genuine omission signal).
       if (missed.length && scope !== "partial") warns.push(`还没规划的 Agent 动作：${missed.join("、")}`);
     }
+    ctx.emit({ t: "plan", plan });
     ctx.planScope = { kind: scope, ...(scopeReason ? { reason: scopeReason } : {}), missedActions: missed };
-    const scopeNote = scope === "partial"
+    const scopeNote = structuredScope
+      ? ` · 🎯 服务端本次验收全集 ${serverScope.length} 个 Action；全部通过测试与沙箱后走 finish`
+      : scope === "partial"
       ? ` · 📌 部分范围（${scopeReason}）：未纳入 ${missed.length} 个动作属用户意图；交付走 save_draft，不走 finish`
       : "";
     return { ok: true, summary: `BuildPlan v${version}（${plan.agents.length} agent）${warns.length ? " · ⚠ " + warns.join("；") : ""}${scopeNote} · 设计前建议 critique_plan 让 AI 独立挑战这份分解`, output: { version, warnings: warns, scope, missedActions: missed } };
@@ -1664,8 +2183,11 @@ const understand_ontology: BrainTool = {
         }
       } catch { /* pack lookup is advisory — fall through to compute */ }
     }
-    const agentActions = ont.actions.filter((a) => a.actor.includes("Agent"));
-    const graph = compileGraph(ont.actions, { domainId: ctx.domain });
+    const agentActions = generationScopedAgentActions(ctx);
+    const graph = compileGraph(
+      generationAcceptanceOntology(ctx).actions,
+      { domainId: ctx.domain },
+    );
     // A structural skeleton always available — the deterministic floor under the LLM analysis, so
     // understand_ontology NEVER hard-fails (an LLM hiccup degrades to this rather than returning a
     // useless error that the brain then skips past).
@@ -1814,7 +2336,7 @@ const capability_resolve: BrainTool = {
   parameters: params({}),
   async execute(_args, ctx) {
     if (!ctx.ontology) return { ok: false, summary: "请先 read_ontology（建议也先 understand_ontology）。" };
-    const agentActions = ctx.ontology.actions.filter((a) => a.actor.includes("Agent"));
+    const agentActions = generationScopedAgentActions(ctx);
     const fleet = ctx.ports.fleet ? await ctx.ports.fleet.list() : null;
     const skills = ctx.ports.skills ? await ctx.ports.skills.list(ctx.domain) : [];
     const norm = (s: string) => (s || "").toLowerCase().replace(/[^a-z0-9一-鿿]+/g, "");
@@ -1925,7 +2447,7 @@ const analyze_with_code: BrainTool = {
     const input = {
       ontology: {
         actions,
-        agentActions: actions.filter((action) => action.actor.includes("Agent")),
+        agentActions: generationScopedAgentActions(ctx),
         events: ctx.ontology.events,
         rules: ctx.ontology.rules,
         objects: ctx.ontology.objects,
@@ -1990,7 +2512,10 @@ function actionReadinessFromSnapshot(
     .filter((binding) => !binding.selectionRequired)
     .map((binding) => binding.toolName ?? (binding.bindingKind === "tool" ? binding.bindingId : undefined))
     .filter((value): value is string => Boolean(value)))];
-  if (uniqueDiscoveredTools.length === 0 && isGate) {
+  if (isGate && !uniqueDiscoveredTools.some((name) => {
+    const tool = resources.realTools.find((candidate) => candidate.name === name);
+    return Boolean(tool && toolReadsRulebase(tool));
+  })) {
     const soleRuleCandidates = resources.realTools.filter(toolReadsRulebase).map((tool) => tool.name);
     if (soleRuleCandidates.length === 1) uniqueDiscoveredTools.push(soleRuleCandidates[0]!);
   }
@@ -2077,7 +2602,8 @@ function actionReadinessFromSnapshot(
   };
 
   const probeTools = candidateTools.map((tool) => {
-    const required = toolRequiresProbeEvidence(tool);
+    const promotionRequired = toolRequiresProbeEvidence(tool);
+    const required = true;
     const verifiedDefinitionHashes = new Set(tool.verifiedDefinitionHashes ?? []);
     const stagedTool = tool as RealTool & {
       productionVerifiedDefinitionHashes?: string[];
@@ -2106,7 +2632,7 @@ function actionReadinessFromSnapshot(
       productionExpectedHash
       && productionVerifiedDefinitionHashes.has(productionExpectedHash),
     );
-    const safety = required && isWriteCapableSideEffect(tool.sideEffect)
+    const safety = promotionRequired && isWriteCapableSideEffect(tool.sideEffect)
       ? inspectWriteProbeSafety(
           tool.sideEffect,
           tool.catalogDefinition?.probeSafety ?? tool.declarativeDefinition?.probeSafety,
@@ -2117,15 +2643,19 @@ function actionReadinessFromSnapshot(
         || binding.selectionCandidates?.some((candidate) =>
           candidate.bindingKind === "tool" && (candidate.toolName ?? candidate.bindingId) === tool.name))
       .map((binding) => ({ requirementId: binding.requirement.id, status: binding.status }));
-    const safetyReady = safety?.status !== "needs_config"
+    const liveSafetyReady = safety?.status !== "needs_config"
       && (!safety || safety.status === "ready");
-    const sandboxReady = !required
-      || (hasVerifiedEvidence && currentDefinitionMatches && safetyReady);
-    const promotionReady = !required
-      || (hasProductionEvidence && currentProductionDefinitionMatches && safetyReady);
+    const sandboxSafetyReady = stagedTool.probeEvidenceMode === "signed-fixture"
+      || liveSafetyReady;
+    const sandboxReady = hasVerifiedEvidence
+      && currentDefinitionMatches
+      && sandboxSafetyReady;
+    const promotionReady = !promotionRequired
+      || (hasProductionEvidence && currentProductionDefinitionMatches && liveSafetyReady);
     return {
       tool: tool.name,
       required,
+      promotionRequired,
       /** Compatibility alias: ready means sandbox replay readiness. */
       ready: sandboxReady,
       sandboxReady,
@@ -2152,9 +2682,17 @@ function actionReadinessFromSnapshot(
     promotionReady: probeTools.every((tool) => tool.promotionReady),
     tools: probeTools,
   };
+  const authoringOptionalGaps = integrationReport.bindings.filter((binding) =>
+    binding.status === "missing"
+    && !binding.bindingId
+    && !binding.toolName
+    && Boolean(binding.requirement.authoringOptional));
   const identityGaps = integrationReport.bindings.filter((binding) =>
     binding.selectionRequired === true
-    || (binding.status === "missing" && !binding.bindingId && !binding.toolName));
+    || (binding.status === "missing"
+      && !binding.bindingId
+      && !binding.toolName
+      && !binding.requirement.authoringOptional));
   const policyGaps = selectedToolPolicies([...candidateToolNames], resources.realTools).missing;
   // Rule-gate parity with design_agent: a rule-check action must have ONE explicitly chosen
   // rule-reading tool among what will actually execute; choosing the rule SOURCE is a real
@@ -2168,7 +2706,7 @@ function actionReadinessFromSnapshot(
     // Authoring needs one exact execution surface per requirement (+ a chosen rule reader for
     // gates). Ungranted tool_use[] suggestions are substitutions, not blockers; configuration and
     // probe state are deliberately evaluated by the later stage gates below.
-    ready: identityGaps.length === 0 && ruleToolSatisfied,
+    ready: identityGaps.length === 0 && ruleToolSatisfied && policyGaps.length === 0,
     executionReady: integrationReport.ready,
     report: integrationReport,
     candidates: humanIntegrationCandidates(integrationReport),
@@ -2182,6 +2720,7 @@ function actionReadinessFromSnapshot(
     ruleToolSatisfied,
     ruleToolCandidates,
     identityGaps,
+    authoringOptionalGaps,
     policyGaps,
   };
   const authoringReady = ontologyBlockers.length === 0
@@ -2300,7 +2839,8 @@ function readinessClarification(
   const needsUserInput = (report: ReturnType<typeof actionReadinessFromSnapshot>): boolean =>
     report.ontologyBlockers.length > 0
     || report.unknownRules.length > 0
-    || report.integrationGate.identityGaps.length > 0;
+    || report.integrationGate.identityGaps.length > 0
+    || report.integrationGate.policyGaps.length > 0;
   const notReady = reports.filter((report) => !report.authoringReady);
   const blocked = notReady.filter(needsUserInput);
   if (!blocked.length) return null;
@@ -2308,6 +2848,7 @@ function readinessClarification(
   if (blocked.some((report) => report.ontologyBlockers.length > 0)) missing.push("authoritative_ontology_corrections");
   if (blocked.some((report) => report.unknownRules.length > 0)) missing.push("canonical_rule_references");
   if (blocked.some((report) => report.integrationGate.identityGaps.length > 0)) missing.push("integration_bindings");
+  if (blocked.some((report) => report.integrationGate.policyGaps.length > 0)) missing.push("tool_execution_policies");
   // Piggyback rule-tool selection onto an ALREADY-happening park so one round-trip covers it.
   if (notReady.some((report) => !report.integrationGate.ruleToolSatisfied)) missing.push("rule_tool_selection");
 
@@ -2332,6 +2873,10 @@ function readinessClarification(
       : `${report.action} 需要连接 ${binding.requirement.system}（尚无任何已授权的工具/运行时能力）`));
   if (identityAsks.length) {
     parts.push(`请确认哪些真实工具负责连接这些系统（${[...new Set(identityAsks)].slice(0, 8).join("、")}${identityAsks.length > 8 ? "…" : ""}）；尚未建好的人工或外部平台可以明确保留为人工边界`);
+  }
+  const policyAsks = [...new Set(blocked.flatMap((report) => report.integrationGate.policyGaps))];
+  if (policyAsks.length) {
+    parts.push(`请先在工具目录中补齐这些工具的 operation、effectScope 和 sandboxPolicy：${policyAsks.slice(0, 8).join("、")}${policyAsks.length > 8 ? "…" : ""}`);
   }
   const ruleAsks = notReady.filter((report) => !report.integrationGate.ruleToolSatisfied);
   if (ruleAsks.length) {
@@ -2362,6 +2907,127 @@ function recordPendingBoundaryAsk(
       .map((binding) => ({ system: binding.requirement.system, mode: binding.requirement.role })));
   const unique = [...new Map(pairs.map((pair) => [`${pair.system} ${pair.mode}`, pair])).values()];
   if (unique.length) ctx.pendingIntegrationBoundaryAsk = unique;
+}
+
+/** Keep the catalog preflight cheap enough to call once without flooding the
+ * model context. Exact profile configs, probe hashes, capability descriptors,
+ * and resolved binding reports remain available through the action-scoped
+ * inspector. This projection retains the identifiers and reasons needed to
+ * trace every blocking summary back to the same immutable resource snapshot. */
+function compactActionReadinessReport(
+  report: ReturnType<typeof actionReadinessFromSnapshot>,
+) {
+  const unresolvedBindings = report.integrationGate.report.bindings
+    .filter((binding) => binding.status !== "resolved")
+    .slice(0, 12)
+    .map((binding) => ({
+      requirementId: binding.requirement.id,
+      system: binding.requirement.system,
+      kind: binding.requirement.kind,
+      role: binding.requirement.role,
+      status: binding.status,
+      ...(binding.toolName || binding.bindingId
+        ? { executionSurface: binding.toolName ?? binding.bindingId }
+        : {}),
+      ...(binding.selectionRequired
+        ? {
+            selectionCandidates: (binding.selectionCandidates ?? [])
+              .slice(0, 6)
+              .map((candidate) => ({
+                kind: candidate.bindingKind,
+                id: candidate.bindingId,
+              })),
+          }
+        : {}),
+      ...(binding.requirement.authoringOptional
+        ? { authoringOptional: { ...binding.requirement.authoringOptional } }
+        : {}),
+      reason: binding.reason.slice(0, 260),
+    }));
+  const sandboxProfileBlockers = report.profileGate.tools
+    .filter((tool) =>
+      tool.environments.find((environment) => environment.environment === "sandbox")?.ready === false)
+    .map((tool) => tool.tool);
+  const productionProfileBlockers = report.profileGate.tools
+    .filter((tool) =>
+      tool.environments.find((environment) => environment.environment === "production")?.ready === false)
+    .map((tool) => tool.tool);
+  const sandboxProbeBlockers = report.probeGate.tools
+    .filter((tool) => !tool.sandboxReady)
+    .map((tool) => tool.tool);
+  const productionProbeBlockers = report.probeGate.tools
+    .filter((tool) => !tool.promotionReady)
+    .map((tool) => tool.tool);
+  return {
+    action: report.action,
+    ready: report.authoringReady,
+    readOnly: true as const,
+    stages: {
+      authoring: report.authoringReady,
+      sandbox: report.sandboxReady,
+      promotion: report.promotionReady,
+    },
+    blockers: {
+      categories: [...report.blockers.categories],
+      ontology: {
+        count: report.ontologyBlockers.length,
+        examples: report.ontologyBlockers.slice(0, 6).map((issue) => ({
+          code: issue.code,
+          message: issue.message,
+          ...(issue.action ? { action: issue.action } : {}),
+          ...(issue.event ? { event: issue.event } : {}),
+          ...(issue.object ? { object: issue.object } : {}),
+          ...(issue.step ? { step: issue.step } : {}),
+          ...(issue.rule ? { rule: issue.rule } : {}),
+          ...(issue.link ? { link: issue.link } : {}),
+          ...(issue.field ? { field: issue.field } : {}),
+        })),
+      },
+      rules: {
+        count: report.unknownRules.length,
+        examples: report.unknownRules.slice(0, 6).map((issue) => ({
+          reason: issue.reason,
+          // Keep the catalog-wide response bounded even when a malformed
+          // uploaded reference contains a very large nested object.  The
+          // canonical id/name (or the explicit "unidentified" marker) is all
+          // the aggregate needs; the action-scoped inspector retains the full
+          // evidence for diagnosis.
+          reference: displayUnresolvedRuleReference(issue),
+        })),
+      },
+      integration: {
+        ready: report.integrationGate.ready,
+        identityGapRequirementIds: report.integrationGate.identityGaps
+          .map((binding) => binding.requirement.id),
+        authoringOptionalRequirementIds: report.integrationGate.authoringOptionalGaps
+          .map((binding) => binding.requirement.id),
+        ruleToolSatisfied: report.integrationGate.ruleToolSatisfied,
+        ruleToolCandidates: report.integrationGate.ruleToolCandidates.slice(0, 6),
+        declaredTools: report.integrationGate.declaredTools.slice(0, 12),
+        selectedTools: report.integrationGate.effectiveTools.slice(0, 12),
+        substitutedDeclaredTools: report.integrationGate.missingDeclaredTools.slice(0, 12),
+        unresolvedBindings,
+        unresolvedBindingCount: report.integrationGate.report.bindings
+          .filter((binding) => binding.status !== "resolved").length,
+      },
+      profiles: {
+        sandboxReady: report.profileGate.sandboxReady,
+        productionReady: report.profileGate.productionReady,
+        sandboxTools: sandboxProfileBlockers.slice(0, 12),
+        productionTools: productionProfileBlockers.slice(0, 12),
+      },
+      probes: {
+        sandboxReady: report.probeGate.sandboxReady,
+        promotionReady: report.probeGate.promotionReady,
+        sandboxTools: sandboxProbeBlockers.slice(0, 12),
+        productionTools: productionProbeBlockers.slice(0, 12),
+      },
+    },
+    detail: {
+      tool: "inspect_action_readiness",
+      action: report.action,
+    },
+  };
 }
 
 /** Read-only, action-scoped preflight. It deliberately does not create a plan/spec,
@@ -2453,7 +3119,7 @@ const inspect_action_readiness: BrainTool = {
 const inspect_all_action_readiness: BrainTool = {
   name: "inspect_all_action_readiness",
   description:
-    "【全量只读预检】一次检查当前 Ontology 中 actor 包含 Agent 的全部 Actions，并逐项返回 ready/blockers/rules/integration/sandbox+production profiles/probes 详情与总计。Action 全集只从已加载 Ontology 确定，调用方不提供动作列表，因此不能漏项或混入虚构 Action。只读取同一个资源快照；不会创建 plan/spec、保存配置、执行探针、部署或修改 Ontology。",
+    "【全量只读预检】一次检查当前 Ontology 中 actor 包含 Agent 的全部 Actions，返回总计和紧凑逐项阻断摘要。Action 全集只从已加载 Ontology 确定，调用方不提供动作列表，因此不能漏项或混入虚构 Action。只读取同一个资源快照；不会创建 plan/spec、保存配置、执行探针、部署或修改 Ontology。需要某个 Action 的完整 binding/profile/probe 证据时，再按摘要指引调用 inspect_action_readiness。",
   parameters: params({}),
   async execute(_args, ctx) {
     if (!ctx.ontology) {
@@ -2606,10 +3272,7 @@ const inspect_all_action_readiness: BrainTool = {
           question: clarification.question,
           missing: clarification.missing,
         } : {}),
-        // Keep the compact totals before the verbose reports. Oversized tool
-        // results are preview-truncated for the model, so coverage and gap
-        // counts must survive at the front of the structured payload.
-        actions,
+        actions: actions.map(compactActionReadinessReport),
       },
     };
   },
@@ -2627,7 +3290,7 @@ const critique_plan: BrainTool = {
     if (!ctx.currentPlan) return { ok: false, summary: "还没 create_plan。" };
     if (!ctx.ontology) return { ok: false, summary: "请先 read_ontology。" };
     const plan = ctx.currentPlan;
-    const agentActions = ctx.ontology.actions.filter((a) => a.actor.includes("Agent")).map((a) => a.name);
+    const agentActions = generationScopedAgentActionNames(ctx);
     if (!isGatewayConfigured()) {
       const planned = new Set(plan.agents.map((a) => a.actionName));
       const missed = agentActions.filter((n) => !planned.has(n));
@@ -2745,14 +3408,14 @@ const critique_plan: BrainTool = {
 const design_agent: BrainTool = {
   name: "design_agent",
   description:
-    "提交你为【一个】agent 动作设计好的 agent。先想清楚职责/边界/选哪些工具(为什么)/每个分支事件的触发条件，并【亲自写中文 system_prompt】。定义 input_schema/output_schema（参考 read_ontology 的 data_objects 真实属性）。若 execution_plan_requirement.required=true，plan 必填且必须覆盖 action_steps 给出的稳定 stepId，并把 integration 的外部调用/写入拆成独立可重放步骤。规则校验类动作(is_rule_check)的 prompt 必须写成运行时动态抓规则，绝不写死规则。suggested_tools 只用于发现：tools 留空时优先采用 Ontology action.tool_use；若未声明但每项 integration 都只有一个精确 capability 候选，工厂会自动绑定；同一需求有多个同分候选才 ask_user。缺 profile/probe 不阻止草稿，但会在 sandbox/finish 阶段阻断。一次只交一个。",
+    "提交你为【一个】agent 动作设计好的 agent。先想清楚职责/边界/选哪些工具(为什么)/每个分支事件的触发条件，并【亲自写中文 system_prompt】。定义 input_schema/output_schema（参考 read_ontology 的 data_objects 真实属性）。若 execution_plan_requirement.required=true，plan 必填且必须覆盖 action_steps 给出的稳定 stepId，并精确保留其 kind/tool/invoke/emitEvent；action_steps[].tool 与 integration via_tool 是权威执行绑定，不能被语义推荐替换或省略。规则校验类动作(is_rule_check)的 prompt 必须写成运行时动态抓规则，绝不写死规则。suggested_tools 只用于发现：tools 留空时采用权威 step/via_tool，再采用 Ontology action.tool_use；其余 integration 只有一个精确 capability 候选时才自动补齐，同一需求有多个同分候选才 ask_user。缺 profile/probe 不阻止草稿，但会在 sandbox/finish 阶段阻断。一次只交一个。",
   parameters: {
     ...params(
     {
       action: { type: "string", description: "动作名（read_ontology agentActions[].name）" },
       role_name: { type: "string", description: "（可选）这个 function 的人类可读【显示名】（≤12 字，如「简历守门员」）——仅用于 UI 卡片/业务流全景的称呼；注意：角色设定属于生成过程中的工作者（过程角色），不属于交付的 functions。" },
       system_prompt: { type: "string", description: "你亲自写的中文系统提示：职责/依据/决策。要具体，别套模板。" },
-      tools: { type: "array", items: { type: "string" }, description: "本次已明确选择的真实工具。留空优先采用 Ontology action.tool_use；若每项 integration 只有一个精确 capability 候选则自动绑定，多个同分候选才 ask_user。语义 suggested_tools 不会自动补底。" },
+      tools: { type: "array", items: { type: "string" }, description: "本次已明确选择的真实工具。无论是否填写，Ontology action_steps[].tool / integration via_tool 都会作为权威必选；留空再采用 action.tool_use，未覆盖 integration 仅在唯一精确 capability 候选时自动补齐。语义 suggested_tools 不会覆盖权威 step 工具。" },
       tool_configs: {
         type: "object",
         additionalProperties: { type: "object", additionalProperties: true },
@@ -2793,6 +3456,13 @@ const design_agent: BrainTool = {
   async execute(args, ctx) {
     if (!ctx.ontology) return { ok: false, summary: "请先调用 read_ontology。" };
     const name = String(args.action ?? "").trim();
+    const serverScope = ctx.generationDirective?.requestedActionNames;
+    if (serverScope?.length && !serverScope.includes(name)) {
+      return {
+        ok: false,
+        summary: `动作「${name}」不在本次服务端生成范围内；只允许：${serverScope.join("、")}。`,
+      };
+    }
     const action = ctx.ontology.actions.find((a) => a.name === name);
     if (!action) return { ok: false, summary: `找不到动作「${name}」，用 read_ontology 里的准确名字。` };
     if (!action.actor.includes("Agent")) {
@@ -2940,10 +3610,19 @@ const design_agent: BrainTool = {
     const explicitPicks = Array.isArray(args.tools)
       ? (args.tools as unknown[]).map(String).map((value) => value.trim()).filter(Boolean)
       : [];
-    const ontologyPicks = (action.tool_use ?? []).map(String).map((value) => value.trim()).filter(Boolean);
+    const authoritativeExecutionPicks = ontologyDeclaredExecutionTools(action);
+    const ontologyPicks = [...new Set([
+      ...authoritativeExecutionPicks,
+      ...(action.tool_use ?? [])
+        .map(String)
+        .map((value) => value.trim())
+        .filter(Boolean),
+    ])];
     let selectionSource = explicitPicks.length
       ? "design_agent.tools"
-      : ontologyPicks.length
+      : authoritativeExecutionPicks.length
+        ? "ontology.action_steps"
+        : ontologyPicks.length
         ? "ontology.action.tool_use"
         : "none";
     const discoveryBinding = resolveIntegrationBindings(action, resources.realTools, {
@@ -2974,12 +3653,56 @@ const design_agent: BrainTool = {
       .filter((binding) => !binding.selectionRequired)
       .map((binding) => binding.toolName ?? (binding.bindingKind === "tool" ? binding.bindingId : undefined))
       .filter((value): value is string => Boolean(value)))];
-    if (uniqueDiscoveredTools.length === 0 && isGate) {
+    if (isGate && !uniqueDiscoveredTools.some((toolName) => {
+      const tool = resources.realTools.find((candidate) => candidate.name === toolName);
+      return Boolean(tool && toolReadsRulebase(tool));
+    })) {
       const ruleCandidates = resources.realTools.filter(toolReadsRulebase).map((tool) => tool.name);
       if (ruleCandidates.length === 1) uniqueDiscoveredTools.push(ruleCandidates[0]!);
     }
-    // Ground ONLY the author's picks (explicit or ontology). Discovery is a SUPPLEMENT, not a pick.
-    const picks = explicitPicks.length ? explicitPicks : ontologyPicks;
+    // action_steps[].tool / integration via_tool are execution identity, not a
+    // fuzzy suggestion. Resolve only declared aliases and fail closed if the
+    // current registry cannot prove the exact adapter/policy.
+    const authoritativeGrounded = groundToolPicks(
+      authoritativeExecutionPicks,
+      ctx.toolCatalog ?? [],
+    );
+    if (authoritativeGrounded.unresolved.length) {
+      const question = `Ontology 为动作「${name}」的 action_steps/integration 明确声明了这些执行工具，但当前 registry 无法解析：${authoritativeGrounded.unresolved.join("、")}。请接入这些准确工具（或在 Ontology 中显式修正声明）；我不会用语义相近候选替换。`;
+      return {
+        ok: false,
+        summary: question,
+        output: {
+          next: "ask_user",
+          reason: "ontology_execution_tool_missing",
+          question,
+          missing: authoritativeGrounded.unresolved,
+        },
+      };
+    }
+    const authoritativePolicies = selectedToolPolicies(
+      authoritativeGrounded.resolved,
+      resources.realTools,
+    );
+    if (authoritativePolicies.missing.length) {
+      const question = `Ontology 明确声明的执行工具缺少完整策略：${authoritativePolicies.missing.join("、")}。请补齐 operation、effectScope 和 sandboxPolicy；权威 step 工具不能被静默丢弃或替换。`;
+      return {
+        ok: false,
+        summary: question,
+        output: {
+          next: "ask_user",
+          reason: "tool_execution_policy_missing",
+          question,
+          missing: authoritativePolicies.missing,
+        },
+      };
+    }
+    // Explicit model picks may add tools, but can never remove the
+    // authoritative execution bindings. Discovery remains a supplement.
+    const picks = [...new Set([
+      ...authoritativeExecutionPicks,
+      ...(explicitPicks.length ? explicitPicks : ontologyPicks),
+    ])];
     const grounded = groundToolPicks(picks, ctx.toolCatalog ?? []);
     const groundedPolicies = selectedToolPolicies(grounded.resolved, resources.realTools);
     // #TOOLUSE-ECHO — an explicit pick that merely ECHOES the ontology's tool_use[] is still a
@@ -3032,6 +3755,20 @@ const design_agent: BrainTool = {
         candidates: availableRuleCandidates,
         detail: "这个动作看起来承担规则校验，但 Ontology 和本次显式选择都没有绑定一个带规则读取 capability 的工具",
       });
+    }
+    const executablePolicies = selectedToolPolicies(tools, resources.realTools);
+    if (executablePolicies.missing.length) {
+      const question = `这些自动发现的工具还没有完整、可审核的执行策略：${executablePolicies.missing.join("、")}。请先在工具库里明确 operation、effectScope 和 sandboxPolicy；唯一 capability 候选也不能绕过执行策略门。`;
+      return {
+        ok: false,
+        summary: question,
+        output: {
+          next: "ask_user",
+          reason: "tool_execution_policy_missing",
+          question,
+          missing: executablePolicies.missing,
+        },
+      };
     }
 
     let systemPrompt = rawPrompt; // 可能已被内部设计循环精修；不再偷偷注入规则工具指令
@@ -3106,7 +3843,10 @@ const design_agent: BrainTool = {
     // discipline (side-effecting steps need idempotencyKeyFrom + onError; deps reference prior
     // steps) and REJECT a sloppy plan (mirrors the empty-prompt rejection). No plan → the deploy
     // falls back to a single logic action (back-compat).
-    const plan = parsePlan(args.plan);
+    const plan = canonicalizePlanExecutionTools(
+      parsePlan(args.plan),
+      ctx.toolCatalog ?? [],
+    );
     if (decisionTables.length && plan.some((step) => step.kind === "emit" || step.body?.some((child) => child.kind === "emit"))) {
       return {
         ok: false,
@@ -3114,7 +3854,13 @@ const design_agent: BrainTool = {
         output: { decisionTableErrors: ["decision_tables_conflict_with_explicit_emit"] },
       };
     }
-    const ontologyPlanErrors = validatePlanAgainstOntology(action, plan);
+    const ontologyPlanErrors = validatePlanAgainstOntology(
+      canonicalizeOntologyExecutionTools(
+        action,
+        ctx.toolCatalog ?? [],
+      ),
+      plan,
+    );
     if (ontologyPlanErrors.length) {
       const requirement = analyzeExecutionPlanRequirement(action);
       return {
@@ -3175,7 +3921,11 @@ const design_agent: BrainTool = {
         });
       }
       const identityGaps = integrationBinding.bindings
-        .filter((binding) => binding.status === "missing" && !binding.bindingId && !binding.toolName);
+        .filter((binding) =>
+          binding.status === "missing"
+          && !binding.bindingId
+          && !binding.toolName
+          && !binding.requirement.authoringOptional);
       if (identityGaps.length) {
         const gaps = identityGaps
         .slice(0, 5)
@@ -3231,7 +3981,7 @@ const design_agent: BrainTool = {
     const spec = buildSpec(action, ctx.domain, authored, inputSchema, outputSchema, compiledInputBindings.bindings);
     // Policies for the FINAL executable set (granted picks ∪ discovered transports), all granted by
     // construction — `.missing` is empty here, so `.values` covers every tool the spec will run.
-    spec.toolPolicies = selectedToolPolicies(tools, resources.realTools).values;
+    spec.toolPolicies = executablePolicies.values;
     spec.toolSideEffects = selectedLegacyToolSideEffects(tools, resources.realTools);
     spec.ruleRefs = actionRuleResolution.relevantRules
       .map((rule) => rule.id || rule.name)
@@ -3275,7 +4025,7 @@ const design_agent: BrainTool = {
     ctx.emit({ t: "code", actionName: name, code: spec.generatedCode ?? "", codeSource: "render" });
     const execNote = spec.codeExecuted ? " · ⚙ 代码已过 编译+安全+加载探针，沙箱将真实执行（CodeAct）" : ` · 📄 声明式执行${spec.probeReason ? `（代码未过加载探针：${spec.probeReason}）` : ""}`;
 
-    const agentActionNames = ctx.ontology.actions.filter((a) => a.actor.includes("Agent")).map((a) => a.name);
+    const agentActionNames = generationScopedAgentActionNames(ctx);
     const done = new Set(ctx.specs.map((s) => s.actionName));
     const remaining = agentActionNames.filter((n) => !done.has(n));
     const integrationGaps = (spec.integrationBindings ?? []).filter((binding) => binding.status !== "resolved");
@@ -3892,8 +4642,62 @@ const propose_boundary_events: BrainTool = {
         consumer: typeof e.consumer === "string" ? e.consumer : undefined,
         payloadContract: typeof e.payloadContract === "string" ? e.payloadContract : undefined,
       }));
+    const unique =
+      proposals.length > 0 &&
+      new Set(proposals.map((proposal) => proposal.event)).size ===
+        proposals.length &&
+      proposals.every(
+        (proposal) =>
+          proposal.suggestedKind === "external" ||
+          proposal.suggestedKind === "terminal",
+      );
+    if (ctx.interactionPolicy === "autopilot" && unique) {
+      const decided = proposals.map((proposal) => ({
+        event: proposal.event,
+        kind: proposal.suggestedKind,
+        ...(proposal.consumer ? { consumer: proposal.consumer } : {}),
+        ...(proposal.payloadContract
+          ? { payloadContract: proposal.payloadContract }
+          : {}),
+        note: `Autopilot 采用唯一建议分类：${proposal.why}`.slice(0, 500),
+      }));
+      const byEvent = new Map(
+        (ctx.boundaryEvents ?? []).map((boundary) => [
+          boundary.event,
+          boundary,
+        ]),
+      );
+      for (const boundary of decided) byEvent.set(boundary.event, boundary);
+      ctx.boundaryEvents = [...byEvent.values()];
+      ctx.awaitingBoundary = false;
+      ctx.boundaryProposals = undefined;
+      ctx.lastValidation = null;
+      ctx.emit({ t: "boundary.cases", proposals, awaitingDecision: false });
+      const assumption = recordFactoryAssumption(ctx, {
+        gate: "boundary",
+        subject: `边界事件分类：${proposals.map((proposal) => proposal.event).join("、")}`,
+        value: JSON.stringify(
+          decided.map((boundary) => ({
+            event: boundary.event,
+            kind: boundary.kind,
+          })),
+        ),
+        source: "recommended",
+        detail: "所有事件都只有一个 external/terminal 建议；未自动接受 break 或副作用授权。",
+      });
+      ctx.emit({ t: "boundary.decided", events: decided });
+      return {
+        ok: true,
+        summary: `Autopilot 已记录假设 ${assumption.id} 并采用 ${decided.length} 个唯一边界分类；继续重新 validate_graph。`,
+        output: {
+          events: decided,
+          awaitingDecision: false,
+          assumptionId: assumption.id,
+        },
+      };
+    }
     ctx.awaitingBoundary = true;
-    ctx.boundaryProposals = proposals; // kept so a park timeout can auto-apply them
+    ctx.boundaryProposals = proposals;
     ctx.emit({ t: "boundary.cases", proposals, awaitingDecision: true });
     return {
       ok: true,
@@ -3905,28 +4709,41 @@ const propose_boundary_events: BrainTool = {
 
 const validate_graph: BrainTool = {
   name: "validate_graph",
-  description: "静态校验所有 agent 的事件图：①结构闭合(emit被消费/是终态、trigger有产出者/是入口、可达)②覆盖(每个 Agent 动作都有 agent)③字段合同(下游 input 要的字段上游 output 有没有产出)。返回 agentIssueMap 把问题绑到具体 agent。",
+  description: "静态校验本次 generation scope 内所有 agent 的事件图：①结构闭合(emit被消费/是终态、trigger有产出者/是入口、可达)②覆盖(本次每个 Agent 动作都有 agent)③字段合同(下游 input 要的字段上游 output 有没有产出)。范围边缘事件按 external handoff/入口/终态处理；返回 agentIssueMap 把问题绑到具体 agent。",
   parameters: params({}),
   async execute(_args, ctx) {
     if (!ctx.ontology) return { ok: false, summary: "请先 read_ontology。" };
     if (!ctx.specs.length) return { ok: false, summary: "还没设计任何 agent。" };
     const specActions: OntologyAction[] = ctx.specs.map((s) => ({ id: s.slug, name: s.actionName, actor: s.hitl ? ["Human"] : ["Agent"], trigger: s.trigger ?? [], triggered_event: s.emit ?? [], target_objects: s.objects ?? [], tool_use: s.tools ?? [], system_prompt: s.systemPrompt, user_prompt: s.userPrompt }));
-    const known = compileGraph(ctx.ontology.actions, { domainId: ctx.domain });
+    const acceptanceOntology = generationAcceptanceOntology(ctx);
+    // A selected subset is a complete executable boundary for this run. An
+    // event crossing to/from an excluded Action is therefore an honest
+    // external entry/handoff, not a producer/consumer that silently closes the
+    // generated graph or an impossible missing-edge requirement.
+    const known = compileGraph(acceptanceOntology.actions, {
+      domainId: ctx.domain,
+    });
     const specGraph = compileGraph(specActions, { domainId: ctx.domain });
     const v = verifyGraph(specGraph, { knownEntries: known.entryEvents, knownTerminals: known.terminalEvents, boundaryEvents: (ctx.boundaryEvents ?? []).filter((b) => b.kind !== "break").map((b) => b.event) });
-    // #SCOPE — 覆盖必须按【本次范围】判，否则部分范围的工作【永远拿不到验证】：
-    // 用户说「只把 createJD 写出来，跑通给我看」→ AI create_plan(scope=partial) → 设计 1 个 →
-    // 这里 gap = 用户明确不要的另外 5 个 → ok=false → stageAdmission 拒绝 sandbox_run（要求
-    // lastValidation.ok===true）→ AI 怎么修都过不去，因为"缺陷"正是用户不要的东西 → 死锁，
-    // 只能 save_draft（诚实标注"无沙箱证据、不能晋升"）。也就是说"只做一个并跑通"过去做不到。
-    // finish(下方) 早就认 planScope 了，validate_graph 却没有——这里补齐口径。
-    // 注意分工：范围内没闭合仍然 ok=false（证据门一步不让）；范围外的动作降级成【事实提醒】，
-    // 让 AI 自己判断要不要回头找用户扩范围。finish 的 coverageGap 仍按【全本体】判 —— 标 partial
-    // 最多换来一张 save_draft 草稿，换不来交付，所以"标 partial 逃避覆盖"这条路依然堵死。
+    // Structured scope is issued by the server recommendation receipt and is
+    // the full acceptance universe. planScope remains only for legacy,
+    // unstructured draft conversations.
     const scopeMissed = ctx.planScope?.kind === "partial" ? new Set(ctx.planScope.missedActions ?? []) : new Set<string>();
-    const fullGap = coverageGap(ctx.ontology.actions, ctx.specs.map((s) => s.actionName));
-    const gap = fullGap.filter((name) => !scopeMissed.has(name));
-    const outOfScopeGap = fullGap.filter((name) => scopeMissed.has(name));
+    const acceptanceGap = coverageGap(
+      acceptanceOntology.actions,
+      ctx.specs.map((s) => s.actionName),
+    );
+    const gap = ctx.generationDirective
+      ? acceptanceGap
+      : acceptanceGap.filter((name) => !scopeMissed.has(name));
+    const selectedNames = new Set(generationScopedAgentActionNames(ctx));
+    const outOfScopeGap = ctx.generationDirective
+      ? ctx.ontology.actions
+          .filter((action) =>
+            action.actor.includes("Agent") && !selectedNames.has(action.name),
+          )
+          .map((action) => action.name)
+      : acceptanceGap.filter((name) => scopeMissed.has(name));
     const contract = deriveContractGraph(ctx.specs, ctx.domain, canonicalEventFields(ctx.ontology));
     const contractMap = contractAgentIssueMap(contract);
     // #SIMPLIFY 契约问题分级（结构化，替代旧的 summary 字符串 includes 判断——那种写法既脆、
@@ -3940,7 +4757,7 @@ const validate_graph: BrainTool = {
     const issues: string[] = [
       ...(gap.length ? [`缺少 agent 的动作：${gap.join("、")}`] : []),
       // 范围外的动作：陈述事实，不阻断。AI 看得见"本体还有这些没做"，自己判断要不要找用户扩范围。
-      ...(outOfScopeGap.length ? [`（本体另有 ${outOfScopeGap.length} 个 Agent 动作不在本次范围内，未计入覆盖：${outOfScopeGap.join("、")}——这是用户指定的部分范围${ctx.planScope?.reason ? `（${ctx.planScope.reason}）` : ""}，不是缺陷；需要做再找用户扩范围）`] : []),
+      ...(outOfScopeGap.length ? [`（本体另有 ${outOfScopeGap.length} 个 Agent 动作不在本次范围内，未计入覆盖：${outOfScopeGap.join("、")}——这是服务端锁定的 generation scope${ctx.planScope?.reason ? `（${ctx.planScope.reason}）` : ""}，不是缺陷；范围边缘事件按 external handoff 处理）`] : []),
       ...v.issues.map((i) => (i.kind === "missing_producer" ? `「${i.action}」消费的 ${i.event} 没人产出` : i.kind === "orphan_emit" ? `「${i.action}」产出的 ${i.event} 没人消费且非终态` : i.kind === "unreachable_node" ? `「${i.action}」从入口不可达` : i.kind === "dead_end" ? `「${i.action}」从入口可达但到不了任何终态（困在环里/死路——补一条通向终态的分支或显式声明退出）` : i.kind === "cycle" ? `⛔ 无界事件环：${i.actions.join("→")}（经 ${i.events.join("、")} 互相触发，环内无 HITL 停止界——部署后会无限互相重触发。修法：给环加退出分支/终态事件，或在环内加人工闸口）` : i.kind === "no_entry" ? "无入口节点" : "到不了终态")),
       ...contractAdvisory,
       ...(softContract.length ? [`（另有 ${softContract.length} 处字段靠 envelope 携带，非阻断——如需严格对齐可补进本体）`] : []),
@@ -3964,7 +4781,7 @@ const validate_graph: BrainTool = {
     // #BIZFLOW — the moment specs + ontology + boundary decisions are all on hand, derive the
     // complete business-flow model (external platforms · reads/calls/writes · branch semantics)
     // so the UI can render the generated end-to-end business diagram.
-    ctx.emit({ t: "flow.business", model: deriveBusinessFlow(ctx.specs, ctx.ontology, ctx.boundaryEvents) as unknown as Record<string, unknown> });
+    ctx.emit({ t: "flow.business", model: deriveBusinessFlow(ctx.specs, acceptanceOntology, ctx.boundaryEvents) as unknown as Record<string, unknown> });
     const contractNote = contractAdvisory.length ? `；另有 ${contractAdvisory.length} 条契约提醒（高置信，建议当场修——沙箱保真会按真实行为裁定）：${contractAdvisory.slice(0, 2).join("；")}` : "";
     return { ok, summary: ok ? `事件图闭合 ✓（覆盖 + 结构）${contractNote}` : `未闭合：${issues.slice(0, 4).join("；")}${contractNote}`, output: { ok, issues, agentIssueMap, coverageGap: gap, contract: { ok: contract.ok, payloadGaps: contract.events.filter((e) => e.payloadGaps.length).map((e) => ({ event: e.name, missing: e.payloadGaps })) } } };
   },
@@ -3985,7 +4802,10 @@ const verify_chain: BrainTool = {
       for (const e of s.emit ?? []) (emitters.get(e) ?? emitters.set(e, []).get(e)!).push(s.actionName);
       for (const e of s.trigger ?? []) (consumers.get(e) ?? consumers.set(e, []).get(e)!).push(s.actionName);
     }
-    const known = compileGraph(ctx.ontology.actions, { domainId: ctx.domain });
+    const known = compileGraph(
+      generationAcceptanceOntology(ctx).actions,
+      { domainId: ctx.domain },
+    );
     const entrySet = new Set(known.entryEvents);
     const termSet = new Set(known.terminalEvents);
     const breaks: string[] = [];
@@ -4106,7 +4926,34 @@ const sandbox_run: BrainTool = {
       };
     }
     const reviewSubjectDigest = sandboxDesignReviewSubjectDigest({ domain: ctx.domain, fingerprint: sbFp });
-    if (!sandboxDesignReviewReceiptIsCurrent(ctx, sbFp, reviewSubjectDigest)) {
+    let autopilotReview: NonNullable<
+      BrainCtx["lastSandbox"]
+    >["autopilotReview"];
+    const autopilotSafe =
+      ctx.interactionPolicy === "autopilot" &&
+      autopilotTestApprovalBlockReason(ctx) === null;
+    if (autopilotSafe) {
+      const assumption = recordFactoryAssumption(ctx, {
+        gate: "sandbox_review",
+        subject: `隔离沙箱审查 ${sbFp}`,
+        value: "approve_read_only_sandbox",
+        source: "safe_default",
+        detail:
+          "覆盖完整、无待处理授权、无外部写；仅批准本次隔离沙箱，不代表生产晋升授权。",
+      });
+      autopilotReview = {
+        schema: "agent-factory-autopilot-sandbox-review/v1",
+        fingerprint: sbFp,
+        subjectDigest: reviewSubjectDigest,
+        assumptionId: assumption.id,
+        appliedAt: assumption.appliedAt,
+        policy: "autopilot_safe",
+        ...(ctx.conversationId
+          ? { conversationId: ctx.conversationId }
+          : {}),
+      };
+      ctx.sandboxDesignReview = undefined;
+    } else if (!sandboxDesignReviewReceiptIsCurrent(ctx, sbFp, reviewSubjectDigest)) {
       const execution = ctx.conversationId ? factoryExecutionScope(ctx.conversationId) : undefined;
       if (!execution || !ctx.ports.authorizationChallenges) {
         const question = "当前 Agent 工厂没有接入可审计的一次性人工签核存储，因此不会创建 Inngest 沙箱 App。请让平台管理员接入 authorization challenge store 后重试。";
@@ -4355,6 +5202,7 @@ const sandbox_run: BrainTool = {
       sandboxTenantSlug: res.sandboxTenantSlug,
       designReviewReceipt: ctx.sandboxDesignReview?.receipt,
       designReviewSubjectDigest: ctx.sandboxDesignReview?.subjectDigest,
+      autopilotReview,
       externalLiveCalls: res.externalLiveCalls,
       replayReceipts: res.replayReceipts,
       sandboxReplayEvidenceComplete: res.sandboxReplayEvidenceComplete,
@@ -4788,7 +5636,7 @@ const review_completeness: BrainTool = {
     if (!ctx.ontology) return { ok: false, summary: "请先 read_ontology。" };
     // Tier 1 — deterministic completeness checks.
     const gaps: string[] = [];
-    const agentActions = ctx.ontology.actions.filter((a) => a.actor.includes("Agent")).map((a) => a.name);
+    const agentActions = generationScopedAgentActionNames(ctx);
     const done = new Set(ctx.specs.map((s) => s.actionName));
     const uncovered = agentActions.filter((n) => !done.has(n));
     if (uncovered.length) gaps.push(`漏了 ${uncovered.length} 个 Agent 动作没设计:${uncovered.join("、")}`);
@@ -4820,10 +5668,11 @@ const review_completeness: BrainTool = {
       const understanding = ctx.ontologyUnderstanding ? `【本体理解(含 ambiguities/risks/externalHandoffs)】\n${ctx.ontologyUnderstanding.slice(0, 1800)}\n\n` : "";
       const digest =
         understanding +
+        `【本次验收 Action 范围】${agentActions.join("、") || "无"}\n` +
         `【已设计 ${ctx.specs.length} 个 agent】\n` +
         ctx.specs.map((s) => `· ${s.actionName}: 触发 ${(s.trigger ?? []).join(",") || "—"} → ${(s.emit ?? []).join(",") || "—"} · plan ${s.plan?.length || 0} 步`).join("\n");
       const sys =
-        "你是【完整性/元认知审查】。别复述已做的——只找【还没想到的】。逐条判断:(1) 有没有 Agent 动作/事件分支被漏掉;(2) 运行时事实是否想全了:失败该 throw 还是 emit 失败事件、可恢复(infra)vs 业务失败、集合入参要不要 foreach、要不要 HITL、有没有外部交接终态被当断链;(3) 有没有边界/异常场景没处理;(4) 规则是否都绑定。只输出 JSON 数组:" +
+        "你是【完整性/元认知审查】。别复述已做的——只找【还没想到的】。严格以材料里的【本次验收 Action 范围】为全集，不得要求补范围外 Action。逐条判断:(1) 本次范围内有没有 Agent 动作/事件分支被漏掉;(2) 运行时事实是否想全了:失败该 throw 还是 emit 失败事件、可恢复(infra)vs 业务失败、集合入参要不要 foreach、要不要 HITL、有没有外部交接终态被当断链;(3) 有没有边界/异常场景没处理;(4) 规则是否都绑定。只输出 JSON 数组:" +
         '[{"gap":string,"severity":"high"|"med"|"low"}]。都想全了就输出 []。不要任何其它文字。';
       try {
         const arr = parseReviewRows(
@@ -4857,13 +5706,14 @@ const review_completeness: BrainTool = {
 
 const list_agents: BrainTool = {
   name: "list_agents",
-  description: "列出已设计的所有 agent + 还没覆盖的 actor=Agent 动作，掌握进度。",
+  description: "列出已设计的所有 agent + 本次 generation scope 内还没覆盖的 actor=Agent 动作，掌握进度。",
   parameters: params({}),
   async execute(_args, ctx) {
-    const agentActions = ctx.ontology ? ctx.ontology.actions.filter((a) => a.actor.includes("Agent")).map((a) => a.name) : [];
+    const agentActions = generationScopedAgentActionNames(ctx);
     const done = new Set(ctx.specs.map((s) => s.actionName));
     const remaining = agentActions.filter((n) => !done.has(n));
-    return { ok: true, summary: `已设计 ${ctx.specs.length} · 还差 ${remaining.length}：${remaining.join("、") || "无"}`, output: { agents: ctx.specs.map(cardOf), remaining } };
+    const designed = agentActions.filter((name) => done.has(name)).length;
+    return { ok: true, summary: `本次范围已设计 ${designed}/${agentActions.length} · 还差 ${remaining.length}：${remaining.join("、") || "无"}`, output: { agents: ctx.specs.map(cardOf), remaining, designed, total: agentActions.length } };
   },
 };
 
@@ -5535,6 +6385,442 @@ const probe_tool: BrainTool = {
           : `❌ 工具「${name}」probe 未通过：${result.classification}${result.status ? ` HTTP ${result.status}` : ""}${result.error ? ` · ${result.error.slice(0, 180)}` : ""}。证据状态已记为 failed，修契约/配置后重探。`,
       output: result,
     };
+  },
+};
+
+function bindCommittedSandboxEvidencePlan(
+  ctx: BrainCtx,
+  receipt: SandboxEvidencePlanReceipt,
+  realTools: RealTool[],
+): { profilesBound: number; specsUpdated: number } {
+  if (!ctx.ontology || !ctx.generationDirective) {
+    throw new Error(
+      "cannot bind sandbox evidence without the server-locked generation scope",
+    );
+  }
+  const allowedActions = new Set(generationScopedAgentActionNames(ctx));
+  const stagedSpecs = ctx.specs.map((spec) => ({
+    ...spec,
+    sandboxToolProfileRefs: {
+      ...(spec.sandboxToolProfileRefs ?? {}),
+    },
+    sandboxToolConfigs: {
+      ...(spec.sandboxToolConfigs ?? {}),
+    },
+  }));
+  const updatedSpecIndexes = new Set<number>();
+  let profilesBound = 0;
+
+  const expectedProfiles = receipt.bindings.filter((binding) =>
+    Boolean(binding.profileKey),
+  );
+  if (receipt.profiles.length !== expectedProfiles.length) {
+    throw new Error(
+      "sandbox evidence receipt profile count does not match its prepared bindings",
+    );
+  }
+
+  for (const binding of receipt.bindings) {
+    for (const use of binding.uses) {
+      if (!allowedActions.has(use.actionName)) {
+        throw new Error(
+          `sandbox evidence receipt expanded outside generation scope: ${use.actionName}`,
+        );
+      }
+      const action = ctx.ontology.actions.find(
+        (candidate) => candidate.name === use.actionName,
+      );
+      if (!action || !action.actor.includes("Agent")) {
+        throw new Error(
+          `sandbox evidence receipt references a non-Agent Action: ${use.actionName}`,
+        );
+      }
+      const spec = stagedSpecs.find(
+        (candidate) => candidate.actionName === use.actionName,
+      );
+      if (!spec || !spec.tools.includes(binding.toolName)) {
+        throw new Error(
+          `sandbox evidence receipt no longer matches spec ${use.actionName}/${binding.toolName}`,
+        );
+      }
+    }
+
+    if (!binding.profileKey) continue;
+    const committedProfiles = receipt.profiles.filter(
+      (profile) =>
+        profile.toolName === binding.toolName
+        && profile.profileKey === binding.profileKey
+        && profile.configHash === binding.configHash
+        && profile.environment === "sandbox",
+    );
+    if (committedProfiles.length !== 1) {
+      throw new Error(
+        `sandbox evidence receipt does not identify exactly one committed profile for ${binding.toolName}/${binding.profileKey}`,
+      );
+    }
+    const tool = realTools.find((candidate) =>
+      candidate.name === binding.toolName,
+    );
+    if (!tool) {
+      throw new Error(
+        `committed sandbox tool ${binding.toolName} is missing from the refreshed registry`,
+      );
+    }
+    const matchingProfiles = (tool.integrationProfiles ?? []).filter(
+      (profile) =>
+        profile.toolName === binding.toolName
+        && profile.profileKey === binding.profileKey
+        && profile.environment === "sandbox"
+        && integrationProfileConfigDigest(profile.config) ===
+          binding.configHash,
+    );
+    if (matchingProfiles.length !== 1) {
+      throw new Error(
+        `committed sandbox profile ${binding.toolName}/${binding.profileKey} is missing or ambiguous after refresh`,
+      );
+    }
+    const profile = matchingProfiles[0]!;
+
+    for (const use of binding.uses) {
+      const specIndex = stagedSpecs.findIndex(
+        (candidate) => candidate.actionName === use.actionName,
+      );
+      const spec = stagedSpecs[specIndex]!;
+      spec.sandboxToolProfileRefs = {
+        ...(spec.sandboxToolProfileRefs ?? {}),
+        [binding.toolName]: profile.id,
+      };
+      spec.sandboxToolConfigs = {
+        ...(spec.sandboxToolConfigs ?? {}),
+        [binding.toolName]: structuredClone(profile.config),
+      };
+      const profileValidation = validateGeneratedSpecIntegrationProfiles({
+        specs: [{
+          ...spec,
+          tools: [binding.toolName],
+        }],
+        tools: realTools,
+        scope: {
+          tenantId: ctx.ports?.factoryScope?.tenantId,
+          tenantSlug: ctx.ports?.factoryScope?.tenantSlug,
+          domainId: ctx.domain,
+        },
+        environments: ["sandbox"],
+      });
+      if (!profileValidation.ok) {
+        throw new Error(
+          profileValidation.issues
+            .slice(0, 4)
+            .map((issue) => issue.message)
+            .join("；"),
+        );
+      }
+      updatedSpecIndexes.add(specIndex);
+      profilesBound += 1;
+    }
+  }
+
+  // Apply only after every receipt binding, scope and current profile has
+  // passed revalidation. Any stale sandbox/design evidence referred to the old
+  // immutable spec fingerprint and must not survive this configuration change.
+  ctx.specs = stagedSpecs;
+  ctx.lastSandbox = null;
+  ctx.sandboxDesignReview = undefined;
+  return {
+    profilesBound,
+    specsUpdated: updatedSpecIndexes.size,
+  };
+}
+
+/** Prepare every missing sandbox profile and replay cassette behind one exact
+ * human confirmation. This is the preferred minimal-interaction path: the API
+ * independently resolves all real definitions and commits the ready state as
+ * one transaction without invoking a handler or contacting an external host. */
+const prepare_sandbox_evidence_plan: BrainTool = {
+  name: "prepare_sandbox_evidence_plan",
+  description:
+    "为一组真实工具一次性准备 sandbox profile + signed replay fixture。第一次调用会由服务端校验所有真实 definition/schema、非 secret config、Action scope 和 exact exchanges，再只提出一个固定确认问题；用户本人确认后，用完全相同参数带 confirmed:true 重调，整包原子落库。它绝不调用真实 handler/外部系统，所有证据 sandboxOnly=true、promotionAllowed=false，任何内容变化都会使确认失效。优先使用本工具，不要逐个调用 confirm_integration_profile/create_signed_fixture。",
+  parameters: params(
+    {
+      bindings: {
+        type: "array",
+        minItems: 1,
+        maxItems: 50,
+        items: {
+          type: "object",
+          properties: {
+            tool_name: { type: "string", description: "真实 registry 工具名" },
+            profile_key: { type: "string", description: "需要非 secret config 时的 sandbox profile key" },
+            config: { type: "object", additionalProperties: true, description: "非 secret config；凭证只能用 *_env 引用服务器环境变量名" },
+            uses: {
+              type: "array",
+              minItems: 1,
+              items: {
+                type: "object",
+                properties: {
+                  action_name: { type: "string" },
+                  required_objects: { type: "array", items: { type: "string" } },
+                },
+                required: ["action_name"],
+                additionalProperties: false,
+              },
+            },
+            exchanges: {
+              type: "array",
+              minItems: 1,
+              maxItems: 50,
+              items: {
+                type: "object",
+                properties: {
+                  args: { type: "object", additionalProperties: true },
+                  status: { type: "number" },
+                  body: {},
+                  headers: { type: "object", additionalProperties: { type: "string" } },
+                },
+                required: ["args", "status", "body"],
+                additionalProperties: false,
+              },
+            },
+          },
+          required: ["tool_name", "uses", "exchanges"],
+          additionalProperties: false,
+        },
+      },
+      ttl_hours: { type: "number", description: "整包有效期小时数，默认 24，范围 1-168" },
+      confirmed: { type: "boolean", description: "只有本工具自己的服务端确认门收到用户本人选择后才可 true" },
+    },
+    ["bindings"],
+  ),
+  async execute(args, ctx) {
+    if (!ctx.ports.sandboxEvidencePlans || !ctx.ports.authorizationChallenges || !ctx.conversationId) {
+      return { ok: false, summary: "当前运行没有接入 sandbox evidence plan 的服务端准备、原子提交或耐久确认端口。" };
+    }
+    if (!Array.isArray(args.bindings) || args.bindings.length < 1 || args.bindings.length > 50) {
+      return { ok: false, summary: "bindings 需要 1-50 项，每项都要指定真实 tool、Action use 和 exact exchanges。" };
+    }
+    const bindings: SandboxEvidencePlanBindingRequest[] = [];
+    for (const [index, raw] of args.bindings.entries()) {
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+        return { ok: false, summary: `binding ${index + 1} 不是对象。` };
+      }
+      const item = raw as Record<string, unknown>;
+      const toolName = String(item.tool_name ?? "").trim();
+      const uses = Array.isArray(item.uses) ? item.uses.map((use) => {
+        const row = use && typeof use === "object" && !Array.isArray(use)
+          ? use as Record<string, unknown>
+          : {};
+        return {
+          actionName: String(row.action_name ?? "").trim(),
+          ...(Array.isArray(row.required_objects)
+            ? { requiredObjects: row.required_objects.map(String) }
+            : {}),
+        };
+      }) : [];
+      if (!toolName || uses.some((use) => !use.actionName)) {
+        return { ok: false, summary: `binding ${index + 1} 缺少真实 tool_name 或 action_name。` };
+      }
+      const exchanges = Array.isArray(item.exchanges)
+        ? item.exchanges as FactorySignedFixtureExchange[]
+        : [];
+      if (exchanges.length < 1 || exchanges.length > 50) {
+        return { ok: false, summary: `binding ${toolName} 需要 1-50 条 exact exchanges。` };
+      }
+      const config = item.config && typeof item.config === "object" && !Array.isArray(item.config)
+        ? item.config as Record<string, unknown>
+        : {};
+      const sensitivePath = findSensitiveInputPath(
+        { config, exchanges },
+        `prepare_sandbox_evidence_plan.bindings[${index}]`,
+      );
+      if (sensitivePath) {
+        return { ok: false, summary: `${sensitivePath} 看起来包含字面凭证。请移除；这里只允许非 secret 配置和脱敏 fixture。` };
+      }
+      bindings.push({
+        toolName,
+        ...(typeof item.profile_key === "string" && item.profile_key.trim()
+          ? { profileKey: item.profile_key.trim() }
+          : {}),
+        config,
+        uses,
+        exchanges,
+      });
+    }
+    const totalExchanges = bindings.reduce((sum, binding) => sum + binding.exchanges.length, 0);
+    if (totalExchanges > 200 || stableJson(bindings).length > 512_000) {
+      return { ok: false, summary: "整包最多 200 条 exchange 且规范化内容不超过 512 KB；请缩小到本次最小 Action/tool 范围。" };
+    }
+    if (!ctx.ontology || !ctx.generationDirective) {
+      return { ok: false, summary: "还没有服务端锁定的 Ontology Action 范围；请先 read_ontology/完成场景分析，不能凭工具参数扩大范围。" };
+    }
+    const allowedActions = new Set(ctx.generationDirective.requestedActionNames);
+    for (const binding of bindings) {
+      for (const use of binding.uses) {
+        if (!allowedActions.has(use.actionName)) {
+          return { ok: false, summary: `Action「${use.actionName}」不在本次服务端锁定范围内；整包确认不能扩大 generation scope。` };
+        }
+        const action = ctx.ontology.actions.find((candidate) => candidate.name === use.actionName);
+        if (!action || !action.actor.includes("Agent")) {
+          return { ok: false, summary: `Action「${use.actionName}」不是当前 authoritative/virtual scope 中的 Agent Action。` };
+        }
+        const authoritativeObjects = [...new Set(action.target_objects ?? [])].sort();
+        const requestedObjects = [...new Set(use.requiredObjects ?? [])].sort();
+        if (
+          requestedObjects.length > 0
+          && stableJson(requestedObjects) !== stableJson(authoritativeObjects)
+        ) {
+          return { ok: false, summary: `Action「${use.actionName}」的 required_objects 与 authoritative target_objects 不一致；不能用模型自报范围签 profile。` };
+        }
+        use.requiredObjects = authoritativeObjects;
+        const spec = ctx.specs.find((candidate) => candidate.actionName === use.actionName);
+        if (!spec || !spec.tools.includes(binding.toolName)) {
+          return { ok: false, summary: `真实绑定「${binding.toolName} → ${use.actionName}」与当前生成 spec 的 tools 不一致；请先重新 design_agent，不能靠 evidence plan 注入新工具。` };
+        }
+      }
+    }
+    const ttlHours = args.ttl_hours === undefined ? 24 : Number(args.ttl_hours);
+    if (!Number.isInteger(ttlHours) || ttlHours < 1 || ttlHours > 168) {
+      return { ok: false, summary: "ttl_hours 必须是 1-168 的整数。" };
+    }
+    const proposalKey = createHash("sha256").update(stableJson({
+      protocol: "agent-factory-sandbox-evidence-plan-brain/v1",
+      domain: ctx.domain,
+      conversationId: ctx.conversationId,
+      bindings,
+      ttlHours,
+    })).digest("hex");
+    let parked = ctx.pendingSandboxEvidencePlanProposals?.[proposalKey];
+    if (parked && Date.parse(parked.preparation.expiresAt) <= Date.now()) {
+      delete ctx.pendingSandboxEvidencePlanProposals?.[proposalKey];
+      parked = undefined;
+    }
+    if (!parked) {
+      if (args.confirmed === true) {
+        return { ok: false, summary: "没有与当前整包内容完全一致的待确认 plan。confirmed 不能由模型自行填写；请先创建服务端确认。" };
+      }
+      const recordedAt = new Date().toISOString();
+      const request = {
+        domain: ctx.domain,
+        bindings,
+        recordedAt,
+        expiresAt: new Date(Date.parse(recordedAt) + ttlHours * 60 * 60_000).toISOString(),
+        execution: factoryExecutionScope(ctx.conversationId),
+      };
+      try {
+        const preparation = await ctx.ports.sandboxEvidencePlans.prepare(request);
+        parked = { request, preparation };
+        (ctx.pendingSandboxEvidencePlanProposals ??= {})[proposalKey] = parked;
+      } catch (error) {
+        return { ok: false, summary: `sandbox evidence plan 校验失败：${String((error as Error).message ?? error).slice(0, 500)}。没有创建 profile、fixture，也没有执行外部 I/O。` };
+      }
+    }
+    const { preparation } = parked;
+    if (args.confirmed !== true) {
+      const question = `是否一次性确认这份 sandbox-only evidence plan？共 ${preparation.bindings.length} 个真实工具绑定：${preparation.bindings.map((binding) => `${binding.toolName}${binding.profileKey ? `/${binding.profileKey}` : ""}`).join("、")}。内容摘要 ${preparation.subjectDigest.slice(0, 12)}，到期 ${preparation.expiresAt}。确认后只会原子保存 sandbox profile 与签名回放 fixture，不会访问外部系统，也不能用于 production promotion。`;
+      let challenge = pendingChallenge(ctx, "sandbox_evidence_plan", preparation.subjectDigest);
+      if (!challenge) {
+        challenge = await ctx.ports.authorizationChallenges.issue(ctx.domain, {
+          kind: "sandbox_evidence_plan",
+          subjectDigest: preparation.subjectDigest,
+          ...factoryExecutionScope(ctx.conversationId),
+          question,
+          declineLabel: "先不创建",
+          confirmLabel: "确认整包仅用于沙箱",
+        });
+      }
+      parkAuthorizationChallenge(ctx, challenge);
+      return {
+        ok: true,
+        summary: "整包 definition/config/Action scope/exchanges 已由服务端校验，只等待一次人工确认。未确认、超时或任一内容变化都不会落库。",
+        output: {
+          authorizationRequired: true,
+          subjectDigest: preparation.subjectDigest,
+          bindings: preparation.bindings.map((binding) => ({
+            toolName: binding.toolName,
+            profileKey: binding.profileKey,
+            definitionHash: binding.definitionHash,
+            schemaHash: binding.schemaHash,
+            configHash: binding.configHash,
+            uses: binding.uses.map((use) => use.actionName),
+            exchangeCount: binding.review.length,
+          })),
+          expiresAt: preparation.expiresAt,
+          sandboxOnly: true,
+          promotionAllowed: false,
+        },
+      };
+    }
+    const challenge = pendingChallenge(ctx, "sandbox_evidence_plan", preparation.subjectDigest);
+    if (!challenge) {
+      return { ok: false, summary: "没有与当前整包内容、run/conversation 和到期时间完全一致的服务端 challenge。" };
+    }
+    let authorization: FactoryHumanAuthorizationReceipt;
+    try {
+      authorization = await consumeChallenge(ctx, challenge);
+    } catch (error) {
+      return { ok: false, summary: `整包没有获得可用的一次性人工确认：${String((error as Error).message ?? error).slice(0, 300)}。` };
+    }
+    try {
+      const receipt = await ctx.ports.sandboxEvidencePlans.commit({
+        ...parked.request,
+        expectedSubjectDigest: preparation.subjectDigest,
+        authorization,
+      });
+      if (
+        receipt.status !== "ready"
+        || receipt.subjectDigest !== preparation.subjectDigest
+        || stableJson(receipt.bindings) !== stableJson(preparation.bindings)
+      ) {
+        throw new Error(
+          "committed receipt does not match the exact prepared evidence plan",
+        );
+      }
+      const [globals, persisted] = await Promise.all([
+        ctx.ports.toolRegistry?.list() ?? Promise.resolve([]),
+        ctx.ports.tools?.list(ctx.domain) ?? Promise.resolve([]),
+      ]);
+      ctx.realTools = [
+        ...globals,
+        ...persisted.filter((tool) => !globals.some((global) => global.name === tool.name)).map(persistedToolAsRealTool),
+      ];
+      const bindingResult = bindCommittedSandboxEvidencePlan(
+        ctx,
+        receipt,
+        ctx.realTools,
+      );
+      delete ctx.pendingSandboxEvidencePlanProposals?.[proposalKey];
+      return {
+        ok: true,
+        summary: `已由「${receipt.confirmedBy}」一次确认并原子保存 ${receipt.profiles.length} 个 sandbox profile、${receipt.fixtures.length} 份独立可审计 fixture；已把 ${bindingResult.profilesBound} 个精确 profile/config 绑定回 ${bindingResult.specsUpdated} 个现有 Agent。现在可直接重新检查 readiness 并运行沙箱，无需重新 design_agent；这些证据仍不能用于 production promotion。`,
+        output: {
+          schema: receipt.schema,
+          status: receipt.status,
+          subjectDigest: receipt.subjectDigest,
+          confirmedBy: receipt.confirmedBy,
+          expiresAt: receipt.expiresAt,
+          sandboxOnly: true,
+          promotionAllowed: false,
+          profileCount: receipt.profiles.length,
+          fixtureCount: receipt.fixtures.length,
+          profilesBound: bindingResult.profilesBound,
+          specsUpdated: bindingResult.specsUpdated,
+          bindings: receipt.bindings.map((binding) => ({
+            toolName: binding.toolName,
+            profileKey: binding.profileKey,
+            definitionHash: binding.definitionHash,
+            schemaHash: binding.schemaHash,
+            configHash: binding.configHash,
+            uses: binding.uses.map((use) => use.actionName),
+            exchangeCount: binding.review.length,
+          })),
+        },
+      };
+    } catch (error) {
+      delete ctx.pendingSandboxEvidencePlanProposals?.[proposalKey];
+      return {
+        ok: false,
+        summary: `确认已一次性消费，但整包没有进入 ready 或当前 run 的精确 profile 回绑没有完成：${String((error as Error).message ?? error).slice(0, 400)}。事务内不会留下部分 ready 状态；若服务端已返回 ready 但资源刷新失败，已提交证据仍保留审计记录，恢复资源后重新检查 readiness。`,
+      };
+    }
   },
 };
 
@@ -6212,11 +7498,20 @@ const save_draft: BrainTool = {
     if (persisted <= 0) {
       return { ok: false, summary: "草稿库拒绝了本次写入（域不匹配或规格不属于当前域）——设计稿未持久化，本次不记为交付。" };
     }
-    const agentActions = ctx.ontology ? ctx.ontology.actions.filter((a) => a.actor.includes("Agent")).length : null;
+    const scopedActionNames = ctx.ontology
+      ? generationScopedAgentActionNames(ctx)
+      : null;
+    const coveredScopedActions = scopedActionNames
+      ? scopedActionNames.filter((actionName) =>
+          ctx.specs.some((spec) => spec.actionName === actionName),
+        ).length
+      : ctx.specs.length;
     const scopeBits = ctx.planScope?.kind === "partial"
       ? `部分交付（${ctx.planScope.reason ?? "用户指定范围"}）`
       : "设计稿";
-    const coverageBits = agentActions != null ? `覆盖 ${ctx.specs.length}/${agentActions} 个 Agent 动作` : `${ctx.specs.length} 个 agent`;
+    const coverageBits = scopedActionNames
+      ? `覆盖 ${coveredScopedActions}/${scopedActionNames.length} 个本次范围 Agent 动作`
+      : `${ctx.specs.length} 个 agent`;
     const note = typeof args.note === "string" && args.note.trim() ? ` · 备注：${args.note.trim()}` : "";
     ctx.emit({ t: "message", text: `📥 已把 ${persisted} 个设计稿存入草稿库（${scopeBits} · ${coverageBits}）${note}。诚实声明：这些草稿没有沙箱执行证据，不能晋升；需要完整交付时再 generate_test_cases → sandbox_run → finish。` });
     return {
@@ -6227,13 +7522,69 @@ const save_draft: BrainTool = {
   },
 };
 
+/** The only Agent Actions that count toward this run's design, review and
+ * acceptance. A server-issued generation directive is authoritative even when
+ * it represents a session-local virtual Action; legacy conversations without a
+ * directive retain the historical full-domain Agent scope. */
+function generationScopedAgentActions(ctx: BrainCtx): OntologyAction[] {
+  if (!ctx.ontology) return [];
+  return factoryGenerationScopedAgentActions(
+    ctx.ontology,
+    ctx.generationDirective,
+  );
+}
+
+function generationScopedAgentActionNames(ctx: BrainCtx): string[] {
+  if (!ctx.ontology) return [];
+  return factoryGenerationScopedAgentActionNames(
+    ctx.ontology,
+    ctx.generationDirective,
+  );
+}
+
+function generationAcceptanceOntology(ctx: BrainCtx): DomainOntology {
+  return factoryGenerationAcceptanceOntology(
+    ctx.ontology!,
+    ctx.generationDirective,
+  );
+}
+
+function authoritativeBaseOntology(ctx: BrainCtx): DomainOntology {
+  const ontology = ctx.ontology!;
+  const directive = ctx.generationDirective;
+  if (!directive?.virtualAction) return ontology;
+  const virtualEvents = new Set(
+    (directive.virtualEvents ?? []).map((event) => event.name),
+  );
+  const virtualLinks = new Set(
+    (directive.virtualLinks ?? []).map((link) => link.id),
+  );
+  const { factorySessionOverlay: _overlay, ...base } = ontology;
+  return {
+    ...base,
+    actions: ontology.actions.filter(
+      (action) => action.id !== directive.virtualAction!.id,
+    ),
+    events: ontology.events.filter((event) => !virtualEvents.has(event.name)),
+    ...(ontology.links === undefined
+      ? {}
+      : {
+          links: ontology.links.filter((link) => !virtualLinks.has(link.id)),
+        }),
+  };
+}
+
 const finish: BrainTool = {
   name: "finish",
-  description: "交付。仅当【每个 actor=Agent 动作都已设计】【每个 agent 都有代码】【当前这套 agent 有一次匹配的 sandbox_run 成功证据】时通过；否则打回继续。通过时附一句交付说明。（用户只要求部分动作时不要硬凑 finish——用 save_draft 存设计稿草稿。）",
+  description: "交付。仅当【本次验收范围内每个 actor=Agent Action 都已设计】【每个 agent 都有代码】【当前这套 agent 有一次匹配的 sandbox_run 成功证据】时通过；否则打回继续。服务端 actionIds/scenario generation scope 是完整验收全集，选中范围跑通后直接 finish；只有无 generation scope 的旧式临时部分设计才用 save_draft。",
   parameters: params({ summary: { type: "string" } }, ["summary"]),
   async execute(args, ctx) {
     if (!ctx.ontology) return { ok: false, summary: "还没 read_ontology，无法验收覆盖。" };
-    const gap = coverageGap(ctx.ontology.actions, ctx.specs.map((s) => s.actionName));
+    const acceptanceOntology = generationAcceptanceOntology(ctx);
+    const gap = coverageGap(
+      acceptanceOntology.actions,
+      ctx.specs.map((s) => s.actionName),
+    );
     if (gap.length) {
       // #SCOPE — a user-scoped partial plan is INTENT: don't push the brain to design actions the
       // user never asked for; route the delivery to save_draft instead (finish semantics untouched).
@@ -6305,17 +7656,35 @@ const finish: BrainTool = {
     }
     const expectedReviewSubjectDigest = sandboxDesignReviewSubjectDigest({ domain: ctx.domain, fingerprint: fp });
     const reviewReceipt = ctx.lastSandbox.designReviewReceipt;
-    if (
-      !reviewReceipt
-      || ctx.lastSandbox.designReviewSubjectDigest !== expectedReviewSubjectDigest
-      || reviewReceipt.kind !== "sandbox_design_review"
-      || reviewReceipt.subjectDigest !== expectedReviewSubjectDigest
-      || !reviewReceipt.actor?.trim()
-      || (ctx.conversationId && (reviewReceipt.runId !== ctx.conversationId || reviewReceipt.conversationId !== ctx.conversationId))
-    ) {
+    const humanReviewCurrent = Boolean(
+      reviewReceipt
+        && ctx.lastSandbox.designReviewSubjectDigest ===
+          expectedReviewSubjectDigest
+        && reviewReceipt.kind === "sandbox_design_review"
+        && reviewReceipt.subjectDigest === expectedReviewSubjectDigest
+        && reviewReceipt.actor?.trim()
+        && (!ctx.conversationId ||
+          (reviewReceipt.runId === ctx.conversationId &&
+            reviewReceipt.conversationId === ctx.conversationId)),
+    );
+    const autopilotReview = ctx.lastSandbox.autopilotReview;
+    const autopilotReviewCurrent = Boolean(
+      ctx.interactionPolicy === "autopilot"
+        && autopilotTestApprovalBlockReason(ctx) === null
+        && ctx.lastSandbox.externalWritesRequired === false
+        && autopilotReview?.schema ===
+          "agent-factory-autopilot-sandbox-review/v1"
+        && autopilotReview.policy === "autopilot_safe"
+        && autopilotReview.fingerprint === fp
+        && autopilotReview.subjectDigest === expectedReviewSubjectDigest
+        && autopilotReview.assumptionId?.trim()
+        && (!ctx.conversationId
+          || autopilotReview.conversationId === ctx.conversationId),
+    );
+    if (!humanReviewCurrent && !autopilotReviewCurrent) {
       return {
         ok: false,
-        summary: "上次沙箱缺少与当前 domain、代码/测试指纹和执行版本精确绑定的人工设计签核回执。请重新 sandbox_run，让服务端重新发起审查；不会复用或伪造旧批准。",
+        summary: "上次沙箱既没有与当前证据精确绑定的人工设计签核，也没有满足覆盖完整、无授权待办、无外部写条件的 Autopilot 安全审查。请重新 sandbox_run；不会复用或伪造批准。",
       };
     }
     const cleanupIssues = sandboxCleanupReceiptIssues(ctx.lastSandbox.cleanupReceipt, {
@@ -6387,7 +7756,7 @@ const finish: BrainTool = {
     // #P3 — 监督者的版本锁定缺陷进 finish 门:0 阻塞缺陷才放行(阻塞缺陷在 sandbox_run 审计+结转到
     // ctx.defects,须在【更新版本】上复验消失才关闭——防同版本重跑洗白)。
     const openBlocking = blockingDefects(ctx.defects ?? []);
-    const gate = acceptanceGate(ctx.specs, ctx.ontology, {
+    const gate = acceptanceGate(ctx.specs, acceptanceOntology, {
       ...ctx.lastSandbox,
       expectedCaseIds: (ctx.testCases ?? []).map((testCase) => testCase.id),
     }, {
@@ -6443,7 +7812,20 @@ const finish: BrainTool = {
           tenantSlug: factoryScope.tenantSlug,
           domainId: ctx.domain,
           source: ctx.ontology.source,
-          contentHash: ontologyContentHash(ctx.ontology),
+          contentHash: ontologyContentHash(authoritativeBaseOntology(ctx)),
+          ...(ctx.generationDirective?.virtualAction
+            ? {
+                sessionOverlay: {
+                  kind: "virtual_scenario" as const,
+                  authoritative: false as const,
+                  actionId: ctx.generationDirective.virtualAction.id,
+                  actionName: ctx.generationDirective.virtualAction.name,
+                  scenarioHash:
+                    ctx.generationDirective.virtualAction.factoryProvenance
+                      .scenarioHash,
+                },
+              }
+            : {}),
         },
         cleanupReceipt: ctx.lastSandbox.cleanupReceipt,
         sandboxAppId: ctx.lastSandbox.appId,
@@ -6461,11 +7843,18 @@ const finish: BrainTool = {
         externalLiveCalls: ctx.lastSandbox.externalLiveCalls,
         replayReceipts: ctx.lastSandbox.replayReceipts,
         sandboxReplayEvidenceComplete: ctx.lastSandbox.sandboxReplayEvidenceComplete,
-        sandboxDesignReview: {
-          fingerprint: fp,
-          subjectDigest: expectedReviewSubjectDigest,
-          receipt: reviewReceipt,
-        },
+        ...(humanReviewCurrent && reviewReceipt
+          ? {
+              sandboxDesignReview: {
+                fingerprint: fp,
+                subjectDigest: expectedReviewSubjectDigest,
+                receipt: reviewReceipt,
+              },
+            }
+          : {}),
+        ...(autopilotReviewCurrent && autopilotReview
+          ? { sandboxAutopilotReview: autopilotReview }
+          : {}),
         // Preserve the exact remote-bundle references (including global,
         // tenant-native and multiple configs of one tool). The local snapshot
         // list is display-only and cannot safely reconstruct this identity.
@@ -6512,10 +7901,10 @@ const ask_user: BrainTool = {
     const rawContext = args.context ? String(args.context) : "";
     const rawOptions = Array.isArray(args.options) ? args.options as Array<Record<string, unknown>> : [];
     if (
-      /authorize_(?:probe|integration_profile|sandbox_design_review):v\d+:/i.test(question)
+      /authorize_(?:probe|integration_profile|sandbox_evidence_plan|sandbox_design_review):v\d+:/i.test(question)
       ||
-      /(?:probe|integration_profile|sandbox_design_review)_authorization:v\d+:/i.test(rawContext)
-      || rawOptions.some((option) => /authorize_(?:probe|integration_profile|sandbox_design_review):v\d+:/i.test(String(option.value ?? "")))
+      /(?:probe|integration_profile|sandbox_evidence_plan|sandbox_design_review)_authorization:v\d+:/i.test(rawContext)
+      || rawOptions.some((option) => /authorize_(?:probe|integration_profile|sandbox_evidence_plan|sandbox_design_review):v\d+:/i.test(String(option.value ?? "")))
     ) {
       return {
         ok: false,
@@ -6534,6 +7923,24 @@ const ask_user: BrainTool = {
     }
     const options = normalizedOptions.options;
     const context = rawContext || undefined;
+    const automatic = resolveAutopilotClarification(ctx, {
+      question,
+      options,
+      context,
+    });
+    if (automatic) {
+      (ctx.askedQuestions ??= {})[norm] = automatic.answer;
+      return {
+        ok: true,
+        summary: `Autopilot 已采用${automatic.source === "recommended" ? "推荐项" : "安全默认"}「${automatic.answer}」并记录假设 ${automatic.assumption.id}；继续执行，不挂起。`,
+        output: {
+          question,
+          answer: automatic.answer,
+          awaitingAnswer: false,
+          assumptionId: automatic.assumption.id,
+        },
+      };
+    }
     (ctx.askedQuestions ??= {})[norm] = ""; // pending 标记：答案由 conductor 的澄清门写入
     ctx.clarifyPrompt = { question, options, context };
     ctx.awaitingClarify = true;
@@ -6580,8 +7987,52 @@ const ask_user_batch: BrainTool = {
     if (items.length > 8) return { ok: false, summary: `一次最多 8 项（收到 ${items.length}）——分两批问。` };
     // Same authorization firewall as ask_user: server-issued challenges are never composed by the model.
     const flat = JSON.stringify(items);
-    if (/(?:authorize_probe|authorize_integration_profile|authorize_sandbox_design_review):v\d+:/i.test(flat) || /(?:probe|integration_profile|sandbox_design_review)_authorization:v\d+:/i.test(flat)) {
+    if (/(?:authorize_probe|authorize_integration_profile|authorize_sandbox_evidence_plan|authorize_sandbox_design_review):v\d+:/i.test(flat) || /(?:probe|integration_profile|sandbox_evidence_plan|sandbox_design_review)_authorization:v\d+:/i.test(flat)) {
       return { ok: false, summary: "授权问题不能由模型通过 ask_user_batch 拼装。请回到 probe_tool / create_signed_fixture / confirm_integration_profile / sandbox_run 的服务端确认门。" };
+    }
+    if (ctx.interactionPolicy === "autopilot") {
+      const prompts = items.map((item) => {
+        const normalized = normalizeClarificationOptions(item.options);
+        return {
+          normalized,
+          prompt: {
+            question: item.question,
+            context: item.context || undefined,
+            options: normalized.ok ? normalized.options : undefined,
+          },
+        };
+      });
+      const preflightBlocked = prompts.some(
+        ({ normalized, prompt }) =>
+          !normalized.ok ||
+          autopilotClarificationHardBlockReason(ctx, prompt) !== null,
+      );
+      const answers: Array<{ index: number; question: string; answer: string; assumptionId: string }> = [];
+      let hardBlock = preflightBlocked;
+      for (let index = 0; index < items.length && !hardBlock; index++) {
+        const item = items[index]!;
+        const prompt = prompts[index]!.prompt;
+        const resolution = resolveAutopilotClarification(ctx, {
+          ...prompt,
+        });
+        if (!resolution) {
+          hardBlock = true;
+          break;
+        }
+        answers.push({
+          index: index + 1,
+          question: item.question,
+          answer: resolution.answer,
+          assumptionId: resolution.assumption.id,
+        });
+      }
+      if (!hardBlock) {
+        return {
+          ok: true,
+          summary: `Autopilot 已逐项采用 ${answers.length} 个推荐/安全默认并记录假设，不挂起：${answers.map((answer) => `${answer.index}. ${answer.answer}`).join("；")}`,
+          output: { answers, awaitingAnswer: false },
+        };
+      }
     }
     const lines: string[] = ["以下几项需要你拍板（按编号逐项回答，如「1 选A；2 用真实key」）："];
     for (let i = 0; i < items.length; i++) {
@@ -6850,7 +8301,7 @@ function redactedTestCasesForApproval(
 const supply_test_data: BrainTool = {
   name: "supply_test_data",
   description:
-    "原子补全已生成测试用例。支持：values 批量替换已存在的顶层字段；case_payloads 按 case_id 替换完整嵌套 JSON；path_values 用 JSON Pointer 修改已存在路径；binary_files 只接受当前任务预先上传的 asset_id，原文件绝不进入模型/聊天。values 不能和高级通道混用。任何成功修改都会作废旧沙箱/签核并要求用户重新批准。凭证禁止进入聊天或 fixture，只能在服务器 integration profile 中配置 *_env 引用；发现凭证字段时返回 next=ask_user。",
+    "原子补全已生成测试用例。支持：values 批量替换已存在的顶层字段；case_payloads 按 case_id 替换完整嵌套 JSON；path_values 用 JSON Pointer 修改已存在路径；binary_files 只接受当前任务预先上传的 asset_id；synthetic_resumes 由服务器生成当前 tenant/domain/conversation 隔离的合成 PDF 简历，优先用于无需真实个人资料的沙箱跑通。原文件和合成文件内容都不进入模型/聊天。values 不能和高级通道混用。任何成功修改都会作废旧沙箱/签核并要求重新批准。凭证禁止进入聊天或 fixture，只能在服务器 integration profile 中配置 *_env 引用；发现凭证字段时返回 next=ask_user。",
   parameters: params({
     values: { type: "object", minProperties: 1, additionalProperties: true, description: "用户批准的 sandbox-safe {顶层字段名:测试值}。只替换 payload 已有字段；不得包含凭证。" },
     case_payloads: {
@@ -6888,6 +8339,29 @@ const supply_test_data: BrainTool = {
         required: ["case_id", "path", "asset_id", "as"],
       },
     },
+    synthetic_resumes: {
+      type: "array", minItems: 1, maxItems: 16,
+      description: "由服务器生成确定性的合成 PDF 简历并绑定到当前 tenant/domain/conversation/case/path。无需上传或复制租户文件；仅是 sandbox 测试输入，不是集成证据。",
+      items: {
+        type: "object", additionalProperties: false,
+        properties: {
+          case_id: { type: "string", minLength: 1, maxLength: 128 },
+          path: { type: "string", minLength: 2, maxLength: 1024 },
+          as: { type: "string", enum: ["base64_string", "data_url", "object"] },
+          persona: {
+            type: "object", additionalProperties: false,
+            properties: {
+              name: { type: "string" },
+              title: { type: "string" },
+              skills: { type: "array", items: { type: "string" } },
+              email: { type: "string" },
+              years: { type: "number" },
+            },
+          },
+        },
+        required: ["case_id", "path", "as"],
+      },
+    },
   }),
   async execute(args, ctx) {
     if (!ctx.testCases?.length) return { ok: false, summary: "还没 generate_test_cases——先造测试用例，再补真实数据。" };
@@ -6913,23 +8387,24 @@ const supply_test_data: BrainTool = {
     const casePayloads = args.case_payloads === undefined ? [] : args.case_payloads;
     const pathValues = args.path_values === undefined ? [] : args.path_values;
     const binaryFiles = args.binary_files === undefined ? [] : args.binary_files;
-    if (!Array.isArray(casePayloads) || !Array.isArray(pathValues) || !Array.isArray(binaryFiles)) {
-      return { ok: false, summary: "case_payloads、path_values、binary_files 必须是数组；没有修改任何测试数据。" };
+    const syntheticResumes = args.synthetic_resumes === undefined ? [] : args.synthetic_resumes;
+    if (!Array.isArray(casePayloads) || !Array.isArray(pathValues) || !Array.isArray(binaryFiles) || !Array.isArray(syntheticResumes)) {
+      return { ok: false, summary: "case_payloads、path_values、binary_files、synthetic_resumes 必须是数组；没有修改任何测试数据。" };
     }
     const hasValues = Boolean(values && Object.keys(values).length);
-    const hasAdvanced = casePayloads.length > 0 || pathValues.length > 0 || binaryFiles.length > 0;
+    const hasAdvanced = casePayloads.length > 0 || pathValues.length > 0 || binaryFiles.length > 0 || syntheticResumes.length > 0;
     if (hasValues && hasAdvanced) {
       return { ok: false, summary: "values 不能和 case_payloads/path_values/binary_files 混用；请拆成一次明确的原子修改，避免覆盖顺序含糊。" };
     }
-    if (casePayloads.length > 50 || pathValues.length > 200 || binaryFiles.length > 16) {
+    if (casePayloads.length > 50 || pathValues.length > 200 || binaryFiles.length + syntheticResumes.length > 16) {
       return { ok: false, summary: "本次 fixture 修改项目过多（完整 payload≤50、路径≤200、文件≤16）；没有修改任何测试数据。" };
     }
-    if (binaryFiles.length && (!ctx.ports?.fixtureAssets || !ctx.conversationId)) {
+    if ((binaryFiles.length || syntheticResumes.length) && (!ctx.ports?.fixtureAssets || !ctx.conversationId)) {
       const question = "当前任务没有可用的隔离测试文件读取通道。我没有接收 base64，也没有修改用例。请在当前 Agent Factory 任务中重新上传文件，再选择目标用例和字段；不要把文件内容粘贴到聊天里。";
       return { ok: false, summary: question, output: { next: "ask_user", reason: "fixture_asset_reader_unavailable", question, missing: ["tenant/domain/conversation-scoped fixture asset reader"] } };
     }
     const suppliedSensitive = hasValues || hasAdvanced
-      ? findSensitiveInputPath({ values, case_payloads: casePayloads, path_values: pathValues, binary_files: binaryFiles }, "supply_test_data.args")
+      ? findSensitiveInputPath({ values, case_payloads: casePayloads, path_values: pathValues, binary_files: binaryFiles, synthetic_resumes: syntheticResumes }, "supply_test_data.args")
       : undefined;
     if (suppliedSensitive) {
       const question = `检测到测试数据里可能含有字面凭证（位置 ${suppliedSensitive}）。我没有保存或执行它。请把凭证改为服务器 sandbox integration profile 的 *_env 引用；不要在聊天里粘贴密钥。`;
@@ -6979,9 +8454,48 @@ const supply_test_data: BrainTool = {
           patchedPaths.push({ caseId: testCase.id, pointer, descriptor: redactedFixtureValue(row.value) });
         }
 
+        const effectiveBinaryFiles = [...binaryFiles];
+        for (const [index, raw] of syntheticResumes.entries()) {
+          const row = fixtureRecord(raw, `synthetic_resumes[${index}]`, ["case_id", "path", "as", "persona"]);
+          const testCase = exactFixtureCase(byId, row.case_id, `synthetic_resumes[${index}]`);
+          const pointer = typeof row.path === "string" ? row.path : "";
+          // Validate the destination before creating a scoped asset. The same
+          // path is validated again by the common binary binding loop.
+          decodeJsonPointer(pointer);
+          const as = typeof row.as === "string" ? row.as : "";
+          if (!new Set(["base64_string", "data_url", "object"]).has(as)) {
+            throw new Error(`synthetic_resumes[${index}].as 必须明确为 base64_string、data_url 或 object。`);
+          }
+          if (!ctx.ports.fixtureAssets?.createSyntheticResume) {
+            throw new Error("当前服务端没有接入 syntheticResumePdf fixture 创建器；不会读取或复制任何租户简历文件。");
+          }
+          const persona = row.persona === undefined
+            ? undefined
+            : fixtureRecord(row.persona, `synthetic_resumes[${index}].persona`, ["name", "title", "skills", "email", "years"]);
+          const asset = await ctx.ports.fixtureAssets.createSyntheticResume({
+            domainId: ctx.domain,
+            conversationId: ctx.conversationId!,
+            caseId: testCase.id,
+            path: pointer,
+            persona: persona as Parameters<NonNullable<typeof ctx.ports.fixtureAssets.createSyntheticResume>>[0]["persona"],
+          });
+          if (!asset || asset.provenance !== "synthetic_resume_pdf") {
+            throw new Error("服务端未返回 conversation-scoped synthetic_resume_pdf fixture。");
+          }
+          effectiveBinaryFiles.push({
+            case_id: testCase.id,
+            path: pointer,
+            asset_id: asset.assetId,
+            mime_type: "application/pdf",
+            filename: asset.filename,
+            sha256: asset.sha256,
+            as,
+          });
+        }
+
         let totalBinaryBytes = 0;
-        const binaryDescriptors: Array<{ caseId: string; path: string; sha256: string; bytes: number; mimeType?: string; filename?: string; as: string }> = [];
-        for (const [index, raw] of binaryFiles.entries()) {
+        const binaryDescriptors: Array<{ caseId: string; path: string; sha256: string; bytes: number; mimeType?: string; filename?: string; provenance?: string; as: string }> = [];
+        for (const [index, raw] of effectiveBinaryFiles.entries()) {
           const row = fixtureRecord(raw, `binary_files[${index}]`, ["case_id", "path", "asset_id", "mime_type", "filename", "sha256", "as"]);
           const testCase = exactFixtureCase(byId, row.case_id, `binary_files[${index}]`);
           const pointer = typeof row.path === "string" ? row.path : "";
@@ -7030,11 +8544,12 @@ const supply_test_data: BrainTool = {
             as,
             ...(mimeType ? { mimeType } : {}),
             ...(filename ? { filename } : {}),
+            ...(asset.provenance ? { provenance: asset.provenance } : {}),
           };
           setExistingFixturePath(testCase.payload, pointer, value);
-          const descriptor = { fixture: "binary_asset", sha256, bytes, ...(mimeType ? { mime_type: mimeType } : {}), ...(filename ? { filename } : {}) };
+          const descriptor = { fixture: "binary_asset", sha256, bytes, ...(mimeType ? { mime_type: mimeType } : {}), ...(filename ? { filename } : {}), ...(asset.provenance ? { provenance: asset.provenance } : {}) };
           patchedPaths.push({ caseId: testCase.id, pointer, descriptor });
-          binaryDescriptors.push({ caseId: testCase.id, path: pointer, sha256, bytes, ...(mimeType ? { mimeType } : {}), ...(filename ? { filename } : {}), as });
+          binaryDescriptors.push({ caseId: testCase.id, path: pointer, sha256, bytes, ...(mimeType ? { mimeType } : {}), ...(filename ? { filename } : {}), ...(asset.provenance ? { provenance: asset.provenance } : {}), as });
         }
 
         const totalJsonBytes = working.reduce((sum, testCase) => sum + jsonFixtureBytes(testCase.payload), 0);
@@ -7099,16 +8614,20 @@ const supply_test_data: BrainTool = {
 const describe_design_constraints: BrainTool = {
   name: "describe_design_constraints",
   description:
-    "查看你当前的设计约束与可用资源：本体里所有 actor=Agent 的动作（哪些已设计 / 还差哪些）、可用工具库（真名）、可复用技能、事件入口 / 终态。设计或选工具前想确认自己有哪些『合法符号』可用时调它——避免脑补不存在的动作 / 工具 / 事件。",
+    "查看你当前的设计约束与可用资源：本次 generation scope 内 actor=Agent 的动作（哪些已设计 / 还差哪些）、可用工具库（真名）、可复用技能、范围入口 / 终态。设计或选工具前想确认自己有哪些『合法符号』可用时调它——避免脑补不存在或范围外的动作 / 工具 / 事件。",
   parameters: params({}),
   async execute(_args, ctx) {
     if (!ctx.ontology) return { ok: false, summary: "请先 read_ontology。" };
-    const agentActions = ctx.ontology.actions.filter((a) => a.actor.includes("Agent")).map((a) => a.name);
+    const agentActions = generationScopedAgentActionNames(ctx);
     const done = new Set(ctx.specs.map((s) => s.actionName));
-    const graph = compileGraph(ctx.ontology.actions, { domainId: ctx.domain });
+    const designed = agentActions.filter((name) => done.has(name)).length;
+    const graph = compileGraph(
+      generationAcceptanceOntology(ctx).actions,
+      { domainId: ctx.domain },
+    );
     return {
       ok: true,
-      summary: `约束：${agentActions.length} 个 Agent 动作（已设计 ${done.size}）· 工具库 ${ctx.toolCatalog?.length ?? 0} 个 · 入口事件 ${graph.entryEvents.length} · 技能 ${ctx.createdSkills.length}`,
+      summary: `本次约束：${agentActions.length} 个 Agent 动作（已设计 ${designed}）· 工具库 ${ctx.toolCatalog?.length ?? 0} 个 · 范围入口事件 ${graph.entryEvents.length} · 技能 ${ctx.createdSkills.length}`,
       output: {
         agent_actions: agentActions.map((n) => ({ name: n, designed: done.has(n) })),
         available_tools: ctx.toolCatalog ?? [],
@@ -7843,6 +9362,8 @@ export const FACTORY_TOOLS: BrainTool[] = [
   // brain: a mock spec must never enter an operator draft, sandbox acceptance, or promotion path.
   ...(process.env.NODE_ENV === "test" ? [create_mock_agent] : []),
   read_ontology,
+  query_links,
+  read_action_contract,
   inspect_action_readiness,
   inspect_all_action_readiness,
   revise_ontology,
@@ -7881,6 +9402,7 @@ export const FACTORY_TOOLS: BrainTool[] = [
   fetch_doc,
   extract_api_schema,
   create_tool,
+  prepare_sandbox_evidence_plan,
   confirm_integration_profile,
   probe_tool,
   create_signed_fixture,
@@ -7905,4 +9427,4 @@ export const __ruleTestHelpers = {
 // R9: subagents are still read-only for AGENT/tool authoring, but gain scoped SKILL authoring
 // (create_skill persists to the shared store so the parent + future runs absorb it) and
 // constraint introspection. spawn_subagent is added by the conductor under a depth cap.
-export const SUBAGENT_TOOLS: BrainTool[] = [read_ontology, list_domains, describe_domain, describe_object, list_agents, read_spec, inspect_run, web_search, search_tools, fetch_doc, extract_api_schema, analyze_failure, create_skill, resolve_capability_ladder, select_strategy, describe_design_constraints];
+export const SUBAGENT_TOOLS: BrainTool[] = [read_ontology, query_links, read_action_contract, list_domains, describe_domain, describe_object, list_agents, read_spec, inspect_run, web_search, search_tools, fetch_doc, extract_api_schema, analyze_failure, create_skill, resolve_capability_ladder, select_strategy, describe_design_constraints];

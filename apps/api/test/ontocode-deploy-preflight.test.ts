@@ -1,11 +1,14 @@
 // The deploy preflight must be precise and honest: it reports the real reason a
 // candidate cannot be promoted, and it must never relax a governance gate to
 // make the flow look finished.
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import {
   getDb,
+  ontocodeArtifactBlobs,
+  ontocodeArtifacts,
+  ontocodeArtifactVersions,
   ontocodeCandidateHeads,
   ontocodePackageVersions,
   ontocodeProjects,
@@ -24,7 +27,10 @@ import {
   setFactoryDomainBinding,
   type FactoryDomainBinding,
 } from "../src/services/agent-factory/domain-binding";
-import { preflightOntoCodeDeploy } from "../src/services/ontocode-deploy";
+import {
+  markOntoCodeCandidateReleased,
+  preflightOntoCodeDeploy,
+} from "../src/services/ontocode-deploy";
 import { buildTestEnv } from "./harness";
 
 const DOMAIN = "deploy-preflight-domain";
@@ -113,15 +119,89 @@ describe("preflightOntoCodeDeploy", () => {
     return job.id;
   }
 
+  /** #DRAFT-BINDING — write the immutable artifact a real Build produces, so the
+   * preflight reads a genuine binding rather than a test-only shortcut. */
+  function seedDraftBinding(
+    projectId: string,
+    sessionId: string,
+    suffix: string,
+    binding: Record<string, unknown>,
+  ) {
+    const db = getDb();
+    const now = new Date();
+    // Blobs are content-addressed per tenant, so keep each fixture distinct.
+    const content = JSON.stringify({ ...binding, sourceHarnessJobId: suffix });
+    const blobId = `ocab-${randomUUID().replace(/-/g, "").slice(0, 16)}`;
+    const artifactId = `oca-${randomUUID().replace(/-/g, "").slice(0, 16)}`;
+    const versionId = `ocav-${randomUUID().replace(/-/g, "").slice(0, 16)}`;
+    db.insert(ontocodeArtifactBlobs)
+      .values({
+        id: blobId,
+        tenantId,
+        sha256: createHash("sha256").update(content).digest("hex"),
+        sizeBytes: Buffer.byteLength(content, "utf8"),
+        contentText: content,
+        createdAt: now,
+      })
+      .run();
+    db.insert(ontocodeArtifacts)
+      .values({
+        id: artifactId,
+        tenantId,
+        projectId,
+        sessionId,
+        logicalName: "package/factory-draft.json",
+        kind: "agent_config",
+        semanticPath: "/package/factoryDraft",
+        createdAt: now,
+      })
+      .run();
+    db.insert(ontocodeArtifactVersions)
+      .values({
+        id: versionId,
+        tenantId,
+        sessionId,
+        artifactId,
+        blobId,
+        version: 1,
+        blobHash: createHash("sha256").update(content).digest("hex"),
+        contentType: "application/json",
+        sizeBytes: Buffer.byteLength(content, "utf8"),
+        changeSetId: null,
+        metadataJson: JSON.stringify({}),
+        idempotencyKey: `draft-binding-${suffix}`,
+        createdAt: now,
+      })
+      .run();
+    return {
+      logicalName: "package/factory-draft.json",
+      kind: "agent_config",
+      artifactId,
+      artifactVersionId: versionId,
+      blobHash: createHash("sha256").update(content).digest("hex"),
+    };
+  }
+
   function seedCandidate(
     projectId: string,
     sessionId: string,
     suffix: string,
     status: "candidate_ready" | "verified_candidate",
+    draftBinding: Record<string, unknown> | null = {
+      schema: "ontocode-candidate-factory-draft/v1",
+      domain: DOMAIN,
+      draftVersionIds: ["v-20260728120000000-abcd1234"],
+      bound: true,
+      unboundAgents: [],
+      unboundReason: null,
+    },
   ) {
     const db = getDb();
     const now = new Date();
     const pkgId = `ocpv-${randomUUID().replace(/-/g, "").slice(0, 16)}`;
+    const bindingRef = draftBinding
+      ? seedDraftBinding(projectId, sessionId, suffix, draftBinding)
+      : null;
     db.insert(ontocodePackageVersions)
       .values({
         id: pkgId,
@@ -140,6 +220,7 @@ describe("preflightOntoCodeDeploy", () => {
             artifactVersionId: "ocav-x",
             blobHash: "c".repeat(64),
           },
+          ...(bindingRef ? [bindingRef] : []),
         ]),
         executionOwnersJson: JSON.stringify({ createJD: "declarative_manifest" }),
         status,
@@ -265,5 +346,152 @@ describe("preflightOntoCodeDeploy", () => {
     expect(pf.blockers).toEqual([]);
     expect(pf.deployable).toBe(true);
     expect(pf.sandbox?.qualification).toBe("promotable");
+    expect(pf.draftBinding?.draftVersionIds).toEqual([
+      "v-20260728120000000-abcd1234",
+    ]);
+  });
+
+  // #DRAFT-BINDING — promotion operates on an on-disk draft version. A candidate
+  // that cannot name exactly one has no unambiguous deploy target, and saying
+  // "ready" there would promote something nobody verified.
+  it("refuses to deploy a candidate that names no Factory draft version", () => {
+    const { ctx, project, session, suffix } = seedSession();
+    const pkgId = seedCandidate(
+      project.id,
+      session.id,
+      suffix,
+      "verified_candidate",
+      null,
+    );
+    const now = new Date();
+    getDb()
+      .insert(ontocodeSandboxAttempts)
+      .values({
+        id: `ocsa-${randomUUID().replace(/-/g, "").slice(0, 16)}`,
+        tenantId,
+        projectId: project.id,
+        sessionId: session.id,
+        harnessJobId: seedJob(session.id, session.revision, suffix),
+        ordinal: 1,
+        packageVersionId: pkgId,
+        dependencyRoot: "b".repeat(64),
+        ontologyHash: "a".repeat(64),
+        testSuiteHash: "d".repeat(64),
+        candidateFingerprint: "e".repeat(64),
+        status: "succeeded",
+        qualification: "promotable",
+        executionOrigin: "remote",
+        isolationTier: "dedicated_host",
+        idempotencyKey: `att-${suffix}`,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .run();
+
+    const pf = preflightOntoCodeDeploy(ctx, session.id);
+    expect(pf.deployable).toBe(false);
+    expect(pf.blockers.map((b) => b.code)).toEqual(["factory_draft_unbound"]);
+    expect(pf.draftBinding).toBeNull();
+  });
+
+  // #RELEASED — the release write must describe the exact thing that went live.
+  describe("markOntoCodeCandidateReleased", () => {
+    function release(
+      pkgId: string,
+      overrides: Partial<{ dependencyRoot: string }> = {},
+    ) {
+      return markOntoCodeCandidateReleased(
+        { tenantId, actorId: "test-fde" },
+        {
+          packageVersionId: pkgId,
+          dependencyRoot: overrides.dependencyRoot ?? "b".repeat(64),
+          draftVersionId: "v-20260728120000000-abcd1234",
+          reviewReceiptId: "rcp-real-human",
+          deploymentId: "dep-1",
+          promotedSlugs: ["createJD"],
+          functionsRegistered: 1,
+          liveAgents: 6,
+          releasedAt: new Date(),
+        },
+      );
+    }
+
+    it("marks a verified candidate released and records what went live", () => {
+      const { project, session, suffix } = seedSession();
+      const pkgId = seedCandidate(
+        project.id,
+        session.id,
+        suffix,
+        "verified_candidate",
+      );
+      expect(release(pkgId)).toBe(true);
+      const row = getDb()
+        .select()
+        .from(ontocodePackageVersions)
+        .where(eq(ontocodePackageVersions.id, pkgId))
+        .get();
+      expect(row?.status).toBe("released");
+      const validation = JSON.parse(row!.validationJson) as Record<
+        string,
+        unknown
+      >;
+      expect(validation.releaseEligible).toBe(true);
+      expect(validation.factoryDraftVersionId).toBe(
+        "v-20260728120000000-abcd1234",
+      );
+      expect(validation.reviewReceiptId).toBe("rcp-real-human");
+    });
+
+    it("refuses to release a candidate that was never verified", () => {
+      const { project, session, suffix } = seedSession();
+      const pkgId = seedCandidate(
+        project.id,
+        session.id,
+        suffix,
+        "candidate_ready",
+      );
+      expect(release(pkgId)).toBe(false);
+      expect(
+        getDb()
+          .select()
+          .from(ontocodePackageVersions)
+          .where(eq(ontocodePackageVersions.id, pkgId))
+          .get()?.status,
+      ).toBe("candidate_ready");
+    });
+
+    it("refuses to release when the candidate's content drifted", () => {
+      const { project, session, suffix } = seedSession();
+      const pkgId = seedCandidate(
+        project.id,
+        session.id,
+        suffix,
+        "verified_candidate",
+      );
+      expect(release(pkgId, { dependencyRoot: "f".repeat(64) })).toBe(false);
+      expect(
+        getDb()
+          .select()
+          .from(ontocodePackageVersions)
+          .where(eq(ontocodePackageVersions.id, pkgId))
+          .get()?.status,
+      ).toBe("verified_candidate");
+    });
+  });
+
+  it("refuses a candidate whose Agents are spread across several draft versions", () => {
+    const { ctx, project, session, suffix } = seedSession();
+    seedCandidate(project.id, session.id, suffix, "verified_candidate", {
+      schema: "ontocode-candidate-factory-draft/v1",
+      domain: DOMAIN,
+      draftVersionIds: ["v-aaa", "v-bbb"],
+      bound: false,
+      unboundAgents: [],
+      unboundReason: "这些 Agent 分散在多个 draft 版本里，无法作为一个整体促升",
+    });
+    const pf = preflightOntoCodeDeploy(ctx, session.id);
+    const blocker = pf.blockers.find((b) => b.code === "factory_draft_unbound");
+    expect(blocker?.detail).toContain("多个 draft 版本");
+    expect(pf.draftBinding?.draftVersionIds).toEqual(["v-aaa", "v-bbb"]);
   });
 });

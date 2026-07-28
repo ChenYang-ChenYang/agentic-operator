@@ -64,12 +64,18 @@ import {
   computeOntoCodeCandidateDependencyRoot,
   computeOntoCodeTestSuiteHash,
 } from "./ontocode-candidate-digest";
-import { createOntoCodeConfigurationTask } from "./ontocode-configuration-task-store";
+import {
+  createOntoCodeConfigurationTask,
+  listOntoCodeConfigurationTasks,
+  verifyOntoCodeConfigurationTask,
+} from "./ontocode-configuration-task-store";
 import { analyzeOntology } from "./ontocode-ontology-analyst";
 import {
+  markOntoCodeCandidateReleased,
   preflightOntoCodeDeploy,
   summarizePreflight,
 } from "./ontocode-deploy";
+import { promoteDrafts } from "./agent-factory/promote";
 import {
   completeOntoCodeSandboxAttempt,
   createOntoCodeSandboxAttempt,
@@ -214,6 +220,18 @@ export interface OntoCodeFactoryHarnessAdapter {
   runCandidateTest?(
     input: OntoCodeFactoryCandidateTestInput,
   ): Promise<SandboxDeployResult>;
+  /**
+   * Live rule bindings for one Action, straight from the bound source. Optional
+   * because not every source can serve them — and the Analyst reports "could not
+   * check" rather than "no rules" when it is absent.
+   */
+  fetchActionRules?(input: {
+    tenantId: string;
+    tenantSlug: string;
+    domain: string;
+    ontologyDomainRegistrationId: string | null;
+    actionName: string;
+  }): Promise<unknown[]>;
 }
 
 export interface OntoCodeHarnessWorkerOptions {
@@ -724,6 +742,19 @@ function harnessAgentArtifacts(
   return artifacts;
 }
 
+/** What an Agent's spec claims about one external-system requirement. The
+ * Candidate Package records this verbatim so a reader can check the claim
+ * against the Ontology without re-running the build. */
+interface CandidateIntegrationBinding {
+  requirementId: string;
+  system: string;
+  role: string;
+  status: string;
+  bindingKind: string | null;
+  toolName: string | null;
+  reason: string | null;
+}
+
 interface CandidateAgentDescriptor {
   slug: string;
   actionName: string | null;
@@ -731,6 +762,35 @@ interface CandidateAgentDescriptor {
   specLogicalName: string;
   codeLogicalName: string;
   tools: string[];
+  integrations: CandidateIntegrationBinding[];
+  /** #DRAFT-BINDING — the immutable on-disk Factory draft version this Agent
+   * came from. Deployment promotes a draft version, so a Candidate that cannot
+   * name its exact draft is reviewable but not deployable. */
+  draftVersionId: string | null;
+  codeSha256: string;
+}
+
+function candidateIntegrationBindings(
+  spec: Record<string, unknown>,
+): CandidateIntegrationBinding[] {
+  const raw = spec.integrationBindings;
+  if (!Array.isArray(raw)) return [];
+  const bindings: CandidateIntegrationBinding[] = [];
+  for (const entry of raw) {
+    const binding = asRecord(entry);
+    if (!binding) continue;
+    const requirement = asRecord(binding.requirement);
+    bindings.push({
+      requirementId: nonEmptyString(requirement?.id) ?? "",
+      system: nonEmptyString(requirement?.system) ?? "",
+      role: nonEmptyString(requirement?.role) ?? "",
+      status: nonEmptyString(binding.status) ?? "missing",
+      bindingKind: nonEmptyString(binding.bindingKind),
+      toolName: nonEmptyString(binding.toolName),
+      reason: nonEmptyString(binding.reason),
+    });
+  }
+  return bindings;
 }
 
 function candidateAgentDescriptors(
@@ -807,9 +867,69 @@ function candidateAgentDescriptors(
             typeof tool === "string" && tool.trim() ? [tool.trim()] : [],
           )
         : [],
+      integrations: candidateIntegrationBindings(spec),
+      draftVersionId: nonEmptyString(agent.draftVersionId),
+      codeSha256: sha256Text(code),
     });
   }
   return descriptors;
+}
+
+/** #STRICT-DELIVERY — a Candidate Package is a claim that these Agents can do
+ * the work. An external-system requirement that is unresolved, awaiting config,
+ * awaiting a probe, or marked as a manual human boundary means the opposite:
+ * the Agent cannot do that part. Such a package must never reach
+ * `candidate_ready`, because everything downstream (verify, sandbox, deploy)
+ * treats a candidate as executable. This is enforced here, at the durable write,
+ * rather than only in the build's own gates — a bypassed or future executor
+ * still cannot write a package that overstates what was built. */
+function assertCandidateIntegrationsBound(
+  agents: CandidateAgentDescriptor[],
+): void {
+  const unbound: Array<Record<string, unknown>> = [];
+  for (const agent of agents) {
+    for (const binding of agent.integrations) {
+      if (binding.status === "resolved") {
+        // A tool binding is only real if the Agent actually carries that tool.
+        const kind = binding.bindingKind ?? (binding.toolName ? "tool" : null);
+        if (
+          kind === "tool" &&
+          (!binding.toolName || !agent.tools.includes(binding.toolName))
+        ) {
+          unbound.push({
+            slug: agent.slug,
+            system: binding.system,
+            role: binding.role,
+            status: "resolved_without_tool",
+            toolName: binding.toolName,
+          });
+        }
+        continue;
+      }
+      unbound.push({
+        slug: agent.slug,
+        system: binding.system,
+        role: binding.role,
+        status: binding.status,
+        reason: binding.reason,
+      });
+    }
+  }
+  if (unbound.length === 0) return;
+  const systems = [
+    ...new Set(unbound.map((entry) => String(entry.system)).filter(Boolean)),
+  ];
+  throw new OntoCodeHarnessExecutionError(
+    "candidate_integration_unbound",
+    systems.length > 0
+      ? `候选包不能交付：${systems.join("、")} 还没有真实可执行的工具绑定`
+      : "候选包不能交付：存在没有真实可执行绑定的外部系统要求",
+    {
+      recoverable: true,
+      retryable: false,
+      details: { unbound, systems },
+    },
+  );
 }
 
 function persistCandidatePackage(
@@ -844,6 +964,7 @@ function persistCandidatePackage(
       { recoverable: true, retryable: false },
     );
   }
+  assertCandidateIntegrationsBound(agents);
   const byLogicalName = new Map(
     existingArtifacts.map((artifact) => [artifact.logicalName, artifact]),
   );
@@ -907,10 +1028,56 @@ function persistCandidatePackage(
     toolBindings: agents.map((agent) => ({
       slug: agent.slug,
       tools: agent.tools,
+      integrations: agent.integrations,
     })),
     releaseEligible: false,
     sandboxVerificationRequired: true,
   });
+  // #DRAFT-BINDING — deployment promotes an immutable on-disk Factory draft
+  // version, while the Candidate Package is content-addressed in the database.
+  // Recording both identities together, per Agent, is what lets a later deploy
+  // prove the thing it promotes is the exact thing that was reviewed and
+  // sandbox-verified. A Candidate whose Agents cannot all name one draft
+  // version is still reviewable — it just cannot be deployed, and the preflight
+  // says exactly that instead of promoting something unverifiable.
+  const draftVersionIds = [
+    ...new Set(
+      agents.flatMap((agent) =>
+        agent.draftVersionId ? [agent.draftVersionId] : [],
+      ),
+    ),
+  ];
+  const unboundAgents = agents
+    .filter((agent) => !agent.draftVersionId)
+    .map((agent) => agent.slug);
+  const draftBinding = {
+    schema: "ontocode-candidate-factory-draft/v1" as const,
+    ontologyHash,
+    domain: data.project.domain,
+    sourceHarnessJobId: claim.jobId,
+    sourceFactoryRunId: nonEmptyString(result.receipt.factoryRunId),
+    draftVersionIds,
+    bound: unboundAgents.length === 0 && draftVersionIds.length === 1,
+    unboundAgents,
+    unboundReason:
+      unboundAgents.length > 0
+        ? "至少一个 Agent 没有对应的不可变 Factory draft 版本"
+        : draftVersionIds.length > 1
+          ? "这些 Agent 分散在多个 draft 版本里，无法作为一个整体促升"
+          : draftVersionIds.length === 0
+            ? "本次构建没有留下 Factory draft 版本"
+            : null,
+    agents: agents.map((agent) => ({
+      slug: agent.slug,
+      actionName: agent.actionName,
+      draftVersionId: agent.draftVersionId,
+      codeSha256: agent.codeSha256,
+      codeArtifactVersionId: byLogicalName.get(agent.codeLogicalName)!
+        .artifactVersionId,
+      codeBlobHash: byLogicalName.get(agent.codeLogicalName)!.blobHash,
+    })),
+  };
+  const draftBindingContent = canonicalEvidenceJson(draftBinding);
   const packageArtifacts = [
     persistHarnessArtifactVersion(
       tx,
@@ -949,6 +1116,27 @@ function persistCandidatePackage(
           candidateRole: "runtime_config",
         },
         idempotencyKey: `worker:${claim.jobId}:candidate-config`,
+      },
+      now,
+    ),
+    persistHarnessArtifactVersion(
+      tx,
+      claim,
+      data,
+      changeSetId,
+      {
+        logicalName: "package/factory-draft.json",
+        kind: "agent_config",
+        semanticPath: "/package/factoryDraft",
+        content: draftBindingContent,
+        contentType: "application/json",
+        metadata: {
+          jobId: claim.jobId,
+          ontologyHash,
+          candidateRole: "factory_draft_binding",
+          bound: String(draftBinding.bound),
+        },
+        idempotencyKey: `worker:${claim.jobId}:candidate-factory-draft`,
       },
       now,
     ),
@@ -3978,6 +4166,15 @@ export function createDefaultOntoCodeFactoryAdapter(): OntoCodeFactoryHarnessAda
         signal: input.signal,
       });
     },
+    fetchActionRules(input) {
+      return makeFactoryPorts(
+        input.tenantSlug,
+        input.tenantId,
+        input.domain,
+        undefined,
+        input.ontologyDomainRegistrationId,
+      ).ontology.fetchActionRules(input.domain, input.actionName);
+    },
   };
 }
 
@@ -4544,6 +4741,21 @@ export function createDefaultOntoCodeHarnessExecutors(
       const receipt = await analyzeOntology(ontology, {
         ontologyHash,
         onProgress: (type, payload) => context.progress(type, payload),
+        // Live rule bindings, when the bound source can serve them. Absent is
+        // reported as "could not check", never as "there are no rules".
+        ...(factory.fetchActionRules
+          ? {
+              fetchActionRules: (_domain: string, actionName: string) =>
+                factory.fetchActionRules!({
+                  tenantId: context.job.tenantId,
+                  tenantSlug: context.tenantSlug,
+                  domain: context.project.domain,
+                  ontologyDomainRegistrationId:
+                    context.project.ontologyDomainRegistrationId,
+                  actionName,
+                }),
+            }
+          : {}),
       });
       const confirmed = receipt.findings.filter(
         (f) => f.verdict === "confirmed",
@@ -4595,6 +4807,242 @@ export function createDefaultOntoCodeHarnessExecutors(
           impact: preflight.blockers.map((b) => b.remedy).join(" "),
           systems: [],
         },
+      };
+    },
+    // #VERIFY-CONFIG — `verify_configuration` maps to a `simulation` job, which
+    // had no executor: planning "go verify the config you just filled in" died
+    // with an internal error instead of checking anything. It re-verifies this
+    // Session's open Configuration Tasks through the same verifier the
+    // Configuration route uses — no second implementation, no relaxed check.
+    simulation: async (context) => {
+      const storeCtx = { tenantId: context.job.tenantId, actorId: null };
+      const requestedTaskId = nonEmptyString(
+        context.command?.arguments.configurationTaskId,
+      );
+      const open = listOntoCodeConfigurationTasks(storeCtx, context.session.id, {
+        limit: 50,
+        offset: 0,
+      }).items.filter((task) =>
+        requestedTaskId
+          ? task.id === requestedTaskId
+          : task.status === "open" || task.status === "verifying",
+      );
+      if (open.length === 0) {
+        return {
+          outcome: "succeeded",
+          receipt: {
+            schema: "ontocode-configuration-verification/v1",
+            verified: [],
+          },
+          message: requestedTaskId
+            ? "找不到这条配置任务，没有可验证的内容。"
+            : "这个 Session 没有待验证的配置项。",
+        };
+      }
+      const verified: Array<Record<string, unknown>> = [];
+      for (const task of open) {
+        // One task's failure is a result, not a reason to abandon the rest.
+        try {
+          const receipt = await verifyOntoCodeConfigurationTask(
+            storeCtx,
+            task.id,
+            {
+              expectedRevision: task.revision,
+              idempotencyKey: `harness:${context.job.id}:verify:${task.id}`,
+            },
+          );
+          verified.push({
+            taskId: task.id,
+            title: task.title,
+            status: receipt.task.status,
+            outcome: receipt.verification?.outcome ?? null,
+            reasonCode: receipt.verification?.code ?? null,
+            detail: receipt.verification?.summary ?? null,
+          });
+        } catch (error) {
+          verified.push({
+            taskId: task.id,
+            title: task.title,
+            status: "error",
+            outcome: "failed",
+            reasonCode: "verification_error",
+            detail: (error as Error).message,
+          });
+        }
+      }
+      await context.progress("harness.simulation.configuration_verified", {
+        verified,
+      });
+      const satisfied = verified.filter(
+        (entry) => entry.status === "satisfied",
+      ).length;
+      const outstanding = verified.length - satisfied;
+      return {
+        outcome: "succeeded",
+        receipt: {
+          schema: "ontocode-configuration-verification/v1",
+          verified,
+          satisfied,
+          outstanding,
+        },
+        message:
+          outstanding === 0
+            ? `${satisfied} 项配置已验证通过。`
+            : `${satisfied} 项通过、${outstanding} 项仍未通过：${verified
+                .filter((entry) => entry.status !== "satisfied")
+                .map((entry) => `${entry.title}（${entry.detail ?? entry.reasonCode ?? "原因未知"}）`)
+                .join("；")}`,
+      };
+    },
+    // #RELEASE — the actual deploy. It reuses the legacy promotion kernel
+    // verbatim (~20 fail-closed gates: signed sandbox execution receipt, human
+    // HMAC review receipt, no-mock, whole-version-only, production integration
+    // probes). Nothing here relaxes a gate: the executor only decides what to
+    // promote, hands it over, and records honestly what came back.
+    deploy: async (context) => {
+      const storeCtx = { tenantId: context.job.tenantId, actorId: null };
+      const preflight = preflightOntoCodeDeploy(storeCtx, context.session.id);
+      await context.progress("harness.deploy.preflight", {
+        deployable: preflight.deployable,
+        blockers: preflight.blockers.map((b) => b.code),
+        candidate: preflight.candidate,
+        draftVersionIds: preflight.draftBinding?.draftVersionIds ?? [],
+      });
+      const baseReceipt = {
+        schema: "ontocode-release/v1",
+        preflight,
+      } as unknown as Record<string, unknown>;
+      if (!preflight.deployable || !preflight.candidate) {
+        return {
+          outcome: "waiting_user",
+          receipt: baseReceipt,
+          message: summarizePreflight(preflight),
+          question: {
+            id: `release-blocked-${context.job.id}`,
+            kind: "decision",
+            question: "还不能部署",
+            why: preflight.blockers.map((b) => b.detail).join(" "),
+            options: [],
+            allowOther: true,
+            impact: preflight.blockers.map((b) => b.remedy).join(" "),
+            systems: [],
+          },
+        };
+      }
+
+      // The human review receipt is minted by an interactive person against the
+      // exact draft version. The worker can never create one — if it is absent,
+      // the honest move is to ask, not to promote something unreviewed.
+      const reviewReceiptId = nonEmptyString(
+        context.command?.arguments.reviewReceiptId,
+      );
+      const draftVersionId = preflight.draftBinding!.draftVersionIds[0]!;
+      if (!reviewReceiptId) {
+        return {
+          outcome: "waiting_user",
+          receipt: {
+            ...baseReceipt,
+            draftVersionId,
+            reason: "review_receipt_missing",
+          },
+          message:
+            "部署需要一份由真人签署的审核回执。请在发布审核里核对这一版代码并签署，然后把回执 id 填回来。",
+          question: {
+            id: `release-review-${context.job.id}`,
+            kind: "authorization",
+            question: `请提供 draft 版本 ${draftVersionId} 的人工审核回执 id`,
+            why: "促升会把生成的代码接到真实系统上，必须有人看过并签字。回执由交互式审核流程签发，工厂自己不能生成。",
+            options: [],
+            allowOther: true,
+            impact: "签署后即可执行部署。",
+            systems: [],
+          },
+        };
+      }
+
+      const promotion = await promoteDrafts(
+        context.project.domain,
+        { versionId: draftVersionId, receiptId: reviewReceiptId },
+        {
+          tenantId: context.job.tenantId,
+          tenantSlug: context.tenantSlug,
+        },
+      );
+      await context.progress("harness.deploy.promoted", {
+        draftVersionId,
+        promoted: promotion.promoted,
+        functionsRegistered: promotion.functionsRegistered,
+        liveAgents: promotion.liveAgents,
+        deploymentId: promotion.deploymentId ?? null,
+      });
+
+      // A partial promotion is not a release. Say so rather than reporting
+      // success for a version that is only half live.
+      if (
+        promotion.total <= 0 ||
+        promotion.promoted.length !== promotion.total ||
+        promotion.functionsRegistered <= 0
+      ) {
+        throw new OntoCodeHarnessExecutionError(
+          "release_incomplete",
+          `促升没有让这一版的全部 Agent 上线（选中 ${promotion.total}、已促升 ${promotion.promoted.length}、注册函数 ${promotion.functionsRegistered}）`,
+          {
+            recoverable: true,
+            retryable: false,
+            details: { draftVersionId, promotion },
+          },
+        );
+      }
+
+      const releasedAt = new Date();
+      const packageRow = getDb()
+        .select()
+        .from(ontocodePackageVersions)
+        .where(
+          and(
+            eq(ontocodePackageVersions.tenantId, context.job.tenantId),
+            eq(ontocodePackageVersions.id, preflight.candidate.packageVersionId),
+          ),
+        )
+        .get();
+      const released = packageRow
+        ? markOntoCodeCandidateReleased(storeCtx, {
+            packageVersionId: packageRow.id,
+            dependencyRoot: packageRow.dependencyRoot,
+            draftVersionId,
+            reviewReceiptId,
+            deploymentId: promotion.deploymentId ?? null,
+            promotedSlugs: promotion.promoted,
+            functionsRegistered: promotion.functionsRegistered,
+            liveAgents: promotion.liveAgents,
+            releasedAt,
+          })
+        : false;
+
+      const receipt = {
+        ...baseReceipt,
+        draftVersionId,
+        reviewReceiptId,
+        promotion,
+        released,
+        releasedAt: releasedAt.toISOString(),
+        rollback: promotion.deploymentId
+          ? {
+              // Promotion creates an exact deployment row; rolling back means
+              // re-promoting the previous one, never editing live code in place.
+              deploymentId: promotion.deploymentId,
+              instruction:
+                "回滚 = 促升上一版 deployment。生产代码不做就地修改。",
+            }
+          : null,
+      } as unknown as Record<string, unknown>;
+
+      return {
+        outcome: "succeeded",
+        receipt,
+        message: released
+          ? `已部署：${promotion.promoted.length} 个 Agent 上线，注册 ${promotion.functionsRegistered} 个 Inngest 函数，租户现有 ${promotion.liveAgents} 个 Agent。`
+          : `代码已促升上线（${promotion.promoted.length} 个 Agent），但候选包状态没能标记为 released——候选包在部署期间发生了变化，请核对后再操作。`,
       };
     },
     scope: async (context) => {

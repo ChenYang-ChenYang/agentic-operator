@@ -222,4 +222,75 @@ describe("ontology_analysis end to end through the worker", () => {
       "harness.ontology_analysis.plan",
     );
   });
+
+  // The Allmeta source can serve live per-Action rule bindings, but the Analyst
+  // was never handed that capability, so it always reported "could not check".
+  it("probes live Action rules when the bound source can serve them", async () => {
+    const ctx = { tenantId, actorId: "test-fde" };
+    const suffix = randomUUID().slice(0, 8);
+    const { project } = createOntoCodeProject(ctx, {
+      domain: ontology.domainId,
+      name: `Analyst rules ${suffix}`,
+    });
+    projectIds.push(project.id);
+    const { session } = createOntoCodeSession(ctx, {
+      projectId: project.id,
+      title: `Analyst rules ${suffix}`,
+      goal: "理解这个域的本体",
+      autonomyMode: "copilot",
+      ontologySnapshotHash: factorySourceOntologyHash(ontology),
+    });
+    const { command, sessionRevision } = createOntoCodeCommand(
+      ctx,
+      session.id,
+      {
+        type: "analyze_ontology",
+        arguments: {},
+        expectedSessionRevision: session.revision,
+        affectedSemanticPaths: [],
+        riskClass: "read_only",
+        requestedCapabilities: [],
+        requiresHuman: false,
+        rationaleSummary: "FDE asked to understand the Ontology",
+        idempotencyKey: `idem-rules-${suffix}`,
+      },
+    );
+    createOntoCodeHarnessJob(ctx, session.id, {
+      commandId: command.id,
+      kind: "ontology_analysis",
+      expectedSessionRevision: sessionRevision,
+      idempotencyKey: `job-rules-${suffix}`,
+    });
+
+    const askedFor: string[] = [];
+    const worker = new OntoCodeHarnessWorkerAdapter({
+      tenantId,
+      factory: {
+        fetchOntology: async () => ontology,
+        recommendScope: async () => {
+          throw new Error("scope not used in this test");
+        },
+        runBuild: async () => {
+          throw new Error("build not used in this test");
+        },
+        fetchActionRules: async (input: { actionName: string }) => {
+          askedFor.push(input.actionName);
+          return [{ id: "R-1", name: "JD 必须包含薪资区间" }];
+        },
+      } as never,
+    });
+    await expect(worker.runNext()).resolves.toMatchObject({
+      status: "succeeded",
+    });
+
+    // It asked about the real Agent action, by name, from the real Ontology.
+    expect(askedFor).toEqual(["createJD"]);
+    const observation = getDb()
+      .select()
+      .from(ontocodeSessionEvents)
+      .where(eq(ontocodeSessionEvents.sessionId, session.id))
+      .all()
+      .find((e) => e.type === "harness.ontology_analysis.observation");
+    expect(JSON.parse(observation!.payloadJson)).toMatchObject({ probes: 1 });
+  });
 });

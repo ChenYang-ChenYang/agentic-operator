@@ -15,6 +15,13 @@
 //
 // Honesty rule: a blocker is reported with the real reason. "We could not verify"
 // is never rendered as "not required".
+import { and, eq, sql } from "drizzle-orm";
+import {
+  getDb,
+  ontocodeArtifactBlobs,
+  ontocodeArtifactVersions,
+  ontocodePackageVersions,
+} from "@agentic/db";
 import { listOntoCodeSandboxAttempts } from "./ontocode-sandbox-attempt-store";
 import { getOntoCodeCandidateHead } from "./ontocode-candidate-store";
 import {
@@ -28,10 +35,71 @@ export interface DeployBlocker {
     | "candidate_not_verified"
     | "sandbox_not_qualified"
     | "no_sandbox_attempt"
-    | "systems_unbound";
+    | "systems_unbound"
+    | "factory_draft_unbound";
   detail: string;
   /** What the FDE can actually do next. Never "contact support". */
   remedy: string;
+}
+
+/** #DRAFT-BINDING — the on-disk Factory draft version this Candidate promotes.
+ * Read back from the Candidate's own immutable artifact, never re-derived. */
+export interface DeployDraftBinding {
+  bound: boolean;
+  draftVersionIds: string[];
+  domain: string | null;
+  unboundReason: string | null;
+}
+
+const DRAFT_BINDING_LOGICAL_NAME = "package/factory-draft.json";
+
+function readDraftBinding(
+  tenantId: string,
+  artifactRefs: unknown,
+): DeployDraftBinding | null {
+  const refs = Array.isArray(artifactRefs)
+    ? (artifactRefs as Array<Record<string, unknown>>)
+    : [];
+  const ref = refs.find(
+    (entry) => entry.logicalName === DRAFT_BINDING_LOGICAL_NAME,
+  );
+  const artifactVersionId =
+    typeof ref?.artifactVersionId === "string" ? ref.artifactVersionId : null;
+  if (!artifactVersionId) return null;
+  const version = getDb()
+    .select()
+    .from(ontocodeArtifactVersions)
+    .where(
+      and(
+        eq(ontocodeArtifactVersions.tenantId, tenantId),
+        eq(ontocodeArtifactVersions.id, artifactVersionId),
+      ),
+    )
+    .get();
+  if (!version) return null;
+  const blob = getDb()
+    .select()
+    .from(ontocodeArtifactBlobs)
+    .where(eq(ontocodeArtifactBlobs.id, version.blobId))
+    .get();
+  if (!blob) return null;
+  try {
+    const parsed = JSON.parse(blob.contentText) as Record<string, unknown>;
+    return {
+      bound: parsed.bound === true,
+      draftVersionIds: Array.isArray(parsed.draftVersionIds)
+        ? parsed.draftVersionIds.filter(
+            (value): value is string => typeof value === "string",
+          )
+        : [],
+      domain: typeof parsed.domain === "string" ? parsed.domain : null,
+      unboundReason:
+        typeof parsed.unboundReason === "string" ? parsed.unboundReason : null,
+    };
+  } catch {
+    // A corrupt binding is an unbound binding — never a passing one.
+    return null;
+  }
 }
 
 export interface DeployPreflight {
@@ -48,6 +116,7 @@ export interface DeployPreflight {
     isolationTier: string | null;
     executionOrigin: string | null;
   } | null;
+  draftBinding: DeployDraftBinding | null;
 }
 
 /**
@@ -68,7 +137,13 @@ export function preflightOntoCodeDeploy(
       detail: "这个 Session 还没有生成候选包，没有可部署的内容。",
       remedy: "先完成一次成功的构建（生成 Agent 代码），再回到这里。",
     });
-    return { deployable: false, blockers, candidate: null, sandbox: null };
+    return {
+      deployable: false,
+      blockers,
+      candidate: null,
+      sandbox: null,
+      draftBinding: null,
+    };
   }
 
   const candidate = {
@@ -121,12 +196,82 @@ export function preflightOntoCodeDeploy(
     });
   }
 
+  // Promotion operates on an immutable on-disk draft version. Without a binding
+  // that names exactly one, "deploy this candidate" has no unambiguous target.
+  const draftBinding = readDraftBinding(
+    ctx.tenantId,
+    packageVersion.artifactRefs,
+  );
+  if (!draftBinding || !draftBinding.bound) {
+    blockers.push({
+      code: "factory_draft_unbound",
+      detail:
+        draftBinding?.unboundReason ??
+        "候选包没有绑定到唯一的 Factory draft 版本，无法确定要促升哪一版代码。",
+      remedy:
+        "重新运行一次构建：新的候选包会把生成的每个 Agent 与磁盘上的 draft 版本一一绑定。",
+    });
+  }
+
   return {
     deployable: blockers.length === 0,
     blockers,
     candidate,
     sandbox,
+    draftBinding,
   };
+}
+
+export interface ReleaseRecord {
+  packageVersionId: string;
+  dependencyRoot: string;
+  draftVersionId: string;
+  reviewReceiptId: string;
+  deploymentId: string | null;
+  promotedSlugs: string[];
+  functionsRegistered: number;
+  liveAgents: number;
+  releasedAt: Date;
+}
+
+/**
+ * #RELEASED — the only write path to `released`. It runs after the promotion
+ * kernel has already made the code live, and it is guarded on the exact
+ * candidate that was verified: a package whose dependency root moved, or which
+ * never reached verified_candidate, is not the thing that was deployed, so the
+ * write must not land. A caller that sees `false` should report the promotion
+ * result and the drift, never silently claim a release.
+ */
+export function markOntoCodeCandidateReleased(
+  ctx: OntoCodeStoreContext,
+  record: ReleaseRecord,
+): boolean {
+  const update = getDb()
+    .update(ontocodePackageVersions)
+    .set({
+      status: "released",
+      validationJson: sql`json_set(
+        ${ontocodePackageVersions.validationJson},
+        '$.releaseEligible', json('true'),
+        '$.releasedAt', ${record.releasedAt.toISOString()},
+        '$.factoryDraftVersionId', ${record.draftVersionId},
+        '$.reviewReceiptId', ${record.reviewReceiptId},
+        '$.deploymentId', ${record.deploymentId ?? null},
+        '$.functionsRegistered', ${record.functionsRegistered},
+        '$.liveAgents', ${record.liveAgents}
+      )`,
+      updatedAt: record.releasedAt,
+    })
+    .where(
+      and(
+        eq(ontocodePackageVersions.tenantId, ctx.tenantId),
+        eq(ontocodePackageVersions.id, record.packageVersionId),
+        eq(ontocodePackageVersions.dependencyRoot, record.dependencyRoot),
+        eq(ontocodePackageVersions.status, "verified_candidate"),
+      ),
+    )
+    .run();
+  return update.changes === 1;
 }
 
 /** One-line human summary for a receipt/message. */

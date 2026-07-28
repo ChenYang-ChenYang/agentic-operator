@@ -1282,6 +1282,7 @@ describe("OntoCode Harness Worker Adapter", () => {
       "agents/screen-candidate-agent/agent.ts",
       "agents/screen-candidate-agent/spec.json",
       `harness/build/${fixture.job.id}/receipt.json`,
+      "package/factory-draft.json",
       "package/manifest.json",
       "package/runtime-config.json",
     ]);
@@ -1296,7 +1297,7 @@ describe("OntoCode Harness Worker Adapter", () => {
         ),
       )
       .all();
-    expect(versions).toHaveLength(5);
+    expect(versions).toHaveLength(6);
     expect(
       versions.every((version) => version.changeSetId === fixture.changeSetId),
     ).toBe(true);
@@ -1483,6 +1484,233 @@ describe("OntoCode Harness Worker Adapter", () => {
         .where(eq(ontocodeCandidateHeads.sessionId, fixture.session.id))
         .all(),
     ).toHaveLength(0);
+  });
+
+  /** Read one Candidate artifact's durable content by its logical name. */
+  function readCandidateArtifact(sessionId: string, logicalName: string) {
+    const artifact = getDb()
+      .select()
+      .from(ontocodeArtifacts)
+      .where(
+        and(
+          eq(ontocodeArtifacts.sessionId, sessionId),
+          eq(ontocodeArtifacts.logicalName, logicalName),
+        ),
+      )
+      .get();
+    if (!artifact) throw new Error(`missing Candidate artifact ${logicalName}`);
+    const version = getDb()
+      .select()
+      .from(ontocodeArtifactVersions)
+      .where(eq(ontocodeArtifactVersions.artifactId, artifact.id))
+      .get();
+    const blob = getDb()
+      .select()
+      .from(ontocodeArtifactBlobs)
+      .where(eq(ontocodeArtifactBlobs.id, version!.blobId))
+      .get();
+    return blob!.contentText;
+  }
+
+  // #STRICT-DELIVERY — a Candidate Package claims these Agents can do the work.
+  // An external system that is only "configurable later", "probe pending" or
+  // "a human will do it" means they cannot, so the package must not be written.
+  function buildReceiptWithBinding(
+    binding: Record<string, unknown>,
+    tools: string[] = [],
+  ) {
+    return vi.fn(async () => ({
+      outcome: "succeeded" as const,
+      receipt: {
+        factoryRunId: "fake-integration-binding",
+        status: "finished",
+        completionKind: "delivery",
+        agents: [
+          {
+            slug: "screen-candidate-agent",
+            actionName: "screenCandidate",
+            spec: {
+              slug: "screen-candidate-agent",
+              actionName: "screenCandidate",
+              tools,
+              generatedCode:
+                "export const screenCandidateAgent = { async handler(input) { return input; } };",
+              integrationBindings: [binding],
+            },
+          },
+        ],
+      },
+    }));
+  }
+
+  async function expectCandidateRefused(binding: Record<string, unknown>) {
+    const fixture = makeQueuedJob({ kind: "build" });
+    const worker = new OntoCodeHarnessWorkerAdapter({
+      tenantId,
+      factory: fakeFactory({ runBuild: buildReceiptWithBinding(binding) }),
+    });
+    await expect(worker.runNext()).resolves.toMatchObject({
+      jobId: fixture.job.id,
+      status: "failed_recoverable",
+    });
+    expect(
+      getDb()
+        .select()
+        .from(ontocodePackageVersions)
+        .where(eq(ontocodePackageVersions.sessionId, fixture.session.id))
+        .all(),
+    ).toHaveLength(0);
+    return fixture;
+  }
+
+  it.each([
+    ["needs_config", "凭证还没配"],
+    ["needs_probe", "还没探通"],
+    ["missing", "根本没有工具"],
+    // A human boundary is an honest answer, but it is not an executable Agent.
+    ["human_boundary", "人工来做"],
+  ])(
+    "refuses to write a Candidate Package when an integration is %s",
+    async (status, reason) => {
+      await expectCandidateRefused({
+        requirement: {
+          id: "req-1",
+          actionName: "screenCandidate",
+          system: "Internal_Recruitment_System",
+          role: "write",
+        },
+        status,
+        reason,
+      });
+    },
+  );
+
+  it("refuses a binding that claims resolved but carries no tool the Agent holds", async () => {
+    await expectCandidateRefused({
+      requirement: {
+        id: "req-1",
+        actionName: "screenCandidate",
+        system: "Internal_Recruitment_System",
+        role: "write",
+      },
+      status: "resolved",
+      bindingKind: "tool",
+      toolName: "recruitment.write",
+      reason: "claimed",
+    });
+  });
+
+  it("records the exact resolved binding in the Candidate config artifact", async () => {
+    const fixture = makeQueuedJob({ kind: "build" });
+    const worker = new OntoCodeHarnessWorkerAdapter({
+      tenantId,
+      factory: fakeFactory({
+        runBuild: buildReceiptWithBinding(
+          {
+            requirement: {
+              id: "req-1",
+              actionName: "screenCandidate",
+              system: "Internal_Recruitment_System",
+              role: "write",
+            },
+            status: "resolved",
+            bindingKind: "tool",
+            toolName: "recruitment.write",
+            reason: "bound to an authorized capability",
+          },
+          ["recruitment.write"],
+        ),
+      }),
+    });
+
+    await expect(worker.runNext()).resolves.toMatchObject({
+      jobId: fixture.job.id,
+      status: "succeeded",
+    });
+    const config = JSON.parse(
+      readCandidateArtifact(fixture.session.id, "package/runtime-config.json"),
+    ) as {
+      toolBindings: Array<{
+        integrations: Array<Record<string, unknown>>;
+      }>;
+    };
+    expect(config.toolBindings[0]?.integrations).toEqual([
+      {
+        requirementId: "req-1",
+        system: "Internal_Recruitment_System",
+        role: "write",
+        status: "resolved",
+        bindingKind: "tool",
+        toolName: "recruitment.write",
+        reason: "bound to an authorized capability",
+      },
+    ]);
+  });
+
+  // #DRAFT-BINDING — deploy promotes an on-disk draft version, so the Candidate
+  // must name exactly which one it is, per Agent, or say plainly that it cannot.
+  it("binds the Candidate to the exact Factory draft version it came from", async () => {
+    const fixture = makeQueuedJob({ kind: "build" });
+    const worker = new OntoCodeHarnessWorkerAdapter({
+      tenantId,
+      factory: fakeFactory({
+        runBuild: vi.fn(async () => ({
+          outcome: "succeeded" as const,
+          receipt: {
+            factoryRunId: "fake-draft-bound",
+            status: "finished",
+            completionKind: "delivery",
+            agents: [
+              {
+                slug: "screen-candidate-agent",
+                actionName: "screenCandidate",
+                draftVersionId: "v-20260728120000000-abcd1234",
+                spec: {
+                  slug: "screen-candidate-agent",
+                  actionName: "screenCandidate",
+                  generatedCode:
+                    "export const screenCandidateAgent = { async handler(input) { return input; } };",
+                },
+              },
+            ],
+          },
+        })),
+      }),
+    });
+
+    await expect(worker.runNext()).resolves.toMatchObject({
+      status: "succeeded",
+    });
+    const binding = JSON.parse(
+      readCandidateArtifact(fixture.session.id, "package/factory-draft.json"),
+    ) as {
+      bound: boolean;
+      draftVersionIds: string[];
+      agents: Array<{ slug: string; draftVersionId: string }>;
+    };
+    expect(binding.bound).toBe(true);
+    expect(binding.draftVersionIds).toEqual(["v-20260728120000000-abcd1234"]);
+    expect(binding.agents[0]).toMatchObject({
+      slug: "screen-candidate-agent",
+      draftVersionId: "v-20260728120000000-abcd1234",
+    });
+  });
+
+  it("records an unbound Candidate honestly instead of inventing a draft version", async () => {
+    const fixture = makeQueuedJob({ kind: "build" });
+    const worker = new OntoCodeHarnessWorkerAdapter({
+      tenantId,
+      factory: fakeFactory(),
+    });
+    await expect(worker.runNext()).resolves.toMatchObject({
+      status: "succeeded",
+    });
+    const binding = JSON.parse(
+      readCandidateArtifact(fixture.session.id, "package/factory-draft.json"),
+    ) as { bound: boolean; unboundAgents: string[]; unboundReason: string };
+    expect(binding.bound).toBe(false);
+    expect(binding.unboundAgents).toEqual(["screen-candidate-agent"]);
+    expect(binding.unboundReason).toContain("draft");
   });
 
   it("adds immutable versions to stable Agent artifacts across build iterations", async () => {
@@ -2105,7 +2333,10 @@ describe("OntoCode Harness Worker Adapter", () => {
     expect(types).toContain("harness.job.failed");
   });
 
-  it("requires durable approval then fails deploy recoverably without an explicit executor", async () => {
+  // #RELEASE — deploy used to die with `executor_not_available`, an internal
+  // error that told the FDE nothing. It now evaluates the real preconditions and
+  // parks on what is actually missing, without promoting anything.
+  it("requires durable approval, then parks deploy on the real unmet precondition", async () => {
     const fixture = makeQueuedJob({
       kind: "deploy",
       requiresHuman: true,
@@ -2120,12 +2351,111 @@ describe("OntoCode Harness Worker Adapter", () => {
 
     await expect(worker.runNext()).resolves.toMatchObject({
       jobId: fixture.job.id,
-      status: "failed_recoverable",
+      status: "waiting_user",
     });
     expect(factory.runBuild).not.toHaveBeenCalled();
-    expect(getOntoCodeHarnessJob({ tenantId }, fixture.job.id)).toMatchObject({
-      status: "failed_recoverable",
-      errorMessage: expect.stringContaining("no safe executor"),
+    // Nothing was promoted: there is no candidate to promote in the first place.
+    const events = getDb()
+      .select()
+      .from(ontocodeSessionEvents)
+      .where(eq(ontocodeSessionEvents.sessionId, fixture.session.id))
+      .all();
+    const preflight = events.find(
+      (event) => event.type === "harness.deploy.preflight",
+    );
+    expect(preflight).toBeDefined();
+    expect(JSON.parse(preflight!.payloadJson)).toMatchObject({
+      deployable: false,
+      blockers: ["no_candidate"],
     });
+    expect(
+      events.some((event) => event.type === "harness.deploy.promoted"),
+    ).toBe(false);
+  });
+
+  it("asks for a human review receipt instead of promoting an unreviewed version", async () => {
+    // Everything else clears; only the human signature is missing. The worker
+    // can never mint that receipt, so the honest outcome is to ask for it.
+    const built = await buildExactCandidate();
+    getDb()
+      .update(ontocodePackageVersions)
+      .set({ status: "verified_candidate" })
+      .where(eq(ontocodePackageVersions.id, built.packageVersion.id))
+      .run();
+    const suffix = randomUUID().slice(0, 8);
+    const current = getOntoCodeSession({ tenantId }, built.fixture.session.id);
+    const { command, sessionRevision } = createOntoCodeCommand(
+      built.fixture.ctx,
+      built.fixture.session.id,
+      {
+        type: "deploy_release",
+        arguments: {},
+        expectedSessionRevision: current.revision,
+        affectedSemanticPaths: [],
+        riskClass: "production_deploy",
+        requestedCapabilities: [],
+        requiresHuman: true,
+        rationaleSummary: "Deploy",
+        idempotencyKey: `deploy-cmd-${suffix}`,
+      },
+    );
+    const revision = decideOntoCodeCommand(
+      built.fixture.ctx,
+      command.id,
+      "approve",
+      { expectedSessionRevision: sessionRevision },
+    ).sessionRevision;
+    getDb()
+      .insert(ontocodeSandboxAttempts)
+      .values({
+        id: `ocsa-${randomUUID().replace(/-/g, "").slice(0, 16)}`,
+        tenantId,
+        projectId: built.fixture.project.id,
+        sessionId: built.fixture.session.id,
+        harnessJobId: built.fixture.job.id,
+        ordinal: 9,
+        packageVersionId: built.packageVersion.id,
+        dependencyRoot: built.packageVersion.dependencyRoot,
+        ontologyHash: built.packageVersion.ontologyHash,
+        testSuiteHash: "d".repeat(64),
+        candidateFingerprint: built.packageVersion.dependencyRoot,
+        status: "succeeded",
+        qualification: "promotable",
+        executionOrigin: "remote",
+        isolationTier: "dedicated_host",
+        idempotencyKey: `deploy-att-${suffix}`,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .run();
+    createOntoCodeHarnessJob(built.fixture.ctx, built.fixture.session.id, {
+      commandId: command.id,
+      kind: "deploy",
+      expectedSessionRevision: revision,
+      idempotencyKey: `deploy-job-${suffix}`,
+    });
+
+    const worker = new OntoCodeHarnessWorkerAdapter({
+      tenantId,
+      factory: fakeFactory(),
+    });
+    await expect(worker.runNext()).resolves.toMatchObject({
+      status: "waiting_user",
+    });
+    const promoted = getDb()
+      .select()
+      .from(ontocodeSessionEvents)
+      .where(eq(ontocodeSessionEvents.sessionId, built.fixture.session.id))
+      .all()
+      .some((event) => event.type === "harness.deploy.promoted");
+    expect(promoted).toBe(false);
+    // The candidate is untouched — no release was recorded.
+    expect(
+      getDb()
+        .select()
+        .from(ontocodePackageVersions)
+        .where(eq(ontocodePackageVersions.id, built.packageVersion.id))
+        .get()?.status,
+    ).toBe("verified_candidate");
   });
 });
