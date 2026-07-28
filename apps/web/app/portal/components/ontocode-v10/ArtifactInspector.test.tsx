@@ -57,6 +57,42 @@ const EVIDENCE = [
 ];
 
 describe("InspectorOverviewView", () => {
+  // 分析回执落了盘、classifyStageDoc 也认得它，但它以前不在阶段文档表里——
+  // 于是整个 Ontology 理解跑完之后，FDE 在界面上没有任何入口能读到结论。
+  it("offers the Ontology analysis as an openable stage document", () => {
+    const opened: string[] = [];
+    const html = renderToStaticMarkup(
+      <InspectorOverviewView
+        candidateLabel="候选 v1"
+        items={[
+          {
+            artifact: makeArtifact({
+              id: "oca-a",
+              logicalName: "harness/ontology_analysis/ocj-1/receipt.json",
+              kind: "harness_receipt",
+            }),
+            latestVersion: makeVersion({ id: "ocav-a", artifactId: "oca-a" }),
+          },
+          {
+            artifact: makeArtifact({
+              id: "oca-s",
+              logicalName: "harness/scope/receipt.json",
+              kind: "harness_receipt",
+            }),
+            latestVersion: makeVersion({ id: "ocav-s", artifactId: "oca-s", createdAt: 3 }),
+          },
+        ]}
+        evidence={EVIDENCE}
+        onOpen={() => {}}
+        onOpenStageDoc={(kind) => opened.push(kind)}
+        onCollapse={() => {}}
+      />,
+    );
+    expect(html).toContain("Ontology 理解");
+    expect(html).toContain("范围分析");
+    void opened;
+  });
+
   it("lists artifacts with short names and folds harness receipts", () => {
     const html = renderToStaticMarkup(
       <InspectorOverviewView

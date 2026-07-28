@@ -49,6 +49,55 @@ export interface EventChain {
   cyclic: boolean;
 }
 
+/** #RULES —— 一条规则被读出来的全部可核查事实。
+ *
+ *  以前整个规则维度只有 `counts.rules` 一个整数：一个域里哪些规则能卡住流程、哪些该由人来做、
+ *  哪些还没法自动化、各自管着哪些对象、有没有接到任何动作上——FDE 一个都看不到，而这些恰恰是
+ *  「能不能据此生成代码」的前提。 */
+export interface RuleFacet {
+  id: string;
+  name: string;
+  /** null 表示【本体没有声明】，绝不兜底成 "warn"。 */
+  enforcementLevel: string | null;
+  failurePolicy: string | null;
+  executor: string | null;
+  automationStatus: string | null;
+  /** 政策不是全域统一的：同一个动作上可能挂着分属不同客户的互斥规则。 */
+  client: string | null;
+  department: string | null;
+  stage: string | null;
+  /** relatedEntities 中能在本体里找到的对象。 */
+  governs: string[];
+  /** relatedEntities 里指向本体不存在对象的引用——这是发现，不是噪音。 */
+  danglingGoverns: string[];
+  /** 编译关系图里是否有任何一条与它相连的边。 */
+  linkBacked: boolean;
+  /** 经 action_steps[].rules[] 精确引用到它的动作。 */
+  referencedByActions: string[];
+}
+
+export interface RuleAnalysis {
+  total: number;
+  /** failurePolicy === "block"：真的能拦住流程。 */
+  blocking: number;
+  warning: number;
+  /** 既没声明 enforcementLevel 也没声明 failurePolicy——报「未声明」，不报「不严重」。 */
+  undeclared: number;
+  byExecutor: Array<{ executor: string; count: number }>;
+  byAutomation: Array<{ status: string; count: number }>;
+  byClient: Array<{ client: string; count: number; blocking: number }>;
+  byStage: Array<{ stage: string; count: number }>;
+  /** 能从动作走到的规则数——生成器只看得见这些。 */
+  reachableFromActions: number;
+  /** 既没有动作引用、也没有任何关系边的规则 id。 */
+  orphans: string[];
+  /** 同名但 id 不同的规则：任何按名字归并的做法都会把不同政策合成一条。 */
+  duplicateNames: Array<{ name: string; ids: string[] }>;
+  /** 同一个动作上挂着分属不同客户的规则——照单生成会把 A 客户的政策套到 B 客户身上。 */
+  crossClientActions: Array<{ action: string; clients: string[]; blockingRules: number }>;
+  rules: RuleFacet[];
+}
+
 export interface OntologyAnalysisGap {
   kind:
     | "no_link_graph"
@@ -56,6 +105,8 @@ export interface OntologyAnalysisGap {
     | "actions_without_objects"
     | "unreferenced_events"
     | "rules_without_actions"
+    | "rules_without_enforcement"
+    | "rules_span_multiple_clients"
     | "no_agent_actions";
   detail: string;
   /** Concrete offenders, so the gap is checkable rather than rhetorical. */
@@ -85,6 +136,8 @@ export interface OntologyStructuralAnalysis {
   agentActions: string[];
   humanActions: string[];
   gaps: OntologyAnalysisGap[];
+  /** #RULES —— 规则维度的完整读数。 */
+  rules: RuleAnalysis;
   /** True when the source supplied a compiled relationship graph. */
   hasLinkGraph: boolean;
 }
@@ -205,6 +258,141 @@ function buildEventChains(actions: OntologyAction[]): {
   return { chains, entryEvents, terminalEvents };
 }
 
+// ── #RULES —— 规则维度 ────────────────────────────────────────────────────────
+
+function ruleText(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+/** 规则在 action_steps[].rules[] 里可能写成裸值，也可能写成 {id}/{name} 记录。
+ *  只做精确匹配：前缀、目标对象、语义相似都不算证据。 */
+function stepRuleRefs(action: OntologyAction): string[] {
+  const refs: string[] = [];
+  for (const rawStep of (action.action_steps ?? []) as unknown[]) {
+    if (!rawStep || typeof rawStep !== "object") continue;
+    const step = rawStep as Record<string, unknown>;
+    const list = Array.isArray(step.rules) ? step.rules : step.rules == null ? [] : [step.rules];
+    for (const entry of list) {
+      if (entry == null) continue;
+      if (typeof entry === "object") {
+        const row = entry as Record<string, unknown>;
+        const id = ruleText(row.id) ?? ruleText(row.rule_id) ?? ruleText(row.name);
+        if (id) refs.push(id);
+        continue;
+      }
+      const scalar = ruleText(entry);
+      if (scalar) refs.push(scalar);
+    }
+  }
+  return refs;
+}
+
+function analyzeRules(
+  rules: Array<Record<string, unknown>>,
+  actions: OntologyAction[],
+  objectIds: Set<string>,
+  linkedRuleIds: Set<string>,
+): RuleAnalysis {
+  const byId = new Map<string, Record<string, unknown>>();
+  for (const [index, rule] of rules.entries()) {
+    const id = ruleText(rule.id) ?? ruleText(rule.rule_id) ?? ruleText(rule.name) ?? `rule:${index + 1}`;
+    if (!byId.has(id)) byId.set(id, rule);
+  }
+  // 动作 → 规则的精确引用。
+  const referencedBy = new Map<string, string[]>();
+  for (const action of actions) {
+    for (const ref of stepRuleRefs(action)) {
+      if (!byId.has(ref)) continue;
+      referencedBy.set(ref, [...(referencedBy.get(ref) ?? []), action.name]);
+    }
+  }
+
+  const facets: RuleFacet[] = [];
+  for (const [id, rule] of byId) {
+    const related = Array.isArray(rule.relatedEntities) ? rule.relatedEntities : [];
+    const governs: string[] = [];
+    const dangling: string[] = [];
+    for (const entry of related) {
+      const name = ruleText(entry) ?? ruleText((entry as Record<string, unknown> | null)?.id);
+      if (!name) continue;
+      (objectIds.has(name) ? governs : dangling).push(name);
+    }
+    facets.push({
+      id,
+      name: ruleText(rule.businessLogicRuleName) ?? ruleText(rule.name) ?? id,
+      // null 一律保留为 null：本体没说，就不要替它说。
+      enforcementLevel: ruleText(rule.enforcementLevel),
+      failurePolicy: ruleText(rule.failurePolicy),
+      executor: ruleText(rule.executor),
+      automationStatus: ruleText(rule.automationStatus),
+      client: ruleText(rule.applicableClient) ?? ruleText(rule.belongsToClient),
+      department: ruleText(rule.applicableDepartment) ?? ruleText(rule.belongsToDepartment),
+      stage: ruleText(rule.specificScenarioStage),
+      governs: [...new Set(governs)].sort(),
+      danglingGoverns: [...new Set(dangling)].sort(),
+      linkBacked: linkedRuleIds.has(id),
+      referencedByActions: [...new Set(referencedBy.get(id) ?? [])].sort(),
+    });
+  }
+  facets.sort((a, b) => a.id.localeCompare(b.id));
+
+  const tally = (pick: (f: RuleFacet) => string | null): Array<[string, number]> => {
+    const counts = new Map<string, number>();
+    for (const f of facets) {
+      const key = pick(f) ?? "(未声明)";
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    return [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  };
+
+  const byClientCounts = new Map<string, { count: number; blocking: number }>();
+  for (const f of facets) {
+    const key = f.client ?? "(未声明)";
+    const row = byClientCounts.get(key) ?? { count: 0, blocking: 0 };
+    row.count += 1;
+    if (f.failurePolicy === "block") row.blocking += 1;
+    byClientCounts.set(key, row);
+  }
+
+  const namesToIds = new Map<string, string[]>();
+  for (const f of facets) namesToIds.set(f.name, [...(namesToIds.get(f.name) ?? []), f.id]);
+
+  // 同一个动作上挂着分属不同客户的规则：照单生成会把 A 客户的政策套到 B 客户身上。
+  const crossClient: RuleAnalysis["crossClientActions"] = [];
+  for (const action of actions) {
+    const attached = facets.filter((f) => f.referencedByActions.includes(action.name));
+    const clients = [...new Set(attached.map((f) => f.client).filter((c): c is string => Boolean(c) && c !== "通用"))].sort();
+    if (clients.length > 1) {
+      crossClient.push({
+        action: action.name,
+        clients,
+        blockingRules: attached.filter((f) => f.failurePolicy === "block").length,
+      });
+    }
+  }
+
+  return {
+    total: facets.length,
+    blocking: facets.filter((f) => f.failurePolicy === "block").length,
+    warning: facets.filter((f) => f.failurePolicy === "warn").length,
+    undeclared: facets.filter((f) => f.failurePolicy === null && f.enforcementLevel === null).length,
+    byExecutor: tally((f) => f.executor).map(([executor, count]) => ({ executor, count })),
+    byAutomation: tally((f) => f.automationStatus).map(([status, count]) => ({ status, count })),
+    byClient: [...byClientCounts.entries()]
+      .sort((a, b) => b[1].count - a[1].count || a[0].localeCompare(b[0]))
+      .map(([client, row]) => ({ client, ...row })),
+    byStage: tally((f) => f.stage).map(([stage, count]) => ({ stage, count })),
+    reachableFromActions: facets.filter((f) => f.referencedByActions.length > 0).length,
+    orphans: facets.filter((f) => f.referencedByActions.length === 0 && !f.linkBacked).map((f) => f.id),
+    duplicateNames: [...namesToIds.entries()]
+      .filter(([, ids]) => ids.length > 1)
+      .map(([name, ids]) => ({ name, ids: ids.sort() }))
+      .sort((a, b) => a.name.localeCompare(b.name)),
+    crossClientActions: crossClient,
+    rules: facets,
+  };
+}
+
 export function analyzeOntologyStructure(
   ontology: DomainOntology,
 ): OntologyStructuralAnalysis {
@@ -282,6 +470,24 @@ export function analyzeOntologyStructure(
     for (const e of action.triggered_event ?? []) referencedEvents.add(e);
   }
 
+  // #RULES —— 规则维度。linkedRuleIds 用「规则端点」判定，而不是任何 id 形状约定。
+  const ruleEndpointIds = new Set<string>();
+  for (const link of links) {
+    for (const end of [link.from, link.to] as Array<{ id?: unknown; type?: unknown } | undefined>) {
+      if (!end) continue;
+      if (String(end.type ?? "").toLowerCase().includes("rule")) {
+        const id = endpointId(end);
+        if (id) ruleEndpointIds.add(id);
+      }
+    }
+  }
+  const ruleAnalysis = analyzeRules(
+    rules as Array<Record<string, unknown>>,
+    actions,
+    new Set(objects.flatMap((o) => [o.id, o.name].filter((v): v is string => Boolean(v)))),
+    ruleEndpointIds,
+  );
+
   const gaps: OntologyAnalysisGap[] = [];
   if (links.length === 0) {
     gaps.push({
@@ -319,6 +525,38 @@ export function analyzeOntologyStructure(
       subjects: unreferencedEvents.slice(0, 20),
     });
   }
+  // 这条 gap 早就声明在类型里，却从来没有人构造过它——于是「孤儿规则」从未被报告给任何人。
+  if (ruleAnalysis.orphans.length > 0) {
+    gaps.push({
+      kind: "rules_without_actions",
+      detail:
+        `${ruleAnalysis.orphans.length}/${ruleAnalysis.total} 条规则既没有被任何动作的 action_steps 引用，`
+        + "在编译关系图里也没有任何一条边。生成器只沿动作引用取规则，所以这些政策对它是不可见的——"
+        + "据此生成的 agent 会静默地少执行这部分约束。",
+      subjects: ruleAnalysis.orphans.slice(0, 20),
+    });
+  }
+  const undeclaredRules = ruleAnalysis.rules
+    .filter((r) => r.failurePolicy === null && r.enforcementLevel === null)
+    .map((r) => r.id);
+  if (undeclaredRules.length > 0) {
+    gaps.push({
+      kind: "rules_without_enforcement",
+      detail:
+        `${undeclaredRules.length} 条规则既没声明 enforcementLevel 也没声明 failurePolicy。`
+        + "这里报「未声明」而不是「不严重」：把空值当成 warn，会把一批本该由人裁决的约束标成无害。",
+      subjects: undeclaredRules.slice(0, 20),
+    });
+  }
+  if (ruleAnalysis.crossClientActions.length > 0) {
+    gaps.push({
+      kind: "rules_span_multiple_clients",
+      detail:
+        "这些动作上挂着分属不同客户的规则。政策不是全域统一的——不带客户作用域就生成一个 agent，"
+        + "等于把一个客户的政策套到另一个客户的业务上。",
+      subjects: ruleAnalysis.crossClientActions.map((a) => `${a.action}（${a.clients.join(" / ")}）`),
+    });
+  }
   if (agentActions.length === 0) {
     gaps.push({
       kind: "no_agent_actions",
@@ -339,6 +577,7 @@ export function analyzeOntologyStructure(
       rules: rules.length,
       links: links.length,
     },
+    rules: ruleAnalysis,
     entities,
     hubs: entities.filter((e) => e.outbound + e.inbound > 0).slice(0, 8),
     isolatedEntities: isolated,
@@ -363,10 +602,11 @@ export function analyzeOntologyStructure(
  */
 export function renderAnalysisForModel(
   analysis: OntologyStructuralAnalysis,
-  opts: { maxEntities?: number; maxChains?: number } = {},
+  opts: { maxEntities?: number; maxChains?: number; maxRules?: number } = {},
 ): string {
   const maxEntities = opts.maxEntities ?? 25;
   const maxChains = opts.maxChains ?? 12;
+  const maxRules = opts.maxRules ?? 24;
   const lines: string[] = [];
   lines.push(`域 ${analysis.domainId}（来源 ${analysis.source}）`);
   lines.push(
@@ -393,8 +633,15 @@ export function renderAnalysisForModel(
   }
   if (analysis.eventChains.length > 0) {
     lines.push("");
-    lines.push("事件链：");
-    for (const chain of analysis.eventChains.slice(0, maxChains)) {
+    // 截断必须自报。这个文件本来就是为了不再重蹈 capJson 静默截断的覆辙而写的，
+    // 而它自己一直在把最多 40 条链切到 12 条却什么都不说。
+    const shownChains = analysis.eventChains.slice(0, maxChains);
+    lines.push(
+      shownChains.length < analysis.eventChains.length
+        ? `事件链（共 ${analysis.eventChains.length} 条，下列为前 ${shownChains.length} 条）：`
+        : "事件链：",
+    );
+    for (const chain of shownChains) {
       lines.push(
         `- ${chain.entryEvent} → ${chain.path.join(" → ")}${chain.terminalEvent ? ` → ${chain.terminalEvent}` : ""}${chain.cyclic ? "（存在回环）" : ""}`,
       );
@@ -403,6 +650,58 @@ export function renderAnalysisForModel(
   if (analysis.externalSystems.length > 0) {
     lines.push("");
     lines.push(`外部系统：${analysis.externalSystems.join("、")}`);
+  }
+  // #RULES —— 规则以前只是 counts 里的一个整数。模型看不到「哪条能卡住流程、谁来执行、
+  // 管着哪个对象、有没有接到动作上」，也就无从据此设计 agent。
+  const r = analysis.rules;
+  if (r.total > 0) {
+    lines.push("");
+    lines.push(
+      `规则：${r.total} 条 · 阻断 ${r.blocking} · 仅告警 ${r.warning} · 未声明强制级别 ${r.undeclared}`
+      + `（未声明 ≠ 不严重：本体没说就是没说）`,
+    );
+    lines.push(
+      `- 生成器可见（被动作 action_steps 精确引用）：${r.reachableFromActions}/${r.total}`
+      + `${r.orphans.length ? ` · 完全未接线 ${r.orphans.length} 条` : ""}`,
+    );
+    if (r.byExecutor.length) {
+      lines.push(`- 执行者：${r.byExecutor.map((e) => `${e.executor} ${e.count}`).join(" · ")}`);
+    }
+    if (r.byAutomation.length) {
+      lines.push(`- 自动化状态：${r.byAutomation.map((a) => `${a.status} ${a.count}`).join(" · ")}`);
+    }
+    if (r.byClient.length > 1) {
+      lines.push(
+        `- 客户作用域：${r.byClient.map((c) => `${c.client} ${c.count}（阻断 ${c.blocking}）`).join(" · ")}`,
+      );
+    }
+    if (r.byStage.length) {
+      lines.push(`- 场景阶段：${r.byStage.map((x) => `${x.stage} ${x.count}`).join(" · ")}`);
+    }
+    if (r.duplicateNames.length) {
+      lines.push(
+        `- 同名不同 id：${r.duplicateNames.map((d) => `${d.name}（${d.ids.join("/")}）`).join(" · ")}`
+        + " —— 任何按名字归并的做法都会把不同政策合成一条",
+      );
+    }
+    const attached = r.rules.filter((rule) => rule.referencedByActions.length > 0);
+    if (attached.length) {
+      const shown = attached.slice(0, maxRules);
+      lines.push(
+        shown.length < attached.length
+          ? `- 已接到动作上的规则（共 ${attached.length} 条，下列为前 ${shown.length} 条）：`
+          : "- 已接到动作上的规则：",
+      );
+      for (const rule of shown) {
+        lines.push(
+          `  · [${rule.id}] ${rule.name} · ${rule.failurePolicy ?? "强制级别未声明"}`
+          + ` · 执行者 ${rule.executor ?? "未声明"}`
+          + `${rule.client ? ` · 客户 ${rule.client}` : ""}`
+          + ` · 动作 ${rule.referencedByActions.join("、")}`
+          + `${rule.governs.length ? ` · 管辖对象 ${rule.governs.join("、")}` : ""}`,
+        );
+      }
+    }
   }
   if (analysis.gaps.length > 0) {
     lines.push("");

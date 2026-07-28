@@ -243,3 +243,97 @@ describe("renderAnalysisForModel", () => {
     expect(text).toContain("unreferenced_events");
   });
 });
+
+// #RULES —— 规则以前只是 counts 里的一个整数。这一组锁住的是「读出来的东西必须诚实」：
+// 未声明不等于不严重、接不上动作要报出来、政策不是全域统一的。
+describe("rule analysis", () => {
+  const rule = (over: Record<string, unknown> = {}) => ({
+    id: "1-1", businessLogicRuleName: "R1", enforcementLevel: "mandatory",
+    failurePolicy: "block", executor: "Agent", automationStatus: "approved",
+    applicableClient: "通用", specificScenarioStage: "简历处理", relatedEntities: ["Job_Requisition"],
+    ...over,
+  });
+  const withRules = (rules: Array<Record<string, unknown>>, actionOver: Record<string, unknown> = {}) =>
+    analyzeOntologyStructure(ontology({
+      rules,
+      actions: [{
+        id: "1", name: "createJD", actor: ["Agent"], trigger: ["requisition.approved"],
+        triggered_event: ["jd.generated"], target_objects: ["Job_Requisition"], tool_use: [],
+        system_prompt: "", user_prompt: "", ...actionOver,
+      }],
+    } as unknown as Partial<DomainOntology>));
+
+  it("never turns an undeclared enforcement into a harmless warning", () => {
+    const a = withRules([
+      rule({ id: "ok-1" }),
+      // 本体没说 → 就是没说。兜底成 warn 会把一批本该由人裁决的约束标成无害。
+      rule({ id: "quiet-1", enforcementLevel: null, failurePolicy: null, relatedEntities: [] }),
+    ]);
+    const quiet = a.rules.rules.find((r) => r.id === "quiet-1");
+    expect(quiet?.failurePolicy).toBeNull();
+    expect(quiet?.enforcementLevel).toBeNull();
+    expect(a.rules.warning).toBe(0);
+    expect(a.rules.undeclared).toBe(1);
+    expect(a.gaps.map((g) => g.kind)).toContain("rules_without_enforcement");
+    expect(a.gaps.find((g) => g.kind === "rules_without_enforcement")?.detail).toContain("未声明 ≠ 不严重".slice(0, 3));
+  });
+
+  it("reports the rules the generator can never see", () => {
+    const a = withRules(
+      [rule({ id: "wired" }), rule({ id: "orphan" })],
+      { action_steps: [{ name: "check", rules: [{ id: "wired" }] }] },
+    );
+    expect(a.rules.reachableFromActions).toBe(1);
+    expect(a.rules.orphans).toEqual(["orphan"]);
+    const gap = a.gaps.find((g) => g.kind === "rules_without_actions");
+    // 这条 gap 的类型早就声明了，却从来没被构造过——孤儿规则从未报给任何人。
+    expect(gap?.subjects).toContain("orphan");
+  });
+
+  it("flags one action carrying rules from mutually exclusive clients", () => {
+    const a = withRules(
+      [
+        rule({ id: "a-1", applicableClient: "腾讯" }),
+        rule({ id: "b-1", applicableClient: "字节" }),
+      ],
+      { action_steps: [{ name: "check", rules: [{ id: "a-1" }, { id: "b-1" }] }] },
+    );
+    expect(a.rules.crossClientActions).toEqual([
+      { action: "createJD", clients: ["字节", "腾讯"], blockingRules: 2 },
+    ]);
+    expect(a.gaps.map((g) => g.kind)).toContain("rules_span_multiple_clients");
+    // 「通用」不算冲突：它本来就适用于所有客户。
+    const shared = withRules(
+      [rule({ id: "a-1", applicableClient: "腾讯" }), rule({ id: "u-1", applicableClient: "通用" })],
+      { action_steps: [{ name: "check", rules: [{ id: "a-1" }, { id: "u-1" }] }] },
+    );
+    expect(shared.rules.crossClientActions).toEqual([]);
+  });
+
+  it("keeps same-named rules apart and reports the collision", () => {
+    const a = withRules([
+      rule({ id: "28-3", businessLogicRuleName: "Offer发放双系统校验", applicableDepartment: "IEG" }),
+      rule({ id: "28-4", businessLogicRuleName: "Offer发放双系统校验", applicableDepartment: "CDG" }),
+    ]);
+    expect(a.rules.total).toBe(2);
+    expect(a.rules.duplicateNames).toEqual([
+      { name: "Offer发放双系统校验", ids: ["28-3", "28-4"] },
+    ]);
+  });
+
+  it("separates entities a rule really governs from references that resolve to nothing", () => {
+    const a = withRules([rule({ id: "r", relatedEntities: ["Job_Requisition", "Ghost_Object"] })]);
+    const r = a.rules.rules[0]!;
+    expect(r.governs).toEqual(["Job_Requisition"]);
+    expect(r.danglingGoverns).toEqual(["Ghost_Object"]);
+  });
+
+  it("says so when it truncates, instead of implying full coverage", () => {
+    const many = Array.from({ length: 40 }, (_, i) => rule({ id: `r-${i}`, businessLogicRuleName: `R${i}` }));
+    const a = withRules(many, {
+      action_steps: [{ name: "check", rules: many.map((r) => ({ id: r.id })) }],
+    });
+    const text = renderAnalysisForModel(a, { maxRules: 5 });
+    expect(text).toContain("共 40 条，下列为前 5 条");
+  });
+});

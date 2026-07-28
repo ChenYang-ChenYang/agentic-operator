@@ -90,7 +90,9 @@ export function InspectorOverviewView(props: InspectorOverviewProps) {
       latestStageByKind.set(d.kind, d);
     }
   }
-  const stageRows = ["scope", "blueprint"]
+  // 顺序即 FDE 的阅读顺序：先看懂这个域，再看这次要做什么，最后看打算怎么做。
+  // 「analysis」以前不在这张表里——于是 Ontology 分析跑完、回执落了盘，却没有任何入口能打开它。
+  const stageRows = ["analysis", "scope", "blueprint"]
     .map((k) => latestStageByKind.get(k as StageDocKind))
     .filter((x): x is { item: OntoCodeArtifactSummaryItem; kind: StageDocKind } =>
       x !== undefined,
