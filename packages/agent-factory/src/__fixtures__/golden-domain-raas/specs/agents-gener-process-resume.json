@@ -1,0 +1,1093 @@
+{
+  "domain": "Agents-generation",
+  "slug": "agents-gener-process-resume",
+  "spec": {
+    "key": "processResume",
+    "actionName": "processResume",
+    "slug": "agents-gener-process-resume",
+    "short": "ProcessResumeAgent",
+    "domainId": "Agents-generation",
+    "nameZh": "简历处理器",
+    "kind": "llm",
+    "trigger": [
+      "RESUME_DOWNLOADED"
+    ],
+    "emit": [
+      "RESUME_PROCESSED",
+      "RESUME_LOCKED_CONFLICT"
+    ],
+    "tools": [
+      "fs.readFromInbox",
+      "parseResumeApi",
+      "entities.write",
+      "ontology.writeInstance",
+      "ontology.fetchActionRules"
+    ],
+    "unresolvedTools": [],
+    "objects": [
+      "Resume_Upload",
+      "Resume",
+      "Candidate",
+      "Application",
+      "Employee",
+      "Job_Requisition",
+      "Sourcing_Channel"
+    ],
+    "systemPrompt": "你负责对一份已下载的候选人简历执行全链路自动化处理：取件→解析→查重→落库→可选锁定校验→路由发事件。\n\n必须遵守：\n1. upload_id、bucket、object_key 是必填锚点，任一缺失即不可重试失败。\n2. 简历文件格式以 magic bytes 为准，docx 须先转 PDF 再解析；扩展名和 mime 不可信。\n3. GoHire 解析返回 UNPARSEABLE（纯图/扫描件/损坏）是内容级失败，不可重试，标记 Resume_Upload.status=failed 后终止。\n4. 候选人身份检查通过 step.invoke 同步调用 ruleCheckForCandidateIdentity（超时 90s），软失败降级为新候选人；唯一例外：查重侧审计写失败必须向上抛，重试先于任何候选人落库。\n5. RAAS 主写入失败须标记 Resume_Upload.status=failed 后抛错；Allmeta 镜像是软失败。\n6. Internal_Recruitment_System（RMHR 锁定校验）为人工边界，当前部署未启用，锁定校验开关默认关闭时跳过整步。\n7. 路由：lock-only 拦截时发 RESUME_LOCKED_CONFLICT；否则发 RESUME_PROCESSED，payload 携带 carry-forward 字段供下游免回查。\n8. 工具只使用已授权传输：fs.readFromInbox、parseResumeApi、entities.write、ontology.writeInstance、ontology.fetchActionRules；不要显式调用旧名路由/落库工具。",
+    "userPrompt": "订阅简历下载完成事件,对简历执行全链路自动化处理: 取件→解析→同步查重(step.invoke 候选人身份检查)→落库(挂老档或新建)→可选归属锁定校验→emit。外部时序: ①对象存储(MinIO/收件箱)读简历字节 → ②RoboHire /api/v1/parse-resume(multipart)解析 → ③同步 invoke ruleCheckForCandidateIdentity 拿同人结论 → ④RAAS partner Postgres 写 candidate+resume(+application) → ⑤Allmeta 镜像 Candidate+Resume → ⑥(可选)内部招聘系统 RMHR 锁定校验 → ⑦emit RESUME_PROCESSED 或 RESUME_LOCKED_CONFLICT。",
+    "designReasoning": "修正 processResume：invoke 步骤去掉 resultMap，改用 forwardLastResult；emit 路由改为两个独立 emit 步骤由 condition 分支控制。",
+    "toolRationale": "",
+    "decisionLogic": "1. unwrap_and_validate_transport：upload_id/bucket/object_key 全有 → 继续；任一缺失 → terminal。\n2. download_resume_object：事件已带 parsed.data → 跳过；否则从收件箱读取；404/NoSuchKey → terminal；其他读取失败 → park。\n3. parse_resume_structured：GoHire 成功且 parsed.data 非空 → 继续；UNPARSEABLE → terminal（标 failed）；配额/5xx → park。\n4. invoke_candidate_identity：同步 invoke ruleCheckForCandidateIdentity（90s）；成功 → 继续；超时/下线 → 降级为新候选人；查重侧审计写失败 → park 重试。\n5. persist_candidate_and_resume：通过 entities.write 写 RAAS 主记录，ontology.writeInstance 做镜像；RAAS 主写入失败 → terminal；镜像失败 → soft-fail 告警。\n6. optional_ownership_lock_check：锁定校验开关关闭（默认）→ 跳过；开启且 lock-only → 路由到 RESUME_LOCKED_CONFLICT。\n7. persist_raas_candidate_resume：phase=candidate_resume 写 RAAS；失败 → terminal。\n8. emit_resume_outcome：lock-only → emit RESUME_LOCKED_CONFLICT；否则 → emit RESUME_PROCESSED（payload 携带 carry-forward 字段）。",
+    "steps": [
+      {
+        "name": "step_1",
+        "description": "调用 fs.readFromInbox",
+        "tool": "fs.readFromInbox"
+      },
+      {
+        "name": "step_2",
+        "description": "调用 parseResumeApi",
+        "tool": "parseResumeApi"
+      },
+      {
+        "name": "step_3",
+        "description": "调用 records.upsert",
+        "tool": "records.upsert"
+      },
+      {
+        "name": "step_4",
+        "description": "调用 entities.write",
+        "tool": "entities.write"
+      },
+      {
+        "name": "step_5",
+        "description": "调用 ontology.writeInstance",
+        "tool": "ontology.writeInstance"
+      },
+      {
+        "name": "step_6",
+        "description": "调用 ontology.fetchActionRules",
+        "tool": "ontology.fetchActionRules"
+      }
+    ],
+    "ruleRefs": [
+      "9-14",
+      "9-15"
+    ],
+    "retries": 3,
+    "hitl": false,
+    "confidence": 0.8,
+    "promptSource": "llm",
+    "inputSchema": [
+      {
+        "field": "upload_id",
+        "type": "String",
+        "source": "Resume_Upload.upload_id",
+        "description": "事件 RESUME_DOWNLOADED 的 payload 字段",
+        "required": true
+      },
+      {
+        "field": "bucket",
+        "type": "String",
+        "source": "Resume_Upload.bucket",
+        "description": "事件 RESUME_DOWNLOADED 的 payload 字段",
+        "required": true
+      },
+      {
+        "field": "object_key",
+        "type": "String",
+        "source": "Resume_Upload.object_key",
+        "description": "事件 RESUME_DOWNLOADED 的 payload 字段",
+        "required": true
+      },
+      {
+        "field": "etag",
+        "type": "String",
+        "source": "Resume_Upload.etag",
+        "description": "事件 RESUME_DOWNLOADED 的 payload 字段",
+        "required": false
+      },
+      {
+        "field": "filename",
+        "type": "String",
+        "source": "Resume_Upload.filename",
+        "description": "事件 RESUME_DOWNLOADED 的 payload 字段",
+        "required": false
+      },
+      {
+        "field": "mime_type",
+        "type": "String",
+        "source": "Resume_Upload.mime_type",
+        "description": "事件 RESUME_DOWNLOADED 的 payload 字段",
+        "required": false
+      },
+      {
+        "field": "size",
+        "type": "Int",
+        "source": "Resume_Upload.size",
+        "description": "事件 RESUME_DOWNLOADED 的 payload 字段",
+        "required": false
+      },
+      {
+        "field": "employee_id",
+        "type": "String",
+        "source": "Employee.employee_id",
+        "description": "事件 RESUME_DOWNLOADED 的 payload 字段",
+        "required": true
+      },
+      {
+        "field": "locked_by_employee_id",
+        "type": "String",
+        "source": "Employee.locked_by_employee_id",
+        "description": "事件 RESUME_DOWNLOADED 的 payload 字段",
+        "required": false
+      },
+      {
+        "field": "client_id",
+        "type": "String",
+        "source": "Client.client_id",
+        "description": "事件 RESUME_DOWNLOADED 的 payload 字段",
+        "required": false
+      },
+      {
+        "field": "job_requisition_id",
+        "type": "String",
+        "source": "Job_Requisition.job_requisition_id",
+        "description": "事件 RESUME_DOWNLOADED 的 payload 字段",
+        "required": false
+      },
+      {
+        "field": "job_requisition_ids",
+        "type": "Array<String>",
+        "source": "Job_Requisition.job_requisition_ids",
+        "description": "事件 RESUME_DOWNLOADED 的 payload 字段",
+        "required": false
+      },
+      {
+        "field": "sourcing_channel_id",
+        "type": "String",
+        "source": "Sourcing_Channel.sourcing_channel_id",
+        "description": "事件 RESUME_DOWNLOADED 的 payload 字段",
+        "required": false
+      },
+      {
+        "field": "parsed",
+        "type": "Object",
+        "description": "事件 RESUME_DOWNLOADED 的 payload 字段",
+        "required": false
+      },
+      {
+        "field": "trace",
+        "type": "Object",
+        "description": "事件 RESUME_DOWNLOADED 的 payload 字段",
+        "required": false
+      }
+    ],
+    "inputBindings": [
+      {
+        "field": "upload_id",
+        "type": "String",
+        "required": true,
+        "kind": "event",
+        "eventPath": "upload_id",
+        "sourceEvents": [
+          "RESUME_DOWNLOADED"
+        ]
+      },
+      {
+        "field": "bucket",
+        "type": "String",
+        "required": true,
+        "kind": "event",
+        "eventPath": "bucket",
+        "sourceEvents": [
+          "RESUME_DOWNLOADED"
+        ]
+      },
+      {
+        "field": "object_key",
+        "type": "String",
+        "required": true,
+        "kind": "event",
+        "eventPath": "object_key",
+        "sourceEvents": [
+          "RESUME_DOWNLOADED"
+        ]
+      },
+      {
+        "field": "etag",
+        "type": "String",
+        "required": false,
+        "kind": "event",
+        "eventPath": "etag",
+        "sourceEvents": [
+          "RESUME_DOWNLOADED"
+        ]
+      },
+      {
+        "field": "filename",
+        "type": "String",
+        "required": false,
+        "kind": "event",
+        "eventPath": "filename",
+        "sourceEvents": [
+          "RESUME_DOWNLOADED"
+        ]
+      },
+      {
+        "field": "employee_id",
+        "type": "String",
+        "required": false,
+        "kind": "event",
+        "eventPath": "employee_id",
+        "sourceEvents": [
+          "RESUME_DOWNLOADED"
+        ]
+      },
+      {
+        "field": "locked_by_employee_id",
+        "type": "String",
+        "required": false,
+        "kind": "event",
+        "eventPath": "locked_by_employee_id",
+        "sourceEvents": [
+          "RESUME_DOWNLOADED"
+        ]
+      },
+      {
+        "field": "client_id",
+        "type": "String",
+        "required": false,
+        "kind": "event",
+        "eventPath": "client_id",
+        "sourceEvents": [
+          "RESUME_DOWNLOADED"
+        ]
+      },
+      {
+        "field": "job_requisition_id",
+        "type": "String",
+        "required": false,
+        "kind": "event",
+        "eventPath": "job_requisition_id",
+        "sourceEvents": [
+          "RESUME_DOWNLOADED"
+        ]
+      },
+      {
+        "field": "job_requisition_ids",
+        "type": "Array<String>",
+        "required": false,
+        "kind": "event",
+        "eventPath": "job_requisition_ids",
+        "sourceEvents": [
+          "RESUME_DOWNLOADED"
+        ]
+      },
+      {
+        "field": "sourcing_channel_id",
+        "type": "String",
+        "required": false,
+        "kind": "event",
+        "eventPath": "sourcing_channel_id",
+        "sourceEvents": [
+          "RESUME_DOWNLOADED"
+        ]
+      }
+    ],
+    "outputSchema": [
+      {
+        "field": "candidate_id",
+        "type": "String",
+        "source": "Candidate.candidate_id",
+        "description": "事件 RESUME_PROCESSED 的 payload 字段",
+        "required": true
+      },
+      {
+        "field": "resume_id",
+        "type": "String",
+        "source": "Resume.resume_id",
+        "description": "事件 RESUME_PROCESSED 的 payload 字段",
+        "required": true
+      },
+      {
+        "field": "upload_id",
+        "type": "String",
+        "source": "Resume_Upload.upload_id",
+        "description": "事件 RESUME_PROCESSED 的 payload 字段",
+        "required": true
+      },
+      {
+        "field": "employee_id",
+        "type": "String",
+        "source": "Employee.employee_id",
+        "description": "事件 RESUME_PROCESSED 的 payload 字段",
+        "required": true
+      },
+      {
+        "field": "application_id",
+        "type": "String",
+        "source": "Application.application_id",
+        "description": "事件 RESUME_PROCESSED 的 payload 字段",
+        "required": false
+      },
+      {
+        "field": "parsed",
+        "type": "Object",
+        "source": "Resume.parsed",
+        "description": "事件 RESUME_PROCESSED 的 payload 字段",
+        "required": false
+      },
+      {
+        "field": "job_requisition_id",
+        "type": "String",
+        "source": "Job_Requisition.job_requisition_id",
+        "description": "事件 RESUME_PROCESSED 的 payload 字段",
+        "required": false
+      },
+      {
+        "field": "job_requisition_ids",
+        "type": "Array<String>",
+        "source": "Job_Requisition.job_requisition_ids",
+        "description": "事件 RESUME_PROCESSED 的 payload 字段",
+        "required": false
+      },
+      {
+        "field": "sourcing_channel_id",
+        "type": "String",
+        "source": "Sourcing_Channel.sourcing_channel_id",
+        "description": "事件 RESUME_PROCESSED 的 payload 字段",
+        "required": false
+      },
+      {
+        "field": "client_id",
+        "type": "String",
+        "source": "Client.client_id",
+        "description": "事件 RESUME_PROCESSED 的 payload 字段",
+        "required": false
+      },
+      {
+        "field": "filename",
+        "type": "String",
+        "source": "Resume_Upload.filename",
+        "description": "事件 RESUME_PROCESSED 的 payload 字段",
+        "required": false
+      },
+      {
+        "field": "bucket",
+        "type": "String",
+        "source": "Resume_Upload.bucket",
+        "description": "事件 RESUME_PROCESSED 的 payload 字段",
+        "required": false
+      },
+      {
+        "field": "objectKey",
+        "type": "String",
+        "source": "Resume_Upload.objectKey",
+        "description": "事件 RESUME_PROCESSED 的 payload 字段",
+        "required": false
+      },
+      {
+        "field": "etag",
+        "type": "String",
+        "source": "Resume_Upload.etag",
+        "description": "事件 RESUME_PROCESSED 的 payload 字段",
+        "required": false
+      },
+      {
+        "field": "parsedAt",
+        "type": "String",
+        "description": "事件 RESUME_PROCESSED 的 payload 字段",
+        "required": false
+      },
+      {
+        "field": "parserVersion",
+        "type": "String",
+        "description": "事件 RESUME_PROCESSED 的 payload 字段",
+        "required": false
+      },
+      {
+        "field": "current_owner_employee_id",
+        "type": "String",
+        "source": "Employee.current_owner_employee_id",
+        "description": "事件 RESUME_LOCKED_CONFLICT 的 payload 字段",
+        "required": false
+      },
+      {
+        "field": "current_owner_email",
+        "type": "String",
+        "source": "Employee.current_owner_email",
+        "description": "事件 RESUME_LOCKED_CONFLICT 的 payload 字段",
+        "required": false
+      },
+      {
+        "field": "reason",
+        "type": "String",
+        "description": "事件 RESUME_LOCKED_CONFLICT 的 payload 字段",
+        "required": false
+      }
+    ],
+    "toolPolicies": {
+      "fs.readFromInbox": {
+        "operation": "read",
+        "effectScope": "sandbox_local",
+        "sandboxPolicy": "sandbox_local"
+      },
+      "parseResumeApi": {
+        "operation": "compute",
+        "effectScope": "external",
+        "sandboxPolicy": "live_external"
+      },
+      "entities.write": {
+        "operation": "write",
+        "effectScope": "external",
+        "sandboxPolicy": "requires_attempt_grant"
+      },
+      "ontology.writeInstance": {
+        "operation": "write",
+        "effectScope": "external",
+        "sandboxPolicy": "requires_attempt_grant"
+      },
+      "ontology.fetchActionRules": {
+        "operation": "read",
+        "effectScope": "external",
+        "sandboxPolicy": "live_external"
+      }
+    },
+    "toolSideEffects": {
+      "fs.readFromInbox": "read",
+      "parseResumeApi": "call",
+      "entities.write": "write",
+      "ontology.writeInstance": "write",
+      "ontology.fetchActionRules": "read"
+    },
+    "integrationRequirements": [
+      {
+        "id": "9-1:integration:1",
+        "actionName": "processResume",
+        "system": "Object_Storage_System",
+        "kind": "object_storage",
+        "role": "read",
+        "capability": "resume.download — 按 bucket/object_key 取简历原始字节(MinIO;新 AO 为租户收件箱 data/resumes/<tenant>/inbox)",
+        "operations": [
+          "object_key",
+          "resumes",
+          "inbox"
+        ],
+        "objectTypes": [
+          "Resume_Upload"
+        ],
+        "eventNames": [],
+        "replayable": true
+      },
+      {
+        "id": "9-1:integration:2",
+        "actionName": "processResume",
+        "system": "GoHire_System",
+        "kind": "external_api",
+        "role": "execute",
+        "capability": "resume.parse — POST /api/v1/parse-resume(multipart file 字段,仅 PDF;docx 需先转换)",
+        "operations": [
+          "parse-resume"
+        ],
+        "objectTypes": [
+          "Resume",
+          "Candidate"
+        ],
+        "eventNames": [],
+        "replayable": true
+      },
+      {
+        "id": "9-1:integration:3",
+        "actionName": "processResume",
+        "system": "AO_Internal",
+        "kind": "internal_invoke",
+        "role": "execute",
+        "capability": "candidate.identity_check — step.invoke ruleCheckForCandidateIdentity(同步等待,90s 超时,软失败降级)",
+        "operations": [],
+        "objectTypes": [
+          "Candidate",
+          "Candidate_Identity_Result"
+        ],
+        "eventNames": [],
+        "replayable": true
+      },
+      {
+        "id": "9-1:integration:4",
+        "actionName": "processResume",
+        "system": "RAAS_System",
+        "kind": "database",
+        "role": "write",
+        "capability": "candidate.save — saveCandidate 幂等 upsert candidate+resume(+application 透传),失败回写 Resume_Upload.status=failed",
+        "operations": [
+          "saveCandidate"
+        ],
+        "objectTypes": [
+          "Candidate",
+          "Resume",
+          "Application",
+          "Resume_Upload"
+        ],
+        "eventNames": [],
+        "replayable": true
+      },
+      {
+        "id": "9-1:integration:5",
+        "actionName": "processResume",
+        "system": "Allmeta_Ontology_System",
+        "kind": "graph_db",
+        "role": "write",
+        "capability": "instance.mirror — 镜像 Candidate + Resume 实例(软失败)",
+        "operations": [],
+        "objectTypes": [
+          "Candidate",
+          "Resume"
+        ],
+        "eventNames": [],
+        "replayable": true
+      },
+      {
+        "id": "9-1:integration:6",
+        "actionName": "processResume",
+        "system": "Internal_Recruitment_System",
+        "kind": "external_api",
+        "role": "execute",
+        "capability": "candidate.lock_check — RMHR 锁定校验(可选,LOCK_CHECK_ENABLED 开关;enforce 时 lock-only 拦截)",
+        "operations": [],
+        "objectTypes": [
+          "Candidate",
+          "Employee"
+        ],
+        "eventNames": [],
+        "replayable": true
+      }
+    ],
+    "integrationBindings": [
+      {
+        "requirement": {
+          "id": "9-1:integration:1",
+          "actionName": "processResume",
+          "system": "Object_Storage_System",
+          "kind": "object_storage",
+          "role": "read",
+          "capability": "resume.download — 按 bucket/object_key 取简历原始字节(MinIO;新 AO 为租户收件箱 data/resumes/<tenant>/inbox)",
+          "operations": [
+            "object_key",
+            "resumes",
+            "inbox"
+          ],
+          "objectTypes": [
+            "Resume_Upload"
+          ],
+          "eventNames": [],
+          "replayable": true
+        },
+        "bindingKind": "tool",
+        "bindingId": "fs.readFromInbox",
+        "toolName": "fs.readFromInbox",
+        "status": "resolved",
+        "reason": "capability exact match",
+        "executionRef": {
+          "kind": "tool",
+          "toolName": "fs.readFromInbox",
+          "planStepIds": [
+            "download_resume_object"
+          ]
+        }
+      },
+      {
+        "requirement": {
+          "id": "9-1:integration:2",
+          "actionName": "processResume",
+          "system": "GoHire_System",
+          "kind": "external_api",
+          "role": "execute",
+          "capability": "resume.parse — POST /api/v1/parse-resume(multipart file 字段,仅 PDF;docx 需先转换)",
+          "operations": [
+            "parse-resume"
+          ],
+          "objectTypes": [
+            "Resume",
+            "Candidate"
+          ],
+          "eventNames": [],
+          "replayable": true
+        },
+        "bindingKind": "tool",
+        "bindingId": "parseResumeApi",
+        "toolName": "parseResumeApi",
+        "status": "needs_config",
+        "next": "ask_user",
+        "missingCredentialEnv": [],
+        "missingConfigKeys": [
+          "api_key_env",
+          "base_url_env"
+        ],
+        "invalidConfigKeys": [],
+        "reason": "工具 parseResumeApi 的集成配置未就绪：还需要填写 api_key_env。；还需要填写 base_url_env。"
+      },
+      {
+        "requirement": {
+          "id": "9-1:integration:3",
+          "actionName": "processResume",
+          "system": "AO_Internal",
+          "kind": "internal_invoke",
+          "role": "execute",
+          "capability": "candidate.identity_check — step.invoke ruleCheckForCandidateIdentity(同步等待,90s 超时,软失败降级)",
+          "operations": [],
+          "objectTypes": [
+            "Candidate",
+            "Candidate_Identity_Result"
+          ],
+          "eventNames": [],
+          "replayable": true
+        },
+        "bindingKind": "runtime",
+        "bindingId": "agent-runtime.invoke",
+        "status": "resolved",
+        "reason": "由运行时能力 agent-runtime.invoke 提供",
+        "executionRef": {
+          "kind": "runtime",
+          "providerId": "agent-runtime.invoke",
+          "planStepIds": [
+            "unwrap_and_validate_transport",
+            "optional_ownership_lock_check",
+            "route_resume_processed"
+          ]
+        }
+      },
+      {
+        "requirement": {
+          "id": "9-1:integration:4",
+          "actionName": "processResume",
+          "system": "RAAS_System",
+          "kind": "database",
+          "role": "write",
+          "capability": "candidate.save — saveCandidate 幂等 upsert candidate+resume(+application 透传),失败回写 Resume_Upload.status=failed",
+          "operations": [
+            "saveCandidate"
+          ],
+          "objectTypes": [
+            "Candidate",
+            "Resume",
+            "Application",
+            "Resume_Upload"
+          ],
+          "eventNames": [],
+          "replayable": true
+        },
+        "bindingKind": "tool",
+        "bindingId": "entities.write",
+        "toolName": "entities.write",
+        "genericSystemBinding": true,
+        "status": "needs_config",
+        "next": "ask_user",
+        "reason": "通用工具 entities.write 只能通过当前 tenant/domain/environment 已确认的 integration profile 绑定到 RAAS_System，不能根据 systems:[\"*\"] 猜连接"
+      },
+      {
+        "requirement": {
+          "id": "9-1:integration:5",
+          "actionName": "processResume",
+          "system": "Allmeta_Ontology_System",
+          "kind": "graph_db",
+          "role": "write",
+          "capability": "instance.mirror — 镜像 Candidate + Resume 实例(软失败)",
+          "operations": [],
+          "objectTypes": [
+            "Candidate",
+            "Resume"
+          ],
+          "eventNames": [],
+          "replayable": true
+        },
+        "bindingKind": "tool",
+        "bindingId": "ontology.writeInstance",
+        "toolName": "ontology.writeInstance",
+        "status": "needs_config",
+        "next": "ask_user",
+        "missingCredentialEnv": [],
+        "missingConfigKeys": [
+          "action",
+          "allowed_actions",
+          "allowed_domains",
+          "allowed_objects",
+          "allowed_tenants",
+          "api_key_env",
+          "base_url_env",
+          "domain",
+          "probe_action",
+          "probe_domain",
+          "probe_idempotency_field",
+          "probe_marker_field",
+          "probe_namespace",
+          "probe_namespace_field",
+          "probe_object",
+          "probe_primary_key_field"
+        ],
+        "invalidConfigKeys": [],
+        "reason": "工具 ontology.writeInstance 的集成配置未就绪：还需要填写 base_url_env。；还需要填写 api_key_env。；还需要填写 domain。；还需要填写 action。；还需要填写 allowed_tenants。；还需要填写 allowed_domains。；还需要填写 allowed_objects。；还需要填写 allowed_actions。；还需要填写 probe_domain。；还需要填写 probe_action。；还需要填写 probe_object。；还需要填写 probe_namespace。；还需要填写 probe_primary_key_field。；还需要填写 probe_marker_field。；还需要填写 probe_namespace_field。；还需要填写 probe_idempotency_field。"
+      },
+      {
+        "requirement": {
+          "id": "9-1:integration:6",
+          "actionName": "processResume",
+          "system": "Internal_Recruitment_System",
+          "kind": "external_api",
+          "role": "execute",
+          "capability": "candidate.lock_check — RMHR 锁定校验(可选,LOCK_CHECK_ENABLED 开关;enforce 时 lock-only 拦截)",
+          "operations": [],
+          "objectTypes": [
+            "Candidate",
+            "Employee"
+          ],
+          "eventNames": [],
+          "replayable": true
+        },
+        "bindingKind": "tool",
+        "status": "human_boundary",
+        "reason": "用户确认为人工边界（hitl_1cabb879-8b5e-41ca-9171-70533bb3de10 · 2026-07-20T04:03:25.826Z）——设计稿可继续；沙箱/交付/晋升仍按未接通拦截",
+        "humanBoundary": {
+          "interactionId": "hitl_1cabb879-8b5e-41ca-9171-70533bb3de10",
+          "actor": "usr-f18311d7962d",
+          "confirmedAt": 1784520205826
+        }
+      }
+    ],
+    "plan": [
+      {
+        "stepId": "unwrap_and_validate_transport",
+        "kind": "logic",
+        "errorPolicy": [
+          {
+            "default": "terminal"
+          }
+        ],
+        "description": "解包信封，校验 upload_id/bucket/object_key 必填，计算 owner=locked_by_employee_id||employee_id"
+      },
+      {
+        "stepId": "download_resume_object",
+        "kind": "tool",
+        "tool": "fs.readFromInbox",
+        "toolArguments": {
+          "subdir": {
+            "const": "resumes"
+          },
+          "filename": {
+            "from": "input.object_key",
+            "required": true
+          }
+        },
+        "resultMap": {
+          "fields": {
+            "base64": "result.base64",
+            "sha256": "result.sha256",
+            "mime": "result.mime"
+          }
+        },
+        "idempotencyKeyFrom": "input.upload_id",
+        "errorPolicy": [
+          {
+            "when": "status == 404 || code == 'NOT_FOUND' || code == 'NoSuchKey'",
+            "do": "terminal",
+            "suppressEmit": true
+          },
+          {
+            "when": "status >= 500 || code == 'ETIMEDOUT'",
+            "do": "park",
+            "suppressEmit": true
+          },
+          {
+            "default": "terminal"
+          }
+        ],
+        "timeoutS": 30,
+        "description": "从收件符1读取简历原始字节，返回 base64+sha256"
+      },
+      {
+        "stepId": "parse_resume_structured",
+        "kind": "tool",
+        "tool": "parseResumeApi",
+        "toolArguments": {
+          "file": {
+            "from": "results.download_resume_object.result.base64",
+            "required": true
+          },
+          "filename": {
+            "from": "input.filename",
+            "required": false
+          },
+          "mime": {
+            "from": "results.download_resume_object.result.mime",
+            "required": false
+          }
+        },
+        "resultMap": {
+          "fields": {
+            "parsedData": "result.data",
+            "requestId": "result.request_id"
+          },
+          "includeRaw": true
+        },
+        "idempotencyKeyFrom": "input.upload_id",
+        "errorPolicy": [
+          {
+            "when": "code == 'UNPARSEABLE' || code == 'CONTENT_UNREADABLE'",
+            "do": "terminal",
+            "suppressEmit": true
+          },
+          {
+            "when": "status == 429 || status >= 500 || code == 'QUOTA_EXHAUSTED' || code == 'ETIMEDOUT'",
+            "do": "park",
+            "suppressEmit": true
+          },
+          {
+            "default": "terminal"
+          }
+        ],
+        "timeoutS": 60,
+        "description": "GoHire multipart 解析，字段名必须是 file"
+      },
+      {
+        "stepId": "invoke_candidate_identity",
+        "kind": "invoke",
+        "invoke": "ruleCheckForCandidateIdentity",
+        "invokeInput": {
+          "upload_id": {
+            "from": "input.upload_id"
+          },
+          "parsed": {
+            "from": "results.parse_resume_structured.result.parsedData"
+          },
+          "invoked_by": {
+            "const": "resume-parser"
+          }
+        },
+        "forwardLastResult": true,
+        "idempotencyKeyFrom": "input.upload_id",
+        "errorPolicy": [
+          {
+            "when": "code == 'RuleAuditPersistenceFailure'",
+            "do": "park",
+            "suppressEmit": true
+          },
+          {
+            "default": "continue",
+            "defaultResult": {
+              "same_as_candidate_id": null,
+              "dedup_action": "new",
+              "needs_human_review": false
+            }
+          }
+        ],
+        "timeoutS": 90,
+        "description": "同步 invoke 候选人身份查重，90s 超时降级为新候选人"
+      },
+      {
+        "stepId": "persist_candidate_and_resume",
+        "kind": "tool",
+        "tool": "records.upsert",
+        "toolArguments": {
+          "record_type": {
+            "const": "candidate_resume"
+          },
+          "upload_id": {
+            "from": "input.upload_id",
+            "required": true
+          },
+          "bucket": {
+            "from": "input.bucket",
+            "required": true
+          },
+          "object_key": {
+            "from": "input.object_key",
+            "required": true
+          },
+          "etag": {
+            "from": "input.etag",
+            "required": false
+          },
+          "same_as_candidate_id": {
+            "from": "results.invoke_candidate_identity.result.same_as_candidate_id",
+            "required": false
+          },
+          "parsed": {
+            "from": "results.parse_resume_structured.result.parsedData",
+            "required": true
+          }
+        },
+        "resultMap": {
+          "fields": {
+            "candidateId": "result.candidate_id",
+            "resumeId": "result.resume_id",
+            "applicationId": "result.application_id",
+            "isNewCandidate": "result.is_new_candidate"
+          }
+        },
+        "idempotencyKeyFrom": "input.upload_id",
+        "errorPolicy": [
+          {
+            "when": "status >= 500 || code == 'ETIMEDOUT'",
+            "do": "park",
+            "suppressEmit": true
+          },
+          {
+            "default": "terminal"
+          }
+        ],
+        "timeoutS": 30,
+        "description": "RAAS saveCandidate 干等 upsert，同时镜像 Candidate+Resume 到 Allmeta"
+      },
+      {
+        "stepId": "optional_ownership_lock_check",
+        "kind": "logic",
+        "dependsOn": [
+          "persist_candidate_and_resume"
+        ],
+        "description": "人工边界：LOCK_CHECK_ENABLED 默认关闭，跳过整步。开启时记录锁定状态供路由步消费"
+      },
+      {
+        "stepId": "route_resume_processed",
+        "kind": "logic",
+        "dependsOn": [
+          "optional_ownership_lock_check"
+        ],
+        "description": "按锁定结果设置路由标志 lockOnly"
+      },
+      {
+        "stepId": "persist_raas_candidate_resume",
+        "kind": "tool",
+        "tool": "entities.write",
+        "toolArguments": {
+          "objectType": {
+            "const": "Candidate_Resume"
+          },
+          "phase": {
+            "const": "candidate_resume"
+          },
+          "candidateId": {
+            "from": "results.persist_candidate_and_resume.result.candidateId",
+            "required": true
+          },
+          "resumeId": {
+            "from": "results.persist_candidate_and_resume.result.resumeId",
+            "required": true
+          }
+        },
+        "resultMap": {
+          "fields": {
+            "persistOk": "result.ok"
+          }
+        },
+        "idempotencyKeyFrom": "input.upload_id",
+        "errorPolicy": [
+          {
+            "when": "status >= 500 || code == 'ETIMEDOUT'",
+            "do": "park",
+            "suppressEmit": true
+          },
+          {
+            "default": "terminal"
+          }
+        ],
+        "timeoutS": 30,
+        "description": "phase=candidate_resume 写入 RAAS 权威库"
+      },
+      {
+        "stepId": "emit_resume_outcome",
+        "kind": "condition",
+        "condition": "results.route_resume_processed.result.lockOnly == true",
+        "dependsOn": [
+          "persist_raas_candidate_resume"
+        ],
+        "description": "路由 emit：lock-only 发 RESUME_LOCKED_CONFLICT，否则发 RESUME_PROCESSED"
+      }
+    ],
+    "stateBindings": [
+      {
+        "object": "Resume_Upload",
+        "reads": [
+          "upload_id",
+          "bucket",
+          "object_key",
+          "etag",
+          "filename",
+          "mime_type",
+          "size"
+        ],
+        "writes": [
+          "status"
+        ]
+      },
+      {
+        "object": "Resume",
+        "reads": [],
+        "writes": [
+          "resume_id",
+          "candidate_id",
+          "file_path"
+        ]
+      },
+      {
+        "object": "Candidate",
+        "reads": [],
+        "writes": [
+          "candidate_id",
+          "employee_id",
+          "name",
+          "gender",
+          "birth_date",
+          "email",
+          "highest_acquired_degree",
+          "status"
+        ]
+      },
+      {
+        "object": "Application",
+        "reads": [],
+        "writes": [
+          "application_id",
+          "candidate_id",
+          "job_requisition_id"
+        ]
+      },
+      {
+        "object": "Employee",
+        "reads": [
+          "employee_id",
+          "locked_by_employee_id"
+        ],
+        "writes": []
+      },
+      {
+        "object": "Job_Requisition",
+        "reads": [
+          "job_requisition_id",
+          "job_requisition_ids"
+        ],
+        "writes": []
+      },
+      {
+        "object": "Sourcing_Channel",
+        "reads": [
+          "sourcing_channel_id"
+        ],
+        "writes": []
+      },
+      {
+        "object": "Client",
+        "reads": [
+          "client_id"
+        ],
+        "writes": []
+      }
+    ],
+    "codeSource": "render",
+    "generatedCode": "// 简历处理器 — 由 Agent 工厂从本体动作 `processResume`(Agents-generation)生成。\n// trigger: RESUME_DOWNLOADED → emit: RESUME_PROCESSED | RESUME_LOCKED_CONFLICT\n// 真实可审查代码：工具调用、条件、foreach、显式 emit 与错误策略均由结构化 spec 渲染。\n// CodeAct 只在执行语义可保真时过探针；需要逐步 durability/typed RPC policy 时 fail-close 到 manifest runtime。\n\n/** Input/Output schema — 依据本体 DataObjects 定义。 */\ninterface ProcessResumeAgentInput {\n  upload_id: string; // 事件 RESUME_DOWNLOADED 的 payload 字段 (源: Resume_Upload.upload_id)\n  bucket: string; // 事件 RESUME_DOWNLOADED 的 payload 字段 (源: Resume_Upload.bucket)\n  object_key: string; // 事件 RESUME_DOWNLOADED 的 payload 字段 (源: Resume_Upload.object_key)\n  etag?: string; // 事件 RESUME_DOWNLOADED 的 payload 字段 (源: Resume_Upload.etag)\n  filename?: string; // 事件 RESUME_DOWNLOADED 的 payload 字段 (源: Resume_Upload.filename)\n  mime_type?: string; // 事件 RESUME_DOWNLOADED 的 payload 字段 (源: Resume_Upload.mime_type)\n  size?: number; // 事件 RESUME_DOWNLOADED 的 payload 字段 (源: Resume_Upload.size)\n  employee_id: string; // 事件 RESUME_DOWNLOADED 的 payload 字段 (源: Employee.employee_id)\n  locked_by_employee_id?: string; // 事件 RESUME_DOWNLOADED 的 payload 字段 (源: Employee.locked_by_employee_id)\n  client_id?: string; // 事件 RESUME_DOWNLOADED 的 payload 字段 (源: Client.client_id)\n  job_requisition_id?: string; // 事件 RESUME_DOWNLOADED 的 payload 字段 (源: Job_Requisition.job_requisition_id)\n  job_requisition_ids?: unknown[]; // 事件 RESUME_DOWNLOADED 的 payload 字段 (源: Job_Requisition.job_requisition_ids)\n  sourcing_channel_id?: string; // 事件 RESUME_DOWNLOADED 的 payload 字段 (源: Sourcing_Channel.sourcing_channel_id)\n  parsed?: Record<string, unknown>; // 事件 RESUME_DOWNLOADED 的 payload 字段\n  trace?: Record<string, unknown>; // 事件 RESUME_DOWNLOADED 的 payload 字段\n}\n\ninterface ProcessResumeAgentOutput {\n  candidate_id: string; // 事件 RESUME_PROCESSED 的 payload 字段 (源: Candidate.candidate_id)\n  resume_id: string; // 事件 RESUME_PROCESSED 的 payload 字段 (源: Resume.resume_id)\n  upload_id: string; // 事件 RESUME_PROCESSED 的 payload 字段 (源: Resume_Upload.upload_id)\n  employee_id: string; // 事件 RESUME_PROCESSED 的 payload 字段 (源: Employee.employee_id)\n  application_id?: string; // 事件 RESUME_PROCESSED 的 payload 字段 (源: Application.application_id)\n  parsed?: Record<string, unknown>; // 事件 RESUME_PROCESSED 的 payload 字段 (源: Resume.parsed)\n  job_requisition_id?: string; // 事件 RESUME_PROCESSED 的 payload 字段 (源: Job_Requisition.job_requisition_id)\n  job_requisition_ids?: unknown[]; // 事件 RESUME_PROCESSED 的 payload 字段 (源: Job_Requisition.job_requisition_ids)\n  sourcing_channel_id?: string; // 事件 RESUME_PROCESSED 的 payload 字段 (源: Sourcing_Channel.sourcing_channel_id)\n  client_id?: string; // 事件 RESUME_PROCESSED 的 payload 字段 (源: Client.client_id)\n  filename?: string; // 事件 RESUME_PROCESSED 的 payload 字段 (源: Resume_Upload.filename)\n  bucket?: string; // 事件 RESUME_PROCESSED 的 payload 字段 (源: Resume_Upload.bucket)\n  objectKey?: string; // 事件 RESUME_PROCESSED 的 payload 字段 (源: Resume_Upload.objectKey)\n  etag?: string; // 事件 RESUME_PROCESSED 的 payload 字段 (源: Resume_Upload.etag)\n  parsedAt?: string; // 事件 RESUME_PROCESSED 的 payload 字段\n  parserVersion?: string; // 事件 RESUME_PROCESSED 的 payload 字段\n  current_owner_employee_id?: string; // 事件 RESUME_LOCKED_CONFLICT 的 payload 字段 (源: Employee.current_owner_employee_id)\n  current_owner_email?: string; // 事件 RESUME_LOCKED_CONFLICT 的 payload 字段 (源: Employee.current_owner_email)\n  reason?: string; // 事件 RESUME_LOCKED_CONFLICT 的 payload 字段\n}\n\nfunction readPath(obj: unknown, path: string): unknown {\n  if (obj == null || !path) return undefined;\n  let cur: unknown = obj;\n  for (const part of path.split(\".\")) {\n    if (cur == null || typeof cur !== \"object\") return undefined;\n    cur = (cur as Record<string, unknown>)[part];\n  }\n  return cur;\n}\nfunction readConditionPath(scope: Record<string, unknown>, rawPath: string): unknown {\n  const path = rawPath.trim().replace(/\\?\\./g, \".\").replace(/\\[['\"]([^'\"]+)['\"]\\]/g, \".$1\");\n  const results = scope.results as Record<string, unknown> | undefined;\n  const explicit = path.startsWith(\"results.\") || path.startsWith(\"steps.\");\n  const rel = explicit ? path.replace(/^(results|steps)\\./, \"\") : path;\n  for (const key of Object.keys(results ?? {}).sort((a, b) => b.length - a.length)) {\n    if (rel !== key && !rel.startsWith(key + \".\")) continue;\n    let tail = rel === key ? \"\" : rel.slice(key.length + 1);\n    if (tail === \"result\" || tail === \"data\" || tail === \"value\") tail = \"\";\n    else tail = tail.replace(/^(result|data|value)\\./, \"\");\n    return tail ? readPath(results![key], tail) : results![key];\n  }\n  if (explicit) return undefined;\n  const direct = readPath(scope, path);\n  if (direct !== undefined) return direct;\n  const last = readPath(scope.lastResult, path);\n  if (last !== undefined) return last;\n  return readPath(scope.input ?? (scope.event as Record<string, unknown> | undefined)?.data, path);\n}\nfunction evalCondition(expr: string, scope: Record<string, unknown>): boolean {\n  const e = (expr || \"\").trim();\n  if (!e) return false;\n  const split = (s: string, op: string): string[] => {\n    const out: string[] = []; let depth = 0; let q = \"\"; let buf = \"\";\n    for (let i = 0; i < s.length; i++) {\n      const c = s[i]!;\n      if (q) { buf += c; if (c === q) q = \"\"; continue; }\n      if (c === \"'\" || c === '\"') { q = c; buf += c; continue; }\n      if (c === \"(\") depth++; else if (c === \")\") depth--;\n      if (depth === 0 && s.startsWith(op, i)) { out.push(buf); buf = \"\"; i += op.length - 1; continue; }\n      buf += c;\n    }\n    out.push(buf); return out;\n  };\n  try {\n    const ors = split(e, \"||\");\n    if (ors.length > 1) return ors.some((p) => evalCondition(p, scope));\n    const ands = split(e, \"&&\");\n    if (ands.length > 1) return ands.every((p) => evalCondition(p, scope));\n    if (/^true$/i.test(e)) return true;\n    if (/^false$/i.test(e)) return false;\n    const m = e.match(/^(.+?)\\s*(===|!==|==|!=|>=|<=|>|<)\\s*(.+)$/);\n    if (m) {\n      const lit = (t0: string): unknown => {\n        const t = t0.trim();\n        if ((t.startsWith(\"'\") && t.endsWith(\"'\")) || (t.startsWith('\"') && t.endsWith('\"'))) return t.slice(1, -1);\n        if (t === \"null\" || t === \"undefined\") return null; if (t === \"true\") return true; if (t === \"false\") return false;\n        if (/^-?\\d+(\\.\\d+)?$/.test(t)) return Number(t);\n        return t;\n      };\n      const l = readConditionPath(scope, m[1]!.trim()); const r = lit(m[3]!); const op = m[2]!;\n      if (r === null && (op === \"==\" || op === \"===\")) return l == null;\n      if (r === null && (op === \"!=\" || op === \"!==\")) return l != null;\n      if (op === \"===\") return l === r;\n      if (op === \"!==\") return l !== r;\n      if (op === \"==\") return l === r || (l != null && r != null && String(l) === String(r));\n      if (op === \"!=\") return !(l === r || (l != null && r != null && String(l) === String(r)));\n      if (op === \">\") return Number(l) > Number(r);\n      if (op === \"<\") return Number(l) < Number(r);\n      if (op === \">=\") return Number(l) >= Number(r);\n      return Number(l) <= Number(r);\n    }\n    if (e.startsWith(\"!!\")) return Boolean(readConditionPath(scope, e.slice(2).trim()));\n    if (e.startsWith(\"!\")) return !Boolean(readConditionPath(scope, e.slice(1).trim()));\n    return Boolean(readConditionPath(scope, e));\n  } catch { return false; }\n}\n\ntype _AfToolArgument = { from: string; required?: boolean } | { const: unknown };\ntype _AfResultMap = { fields: Record<string, string>; includeRaw?: boolean };\nfunction _afCloneJson(value: unknown, seen = new Set<object>()): unknown {\n  if (value === null || typeof value === \"string\" || typeof value === \"boolean\") return value;\n  if (typeof value === \"number\") { if (!Number.isFinite(value)) throw new Error(\"[terminal] tool argument is not finite JSON\"); return value; }\n  if (!value || typeof value !== \"object\" || seen.has(value)) throw new Error(\"[terminal] tool argument is not JSON\");\n  seen.add(value);\n  if (Array.isArray(value)) return value.map((entry) => _afCloneJson(entry, seen));\n  const out: Record<string, unknown> = Object.create(null) as Record<string, unknown>;\n  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) out[key] = _afCloneJson(entry, seen);\n  return out;\n}\nfunction _afToolArguments(template: Record<string, _AfToolArgument>, scope: Record<string, unknown>): Record<string, unknown> {\n  const out: Record<string, unknown> = Object.create(null) as Record<string, unknown>;\n  for (const [argument, source] of Object.entries(template)) {\n    const hasFrom = Object.prototype.hasOwnProperty.call(source, \"from\");\n    const hasConst = Object.prototype.hasOwnProperty.call(source, \"const\");\n    if (hasFrom === hasConst) throw new Error(\"[terminal] tool argument \" + argument + \" must choose exactly one of from/const\");\n    if (hasFrom) {\n      const path = String((source as { from: string }).from ?? \"\");\n      const value = readConditionPath(scope, path);\n      if (value === undefined) {\n        if ((source as { required?: boolean }).required === false) continue;\n        throw new Error(\"[terminal] required tool argument path did not resolve: \" + argument + \" <- \" + path);\n      }\n      out[argument] = _afCloneJson(value);\n    } else {\n      out[argument] = _afCloneJson((source as { const: unknown }).const);\n    }\n  }\n  return out;\n}\nfunction _afMapToolResult(raw: unknown, map: _AfResultMap): Record<string, unknown> {\n  const out: Record<string, unknown> = Object.create(null) as Record<string, unknown>;\n  for (const [field, path] of Object.entries(map.fields)) {\n    const value = path === \"result\" ? raw : readPath(raw, path.slice(\"result.\".length));\n    if (value === undefined) throw new Error(\"[terminal] tool result path did not resolve: \" + field + \" <- \" + path);\n    out[field] = value;\n  }\n  if (map.includeRaw === true) out._raw = raw;\n  return out;\n}\n\ntype _AfPolicyAction = \"park\" | \"retry\" | \"terminal\" | \"continue\";\ntype _AfPolicyRule = {\n  when?: string;\n  do?: _AfPolicyAction;\n  default?: _AfPolicyAction;\n  defaultResult?: unknown;\n  emitEvent?: string;\n  emitPayload?: Record<string, unknown>;\n  suppressEmit?: boolean;\n};\ntype _AfErrorFacts = {\n  kind?: string;\n  code?: string;\n  status?: number;\n  name: string;\n  message: string;\n  data?: Record<string, unknown>;\n  meta?: Record<string, unknown>;\n};\ntype _AfFailureResolution = {\n  disposition: \"retry\" | \"terminal\" | \"continue\";\n  policyAction: _AfPolicyAction | \"soft\";\n  facts: _AfErrorFacts;\n  defaultResult?: unknown;\n  emitEvent?: string;\n  emitPayload?: Record<string, unknown>;\n  suppressEmit: boolean;\n  policyError?: string;\n};\nfunction _afRecord(value: unknown): Record<string, unknown> | undefined {\n  return value && typeof value === \"object\" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;\n}\nfunction _afScalar(value: unknown): string | undefined {\n  if (typeof value === \"string\" && value.trim()) return value.trim();\n  if (typeof value === \"number\" && Number.isFinite(value)) return String(value);\n  return undefined;\n}\nfunction _afErrorFacts(value: unknown): _AfErrorFacts {\n  const root = value instanceof Error ? value : undefined;\n  let kind: string | undefined;\n  let code: string | undefined;\n  let status: number | undefined;\n  let name = root?.name || \"Error\";\n  let message = root?.message || _afScalar(value) || \"action failed\";\n  let data: Record<string, unknown> | undefined;\n  let meta: Record<string, unknown> | undefined;\n  const queue: unknown[] = [value];\n  const seen = new Set<unknown>();\n  for (let i = 0; i < queue.length && i < 24; i++) {\n    const current = queue[i];\n    if (current == null || seen.has(current)) continue;\n    seen.add(current);\n    if (current instanceof Error) {\n      if ((!message || message === \"action failed\") && current.message) message = current.message;\n      if (name === \"Error\" && current.name) name = current.name;\n      queue.push(current.cause);\n    }\n    const row = _afRecord(current);\n    if (!row) continue;\n    kind ??= _afScalar(row.kind) ?? _afScalar(row.failureKind) ?? _afScalar(row.failure_kind) ?? _afScalar(row.category);\n    code ??= _afScalar(row.code) ?? _afScalar(row.errorCode) ?? _afScalar(row.error_code);\n    const rawStatus = row.status ?? row.statusCode ?? row.status_code;\n    if (status === undefined && Number.isFinite(Number(rawStatus))) status = Number(rawStatus);\n    const nestedData = _afRecord(row.data);\n    const nestedMeta = _afRecord(row.meta);\n    data ??= nestedData;\n    meta ??= nestedMeta;\n    kind ??= _afScalar(nestedMeta?.error) ?? _afScalar(nestedData?.kind);\n    code ??= _afScalar(nestedMeta?.code) ?? _afScalar(nestedData?.code) ?? _afScalar(nestedData?.error_code);\n    const nestedStatus = nestedMeta?.status ?? nestedData?.status;\n    if (status === undefined && Number.isFinite(Number(nestedStatus))) status = Number(nestedStatus);\n    queue.push(row.cause, row.error, row.reason, row.output, row.result, row.data, row.meta);\n  }\n  if (!kind) {\n    const prefixed = message.match(/^([a-z][a-z0-9_-]{1,80})\\s*:/i);\n    if (prefixed) kind = prefixed[1];\n  }\n  if (status === undefined) {\n    const http = message.match(/\\bHTTP\\s+(\\d{3})\\b/i);\n    if (http) status = Number(http[1]);\n  }\n  return { ...(kind ? { kind } : {}), ...(code ? { code } : {}), ...(status !== undefined ? { status } : {}), name, message, ...(data ? { data } : {}), ...(meta ? { meta } : {}) };\n}\nfunction _afStripParens(source: string): string {\n  let out = source.trim();\n  while (out.startsWith(\"(\") && out.endsWith(\")\")) {\n    let depth = 0; let quote = \"\"; let wraps = true;\n    for (let i = 0; i < out.length; i++) {\n      const c = out[i]!;\n      if (quote) { if (c === \"\\\\\") i++; else if (c === quote) quote = \"\"; continue; }\n      if (c === \"'\" || c === '\"') { quote = c; continue; }\n      if (c === \"(\") depth++; else if (c === \")\") depth--;\n      if (depth === 0 && i < out.length - 1) { wraps = false; break; }\n    }\n    if (!wraps || depth !== 0) break;\n    out = out.slice(1, -1).trim();\n  }\n  return out;\n}\nfunction _afSplitTop(source: string, operator: \"&&\" | \"||\"): string[] {\n  const parts: string[] = []; let buffer = \"\"; let depth = 0; let quote = \"\";\n  for (let i = 0; i < source.length; i++) {\n    const c = source[i]!;\n    if (quote) { buffer += c; if (c === \"\\\\\" && i + 1 < source.length) buffer += source[++i]!; else if (c === quote) quote = \"\"; continue; }\n    if (c === \"'\" || c === '\"') { quote = c; buffer += c; continue; }\n    if (c === \"(\") depth++; else if (c === \")\") depth--;\n    if (depth === 0 && source.startsWith(operator, i)) { parts.push(buffer); buffer = \"\"; i++; continue; }\n    buffer += c;\n  }\n  parts.push(buffer);\n  return parts;\n}\nfunction _afRead(value: unknown, path: string): unknown {\n  let current = value;\n  for (const key of path.split(\".\")) {\n    if (current == null || typeof current !== \"object\") return undefined;\n    current = (current as Record<string, unknown>)[key];\n  }\n  return current;\n}\nfunction _afLiteral(source: string): unknown {\n  const value = source.trim();\n  if ((value.startsWith('\"') && value.endsWith('\"')) || (value.startsWith(\"'\") && value.endsWith(\"'\"))) return value.slice(1, -1);\n  if (/^-?\\d+(?:\\.\\d+)?$/.test(value)) return Number(value);\n  if (value === \"true\") return true;\n  if (value === \"false\") return false;\n  if (value === \"null\" || value === \"undefined\") return null;\n  return value;\n}\nfunction _afCompare(left: unknown, right: unknown, operator: string): boolean {\n  if (right === null) {\n    if (operator === \"==\" || operator === \"===\") return left == null;\n    if (operator === \"!=\" || operator === \"!==\") return left != null;\n  }\n  if (operator === \"===\") return left === right;\n  if (operator === \"!==\") return left !== right;\n  if (operator === \"==\") return left === right || (left != null && right != null && String(left) === String(right));\n  if (operator === \"!=\") return !(left === right || (left != null && right != null && String(left) === String(right)));\n  if (operator === \">\") return Number(left) > Number(right);\n  if (operator === \"<\") return Number(left) < Number(right);\n  if (operator === \">=\") return Number(left) >= Number(right);\n  return Number(left) <= Number(right);\n}\nfunction _afPredicateAtom(source: string, facts: _AfErrorFacts): boolean {\n  const atom = _afStripParens(source);\n  if (/^true$/i.test(atom)) return true;\n  if (/^false$/i.test(atom)) return false;\n  const path = \"(?:error\\\\.)?(?:kind|code|status|name|message|data(?:\\\\.[A-Za-z_$][A-Za-z0-9_$-]*)*|meta(?:\\\\.[A-Za-z_$][A-Za-z0-9_$-]*)*)\";\n  const literal = \"(?:'(?:\\\\\\\\.|[^'\\\\\\\\])*'|\\\"(?:\\\\\\\\.|[^\\\"\\\\\\\\])*\\\"|-?\\\\d+(?:\\\\.\\\\d+)?|true|false|null|undefined|[A-Za-z_$][A-Za-z0-9_$.-]*)\";\n  const includes = atom.match(new RegExp(\"^(\" + path + \")\\\\.includes\\\\(\\\\s*(\" + literal + \")\\\\s*\\\\)$\", \"i\"));\n  if (includes) {\n    const left = _afRead(facts, includes[1]!.replace(/^error\\./, \"\"));\n    const right = _afLiteral(includes[2]!);\n    return typeof left === \"string\" ? left.includes(String(right)) : Array.isArray(left) && left.includes(right);\n  }\n  const comparison = atom.match(new RegExp(\"^(\" + path + \")\\\\s*(===|!==|==|!=|>=|<=|>|<)\\\\s*(\" + literal + \")$\", \"i\"));\n  if (comparison) return _afCompare(_afRead(facts, comparison[1]!.replace(/^error\\./, \"\")), _afLiteral(comparison[3]!), comparison[2]!);\n  const presence = atom.match(new RegExp(\"^(!{0,2})(\" + path + \")$\", \"i\"));\n  if (!presence) return false;\n  const value = Boolean(_afRead(facts, presence[2]!.replace(/^error\\./, \"\")));\n  return presence[1] === \"!\" ? !value : value;\n}\nfunction _afErrorPredicate(predicate: string, facts: _AfErrorFacts): boolean {\n  const evaluate = (source: string): boolean => {\n    const normalized = _afStripParens(source);\n    const ors = _afSplitTop(normalized, \"||\");\n    if (ors.length > 1) return ors.some(evaluate);\n    const ands = _afSplitTop(normalized, \"&&\");\n    return ands.length > 1 ? ands.every(evaluate) : _afPredicateAtom(normalized, facts);\n  };\n  return evaluate(predicate);\n}\nfunction _afResolveFailure(policy: \"soft\" | \"terminal\" | \"park\" | _AfPolicyRule[] | undefined, failure: unknown, stepDefault?: unknown): _AfFailureResolution {\n  const facts = _afErrorFacts(failure);\n  if (policy === \"soft\") return { disposition: \"continue\", policyAction: \"soft\", facts, defaultResult: stepDefault, suppressEmit: false };\n  if (policy === \"terminal\") return { disposition: \"terminal\", policyAction: \"terminal\", facts, suppressEmit: true };\n  if (policy === \"park\") return { disposition: \"retry\", policyAction: \"park\", facts, suppressEmit: true };\n  if (!Array.isArray(policy)) return { disposition: \"retry\", policyAction: \"retry\", facts, suppressEmit: true };\n  for (const rule of policy) {\n    const action = typeof rule.when === \"string\" ? (_afErrorPredicate(rule.when, facts) ? rule.do : undefined) : rule.default;\n    if (!action) continue;\n    const ownDefault = Object.prototype.hasOwnProperty.call(rule, \"defaultResult\");\n    const defaultResult = ownDefault ? rule.defaultResult : stepDefault;\n    return {\n      disposition: action === \"park\" || action === \"retry\" ? \"retry\" : action,\n      policyAction: action,\n      facts,\n      ...(ownDefault || stepDefault !== undefined ? { defaultResult } : {}),\n      ...(rule.emitEvent ? { emitEvent: rule.emitEvent } : {}),\n      ...(rule.emitPayload ? { emitPayload: rule.emitPayload } : {}),\n      suppressEmit: rule.suppressEmit ?? false,\n    };\n  }\n  return { disposition: \"terminal\", policyAction: \"terminal\", facts, suppressEmit: true, policyError: \"error policy has no matching/default rule\" };\n}\nfunction _afFailurePayload(resolution: _AfFailureResolution): Record<string, unknown> {\n  const fallback = resolution.defaultResult && typeof resolution.defaultResult === \"object\" && !Array.isArray(resolution.defaultResult)\n    ? resolution.defaultResult as Record<string, unknown>\n    : { error: resolution.facts };\n  return { ...fallback, ...(resolution.emitPayload ?? {}) };\n}\n\nconst _invokePayload = (args: { eventData: Record<string, unknown>; invokeInput?: Record<string, unknown>; forwardLastResult?: boolean; forwardResults?: boolean; lastResult?: unknown; results?: Record<string, unknown>; subject?: unknown; correlationId?: string }): Record<string, unknown> => {\n  const last = args.forwardLastResult === false || args.lastResult == null ? {} : (typeof args.lastResult === \"object\" && !Array.isArray(args.lastResult) ? args.lastResult as Record<string, unknown> : { _lastResult: args.lastResult });\n  const subject = args.subject ?? args.eventData.subject ?? args.eventData._subject;\n  const correlationId = args.correlationId || args.eventData.__correlationId || args.eventData._correlationId;\n  return { ...args.eventData, ...(args.invokeInput ?? {}), ...last, ...(args.forwardResults ? { _results: { ...(args.results ?? {}) } } : {}), ...(subject == null ? {} : { subject, _subject: subject }), ...(correlationId == null || correlationId === \"\" ? {} : { __correlationId: correlationId, _correlationId: correlationId }) };\n};\n\n/** System prompt — 工厂为【这一个】agent 亲自推理出来的。 */\nconst SYSTEM_PROMPT = `你负责对一份已下载的候选人简历执行全链路自动化处理：取件→解析→查重→落库→可选锁定校验→路由发事件。\n\n必须遵守：\n1. upload_id、bucket、object_key 是必填锚点，任一缺失即不可重试失败。\n2. 简历文件格式以 magic bytes 为准，docx 须先转 PDF 再解析；扩展名和 mime 不可信。\n3. GoHire 解析返回 UNPARSEABLE（纯图/扫描件/损坏）是内容级失败，不可重试，标记 Resume_Upload.status=failed 后终止。\n4. 候选人身份检查通过 step.invoke 同步调用 ruleCheckForCandidateIdentity（超时 90s），软失败降级为新候选人；唯一例外：查重侧审计写失败必须向上抛，重试先于任何候选人落库。\n5. RAAS 主写入失败须标记 Resume_Upload.status=failed 后抛错；Allmeta 镜像是软失败。\n6. Internal_Recruitment_System（RMHR 锁定校验）为人工边界，当前部署未启用，锁定校验开关默认关闭时跳过整步。\n7. 路由：lock-only 拦截时发 RESUME_LOCKED_CONFLICT；否则发 RESUME_PROCESSED，payload 携带 carry-forward 字段供下游免回查。\n8. 工具只使用已授权传输：fs.readFromInbox、parseResumeApi、entities.write、ontology.writeInstance、ontology.fetchActionRules；不要显式调用旧名路由/落库工具。`;\n\nexport const processResumeAgent = defineAgent({\n  id: \"agents-gener-process-resume\",\n  name: \"ProcessResumeAgent\",\n  actor: [\"Agent\"],\n  trigger: [\"RESUME_DOWNLOADED\"],\n  emit: [\"RESUME_PROCESSED\",\"RESUME_LOCKED_CONFLICT\"],\n  tools: [\"fs.readFromInbox\",\"parseResumeApi\",\"entities.write\",\"ontology.writeInstance\",\"ontology.fetchActionRules\"],\n  systemPrompt: SYSTEM_PROMPT,\n  // Fail-closed ownership marker: probeAgentModule keeps this code reviewable but does not\n  // claim CodeAct execution where the worker lacks durable/per-RPC policy semantics.\n  factoryExecutionMode: \"declarative_required\",\n  factoryExecutionReason: \"工具调用需要独立 durable step、幂等键与 typed failure policy；invoke 需要宿主创建可重放的 durable child step；错误策略需要宿主的 typed retry/park/terminal 控制流；代码直接访问 invoke、reason、tools.run；当前协议不能把这些调用恢复为独立 durable step\",\n  async handler(input, ctx) {\n      const $in = (input ?? {}) as Record<string, unknown>;\n      let last: unknown = undefined;\n      const results: Record<string, unknown> = {};\n      const carry = (): Record<string, unknown> => ({ ...$in, ...(last && typeof last === \"object\" ? (last as Record<string, unknown>) : {}), results: { ...results } });\n      let _explicitEmitCount = 0;\n      let _suppressImplicitEmit = false;\n      const _cond: Record<string, boolean> = {};\n      const _skipped = new Set<string>();\n      const _pass = (deps: string[]) => deps.every((d) => !_skipped.has(d) && _cond[d] !== false);\n      // step unwrap_and_validate_transport (logic) — 解包信封，校验 upload_id/bucket/object_key 必填，计算 owner=locked_by_employee_id||employee_\n      try {\n        last = await ctx.reason(SYSTEM_PROMPT + \"\\n\\n【当前子步骤】unwrap_and_validate_transport：解包信封，校验 upload_id/bucket/object_key 必填，计算 owner=locked_by_employee_id||employee_id\", carry());\n      } catch (e) {\n        const _resolution = _afResolveFailure([{\"default\":\"terminal\"}], e, undefined);\n        if (_resolution.disposition !== \"continue\") {\n          const _tag = _resolution.disposition === \"terminal\" ? \"terminal\" : (_resolution.policyAction === \"park\" ? \"park\" : \"retry\");\n          ctx.log?.(\"error\", \"步骤 unwrap_and_validate_transport 按错误策略终止\", { action: _resolution.policyAction, facts: _resolution.facts });\n          throw new Error(\"[\" + _tag + \"] step unwrap_and_validate_transport: \" + _resolution.facts.message);\n        }\n        if (_resolution.suppressEmit) _suppressImplicitEmit = true;\n        if (_resolution.emitEvent) { await ctx.emit(_resolution.emitEvent, _afFailurePayload(_resolution)); _explicitEmitCount++; }\n        last = _resolution.defaultResult;\n      }\n      results[\"unwrap_and_validate_transport\"] = last;\n      // step download_resume_object (tool) — 从收件符1读取简历原始字节，返回 base64+sha256\n      try {\n        last = await (async () => { const _raw = await ctx.tools.run(\"fs.readFromInbox\", _afToolArguments({\"subdir\":{\"const\":\"resumes\"},\"filename\":{\"from\":\"input.object_key\",\"required\":true}}, { event: { name: \"RESUME_DOWNLOADED\", data: $in }, lastResult: last, results, input: $in })); return _afMapToolResult(_raw, {\"fields\":{\"base64\":\"result.base64\",\"sha256\":\"result.sha256\",\"mime\":\"result.mime\"}}); })();\n      } catch (e) {\n        const _resolution = _afResolveFailure([{\"when\":\"status == 404 || code == 'NOT_FOUND' || code == 'NoSuchKey'\",\"do\":\"terminal\",\"suppressEmit\":true},{\"when\":\"status >= 500 || code == 'ETIMEDOUT'\",\"do\":\"park\",\"suppressEmit\":true},{\"default\":\"terminal\"}], e, undefined);\n        if (_resolution.disposition !== \"continue\") {\n          const _tag = _resolution.disposition === \"terminal\" ? \"terminal\" : (_resolution.policyAction === \"park\" ? \"park\" : \"retry\");\n          ctx.log?.(\"error\", \"步骤 download_resume_object 按错误策略终止\", { action: _resolution.policyAction, facts: _resolution.facts });\n          throw new Error(\"[\" + _tag + \"] step download_resume_object: \" + _resolution.facts.message);\n        }\n        if (_resolution.suppressEmit) _suppressImplicitEmit = true;\n        if (_resolution.emitEvent) { await ctx.emit(_resolution.emitEvent, _afFailurePayload(_resolution)); _explicitEmitCount++; }\n        last = _resolution.defaultResult;\n      }\n      results[\"download_resume_object\"] = last;\n      // step parse_resume_structured (tool) — GoHire multipart 解析，字段名必须是 file\n      try {\n        last = await (async () => { const _raw = await ctx.tools.run(\"parseResumeApi\", _afToolArguments({\"file\":{\"from\":\"results.download_resume_object.result.base64\",\"required\":true},\"filename\":{\"from\":\"input.filename\",\"required\":false},\"mime\":{\"from\":\"results.download_resume_object.result.mime\",\"required\":false}}, { event: { name: \"RESUME_DOWNLOADED\", data: $in }, lastResult: last, results, input: $in })); return _afMapToolResult(_raw, {\"fields\":{\"parsedData\":\"result.data\",\"requestId\":\"result.request_id\"},\"includeRaw\":true}); })();\n      } catch (e) {\n        const _resolution = _afResolveFailure([{\"when\":\"code == 'UNPARSEABLE' || code == 'CONTENT_UNREADABLE'\",\"do\":\"terminal\",\"suppressEmit\":true},{\"when\":\"status == 429 || status >= 500 || code == 'QUOTA_EXHAUSTED' || code == 'ETIMEDOUT'\",\"do\":\"park\",\"suppressEmit\":true},{\"default\":\"terminal\"}], e, undefined);\n        if (_resolution.disposition !== \"continue\") {\n          const _tag = _resolution.disposition === \"terminal\" ? \"terminal\" : (_resolution.policyAction === \"park\" ? \"park\" : \"retry\");\n          ctx.log?.(\"error\", \"步骤 parse_resume_structured 按错误策略终止\", { action: _resolution.policyAction, facts: _resolution.facts });\n          throw new Error(\"[\" + _tag + \"] step parse_resume_structured: \" + _resolution.facts.message);\n        }\n        if (_resolution.suppressEmit) _suppressImplicitEmit = true;\n        if (_resolution.emitEvent) { await ctx.emit(_resolution.emitEvent, _afFailurePayload(_resolution)); _explicitEmitCount++; }\n        last = _resolution.defaultResult;\n      }\n      results[\"parse_resume_structured\"] = last;\n      // step invoke_candidate_identity (invoke) — 同步 invoke 候选人身份查重，90s 超时降级为新候选人\n      try {\n        last = await ctx.invoke(\"ruleCheckForCandidateIdentity\", _invokePayload({ eventData: $in, invokeInput: {\"upload_id\":{\"from\":\"input.upload_id\"},\"parsed\":{\"from\":\"results.parse_resume_structured.result.parsedData\"},\"invoked_by\":{\"const\":\"resume-parser\"}}, forwardLastResult: true, forwardResults: false, lastResult: last, results, subject: ctx.subject, correlationId: ctx.correlationId }), { timeoutMs: 90000 });\n      } catch (e) {\n        const _resolution = _afResolveFailure([{\"when\":\"code == 'RuleAuditPersistenceFailure'\",\"do\":\"park\",\"suppressEmit\":true},{\"default\":\"continue\",\"defaultResult\":{\"same_as_candidate_id\":null,\"dedup_action\":\"new\",\"needs_human_review\":false}}], e, undefined);\n        if (_resolution.disposition !== \"continue\") {\n          const _tag = _resolution.disposition === \"terminal\" ? \"terminal\" : (_resolution.policyAction === \"park\" ? \"park\" : \"retry\");\n          ctx.log?.(\"error\", \"步骤 invoke_candidate_identity 按错误策略终止\", { action: _resolution.policyAction, facts: _resolution.facts });\n          throw new Error(\"[\" + _tag + \"] step invoke_candidate_identity: \" + _resolution.facts.message);\n        }\n        if (_resolution.suppressEmit) _suppressImplicitEmit = true;\n        if (_resolution.emitEvent) { await ctx.emit(_resolution.emitEvent, _afFailurePayload(_resolution)); _explicitEmitCount++; }\n        last = _resolution.defaultResult;\n      }\n      results[\"invoke_candidate_identity\"] = last;\n      // step persist_candidate_and_resume (tool) — RAAS saveCandidate 干等 upsert，同时镜像 Candidate+Resume 到 Allmeta\n      try {\n        last = await (async () => { const _raw = await ctx.tools.run(\"records.upsert\", _afToolArguments({\"record_type\":{\"const\":\"candidate_resume\"},\"upload_id\":{\"from\":\"input.upload_id\",\"required\":true},\"bucket\":{\"from\":\"input.bucket\",\"required\":true},\"object_key\":{\"from\":\"input.object_key\",\"required\":true},\"etag\":{\"from\":\"input.etag\",\"required\":false},\"same_as_candidate_id\":{\"from\":\"results.invoke_candidate_identity.result.same_as_candidate_id\",\"required\":false},\"parsed\":{\"from\":\"results.parse_resume_structured.result.parsedData\",\"required\":true}}, { event: { name: \"RESUME_DOWNLOADED\", data: $in }, lastResult: last, results, input: $in })); return _afMapToolResult(_raw, {\"fields\":{\"candidateId\":\"result.candidate_id\",\"resumeId\":\"result.resume_id\",\"applicationId\":\"result.application_id\",\"isNewCandidate\":\"result.is_new_candidate\"}}); })();\n      } catch (e) {\n        const _resolution = _afResolveFailure([{\"when\":\"status >= 500 || code == 'ETIMEDOUT'\",\"do\":\"park\",\"suppressEmit\":true},{\"default\":\"terminal\"}], e, undefined);\n        if (_resolution.disposition !== \"continue\") {\n          const _tag = _resolution.disposition === \"terminal\" ? \"terminal\" : (_resolution.policyAction === \"park\" ? \"park\" : \"retry\");\n          ctx.log?.(\"error\", \"步骤 persist_candidate_and_resume 按错误策略终止\", { action: _resolution.policyAction, facts: _resolution.facts });\n          throw new Error(\"[\" + _tag + \"] step persist_candidate_and_resume: \" + _resolution.facts.message);\n        }\n        if (_resolution.suppressEmit) _suppressImplicitEmit = true;\n        if (_resolution.emitEvent) { await ctx.emit(_resolution.emitEvent, _afFailurePayload(_resolution)); _explicitEmitCount++; }\n        last = _resolution.defaultResult;\n      }\n      results[\"persist_candidate_and_resume\"] = last;\n      // step optional_ownership_lock_check (logic) — 依赖: persist_candidate_and_resume\n      if (_pass([\"persist_candidate_and_resume\"])) {\n        try {\n          last = await ctx.reason(SYSTEM_PROMPT + \"\\n\\n【当前子步骤】optional_ownership_lock_check：人工边界：LOCK_CHECK_ENABLED 默认关闭，跳过整步。开启时记录锁定状态供路由步消费\", carry());\n        } catch (e) {\n          const _resolution = _afResolveFailure(undefined, e, undefined);\n          if (_resolution.disposition !== \"continue\") {\n            const _tag = _resolution.disposition === \"terminal\" ? \"terminal\" : (_resolution.policyAction === \"park\" ? \"park\" : \"retry\");\n            ctx.log?.(\"error\", \"步骤 optional_ownership_lock_check 按错误策略终止\", { action: _resolution.policyAction, facts: _resolution.facts });\n            throw new Error(\"[\" + _tag + \"] step optional_ownership_lock_check: \" + _resolution.facts.message);\n          }\n          if (_resolution.suppressEmit) _suppressImplicitEmit = true;\n          if (_resolution.emitEvent) { await ctx.emit(_resolution.emitEvent, _afFailurePayload(_resolution)); _explicitEmitCount++; }\n          last = _resolution.defaultResult;\n        }\n        results[\"optional_ownership_lock_check\"] = last;\n      } else {\n        _skipped.add(\"optional_ownership_lock_check\");\n        ctx.log?.(\"info\", \"跳过步骤 optional_ownership_lock_check（依赖条件不成立）\");\n      }\n      // step route_resume_processed (logic) — 依赖: optional_ownership_lock_check\n      if (_pass([\"optional_ownership_lock_check\"])) {\n        try {\n          last = await ctx.reason(SYSTEM_PROMPT + \"\\n\\n【当前子步骤】route_resume_processed：按锁定结果设置路由标志 lockOnly\", carry());\n        } catch (e) {\n          const _resolution = _afResolveFailure(undefined, e, undefined);\n          if (_resolution.disposition !== \"continue\") {\n            const _tag = _resolution.disposition === \"terminal\" ? \"terminal\" : (_resolution.policyAction === \"park\" ? \"park\" : \"retry\");\n            ctx.log?.(\"error\", \"步骤 route_resume_processed 按错误策略终止\", { action: _resolution.policyAction, facts: _resolution.facts });\n            throw new Error(\"[\" + _tag + \"] step route_resume_processed: \" + _resolution.facts.message);\n          }\n          if (_resolution.suppressEmit) _suppressImplicitEmit = true;\n          if (_resolution.emitEvent) { await ctx.emit(_resolution.emitEvent, _afFailurePayload(_resolution)); _explicitEmitCount++; }\n          last = _resolution.defaultResult;\n        }\n        results[\"route_resume_processed\"] = last;\n      } else {\n        _skipped.add(\"route_resume_processed\");\n        ctx.log?.(\"info\", \"跳过步骤 route_resume_processed（依赖条件不成立）\");\n      }\n      // step persist_raas_candidate_resume (tool) — phase=candidate_resume 写入 RAAS 权威库\n      try {\n        last = await (async () => { const _raw = await ctx.tools.run(\"entities.write\", _afToolArguments({\"objectType\":{\"const\":\"Candidate_Resume\"},\"phase\":{\"const\":\"candidate_resume\"},\"candidateId\":{\"from\":\"results.persist_candidate_and_resume.result.candidateId\",\"required\":true},\"resumeId\":{\"from\":\"results.persist_candidate_and_resume.result.resumeId\",\"required\":true}}, { event: { name: \"RESUME_DOWNLOADED\", data: $in }, lastResult: last, results, input: $in })); return _afMapToolResult(_raw, {\"fields\":{\"persistOk\":\"result.ok\"}}); })();\n      } catch (e) {\n        const _resolution = _afResolveFailure([{\"when\":\"status >= 500 || code == 'ETIMEDOUT'\",\"do\":\"park\",\"suppressEmit\":true},{\"default\":\"terminal\"}], e, undefined);\n        if (_resolution.disposition !== \"continue\") {\n          const _tag = _resolution.disposition === \"terminal\" ? \"terminal\" : (_resolution.policyAction === \"park\" ? \"park\" : \"retry\");\n          ctx.log?.(\"error\", \"步骤 persist_raas_candidate_resume 按错误策略终止\", { action: _resolution.policyAction, facts: _resolution.facts });\n          throw new Error(\"[\" + _tag + \"] step persist_raas_candidate_resume: \" + _resolution.facts.message);\n        }\n        if (_resolution.suppressEmit) _suppressImplicitEmit = true;\n        if (_resolution.emitEvent) { await ctx.emit(_resolution.emitEvent, _afFailurePayload(_resolution)); _explicitEmitCount++; }\n        last = _resolution.defaultResult;\n      }\n      results[\"persist_raas_candidate_resume\"] = last;\n      // step emit_resume_outcome (condition) — 依赖: persist_raas_candidate_resume\n      if (_pass([\"persist_raas_candidate_resume\"])) {\n        try {\n          _cond[\"emit_resume_outcome\"] = evalCondition(\"results.route_resume_processed.result.lockOnly == true\", { event: { name: \"RESUME_DOWNLOADED\", data: $in }, lastResult: last, results, input: $in });\n          results[\"emit_resume_outcome\"] = { evaluated: _cond[\"emit_resume_outcome\"] };\n        } catch (e) {\n          const _resolution = _afResolveFailure(undefined, e, undefined);\n          if (_resolution.disposition !== \"continue\") {\n            const _tag = _resolution.disposition === \"terminal\" ? \"terminal\" : (_resolution.policyAction === \"park\" ? \"park\" : \"retry\");\n            ctx.log?.(\"error\", \"步骤 emit_resume_outcome 按错误策略终止\", { action: _resolution.policyAction, facts: _resolution.facts });\n            throw new Error(\"[\" + _tag + \"] step emit_resume_outcome: \" + _resolution.facts.message);\n          }\n          if (_resolution.suppressEmit) _suppressImplicitEmit = true;\n          if (_resolution.emitEvent) { await ctx.emit(_resolution.emitEvent, _afFailurePayload(_resolution)); _explicitEmitCount++; }\n          last = _resolution.defaultResult;\n        }\n      } else {\n        _skipped.add(\"emit_resume_outcome\");\n        ctx.log?.(\"info\", \"跳过步骤 emit_resume_outcome（依赖条件不成立）\");\n      }\n      // 决策核心（fail-close）：LLM 不可用/失败时绝不伪造通过\n      const decision = (await ctx.reason(SYSTEM_PROMPT + \"\\n只输出 JSON；必须附字段 \\\"emit\\\" 选择产出事件，取值之一：RESUME_PROCESSED | RESUME_LOCKED_CONFLICT；判定失败/拒绝时选失败/拒绝类事件。\", { input: $in, lastResult: last, results })) as Record<string, unknown>;\n      if (decision._reasonFailed === true) throw new Error(\"决策核心失败（LLM 不可用）——fail-close，不伪造通过\");\n      if (!_suppressImplicitEmit) {\n        // 真实事件选择：优先决策核心显式选择的 emit；否则按 pass/ok 走首个(成功)或末个(失败)分支\n        const _declared = [\"RESUME_PROCESSED\",\"RESUME_LOCKED_CONFLICT\"];\n        const _failed = decision.pass === false || decision.ok === false;\n        let _chosen = _failed ? _declared[_declared.length - 1]! : _declared[0]!;\n        if (typeof decision.emit === \"string\" && _declared.includes(decision.emit)) _chosen = decision.emit;\n        await ctx.emit(_chosen, { ...carry(), ...decision });\n      }\n      return { ok: decision.pass !== false && decision.ok !== false, lastResult: last, results };\n  },\n});\n",
+    "codeExecuted": false,
+    "probeReason": "execution owner=declarative-plan: 工具调用需要独立 durable step、幂等键与 typed failure policy；invoke 需要宿主创建可重放的 durable child step；错误策略需要宿主的 typed retry/park/terminal 控制流；代码直接访问 invoke、reason、tools.run；当前协议不能把这些调用恢复为独立 durable step"
+  },
+  "createdAt": "2026-07-20T05:49:12.892Z",
+  "versionId": "v-20260720054912892-0f578b0e",
+  "ownerTenantId": "ten-f17312c2b674",
+  "bindingDomainId": "Agents-generation"
+}

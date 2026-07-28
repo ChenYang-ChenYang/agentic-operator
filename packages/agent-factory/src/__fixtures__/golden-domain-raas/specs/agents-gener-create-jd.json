@@ -1,0 +1,699 @@
+{
+  "domain": "Agents-generation",
+  "slug": "agents-gener-create-jd",
+  "spec": {
+    "key": "createJD",
+    "actionName": "createJD",
+    "slug": "agents-gener-create-jd",
+    "short": "CreateJDAgent",
+    "domainId": "Agents-generation",
+    "nameZh": "JD生成器",
+    "kind": "llm",
+    "trigger": [
+      "REQUIREMENT_LOGGED",
+      "CLARIFICATION_READY",
+      "JD_REJECTED"
+    ],
+    "emit": [
+      "JD_GENERATED"
+    ],
+    "tools": [
+      "facts.query",
+      "generateJdApi",
+      "entities.write",
+      "ontology.writeInstance",
+      "ontology.fetchActionRules"
+    ],
+    "unresolvedTools": [],
+    "objects": [
+      "Job_Requisition",
+      "Job_Requisition_Specification",
+      "Requirement_Clarification_Record",
+      "Job_Posting",
+      "Client"
+    ],
+    "systemPrompt": "你负责把招聘需求生成并落地为标准化 JD。你必须严格依据当前事件输入、RAAS 读取结果、GoHire 返回结果，以及运行时通过 ontology.fetchActionRules 获取的 createJD 当前规则执行。\n\n执行要求：\n1. 规则绝不写死。每次运行都要动态读取 createJD 当前规则，再对生成的 JD 与结构化字段做核对。\n2. 你必须按既定顺序执行：读取需求上下文→构造生成 prompt→生成 JD→提取结构化技能→主持久化→RAAS/镜像补写→发出 JD_GENERATED。\n3. GoHire 返回 2xx 但正文为空、关键字段缺失或阶段异常，属于静默降级，不得当作成功。\n4. 未获得 job_posting_id 前不得发 JD_GENERATED。\n5. 主写入是硬门槛；Allmeta 镜像是软门槛，可告警后继续。\n6. 你的输出要可审计：说明输入锚点、生成结果、规则核对结果、持久化结果。\n\n【前置条件（运行前必须满足；不满足则 fail-close 发拦截/失败事件，不要继续）】\n1. 事件携带 entity_id(=job_requisition_id),缺失兼容 payload.requirement_id / raw_input_data.job_requisition_id,均无则不可重试失败。\n2. job_requisition 在 RAAS partner Postgres 存在且可读。\n3. client_id 可从 requirement 或 specification 解析(job_posting 落库必填)。\n4. 需求关键字段可拼出 ≥4 字符的生成 prompt(全空则失败,禁止空泛生成)。\n5. 澄清记录读取失败不阻断(增强信息,回退空数组)。",
+    "userPrompt": "订阅需求登记/澄清就绪/JD 被退回事件,基于 RAAS 权威需求详情生成标准化 JD 并持久化为 Job_Posting,最后发 JD_GENERATED 供 RAAS 侧审核发布。外部时序: ①RAAS Postgres 读 requirement+specification+澄清记录 → ②RoboHire /api/v1/jobs/generate-jd 生成 → ③JD store/RAAS Postgres 写 job_posting(spec.status→pending_publish) → ④Allmeta 镜像 Job_Requisition+Job_Posting → ⑤emit JD_GENERATED。",
+    "designReasoning": "按最新 read_ontology 的 createJD 真步骤与事件重提设计：覆盖 7 个稳定 stepId，仅保留 errorPolicy，不混用 onError；规则读取显式使用 ontology.fetchActionRules。",
+    "toolRationale": "",
+    "decisionLogic": "分支逻辑：\n1. resolve_requirement_context：\n   - requirement 存在且可读取 → 继续\n   - requirement 不存在 → terminal\n   - 澄清记录读取失败 → 告警并回退空数组\n2. build_jd_prompt：\n   - 生成 prompt 长度在 4-4000 且含关键岗位信息 → 继续\n   - prompt 无法构成或过短 → terminal\n3. generate_jd_content：\n   - GoHire 返回可用 jd_content → 继续\n   - 2xx 但 jd_content 为空/阶段异常 → park\n   - 配额/5xx/超时 → park\n   - 明确业务拒绝/不可恢复错误 → terminal\n4. derive_structured_skills：\n   - 优先使用已有结构化技能；无则从 hardRequirements / niceToHave 派生\n   - 派生失败仅告警，技能数组可回退为空\n5. 运行时规则核对：\n   - 成功读取 createJD 规则 → 对 JD 内容、脱敏、标题精准性等做 evidence 化核对\n   - 规则读取失败 → fail-closed，terminal\n   - 命中违规 → 保留违规 evidence 并随持久化结果输出，供后续审核消费；本动作不自行改发拒绝事件\n6. persist_jd_posting：\n   - RAAS 主写入成功且返回 job_posting_id → 继续\n   - 未返回 job_posting_id 或主写入失败 → terminal\n7. persist_raas_job_posting：\n   - 镜像成功 → 继续\n   - 镜像失败 → continue，带 mirrored=false\n8. emit_jd_generated：\n   - 仅当 job_posting_id 就绪时发 JD_GENERATED。",
+    "steps": [
+      {
+        "name": "step_1",
+        "description": "调用 facts.query",
+        "tool": "facts.query"
+      },
+      {
+        "name": "step_2",
+        "description": "调用 generateJdApi",
+        "tool": "generateJdApi"
+      },
+      {
+        "name": "step_3",
+        "description": "调用 entities.write",
+        "tool": "entities.write"
+      },
+      {
+        "name": "step_4",
+        "description": "调用 ontology.writeInstance",
+        "tool": "ontology.writeInstance"
+      },
+      {
+        "name": "step_5",
+        "description": "调用 ontology.fetchActionRules",
+        "tool": "ontology.fetchActionRules"
+      }
+    ],
+    "ruleRefs": [
+      "4-2",
+      "4-3",
+      "4-4"
+    ],
+    "retries": 3,
+    "hitl": false,
+    "confidence": 0.8,
+    "promptSource": "llm",
+    "inputSchema": [
+      {
+        "field": "job_requisition_id",
+        "type": "String",
+        "source": "Job_Requisition.job_requisition_id",
+        "description": "招聘需求编号",
+        "required": true
+      },
+      {
+        "field": "client_id",
+        "type": "String",
+        "source": "Client.client_id",
+        "description": "客户编号",
+        "required": false
+      },
+      {
+        "field": "is_urgent",
+        "type": "Boolean",
+        "description": "事件 REQUIREMENT_LOGGED 的 payload 字段",
+        "required": false
+      },
+      {
+        "field": "source_channel",
+        "type": "String",
+        "description": "事件 REQUIREMENT_LOGGED 的 payload 字段",
+        "required": false
+      },
+      {
+        "field": "requirement_brief",
+        "type": "String",
+        "description": "事件 REQUIREMENT_LOGGED 的 payload 字段",
+        "required": false
+      },
+      {
+        "field": "raw_input_data",
+        "type": "Object",
+        "source": "Job_Requisition.raw_input_data",
+        "description": "事件 REQUIREMENT_LOGGED 的 payload 字段",
+        "required": false
+      },
+      {
+        "field": "trace",
+        "type": "Object",
+        "description": "跨系统审计追踪",
+        "required": false
+      },
+      {
+        "field": "job_posting_id",
+        "type": "String",
+        "source": "Job_Posting.job_posting_id",
+        "description": "事件 JD_REJECTED 的 payload 字段",
+        "required": false
+      },
+      {
+        "field": "reject_reason",
+        "type": "String",
+        "description": "事件 JD_REJECTED 的 payload 字段",
+        "required": false
+      }
+    ],
+    "inputBindings": [
+      {
+        "field": "job_requisition_id",
+        "type": "String",
+        "required": true,
+        "kind": "event",
+        "eventPath": "job_requisition_id",
+        "sourceEvents": [
+          "REQUIREMENT_LOGGED",
+          "CLARIFICATION_READY",
+          "JD_REJECTED"
+        ]
+      },
+      {
+        "field": "client_id",
+        "type": "String",
+        "required": false,
+        "kind": "event",
+        "eventPath": "client_id",
+        "sourceEvents": [
+          "REQUIREMENT_LOGGED"
+        ]
+      },
+      {
+        "field": "trace",
+        "type": "Object",
+        "required": false,
+        "kind": "event",
+        "eventPath": "trace",
+        "sourceEvents": [
+          "REQUIREMENT_LOGGED",
+          "CLARIFICATION_READY"
+        ]
+      }
+    ],
+    "outputSchema": [
+      {
+        "field": "job_posting_id",
+        "type": "String",
+        "source": "Job_Posting.job_posting_id",
+        "description": "岗位发布信息编号",
+        "required": true
+      },
+      {
+        "field": "jd_content",
+        "type": "String",
+        "source": "Job_Posting.jd_content",
+        "description": "生成的 JD 正文",
+        "required": true
+      },
+      {
+        "field": "job_requisition_id",
+        "type": "String",
+        "source": "Job_Requisition.job_requisition_id",
+        "description": "事件 JD_GENERATED 的 payload 字段",
+        "required": true
+      },
+      {
+        "field": "client_id",
+        "type": "String",
+        "source": "Client.client_id",
+        "description": "事件 JD_GENERATED 的 payload 字段",
+        "required": false
+      },
+      {
+        "field": "trace",
+        "type": "Object",
+        "description": "事件 JD_GENERATED 的 payload 字段",
+        "required": false
+      },
+      {
+        "field": "robohire_request_id",
+        "type": "String",
+        "description": "GoHire 请求编号",
+        "source": "internal",
+        "required": false
+      }
+    ],
+    "toolPolicies": {
+      "facts.query": {
+        "operation": "read",
+        "effectScope": "external",
+        "sandboxPolicy": "live_external"
+      },
+      "generateJdApi": {
+        "operation": "compute",
+        "effectScope": "external",
+        "sandboxPolicy": "live_external"
+      },
+      "entities.write": {
+        "operation": "write",
+        "effectScope": "external",
+        "sandboxPolicy": "requires_attempt_grant"
+      },
+      "ontology.writeInstance": {
+        "operation": "write",
+        "effectScope": "external",
+        "sandboxPolicy": "requires_attempt_grant"
+      },
+      "ontology.fetchActionRules": {
+        "operation": "read",
+        "effectScope": "external",
+        "sandboxPolicy": "live_external"
+      }
+    },
+    "toolSideEffects": {
+      "facts.query": "read",
+      "generateJdApi": "call",
+      "entities.write": "write",
+      "ontology.writeInstance": "write",
+      "ontology.fetchActionRules": "read"
+    },
+    "integrationRequirements": [
+      {
+        "id": "4:integration:1",
+        "actionName": "createJD",
+        "system": "RAAS_System",
+        "kind": "database",
+        "role": "read",
+        "capability": "requirement.load — GET job_requisition + specification + clarification_records(直读 partner Postgres)",
+        "operations": [],
+        "objectTypes": [
+          "Job_Requisition",
+          "Job_Requisition_Specification",
+          "Requirement_Clarification_Record"
+        ],
+        "eventNames": [],
+        "replayable": true
+      },
+      {
+        "id": "4:integration:2",
+        "actionName": "createJD",
+        "system": "GoHire_System",
+        "kind": "external_api",
+        "role": "execute",
+        "capability": "jd.generate — POST /api/v1/jobs/generate-jd(free-text prompt → 结构化 JD)",
+        "operations": [
+          "jobs",
+          "generate-jd"
+        ],
+        "objectTypes": [
+          "Job_Posting"
+        ],
+        "eventNames": [],
+        "replayable": true
+      },
+      {
+        "id": "4:integration:3",
+        "actionName": "createJD",
+        "system": "RAAS_System",
+        "kind": "database",
+        "role": "write",
+        "capability": "job_posting.sync — 写 job_posting 主表 + 回填 JR 技能 + spec.status→pending_publish(write-before-emit)",
+        "operations": [],
+        "objectTypes": [
+          "Job_Posting",
+          "Job_Requisition",
+          "Job_Requisition_Specification"
+        ],
+        "eventNames": [],
+        "replayable": true
+      },
+      {
+        "id": "4:integration:4",
+        "actionName": "createJD",
+        "system": "Allmeta_Ontology_System",
+        "kind": "graph_db",
+        "role": "write",
+        "capability": "instance.mirror — 幂等镜像 Job_Requisition / Job_Posting 实例(软失败)",
+        "operations": [],
+        "objectTypes": [
+          "Job_Requisition",
+          "Job_Posting"
+        ],
+        "eventNames": [],
+        "replayable": true
+      }
+    ],
+    "integrationBindings": [
+      {
+        "requirement": {
+          "id": "4:integration:1",
+          "actionName": "createJD",
+          "system": "RAAS_System",
+          "kind": "database",
+          "role": "read",
+          "capability": "requirement.load — GET job_requisition + specification + clarification_records(直读 partner Postgres)",
+          "operations": [],
+          "objectTypes": [
+            "Job_Requisition",
+            "Job_Requisition_Specification",
+            "Requirement_Clarification_Record"
+          ],
+          "eventNames": [],
+          "replayable": true
+        },
+        "bindingKind": "tool",
+        "bindingId": "facts.query",
+        "toolName": "facts.query",
+        "genericSystemBinding": true,
+        "status": "needs_config",
+        "next": "ask_user",
+        "reason": "通用工具 facts.query 只能通过当前 tenant/domain/environment 已确认的 integration profile 绑定到 RAAS_System，不能根据 systems:[\"*\"] 猜连接"
+      },
+      {
+        "requirement": {
+          "id": "4:integration:2",
+          "actionName": "createJD",
+          "system": "GoHire_System",
+          "kind": "external_api",
+          "role": "execute",
+          "capability": "jd.generate — POST /api/v1/jobs/generate-jd(free-text prompt → 结构化 JD)",
+          "operations": [
+            "jobs",
+            "generate-jd"
+          ],
+          "objectTypes": [
+            "Job_Posting"
+          ],
+          "eventNames": [],
+          "replayable": true
+        },
+        "bindingKind": "tool",
+        "bindingId": "generateJdApi",
+        "toolName": "generateJdApi",
+        "status": "needs_config",
+        "next": "ask_user",
+        "missingCredentialEnv": [],
+        "missingConfigKeys": [
+          "api_key_env",
+          "base_url_env"
+        ],
+        "invalidConfigKeys": [],
+        "reason": "工具 generateJdApi 的集成配置未就绪：还需要填写 api_key_env。；还需要填写 base_url_env。"
+      },
+      {
+        "requirement": {
+          "id": "4:integration:3",
+          "actionName": "createJD",
+          "system": "RAAS_System",
+          "kind": "database",
+          "role": "write",
+          "capability": "job_posting.sync — 写 job_posting 主表 + 回填 JR 技能 + spec.status→pending_publish(write-before-emit)",
+          "operations": [],
+          "objectTypes": [
+            "Job_Posting",
+            "Job_Requisition",
+            "Job_Requisition_Specification"
+          ],
+          "eventNames": [],
+          "replayable": true
+        },
+        "bindingKind": "tool",
+        "bindingId": "entities.write",
+        "toolName": "entities.write",
+        "genericSystemBinding": true,
+        "status": "needs_config",
+        "next": "ask_user",
+        "reason": "通用工具 entities.write 只能通过当前 tenant/domain/environment 已确认的 integration profile 绑定到 RAAS_System，不能根据 systems:[\"*\"] 猜连接"
+      },
+      {
+        "requirement": {
+          "id": "4:integration:4",
+          "actionName": "createJD",
+          "system": "Allmeta_Ontology_System",
+          "kind": "graph_db",
+          "role": "write",
+          "capability": "instance.mirror — 幂等镜像 Job_Requisition / Job_Posting 实例(软失败)",
+          "operations": [],
+          "objectTypes": [
+            "Job_Requisition",
+            "Job_Posting"
+          ],
+          "eventNames": [],
+          "replayable": true
+        },
+        "bindingKind": "tool",
+        "bindingId": "ontology.writeInstance",
+        "toolName": "ontology.writeInstance",
+        "status": "needs_config",
+        "next": "ask_user",
+        "missingCredentialEnv": [],
+        "missingConfigKeys": [
+          "action",
+          "allowed_actions",
+          "allowed_domains",
+          "allowed_objects",
+          "allowed_tenants",
+          "api_key_env",
+          "base_url_env",
+          "domain",
+          "probe_action",
+          "probe_domain",
+          "probe_idempotency_field",
+          "probe_marker_field",
+          "probe_namespace",
+          "probe_namespace_field",
+          "probe_object",
+          "probe_primary_key_field"
+        ],
+        "invalidConfigKeys": [],
+        "reason": "工具 ontology.writeInstance 的集成配置未就绪：还需要填写 base_url_env。；还需要填写 api_key_env。；还需要填写 domain。；还需要填写 action。；还需要填写 allowed_tenants。；还需要填写 allowed_domains。；还需要填写 allowed_objects。；还需要填写 allowed_actions。；还需要填写 probe_domain。；还需要填写 probe_action。；还需要填写 probe_object。；还需要填写 probe_namespace。；还需要填写 probe_primary_key_field。；还需要填写 probe_marker_field。；还需要填写 probe_namespace_field。；还需要填写 probe_idempotency_field。"
+      }
+    ],
+    "plan": [
+      {
+        "stepId": "resolve_requirement_context",
+        "kind": "tool",
+        "tool": "facts.query",
+        "toolArguments": {
+          "subject": {
+            "from": "input.job_requisition_id",
+            "required": true
+          },
+          "objectTypes": {
+            "const": [
+              "Job_Requisition",
+              "Job_Requisition_Specification",
+              "Requirement_Clarification_Record"
+            ]
+          }
+        },
+        "resultMap": {
+          "fields": {
+            "requirement": "result.requirement",
+            "specification": "result.specification",
+            "clarifications": "result.clarifications"
+          },
+          "includeRaw": true
+        },
+        "idempotencyKeyFrom": "input.job_requisition_id",
+        "errorPolicy": [
+          {
+            "when": "status == 404 || code == 'NOT_FOUND'",
+            "do": "terminal",
+            "suppressEmit": true
+          },
+          {
+            "when": "status >= 500 || code == 'ETIMEDOUT'",
+            "do": "park",
+            "suppressEmit": true
+          },
+          {
+            "default": "terminal"
+          }
+        ],
+        "timeoutS": 30,
+        "description": "按 job_requisition_id 读取 requirement、specification 与 clarification_records"
+      },
+      {
+        "stepId": "build_jd_prompt",
+        "kind": "logic",
+        "dependsOn": [
+          "resolve_requirement_context"
+        ],
+        "description": "按 requirement、specification 与澄清记录构造 4-4000 字的 JD 生成 prompt，日期按 Asia/Shanghai 取日历日"
+      },
+      {
+        "stepId": "generate_jd_content",
+        "kind": "tool",
+        "tool": "generateJdApi",
+        "toolArguments": {
+          "prompt": {
+            "from": "results.build_jd_prompt.result.prompt",
+            "required": true
+          },
+          "language": {
+            "const": "zh"
+          },
+          "companyName": {
+            "from": "results.resolve_requirement_context.result.requirement.sd_org_name",
+            "required": false
+          },
+          "department": {
+            "from": "results.resolve_requirement_context.result.requirement.client_department_id",
+            "required": false
+          }
+        },
+        "resultMap": {
+          "fields": {
+            "jdContent": "result.jd_content",
+            "requestId": "result.request_id",
+            "hardRequirements": "result.hardRequirements",
+            "niceToHave": "result.niceToHave"
+          },
+          "includeRaw": true
+        },
+        "idempotencyKeyFrom": "input.job_requisition_id",
+        "errorPolicy": [
+          {
+            "when": "status == 200 && (!data || !data.jd_content)",
+            "do": "park",
+            "suppressEmit": true
+          },
+          {
+            "when": "status == 429 || status >= 500 || code == 'QUOTA_EXHAUSTED' || code == 'ETIMEDOUT'",
+            "do": "park",
+            "suppressEmit": true
+          },
+          {
+            "default": "terminal"
+          }
+        ],
+        "timeoutS": 60,
+        "description": "调用 GoHire 生成 JD，并验证正文非空且可用"
+      },
+      {
+        "stepId": "derive_structured_skills",
+        "kind": "logic",
+        "dependsOn": [
+          "generate_jd_content"
+        ],
+        "description": "从 hardRequirements 与 niceToHave 派生 must_have_skills、nice_to_have_skills，已有结构化值优先"
+      },
+      {
+        "stepId": "persist_jd_posting",
+        "kind": "tool",
+        "tool": "entities.write",
+        "toolArguments": {
+          "objectType": {
+            "const": "Job_Posting"
+          },
+          "payload": {
+            "from": "results.derive_structured_skills.result.jobPostingPayload",
+            "required": true
+          }
+        },
+        "resultMap": {
+          "fields": {
+            "jobPostingId": "result.job_posting_id",
+            "savedPosting": "result.record"
+          },
+          "includeRaw": true
+        },
+        "idempotencyKeyFrom": "input.job_requisition_id",
+        "errorPolicy": [
+          {
+            "when": "!data || !data.job_posting_id",
+            "do": "terminal",
+            "suppressEmit": true
+          },
+          {
+            "when": "status >= 500 || code == 'ETIMEDOUT'",
+            "do": "park",
+            "suppressEmit": true
+          },
+          {
+            "default": "terminal"
+          }
+        ],
+        "timeoutS": 30,
+        "description": "写入 RAAS Job_Posting，并回填 Job_Requisition 技能数组与 specification 状态"
+      },
+      {
+        "stepId": "persist_raas_job_posting",
+        "kind": "tool",
+        "tool": "ontology.writeInstance",
+        "toolArguments": {
+          "object": {
+            "const": "Job_Posting"
+          },
+          "id": {
+            "from": "results.persist_jd_posting.result.jobPostingId",
+            "required": true
+          },
+          "data": {
+            "from": "results.persist_jd_posting.result.savedPosting",
+            "required": true
+          }
+        },
+        "resultMap": {
+          "fields": {
+            "mirrorOk": "result.ok"
+          },
+          "includeRaw": true
+        },
+        "idempotencyKeyFrom": "results.persist_jd_posting.result.jobPostingId",
+        "errorPolicy": [
+          {
+            "default": "continue",
+            "defaultResult": {
+              "mirrorOk": false
+            }
+          }
+        ],
+        "timeoutS": 20,
+        "description": "按 job_posting phase 将 Job_Requisition 与 Job_Posting 镜像到 Allmeta"
+      },
+      {
+        "stepId": "emit_jd_generated",
+        "kind": "emit",
+        "condition": "results.persist_jd_posting.result.jobPostingId != null",
+        "emitEvent": "JD_GENERATED",
+        "emitPayloadFrom": "results.persist_jd_posting.result",
+        "emitPayload": {
+          "job_requisition_id": "{{input.job_requisition_id}}",
+          "client_id": "{{input.client_id}}"
+        },
+        "description": "发出 JD_GENERATED，携带 job_posting_id、jd_content 与便利外键"
+      }
+    ],
+    "stateBindings": [
+      {
+        "object": "Job_Requisition",
+        "reads": [
+          "job_requisition_id",
+          "raw_input_data"
+        ],
+        "writes": [
+          "must_have_skills",
+          "nice_to_have_skills"
+        ]
+      },
+      {
+        "object": "Job_Requisition_Specification",
+        "reads": [],
+        "writes": [
+          "status"
+        ]
+      },
+      {
+        "object": "Requirement_Clarification_Record",
+        "reads": [],
+        "writes": []
+      },
+      {
+        "object": "Job_Posting",
+        "reads": [
+          "job_posting_id"
+        ],
+        "writes": [
+          "job_posting_id",
+          "job_requisition_id",
+          "title",
+          "responsibility",
+          "requirement",
+          "key_words",
+          "recruitment_type",
+          "work_years",
+          "degree_requirement",
+          "education_requirement",
+          "city",
+          "salary_range",
+          "publish_status"
+        ]
+      },
+      {
+        "object": "Client",
+        "reads": [
+          "client_id"
+        ],
+        "writes": []
+      }
+    ],
+    "codeSource": "render",
+    "generatedCode": "// JD生成器 — 由 Agent 工厂从本体动作 `createJD`(Agents-generation)生成。\n// trigger: REQUIREMENT_LOGGED / CLARIFICATION_READY / JD_REJECTED → emit: JD_GENERATED\n// 真实可审查代码：工具调用、条件、foreach、显式 emit 与错误策略均由结构化 spec 渲染。\n// CodeAct 只在执行语义可保真时过探针；需要逐步 durability/typed RPC policy 时 fail-close 到 manifest runtime。\n\n/** Input/Output schema — 依据本体 DataObjects 定义。 */\ninterface CreateJDAgentInput {\n  job_requisition_id: string; // 招聘需求编号 (源: Job_Requisition.job_requisition_id)\n  client_id?: string; // 客户编号 (源: Client.client_id)\n  is_urgent?: boolean; // 事件 REQUIREMENT_LOGGED 的 payload 字段\n  source_channel?: string; // 事件 REQUIREMENT_LOGGED 的 payload 字段\n  requirement_brief?: string; // 事件 REQUIREMENT_LOGGED 的 payload 字段\n  raw_input_data?: Record<string, unknown>; // 事件 REQUIREMENT_LOGGED 的 payload 字段 (源: Job_Requisition.raw_input_data)\n  trace?: Record<string, unknown>; // 跨系统审计追踪\n  job_posting_id?: string; // 事件 JD_REJECTED 的 payload 字段 (源: Job_Posting.job_posting_id)\n  reject_reason?: string; // 事件 JD_REJECTED 的 payload 字段\n}\n\ninterface CreateJDAgentOutput {\n  job_posting_id: string; // 岗位发布信息编号 (源: Job_Posting.job_posting_id)\n  jd_content: string; // 生成的 JD 正文 (源: Job_Posting.jd_content)\n  job_requisition_id: string; // 事件 JD_GENERATED 的 payload 字段 (源: Job_Requisition.job_requisition_id)\n  client_id?: string; // 事件 JD_GENERATED 的 payload 字段 (源: Client.client_id)\n  trace?: Record<string, unknown>; // 事件 JD_GENERATED 的 payload 字段\n  robohire_request_id?: string; // GoHire 请求编号 (源: internal)\n}\n\nfunction readPath(obj: unknown, path: string): unknown {\n  if (obj == null || !path) return undefined;\n  let cur: unknown = obj;\n  for (const part of path.split(\".\")) {\n    if (cur == null || typeof cur !== \"object\") return undefined;\n    cur = (cur as Record<string, unknown>)[part];\n  }\n  return cur;\n}\nfunction readConditionPath(scope: Record<string, unknown>, rawPath: string): unknown {\n  const path = rawPath.trim().replace(/\\?\\./g, \".\").replace(/\\[['\"]([^'\"]+)['\"]\\]/g, \".$1\");\n  const results = scope.results as Record<string, unknown> | undefined;\n  const explicit = path.startsWith(\"results.\") || path.startsWith(\"steps.\");\n  const rel = explicit ? path.replace(/^(results|steps)\\./, \"\") : path;\n  for (const key of Object.keys(results ?? {}).sort((a, b) => b.length - a.length)) {\n    if (rel !== key && !rel.startsWith(key + \".\")) continue;\n    let tail = rel === key ? \"\" : rel.slice(key.length + 1);\n    if (tail === \"result\" || tail === \"data\" || tail === \"value\") tail = \"\";\n    else tail = tail.replace(/^(result|data|value)\\./, \"\");\n    return tail ? readPath(results![key], tail) : results![key];\n  }\n  if (explicit) return undefined;\n  const direct = readPath(scope, path);\n  if (direct !== undefined) return direct;\n  const last = readPath(scope.lastResult, path);\n  if (last !== undefined) return last;\n  return readPath(scope.input ?? (scope.event as Record<string, unknown> | undefined)?.data, path);\n}\nfunction evalCondition(expr: string, scope: Record<string, unknown>): boolean {\n  const e = (expr || \"\").trim();\n  if (!e) return false;\n  const split = (s: string, op: string): string[] => {\n    const out: string[] = []; let depth = 0; let q = \"\"; let buf = \"\";\n    for (let i = 0; i < s.length; i++) {\n      const c = s[i]!;\n      if (q) { buf += c; if (c === q) q = \"\"; continue; }\n      if (c === \"'\" || c === '\"') { q = c; buf += c; continue; }\n      if (c === \"(\") depth++; else if (c === \")\") depth--;\n      if (depth === 0 && s.startsWith(op, i)) { out.push(buf); buf = \"\"; i += op.length - 1; continue; }\n      buf += c;\n    }\n    out.push(buf); return out;\n  };\n  try {\n    const ors = split(e, \"||\");\n    if (ors.length > 1) return ors.some((p) => evalCondition(p, scope));\n    const ands = split(e, \"&&\");\n    if (ands.length > 1) return ands.every((p) => evalCondition(p, scope));\n    if (/^true$/i.test(e)) return true;\n    if (/^false$/i.test(e)) return false;\n    const m = e.match(/^(.+?)\\s*(===|!==|==|!=|>=|<=|>|<)\\s*(.+)$/);\n    if (m) {\n      const lit = (t0: string): unknown => {\n        const t = t0.trim();\n        if ((t.startsWith(\"'\") && t.endsWith(\"'\")) || (t.startsWith('\"') && t.endsWith('\"'))) return t.slice(1, -1);\n        if (t === \"null\" || t === \"undefined\") return null; if (t === \"true\") return true; if (t === \"false\") return false;\n        if (/^-?\\d+(\\.\\d+)?$/.test(t)) return Number(t);\n        return t;\n      };\n      const l = readConditionPath(scope, m[1]!.trim()); const r = lit(m[3]!); const op = m[2]!;\n      if (r === null && (op === \"==\" || op === \"===\")) return l == null;\n      if (r === null && (op === \"!=\" || op === \"!==\")) return l != null;\n      if (op === \"===\") return l === r;\n      if (op === \"!==\") return l !== r;\n      if (op === \"==\") return l === r || (l != null && r != null && String(l) === String(r));\n      if (op === \"!=\") return !(l === r || (l != null && r != null && String(l) === String(r)));\n      if (op === \">\") return Number(l) > Number(r);\n      if (op === \"<\") return Number(l) < Number(r);\n      if (op === \">=\") return Number(l) >= Number(r);\n      return Number(l) <= Number(r);\n    }\n    if (e.startsWith(\"!!\")) return Boolean(readConditionPath(scope, e.slice(2).trim()));\n    if (e.startsWith(\"!\")) return !Boolean(readConditionPath(scope, e.slice(1).trim()));\n    return Boolean(readConditionPath(scope, e));\n  } catch { return false; }\n}\n\ntype _AfToolArgument = { from: string; required?: boolean } | { const: unknown };\ntype _AfResultMap = { fields: Record<string, string>; includeRaw?: boolean };\nfunction _afCloneJson(value: unknown, seen = new Set<object>()): unknown {\n  if (value === null || typeof value === \"string\" || typeof value === \"boolean\") return value;\n  if (typeof value === \"number\") { if (!Number.isFinite(value)) throw new Error(\"[terminal] tool argument is not finite JSON\"); return value; }\n  if (!value || typeof value !== \"object\" || seen.has(value)) throw new Error(\"[terminal] tool argument is not JSON\");\n  seen.add(value);\n  if (Array.isArray(value)) return value.map((entry) => _afCloneJson(entry, seen));\n  const out: Record<string, unknown> = Object.create(null) as Record<string, unknown>;\n  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) out[key] = _afCloneJson(entry, seen);\n  return out;\n}\nfunction _afToolArguments(template: Record<string, _AfToolArgument>, scope: Record<string, unknown>): Record<string, unknown> {\n  const out: Record<string, unknown> = Object.create(null) as Record<string, unknown>;\n  for (const [argument, source] of Object.entries(template)) {\n    const hasFrom = Object.prototype.hasOwnProperty.call(source, \"from\");\n    const hasConst = Object.prototype.hasOwnProperty.call(source, \"const\");\n    if (hasFrom === hasConst) throw new Error(\"[terminal] tool argument \" + argument + \" must choose exactly one of from/const\");\n    if (hasFrom) {\n      const path = String((source as { from: string }).from ?? \"\");\n      const value = readConditionPath(scope, path);\n      if (value === undefined) {\n        if ((source as { required?: boolean }).required === false) continue;\n        throw new Error(\"[terminal] required tool argument path did not resolve: \" + argument + \" <- \" + path);\n      }\n      out[argument] = _afCloneJson(value);\n    } else {\n      out[argument] = _afCloneJson((source as { const: unknown }).const);\n    }\n  }\n  return out;\n}\nfunction _afMapToolResult(raw: unknown, map: _AfResultMap): Record<string, unknown> {\n  const out: Record<string, unknown> = Object.create(null) as Record<string, unknown>;\n  for (const [field, path] of Object.entries(map.fields)) {\n    const value = path === \"result\" ? raw : readPath(raw, path.slice(\"result.\".length));\n    if (value === undefined) throw new Error(\"[terminal] tool result path did not resolve: \" + field + \" <- \" + path);\n    out[field] = value;\n  }\n  if (map.includeRaw === true) out._raw = raw;\n  return out;\n}\n\ntype _AfPolicyAction = \"park\" | \"retry\" | \"terminal\" | \"continue\";\ntype _AfPolicyRule = {\n  when?: string;\n  do?: _AfPolicyAction;\n  default?: _AfPolicyAction;\n  defaultResult?: unknown;\n  emitEvent?: string;\n  emitPayload?: Record<string, unknown>;\n  suppressEmit?: boolean;\n};\ntype _AfErrorFacts = {\n  kind?: string;\n  code?: string;\n  status?: number;\n  name: string;\n  message: string;\n  data?: Record<string, unknown>;\n  meta?: Record<string, unknown>;\n};\ntype _AfFailureResolution = {\n  disposition: \"retry\" | \"terminal\" | \"continue\";\n  policyAction: _AfPolicyAction | \"soft\";\n  facts: _AfErrorFacts;\n  defaultResult?: unknown;\n  emitEvent?: string;\n  emitPayload?: Record<string, unknown>;\n  suppressEmit: boolean;\n  policyError?: string;\n};\nfunction _afRecord(value: unknown): Record<string, unknown> | undefined {\n  return value && typeof value === \"object\" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;\n}\nfunction _afScalar(value: unknown): string | undefined {\n  if (typeof value === \"string\" && value.trim()) return value.trim();\n  if (typeof value === \"number\" && Number.isFinite(value)) return String(value);\n  return undefined;\n}\nfunction _afErrorFacts(value: unknown): _AfErrorFacts {\n  const root = value instanceof Error ? value : undefined;\n  let kind: string | undefined;\n  let code: string | undefined;\n  let status: number | undefined;\n  let name = root?.name || \"Error\";\n  let message = root?.message || _afScalar(value) || \"action failed\";\n  let data: Record<string, unknown> | undefined;\n  let meta: Record<string, unknown> | undefined;\n  const queue: unknown[] = [value];\n  const seen = new Set<unknown>();\n  for (let i = 0; i < queue.length && i < 24; i++) {\n    const current = queue[i];\n    if (current == null || seen.has(current)) continue;\n    seen.add(current);\n    if (current instanceof Error) {\n      if ((!message || message === \"action failed\") && current.message) message = current.message;\n      if (name === \"Error\" && current.name) name = current.name;\n      queue.push(current.cause);\n    }\n    const row = _afRecord(current);\n    if (!row) continue;\n    kind ??= _afScalar(row.kind) ?? _afScalar(row.failureKind) ?? _afScalar(row.failure_kind) ?? _afScalar(row.category);\n    code ??= _afScalar(row.code) ?? _afScalar(row.errorCode) ?? _afScalar(row.error_code);\n    const rawStatus = row.status ?? row.statusCode ?? row.status_code;\n    if (status === undefined && Number.isFinite(Number(rawStatus))) status = Number(rawStatus);\n    const nestedData = _afRecord(row.data);\n    const nestedMeta = _afRecord(row.meta);\n    data ??= nestedData;\n    meta ??= nestedMeta;\n    kind ??= _afScalar(nestedMeta?.error) ?? _afScalar(nestedData?.kind);\n    code ??= _afScalar(nestedMeta?.code) ?? _afScalar(nestedData?.code) ?? _afScalar(nestedData?.error_code);\n    const nestedStatus = nestedMeta?.status ?? nestedData?.status;\n    if (status === undefined && Number.isFinite(Number(nestedStatus))) status = Number(nestedStatus);\n    queue.push(row.cause, row.error, row.reason, row.output, row.result, row.data, row.meta);\n  }\n  if (!kind) {\n    const prefixed = message.match(/^([a-z][a-z0-9_-]{1,80})\\s*:/i);\n    if (prefixed) kind = prefixed[1];\n  }\n  if (status === undefined) {\n    const http = message.match(/\\bHTTP\\s+(\\d{3})\\b/i);\n    if (http) status = Number(http[1]);\n  }\n  return { ...(kind ? { kind } : {}), ...(code ? { code } : {}), ...(status !== undefined ? { status } : {}), name, message, ...(data ? { data } : {}), ...(meta ? { meta } : {}) };\n}\nfunction _afStripParens(source: string): string {\n  let out = source.trim();\n  while (out.startsWith(\"(\") && out.endsWith(\")\")) {\n    let depth = 0; let quote = \"\"; let wraps = true;\n    for (let i = 0; i < out.length; i++) {\n      const c = out[i]!;\n      if (quote) { if (c === \"\\\\\") i++; else if (c === quote) quote = \"\"; continue; }\n      if (c === \"'\" || c === '\"') { quote = c; continue; }\n      if (c === \"(\") depth++; else if (c === \")\") depth--;\n      if (depth === 0 && i < out.length - 1) { wraps = false; break; }\n    }\n    if (!wraps || depth !== 0) break;\n    out = out.slice(1, -1).trim();\n  }\n  return out;\n}\nfunction _afSplitTop(source: string, operator: \"&&\" | \"||\"): string[] {\n  const parts: string[] = []; let buffer = \"\"; let depth = 0; let quote = \"\";\n  for (let i = 0; i < source.length; i++) {\n    const c = source[i]!;\n    if (quote) { buffer += c; if (c === \"\\\\\" && i + 1 < source.length) buffer += source[++i]!; else if (c === quote) quote = \"\"; continue; }\n    if (c === \"'\" || c === '\"') { quote = c; buffer += c; continue; }\n    if (c === \"(\") depth++; else if (c === \")\") depth--;\n    if (depth === 0 && source.startsWith(operator, i)) { parts.push(buffer); buffer = \"\"; i++; continue; }\n    buffer += c;\n  }\n  parts.push(buffer);\n  return parts;\n}\nfunction _afRead(value: unknown, path: string): unknown {\n  let current = value;\n  for (const key of path.split(\".\")) {\n    if (current == null || typeof current !== \"object\") return undefined;\n    current = (current as Record<string, unknown>)[key];\n  }\n  return current;\n}\nfunction _afLiteral(source: string): unknown {\n  const value = source.trim();\n  if ((value.startsWith('\"') && value.endsWith('\"')) || (value.startsWith(\"'\") && value.endsWith(\"'\"))) return value.slice(1, -1);\n  if (/^-?\\d+(?:\\.\\d+)?$/.test(value)) return Number(value);\n  if (value === \"true\") return true;\n  if (value === \"false\") return false;\n  if (value === \"null\" || value === \"undefined\") return null;\n  return value;\n}\nfunction _afCompare(left: unknown, right: unknown, operator: string): boolean {\n  if (right === null) {\n    if (operator === \"==\" || operator === \"===\") return left == null;\n    if (operator === \"!=\" || operator === \"!==\") return left != null;\n  }\n  if (operator === \"===\") return left === right;\n  if (operator === \"!==\") return left !== right;\n  if (operator === \"==\") return left === right || (left != null && right != null && String(left) === String(right));\n  if (operator === \"!=\") return !(left === right || (left != null && right != null && String(left) === String(right)));\n  if (operator === \">\") return Number(left) > Number(right);\n  if (operator === \"<\") return Number(left) < Number(right);\n  if (operator === \">=\") return Number(left) >= Number(right);\n  return Number(left) <= Number(right);\n}\nfunction _afPredicateAtom(source: string, facts: _AfErrorFacts): boolean {\n  const atom = _afStripParens(source);\n  if (/^true$/i.test(atom)) return true;\n  if (/^false$/i.test(atom)) return false;\n  const path = \"(?:error\\\\.)?(?:kind|code|status|name|message|data(?:\\\\.[A-Za-z_$][A-Za-z0-9_$-]*)*|meta(?:\\\\.[A-Za-z_$][A-Za-z0-9_$-]*)*)\";\n  const literal = \"(?:'(?:\\\\\\\\.|[^'\\\\\\\\])*'|\\\"(?:\\\\\\\\.|[^\\\"\\\\\\\\])*\\\"|-?\\\\d+(?:\\\\.\\\\d+)?|true|false|null|undefined|[A-Za-z_$][A-Za-z0-9_$.-]*)\";\n  const includes = atom.match(new RegExp(\"^(\" + path + \")\\\\.includes\\\\(\\\\s*(\" + literal + \")\\\\s*\\\\)$\", \"i\"));\n  if (includes) {\n    const left = _afRead(facts, includes[1]!.replace(/^error\\./, \"\"));\n    const right = _afLiteral(includes[2]!);\n    return typeof left === \"string\" ? left.includes(String(right)) : Array.isArray(left) && left.includes(right);\n  }\n  const comparison = atom.match(new RegExp(\"^(\" + path + \")\\\\s*(===|!==|==|!=|>=|<=|>|<)\\\\s*(\" + literal + \")$\", \"i\"));\n  if (comparison) return _afCompare(_afRead(facts, comparison[1]!.replace(/^error\\./, \"\")), _afLiteral(comparison[3]!), comparison[2]!);\n  const presence = atom.match(new RegExp(\"^(!{0,2})(\" + path + \")$\", \"i\"));\n  if (!presence) return false;\n  const value = Boolean(_afRead(facts, presence[2]!.replace(/^error\\./, \"\")));\n  return presence[1] === \"!\" ? !value : value;\n}\nfunction _afErrorPredicate(predicate: string, facts: _AfErrorFacts): boolean {\n  const evaluate = (source: string): boolean => {\n    const normalized = _afStripParens(source);\n    const ors = _afSplitTop(normalized, \"||\");\n    if (ors.length > 1) return ors.some(evaluate);\n    const ands = _afSplitTop(normalized, \"&&\");\n    return ands.length > 1 ? ands.every(evaluate) : _afPredicateAtom(normalized, facts);\n  };\n  return evaluate(predicate);\n}\nfunction _afResolveFailure(policy: \"soft\" | \"terminal\" | \"park\" | _AfPolicyRule[] | undefined, failure: unknown, stepDefault?: unknown): _AfFailureResolution {\n  const facts = _afErrorFacts(failure);\n  if (policy === \"soft\") return { disposition: \"continue\", policyAction: \"soft\", facts, defaultResult: stepDefault, suppressEmit: false };\n  if (policy === \"terminal\") return { disposition: \"terminal\", policyAction: \"terminal\", facts, suppressEmit: true };\n  if (policy === \"park\") return { disposition: \"retry\", policyAction: \"park\", facts, suppressEmit: true };\n  if (!Array.isArray(policy)) return { disposition: \"retry\", policyAction: \"retry\", facts, suppressEmit: true };\n  for (const rule of policy) {\n    const action = typeof rule.when === \"string\" ? (_afErrorPredicate(rule.when, facts) ? rule.do : undefined) : rule.default;\n    if (!action) continue;\n    const ownDefault = Object.prototype.hasOwnProperty.call(rule, \"defaultResult\");\n    const defaultResult = ownDefault ? rule.defaultResult : stepDefault;\n    return {\n      disposition: action === \"park\" || action === \"retry\" ? \"retry\" : action,\n      policyAction: action,\n      facts,\n      ...(ownDefault || stepDefault !== undefined ? { defaultResult } : {}),\n      ...(rule.emitEvent ? { emitEvent: rule.emitEvent } : {}),\n      ...(rule.emitPayload ? { emitPayload: rule.emitPayload } : {}),\n      suppressEmit: rule.suppressEmit ?? false,\n    };\n  }\n  return { disposition: \"terminal\", policyAction: \"terminal\", facts, suppressEmit: true, policyError: \"error policy has no matching/default rule\" };\n}\nfunction _afFailurePayload(resolution: _AfFailureResolution): Record<string, unknown> {\n  const fallback = resolution.defaultResult && typeof resolution.defaultResult === \"object\" && !Array.isArray(resolution.defaultResult)\n    ? resolution.defaultResult as Record<string, unknown>\n    : { error: resolution.facts };\n  return { ...fallback, ...(resolution.emitPayload ?? {}) };\n}\n\n/** System prompt — 工厂为【这一个】agent 亲自推理出来的。 */\nconst SYSTEM_PROMPT = `你负责把招聘需求生成并落地为标准化 JD。你必须严格依据当前事件输入、RAAS 读取结果、GoHire 返回结果，以及运行时通过 ontology.fetchActionRules 获取的 createJD 当前规则执行。\n\n执行要求：\n1. 规则绝不写死。每次运行都要动态读取 createJD 当前规则，再对生成的 JD 与结构化字段做核对。\n2. 你必须按既定顺序执行：读取需求上下文→构造生成 prompt→生成 JD→提取结构化技能→主持久化→RAAS/镜像补写→发出 JD_GENERATED。\n3. GoHire 返回 2xx 但正文为空、关键字段缺失或阶段异常，属于静默降级，不得当作成功。\n4. 未获得 job_posting_id 前不得发 JD_GENERATED。\n5. 主写入是硬门槛；Allmeta 镜像是软门槛，可告警后继续。\n6. 你的输出要可审计：说明输入锚点、生成结果、规则核对结果、持久化结果。\n\n【前置条件（运行前必须满足；不满足则 fail-close 发拦截/失败事件，不要继续）】\n1. 事件携带 entity_id(=job_requisition_id),缺失兼容 payload.requirement_id / raw_input_data.job_requisition_id,均无则不可重试失败。\n2. job_requisition 在 RAAS partner Postgres 存在且可读。\n3. client_id 可从 requirement 或 specification 解析(job_posting 落库必填)。\n4. 需求关键字段可拼出 ≥4 字符的生成 prompt(全空则失败,禁止空泛生成)。\n5. 澄清记录读取失败不阻断(增强信息,回退空数组)。`;\n\nexport const createJDAgent = defineAgent({\n  id: \"agents-gener-create-jd\",\n  name: \"CreateJDAgent\",\n  actor: [\"Agent\"],\n  trigger: [\"REQUIREMENT_LOGGED\",\"CLARIFICATION_READY\",\"JD_REJECTED\"],\n  emit: [\"JD_GENERATED\"],\n  tools: [\"facts.query\",\"generateJdApi\",\"entities.write\",\"ontology.writeInstance\",\"ontology.fetchActionRules\"],\n  systemPrompt: SYSTEM_PROMPT,\n  // Fail-closed ownership marker: probeAgentModule keeps this code reviewable but does not\n  // claim CodeAct execution where the worker lacks durable/per-RPC policy semantics.\n  factoryExecutionMode: \"declarative_required\",\n  factoryExecutionReason: \"工具调用需要独立 durable step、幂等键与 typed failure policy；错误策略需要宿主的 typed retry/park/terminal 控制流\",\n  async handler(input, ctx) {\n      const $in = (input ?? {}) as Record<string, unknown>;\n      let last: unknown = undefined;\n      const results: Record<string, unknown> = {};\n      const carry = (): Record<string, unknown> => ({ ...$in, ...(last && typeof last === \"object\" ? (last as Record<string, unknown>) : {}), results: { ...results } });\n      let _explicitEmitCount = 0;\n      let _suppressImplicitEmit = false;\n      const _cond: Record<string, boolean> = {};\n      const _skipped = new Set<string>();\n      const _pass = (deps: string[]) => deps.every((d) => !_skipped.has(d) && _cond[d] !== false);\n      // step resolve_requirement_context (tool) — 按 job_requisition_id 读取 requirement、specification 与 clarification_records\n      try {\n        last = await (async () => { const _raw = await ctx.tools.run(\"facts.query\", _afToolArguments({\"subject\":{\"from\":\"input.job_requisition_id\",\"required\":true},\"objectTypes\":{\"const\":[\"Job_Requisition\",\"Job_Requisition_Specification\",\"Requirement_Clarification_Record\"]}}, { event: { name: \"REQUIREMENT_LOGGED\", data: $in }, lastResult: last, results, input: $in })); return _afMapToolResult(_raw, {\"fields\":{\"requirement\":\"result.requirement\",\"specification\":\"result.specification\",\"clarifications\":\"result.clarifications\"},\"includeRaw\":true}); })();\n      } catch (e) {\n        const _resolution = _afResolveFailure([{\"when\":\"status == 404 || code == 'NOT_FOUND'\",\"do\":\"terminal\",\"suppressEmit\":true},{\"when\":\"status >= 500 || code == 'ETIMEDOUT'\",\"do\":\"park\",\"suppressEmit\":true},{\"default\":\"terminal\"}], e, undefined);\n        if (_resolution.disposition !== \"continue\") {\n          const _tag = _resolution.disposition === \"terminal\" ? \"terminal\" : (_resolution.policyAction === \"park\" ? \"park\" : \"retry\");\n          ctx.log?.(\"error\", \"步骤 resolve_requirement_context 按错误策略终止\", { action: _resolution.policyAction, facts: _resolution.facts });\n          throw new Error(\"[\" + _tag + \"] step resolve_requirement_context: \" + _resolution.facts.message);\n        }\n        if (_resolution.suppressEmit) _suppressImplicitEmit = true;\n        if (_resolution.emitEvent) { await ctx.emit(_resolution.emitEvent, _afFailurePayload(_resolution)); _explicitEmitCount++; }\n        last = _resolution.defaultResult;\n      }\n      results[\"resolve_requirement_context\"] = last;\n      // step build_jd_prompt (logic) — 依赖: resolve_requirement_context\n      if (_pass([\"resolve_requirement_context\"])) {\n        try {\n          last = await ctx.reason(SYSTEM_PROMPT + \"\\n\\n【当前子步骤】build_jd_prompt：按 requirement、specification 与澄清记录构造 4-4000 字的 JD 生成 prompt，日期按 Asia/Shanghai 取日历日\", carry());\n        } catch (e) {\n          const _resolution = _afResolveFailure(undefined, e, undefined);\n          if (_resolution.disposition !== \"continue\") {\n            const _tag = _resolution.disposition === \"terminal\" ? \"terminal\" : (_resolution.policyAction === \"park\" ? \"park\" : \"retry\");\n            ctx.log?.(\"error\", \"步骤 build_jd_prompt 按错误策略终止\", { action: _resolution.policyAction, facts: _resolution.facts });\n            throw new Error(\"[\" + _tag + \"] step build_jd_prompt: \" + _resolution.facts.message);\n          }\n          if (_resolution.suppressEmit) _suppressImplicitEmit = true;\n          if (_resolution.emitEvent) { await ctx.emit(_resolution.emitEvent, _afFailurePayload(_resolution)); _explicitEmitCount++; }\n          last = _resolution.defaultResult;\n        }\n        results[\"build_jd_prompt\"] = last;\n      } else {\n        _skipped.add(\"build_jd_prompt\");\n        ctx.log?.(\"info\", \"跳过步骤 build_jd_prompt（依赖条件不成立）\");\n      }\n      // step generate_jd_content (tool) — 调用 GoHire 生成 JD，并验证正文非空且可用\n      try {\n        last = await (async () => { const _raw = await ctx.tools.run(\"generateJdApi\", _afToolArguments({\"prompt\":{\"from\":\"results.build_jd_prompt.result.prompt\",\"required\":true},\"language\":{\"const\":\"zh\"},\"companyName\":{\"from\":\"results.resolve_requirement_context.result.requirement.sd_org_name\",\"required\":false},\"department\":{\"from\":\"results.resolve_requirement_context.result.requirement.client_department_id\",\"required\":false}}, { event: { name: \"REQUIREMENT_LOGGED\", data: $in }, lastResult: last, results, input: $in })); return _afMapToolResult(_raw, {\"fields\":{\"jdContent\":\"result.jd_content\",\"requestId\":\"result.request_id\",\"hardRequirements\":\"result.hardRequirements\",\"niceToHave\":\"result.niceToHave\"},\"includeRaw\":true}); })();\n      } catch (e) {\n        const _resolution = _afResolveFailure([{\"when\":\"status == 200 && (!data || !data.jd_content)\",\"do\":\"park\",\"suppressEmit\":true},{\"when\":\"status == 429 || status >= 500 || code == 'QUOTA_EXHAUSTED' || code == 'ETIMEDOUT'\",\"do\":\"park\",\"suppressEmit\":true},{\"default\":\"terminal\"}], e, undefined);\n        if (_resolution.disposition !== \"continue\") {\n          const _tag = _resolution.disposition === \"terminal\" ? \"terminal\" : (_resolution.policyAction === \"park\" ? \"park\" : \"retry\");\n          ctx.log?.(\"error\", \"步骤 generate_jd_content 按错误策略终止\", { action: _resolution.policyAction, facts: _resolution.facts });\n          throw new Error(\"[\" + _tag + \"] step generate_jd_content: \" + _resolution.facts.message);\n        }\n        if (_resolution.suppressEmit) _suppressImplicitEmit = true;\n        if (_resolution.emitEvent) { await ctx.emit(_resolution.emitEvent, _afFailurePayload(_resolution)); _explicitEmitCount++; }\n        last = _resolution.defaultResult;\n      }\n      results[\"generate_jd_content\"] = last;\n      // step derive_structured_skills (logic) — 依赖: generate_jd_content\n      if (_pass([\"generate_jd_content\"])) {\n        try {\n          last = await ctx.reason(SYSTEM_PROMPT + \"\\n\\n【当前子步骤】derive_structured_skills：从 hardRequirements 与 niceToHave 派生 must_have_skills、nice_to_have_skills，已有结构化值优先\", carry());\n        } catch (e) {\n          const _resolution = _afResolveFailure(undefined, e, undefined);\n          if (_resolution.disposition !== \"continue\") {\n            const _tag = _resolution.disposition === \"terminal\" ? \"terminal\" : (_resolution.policyAction === \"park\" ? \"park\" : \"retry\");\n            ctx.log?.(\"error\", \"步骤 derive_structured_skills 按错误策略终止\", { action: _resolution.policyAction, facts: _resolution.facts });\n            throw new Error(\"[\" + _tag + \"] step derive_structured_skills: \" + _resolution.facts.message);\n          }\n          if (_resolution.suppressEmit) _suppressImplicitEmit = true;\n          if (_resolution.emitEvent) { await ctx.emit(_resolution.emitEvent, _afFailurePayload(_resolution)); _explicitEmitCount++; }\n          last = _resolution.defaultResult;\n        }\n        results[\"derive_structured_skills\"] = last;\n      } else {\n        _skipped.add(\"derive_structured_skills\");\n        ctx.log?.(\"info\", \"跳过步骤 derive_structured_skills（依赖条件不成立）\");\n      }\n      // step persist_jd_posting (tool) — 写入 RAAS Job_Posting，并回填 Job_Requisition 技能数组与 specification 状态\n      try {\n        last = await (async () => { const _raw = await ctx.tools.run(\"entities.write\", _afToolArguments({\"objectType\":{\"const\":\"Job_Posting\"},\"payload\":{\"from\":\"results.derive_structured_skills.result.jobPostingPayload\",\"required\":true}}, { event: { name: \"REQUIREMENT_LOGGED\", data: $in }, lastResult: last, results, input: $in })); return _afMapToolResult(_raw, {\"fields\":{\"jobPostingId\":\"result.job_posting_id\",\"savedPosting\":\"result.record\"},\"includeRaw\":true}); })();\n      } catch (e) {\n        const _resolution = _afResolveFailure([{\"when\":\"!data || !data.job_posting_id\",\"do\":\"terminal\",\"suppressEmit\":true},{\"when\":\"status >= 500 || code == 'ETIMEDOUT'\",\"do\":\"park\",\"suppressEmit\":true},{\"default\":\"terminal\"}], e, undefined);\n        if (_resolution.disposition !== \"continue\") {\n          const _tag = _resolution.disposition === \"terminal\" ? \"terminal\" : (_resolution.policyAction === \"park\" ? \"park\" : \"retry\");\n          ctx.log?.(\"error\", \"步骤 persist_jd_posting 按错误策略终止\", { action: _resolution.policyAction, facts: _resolution.facts });\n          throw new Error(\"[\" + _tag + \"] step persist_jd_posting: \" + _resolution.facts.message);\n        }\n        if (_resolution.suppressEmit) _suppressImplicitEmit = true;\n        if (_resolution.emitEvent) { await ctx.emit(_resolution.emitEvent, _afFailurePayload(_resolution)); _explicitEmitCount++; }\n        last = _resolution.defaultResult;\n      }\n      results[\"persist_jd_posting\"] = last;\n      // step persist_raas_job_posting (tool) — 按 job_posting phase 将 Job_Requisition 与 Job_Posting 镜像到 Allmeta\n      try {\n        last = await (async () => { const _raw = await ctx.tools.run(\"ontology.writeInstance\", _afToolArguments({\"object\":{\"const\":\"Job_Posting\"},\"id\":{\"from\":\"results.persist_jd_posting.result.jobPostingId\",\"required\":true},\"data\":{\"from\":\"results.persist_jd_posting.result.savedPosting\",\"required\":true}}, { event: { name: \"REQUIREMENT_LOGGED\", data: $in }, lastResult: last, results, input: $in })); return _afMapToolResult(_raw, {\"fields\":{\"mirrorOk\":\"result.ok\"},\"includeRaw\":true}); })();\n      } catch (e) {\n        const _resolution = _afResolveFailure([{\"default\":\"continue\",\"defaultResult\":{\"mirrorOk\":false}}], e, undefined);\n        if (_resolution.disposition !== \"continue\") {\n          const _tag = _resolution.disposition === \"terminal\" ? \"terminal\" : (_resolution.policyAction === \"park\" ? \"park\" : \"retry\");\n          ctx.log?.(\"error\", \"步骤 persist_raas_job_posting 按错误策略终止\", { action: _resolution.policyAction, facts: _resolution.facts });\n          throw new Error(\"[\" + _tag + \"] step persist_raas_job_posting: \" + _resolution.facts.message);\n        }\n        if (_resolution.suppressEmit) _suppressImplicitEmit = true;\n        if (_resolution.emitEvent) { await ctx.emit(_resolution.emitEvent, _afFailurePayload(_resolution)); _explicitEmitCount++; }\n        last = _resolution.defaultResult;\n      }\n      results[\"persist_raas_job_posting\"] = last;\n      // step emit_jd_generated (emit) — 发出 JD_GENERATED，携带 job_posting_id、jd_content 与便利外键\n      try {\n        const _selected = readConditionPath({ event: { name: \"REQUIREMENT_LOGGED\", data: $in }, lastResult: last, results, input: $in }, \"results.persist_jd_posting.result\");\n        if (_selected === undefined) throw new Error(\"[terminal] emit step emit_jd_generated: payload path results.persist_jd_posting.result did not resolve\");\n        const _payloadBase = _selected && typeof _selected === \"object\" && !Array.isArray(_selected) ? (_selected as Record<string, unknown>) : _selected === undefined ? {} : { value: _selected };\n        const _payload: Record<string, unknown> = { ..._payloadBase, ...{\"job_requisition_id\":\"{{input.job_requisition_id}}\",\"client_id\":\"{{input.client_id}}\"} };\n        await ctx.emit(\"JD_GENERATED\", _payload);\n        _explicitEmitCount++;\n        last = { ..._payload, _emit: \"JD_GENERATED\" };\n      } catch (e) {\n        const _resolution = _afResolveFailure(undefined, e, undefined);\n        if (_resolution.disposition !== \"continue\") {\n          const _tag = _resolution.disposition === \"terminal\" ? \"terminal\" : (_resolution.policyAction === \"park\" ? \"park\" : \"retry\");\n          ctx.log?.(\"error\", \"步骤 emit_jd_generated 按错误策略终止\", { action: _resolution.policyAction, facts: _resolution.facts });\n          throw new Error(\"[\" + _tag + \"] step emit_jd_generated: \" + _resolution.facts.message);\n        }\n        if (_resolution.suppressEmit) _suppressImplicitEmit = true;\n        if (_resolution.emitEvent) { await ctx.emit(_resolution.emitEvent, _afFailurePayload(_resolution)); _explicitEmitCount++; }\n        last = _resolution.defaultResult;\n      }\n      results[\"emit_jd_generated\"] = last;\n      // 决策核心（fail-close）：LLM 不可用/失败时绝不伪造通过\n      const decision = (await ctx.reason(SYSTEM_PROMPT + \"\\n只输出 JSON。\", { input: $in, lastResult: last, results })) as Record<string, unknown>;\n      if (decision._reasonFailed === true) throw new Error(\"决策核心失败（LLM 不可用）——fail-close，不伪造通过\");\n      // 显式 emit / errorPolicy intent 是权威输出；没有 intent 且未 suppress 时才走历史隐式终态。\n      if (_explicitEmitCount === 0 && !_suppressImplicitEmit) {\n        await ctx.emit(\"JD_GENERATED\", { ...carry(), ...decision });\n      }\n      return { ok: decision.pass !== false && decision.ok !== false, lastResult: last, results };\n  },\n});\n",
+    "codeExecuted": false,
+    "probeReason": "execution owner=declarative-plan: 工具调用需要独立 durable step、幂等键与 typed failure policy；错误策略需要宿主的 typed retry/park/terminal 控制流；代码直接访问 reason、tools.run；当前协议不能把这些调用恢复为独立 durable step"
+  },
+  "createdAt": "2026-07-20T05:49:12.892Z",
+  "versionId": "v-20260720054912892-0f578b0e",
+  "ownerTenantId": "ten-f17312c2b674",
+  "bindingDomainId": "Agents-generation"
+}

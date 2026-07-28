@@ -87,6 +87,31 @@ function _afToolArguments(template: Record<string, _AfToolArgument>, scope: Reco
   }
   return out;
 }
+// #G4 — an invoked child's payload. A value may be a {from}/{const} descriptor
+// (resolve it) or a plain literal (pass it through). Before this existed the
+// whole object was inlined verbatim, so a descriptor travelled to the callee as
+// an object AND — because the payload is spread after the inbound event data —
+// overwrote the real value it was meant to select. A required:false descriptor
+// on an unresolvable path drops the key rather than poisoning it.
+function _afInvokeInput(template: Record<string, unknown>, scope: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+  for (const [argument, source] of Object.entries(template)) {
+    if (!source || typeof source !== "object" || Array.isArray(source)) { out[argument] = source; continue; }
+    const hasFrom = Object.prototype.hasOwnProperty.call(source, "from");
+    const hasConst = Object.prototype.hasOwnProperty.call(source, "const");
+    if (!hasFrom && !hasConst) { out[argument] = source; continue; }
+    if (hasFrom && hasConst) throw new Error("[terminal] invoke input " + argument + " must choose exactly one of from/const");
+    if (hasConst) { out[argument] = _afCloneJson((source as { const: unknown }).const); continue; }
+    const path = String((source as { from: string }).from ?? "");
+    const value = readConditionPath(scope, path);
+    if (value === undefined) {
+      if ((source as { required?: boolean }).required === false) continue;
+      throw new Error("[terminal] required invoke input path did not resolve: " + argument + " <- " + path);
+    }
+    out[argument] = _afCloneJson(value);
+  }
+  return out;
+}
 function _afMapToolResult(raw: unknown, map: _AfResultMap): Record<string, unknown> {
   const out: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
   for (const [field, path] of Object.entries(map.fields)) {
@@ -101,7 +126,9 @@ function _afMapToolResult(raw: unknown, map: _AfResultMap): Record<string, unkno
 
 export function planUsesExactDataflow(plan: PlanStep[]): boolean {
   return plan.some((step) =>
-    Boolean(step.toolArguments || step.resultMap)
+    // #G4 — an invoke payload is resolved by this runtime too, so a plan that
+    // only carries `invokeInput` still needs the prelude emitted.
+    Boolean(step.toolArguments || step.resultMap || step.invokeInput)
     || (step.body ? planUsesExactDataflow(step.body) : false));
 }
 
@@ -119,6 +146,22 @@ export function renderedToolArguments(
     expression: `_afToolArguments(${JSON.stringify(step.toolArguments)}, ${scopeExpression})`,
     legacy: false,
   };
+}
+
+/**
+ * #G4 — an invoked child agent's payload, resolved the same way tool arguments
+ * are. Inlining `invokeInput` verbatim shipped literal `{from:"input.upload_id"}`
+ * descriptors to the callee, and because the payload is spread AFTER the inbound
+ * event data, each descriptor OVERWROTE the correct value it was supposed to
+ * select — so the child saw a poisoned object where a real id belonged, and any
+ * `required` check passed because the object is not undefined.
+ */
+export function renderedInvokeInput(
+  invokeInput: Record<string, unknown> | undefined,
+  scopeExpression: string,
+): string {
+  if (!invokeInput || Object.keys(invokeInput).length === 0) return "{}";
+  return `_afInvokeInput(${JSON.stringify(invokeInput)}, ${scopeExpression})`;
 }
 
 /** Wrap an awaited raw tool call with resultMap when authored. The callback

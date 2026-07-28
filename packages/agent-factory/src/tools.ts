@@ -243,6 +243,17 @@ const PLAN_STEP_SCHEMA: Record<string, unknown> = {
     toolArguments: TOOL_ARGUMENTS_SCHEMA,
     resultMap: RESULT_MAP_SCHEMA,
     condition: { type: "string" },
+    routes: {
+      type: "object",
+      description:
+        "【终态路由】仅用于 kind:\"condition\"。条件为真/假时各自对应哪个已声明事件。凡是用来决定「发哪个终态事件」的条件，都必须写 routes——否则这个条件算完就被丢弃，终态会退回到粗粒度的 pass/fail 二分。两个值都必须出自本 agent 的 emit 列表。",
+      properties: {
+        onTrue: { type: "string" },
+        onFalse: { type: "string" },
+      },
+      required: ["onTrue", "onFalse"],
+      additionalProperties: false,
+    },
     invoke: { type: "string" },
     invokeInput: { type: "object", additionalProperties: true },
     forwardLastResult: { type: "boolean" },
@@ -3445,7 +3456,7 @@ const design_agent: BrainTool = {
       plan: {
         type: "array",
         description:
-          "这个 agent 的【有序多步 plan】——execution_plan_requirement.required=true 时必填，并必须覆盖 action_steps 中每个稳定 stepId；每个 integration 外部调用/写入是独立一步(运行时各包一个稳定业务键 durable step，可重放)。kind 支持 tool|logic|condition|invoke|foreach|emit。foreach 用 itemsFrom + itemAs + itemKeyFrom + body，支持嵌套 foreach 和循环内 invoke；每层 itemKeyFrom 都必须是稳定业务键。emit 用 emitEvent（必须在本体 triggered_event 白名单）+ emitPayloadFrom/emitPayload。tool/invoke 步要给精确输入、timeout 和 onError/errorPolicy；绝不按参数名猜映射。condition 使用安全 DSL；用 dependsOn 做分支。只有本体没有执行边界/副作用的简单动作才可省略 plan。",
+          "这个 agent 的【有序多步 plan】——execution_plan_requirement.required=true 时必填，并必须覆盖 action_steps 中每个稳定 stepId；每个 integration 外部调用/写入是独立一步(运行时各包一个稳定业务键 durable step，可重放)。kind 支持 tool|logic|condition|invoke|foreach|emit。foreach 用 itemsFrom + itemAs + itemKeyFrom + body，支持嵌套 foreach 和循环内 invoke；每层 itemKeyFrom 都必须是稳定业务键。emit 用 emitEvent（必须在本体 triggered_event 白名单）+ emitPayloadFrom/emitPayload。tool/invoke 步要给精确输入、timeout 和 onError/errorPolicy；绝不按参数名猜映射。condition 使用安全 DSL；用 dependsOn 做分支。【终态由判定决定】：凡是决定「发哪个终态事件」的 condition，必须写 routes:{onTrue,onFalse}(两个值都取自本 agent 的 emit 列表)；没写 routes 又没有后续步骤 dependsOn 它的 condition 会被判为死逻辑——它算完就丢弃，终态就退回粗粒度的 pass/fail 二分，等于把「这个候选人是通过还是拒绝」交给一次自由文本生成。只有本体没有执行边界/副作用的简单动作才可省略 plan。",
         items: PLAN_STEP_SCHEMA,
       },
     },

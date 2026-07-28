@@ -423,7 +423,37 @@ describe("validatePlan — enforces production discipline (Phase 1)", () => {
       { stepId: "parse", kind: "logic" },
       { stepId: "has-items", kind: "condition", condition: "Array.isArray(results.parse.result.items) && results.parse.result.items.includes('ready')" },
     ];
-    expect(validatePlan(collectionPlan)).toEqual({ ok: true, errors: [], warnings: [] });
+    const result = validatePlan(collectionPlan);
+    expect(result.ok).toBe(true);
+    expect(result.errors).toEqual([]);
+    // #G2 — the predicate itself is fine; the plan is flagged because nothing
+    // reads the verdict. A trailing condition with no dependents and no routes
+    // is computed and discarded, which is how routing rules went missing.
+    expect(result.warnings.join(" ")).toMatch(/never read/);
+  });
+
+  it("#G2 flags a routing condition whose result nothing reads, and validates declared routes", () => {
+    const dead: PlanStep[] = [
+      { stepId: "score-passes", kind: "condition", condition: "event.data.score >= 40" },
+    ];
+    expect(validatePlan(dead).warnings.join(" ")).toMatch(/never read/);
+
+    const routed: PlanStep[] = [
+      {
+        stepId: "score-passes",
+        kind: "condition",
+        condition: "event.data.score >= 40",
+        routes: { onTrue: "MATCHED", onFalse: "REJECTED" },
+      },
+    ];
+    const ok = validatePlan(routed, { declaredEvents: ["MATCHED", "REJECTED"] });
+    expect(ok.errors).toEqual([]);
+    expect(ok.warnings.join(" ")).not.toMatch(/never read/);
+
+    // A route must name an event this agent is actually allowed to emit.
+    const undeclared = validatePlan(routed, { declaredEvents: ["MATCHED"] });
+    expect(undeclared.ok).toBe(false);
+    expect(undeclared.errors.join(" ")).toMatch(/REJECTED.*allow-list/);
   });
   it("rejects an invoke step with no target", () => {
     expect(validatePlan([{ stepId: "i", kind: "invoke", idempotencyKeyFrom: "id", onError: "soft" }]).ok).toBe(false);

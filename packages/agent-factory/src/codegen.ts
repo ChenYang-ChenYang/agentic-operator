@@ -14,6 +14,7 @@ import {
   assertPlanDataflowRenderable,
   PLAN_DATAFLOW_RUNTIME_SRC,
   planUsesExactDataflow,
+  renderedInvokeInput,
   renderedToolArguments,
   renderedToolCallback,
 } from "./plan-dataflow-code";
@@ -473,7 +474,7 @@ function renderCodegenForeachBody(
       }
       else if (child.kind === "invoke") {
         const eventData = `{ ...(${env.inputExpr}), ...${locals} }`;
-        const payload = `_invokePayload({ eventData: ${eventData}, invokeInput: ${JSON.stringify(child.invokeInput ?? {})}, forwardLastResult: ${String(child.forwardLastResult ?? true)}, forwardResults: ${String(child.forwardResults ?? false)}, lastResult: ${localLast}, results: ${resultsExpr}, subject: ctx.subject, correlationId: ctx.correlationId })`;
+        const payload = `_invokePayload({ eventData: ${eventData}, invokeInput: ${renderedInvokeInput(child.invokeInput as Record<string, unknown> | undefined, scope)}, forwardLastResult: ${String(child.forwardLastResult ?? true)}, forwardResults: ${String(child.forwardResults ?? false)}, lastResult: ${localLast}, results: ${resultsExpr}, subject: ctx.subject, correlationId: ctx.correlationId })`;
         execute = [`${localLast} = await ctx.invoke(${JSON.stringify(child.invoke ?? id)}, ${payload}, { timeoutMs: ${child.timeoutS ? child.timeoutS * 1000 : "undefined"} });`];
       }
       else if (child.kind === "emit") execute = codegenEmitLines(child, scope, localLast);
@@ -600,7 +601,7 @@ function renderPlanStep(step: PlanStep, opts: { triggers: string[] }): string {
       ];
       break;
     }
-    case "invoke": body = [`last = await ctx.invoke(${JSON.stringify(step.invoke ?? id)}, _invokePayload({ eventData: $in, invokeInput: ${JSON.stringify(step.invokeInput ?? {})}, forwardLastResult: ${String(step.forwardLastResult ?? true)}, forwardResults: ${String(step.forwardResults ?? false)}, lastResult: last, results, subject: ctx.subject, correlationId: ctx.correlationId }), { timeoutMs: ${step.timeoutS ? step.timeoutS * 1000 : "undefined"} });`]; break;
+    case "invoke": body = [`last = await ctx.invoke(${JSON.stringify(step.invoke ?? id)}, _invokePayload({ eventData: $in, invokeInput: ${renderedInvokeInput(step.invokeInput as Record<string, unknown> | undefined, scopeExpr)}, forwardLastResult: ${String(step.forwardLastResult ?? true)}, forwardResults: ${String(step.forwardResults ?? false)}, lastResult: last, results, subject: ctx.subject, correlationId: ctx.correlationId }), { timeoutMs: ${step.timeoutS ? step.timeoutS * 1000 : "undefined"} });`]; break;
     case "emit": body = codegenEmitLines(step, scopeExpr, "last"); break;
     case "foreach": body = codegenForeachLines(step, trigger); break;
     case "logic": body = [`last = await ctx.reason(SYSTEM_PROMPT + ${JSON.stringify(`\n\n【当前子步骤】${id}${step.description ? `：${step.description}` : ""}`)}, carry());`]; break;

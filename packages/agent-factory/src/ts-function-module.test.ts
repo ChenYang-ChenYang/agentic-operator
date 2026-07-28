@@ -147,12 +147,19 @@ describe("#TRUE-CODE renderTsFunctionModule — 槽位真执行(经 harness)", (
     expect(infra.ran).toBe(false); // park → 上抛给 Inngest 重试,不发终态
     expect(infra.emitNames).not.toContain("RESUME_FAILED");
 
-    // #SLOT-2 回归 — 计费/欠费(402)不可恢复：必须 terminal(发 _FAILED)，不能落到 park 被 Inngest
-    // 无限重试一个永远不会成功的欠费故障（记忆里 RoboHire 402「没钱」的真实高频坑）。
+    // #G18 — 欠费/额度用尽在充值后自愈，必须 park 等重试。此前它被判成 terminal，
+    // 把一次「暂时没钱」变成对这条业务的永久杀死；而真正不自愈的是凭证类失败(401/403)。
+    // 这与 lib/dependency-health 的 RECOVERABLE 集合(quota/rate_limit/network/server)一致。
     for (const msg of ["Request failed with status 402", "insufficient balance", "余额不足，请充值", "quota exceeded for this month"]) {
       const billing = await loadHarnessed(code)({ data: {} }, { tool: async () => ({}), reason: async () => { throw new Error(msg); } });
-      expect(billing.ran, msg).toBe(true); // 被捕获、发终态，而不是上抛重试
-      expect(billing.emitNames, msg).toContain("RESUME_FAILED");
+      expect(billing.ran, msg).toBe(false); // 上抛给 Inngest 重试
+      expect(billing.emitNames, msg).not.toContain("RESUME_FAILED");
+    }
+    // 凭证失败仍然 terminal：重试换不来一把新钥匙。
+    for (const msg of ["Request failed with status 401", "invalid api key"]) {
+      const auth = await loadHarnessed(code)({ data: {} }, { tool: async () => ({}), reason: async () => { throw new Error(msg); } });
+      expect(auth.ran, msg).toBe(true);
+      expect(auth.emitNames, msg).toContain("RESUME_FAILED");
     }
   });
 
@@ -230,12 +237,40 @@ describe("#TRUE-CODE renderTsFunctionModule — 槽位真执行(经 harness)", (
     expect(r.toolCalls!.map((c) => c.name)).toEqual(["parseResumeApi", "ontology.fetchActionRules", "records.upsert"]);
   });
 
-  it("多 emit 真选择:决策核心显式 emit 生效;失败决策走失败事件", async () => {
+  it("#G1 多 emit 的终态由判定决定,LLM 的自由文本 emit 不能改写它", async () => {
     const code = renderTsFunctionModule(spec({ emit: ["MATCHED", "REVIEW_NEEDED", "REJECTED"] }));
-    const picked = await loadHarnessed(code)({ data: {} }, { tool: async () => ({}), reason: async () => ({ ok: true, emit: "REVIEW_NEEDED" }) });
-    expect(picked.emitNames).toEqual(["REVIEW_NEEDED"]);
+    // 模型说"发 REVIEW_NEEDED"——不算数。没有路由条件时，终态只由 pass/ok 判定二分。
+    // 这条保证的意义在于：一个候选人是被拒绝还是被推进，不能取决于一次自由文本生成。
+    const hostile = await loadHarnessed(code)({ data: {} }, { tool: async () => ({}), reason: async () => ({ ok: true, emit: "REVIEW_NEEDED" }) });
+    expect(hostile.emitNames).toEqual(["MATCHED"]);
+    // #G19 — 运行失败绝不能复用某条业务终态。这里三个声明事件都是业务判定，
+    // 「REJECTED」尤其是对候选人的处置结论；把一次 401 或接线 bug 发成 REJECTED
+    // 等于凭零证据永久拒绝一个人。没有失败形态的已声明事件时必须合成 _FAILED。
     const failed = await loadHarnessed(code)({ data: {} }, { tool: async () => ({}), reason: async () => ({ pass: false }) });
-    expect(failed.emitNames).toEqual(["REJECTED"]);
+    expect(failed.emitNames).toEqual(["MATCHED_FAILED"]);
+
+    // 已声明了失败形态事件时，复用它而不是再合成一个下游没订阅的新名字。
+    const withFailure = renderTsFunctionModule(spec({ emit: ["MATCHED", "MATCH_FAILED"] }));
+    const reused = await loadHarnessed(withFailure)({ data: {} }, { tool: async () => ({}), reason: async () => ({ pass: false }) });
+    expect(reused.emitNames).toEqual(["MATCH_FAILED"]);
+  });
+
+  it("#G2 路由条件真的决定终态——算完就丢弃的条件等于这段逻辑不存在", async () => {
+    const plan: PlanStep[] = [
+      {
+        stepId: "score-passes",
+        kind: "condition",
+        condition: "event.data.score >= 40",
+        routes: { onTrue: "MATCHED", onFalse: "REJECTED" },
+      },
+    ];
+    const code = renderTsFunctionModule(spec({ emit: ["MATCHED", "REJECTED"], plan, tools: [] }));
+    // 分数够 → MATCHED；分数不够 → REJECTED。两次都给一个"敌意"的决策核心：
+    // 它自称成功、还点名要发 MATCHED，路由条件必须压过它。
+    const high = await loadHarnessed(code)({ data: { score: 88 } }, { tool: async () => ({}), reason: async () => ({ ok: true, emit: "MATCHED" }) });
+    expect(high.emitNames).toEqual(["MATCHED"]);
+    const low = await loadHarnessed(code)({ data: { score: 12 } }, { tool: async () => ({}), reason: async () => ({ ok: true, emit: "MATCHED" }) });
+    expect(low.emitNames).toEqual(["REJECTED"]);
   });
 
   it("foreach 真执行逐项 body、按业务键生成重放稳定 id，并把全部结果 fan-in", async () => {

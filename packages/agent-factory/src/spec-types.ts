@@ -79,6 +79,13 @@ export interface PlanStep {
   resultMap?: PlanResultMap;
   /** boolean expression evaluated against lastResult/event — for kind:"condition" */
   condition?: string;
+  /** #G1/#G2 — the two declared events this condition routes to. A condition
+   * step with no dependents used to be computed and then discarded, because the
+   * gating map is only read by LATER steps; every routing rule the designer
+   * authored (score >= threshold, lockOnly, passed, invitationId != null) was
+   * evaluated and thrown away, leaving an LLM's free-text `emit` to pick the
+   * terminal event. Declaring the routes makes the verdict decide. */
+  routes?: { onTrue: string; onFalse: string };
   /** target agent name / fn id — for kind:"invoke" (synchronous sub-agent) */
   invoke?: string;
   /** Static fields sent to the invoked sub-agent. */

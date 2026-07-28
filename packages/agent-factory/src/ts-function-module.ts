@@ -21,6 +21,7 @@ import {
   assertPlanDataflowRenderable,
   PLAN_DATAFLOW_RUNTIME_SRC,
   planUsesExactDataflow,
+  renderedInvokeInput,
   renderedToolArguments,
   renderedToolCallback,
 } from "./plan-dataflow-code";
@@ -44,10 +45,16 @@ function stepId(verb: string, anchor: string): string {
   return `${verb}-${a || "x"}`;
 }
 
-/** 从 spec 推导失败 emit 事件名:多 emit 取最后一个;单/零 emit 从 trigger/action 派生一个 _FAILED。 */
+/** 从 spec 推导「运行失败」事件名。
+ *
+ * #G19 — 只有本身就是失败形态的已声明事件(_FAILED/_ERROR/_REJECTED/_DENIED)才可以复用。
+ * 以前这里对多 emit 的 agent 一律取【最后一个】声明事件，于是一次 HTTP 401 或一处接线 bug
+ * 会被当成业务终态发出去：候选人被永久拒绝、锁冲突被凭空报告，而事件里没有任何支撑这个
+ * 判定的证据。运行错误不是业务结论，拿不准就合成一个 _FAILED。 */
 function failEmitOf(spec: GeneratedAgentSpec): string {
   const emits = (spec.emit ?? []).filter(Boolean);
-  if (emits.length > 1) return emits[emits.length - 1]!;
+  const failureShaped = emits.find((name) => /_(FAILED|ERROR|REJECTED|DENIED)$/.test(name));
+  if (failureShaped) return failureShaped;
   const base = (emits[0] ?? spec.trigger?.[0] ?? spec.actionName ?? "TASK").toUpperCase().replace(/[^A-Z0-9]+/g, "_").replace(/_(PROCESSED|DONE|GENERATED|SENT|PASSED|OK)$/, "");
   return `${base}_FAILED`;
 }
@@ -111,9 +118,12 @@ const CLASSIFY_ERROR_SRC = [
   `  if (m.startsWith("[rethrow]")) return "rethrow";`,
   `  // 强制持久化/审计类失败 → rethrow(绝不吞——candidate-identity 的 RuleAuditPersistenceError 语义)`,
   `  if (/(persist|audit|database|sqlite|constraint|transaction)/.test(m)) return "rethrow";`,
-  `  // 计费/额度/欠费(402/insufficient/quota exceeded/欠费/余额不足) → terminal(不可恢复,重试永远不自愈——`,
-  `  //   之前它落到最后的 park 分支被 Inngest 无限重试一个永不成功的欠费故障,是真实高频坑)`,
-  `  if (/(402|payment required|insufficient|quota exceeded|out of credit|billing|欠费|余额不足|额度不足|配额)/.test(m)) return "terminal";`,
+  `  // 凭证类失败(401/403/无效 key) → terminal:重试永远不会自愈,必须人工换凭证。`,
+  `  if (/(401|403|unauthorized|forbidden|invalid api key|invalid_api_key|authentication failed)/.test(m)) return "terminal";`,
+  `  // #G18 计费/额度/欠费(402/insufficient/quota/欠费/余额不足) → park。`,
+  `  //   这类失败在充值后自愈,和 401 不同;判成 terminal 会把一次"暂时没钱"变成永久杀死,`,
+  `  //   与 lib/dependency-health 的 RECOVERABLE 集合(quota/rate_limit/network/server)一致。`,
+  `  if (/(402|payment required|insufficient|quota exceeded|out of credit|billing|欠费|余额不足|额度不足|配额)/.test(m)) return "park";`,
   `  // 基础设施瞬态(网络/超时/限流/5xx) → park(Inngest 重试自愈)`,
   `  if (/(timeout|timed out|econn|enotfound|eai_again|socket hang|fetch failed|network|429|too many requests|rate limit|502|503|504)/.test(m)) return "park";`,
   `  // 明确业务拒绝/校验失败 → business_fail(发 _FAILED 终态;重试不可自愈)`,
@@ -142,10 +152,14 @@ const SEAM_SRC = [
   `}`,
 ].join("\n");
 
-/** idempotencyKeyFrom 的稳定后缀 helper(仅在有步骤声明时嵌入)。 */
+/** idempotencyKeyFrom 的稳定后缀 helper(仅在有步骤声明时嵌入)。
+ *
+ * #G6 — 后缀要按【完整作用域】解析。以前它把 "input.candidate_id" 直接对着 mapped 走，
+ * 而 mapped 里根本没有 `input` 这一层，于是每次都返回空串：所有 idempotencyKeyFrom 形同虚设，
+ * 一个 handler 里多个持久化步骤会塌成同一个 id，被 Inngest 当成同一步重放。 */
 const SUFFIX_SRC = [
-  `const idSuffix = (obj: Record<string, unknown>, path: string): string => {`,
-  `  const v = path.split(".").reduce<unknown>((c, k) => (c != null && typeof c === "object" ? (c as Record<string, unknown>)[k] : undefined), obj);`,
+  `const idSuffix = (scope: Record<string, unknown>, path: string): string => {`,
+  `  const v = path.split(".").reduce<unknown>((c, k) => (c != null && typeof c === "object" ? (c as Record<string, unknown>)[k] : undefined), scope);`,
   `  return v == null || String(v).trim() === "" ? "" : "-" + String(v).replace(/[^A-Za-z0-9_-]/g, "-").slice(0, 40);`,
   `};`,
 ].join("\n");
@@ -280,6 +294,15 @@ function policyFailureLines(
       : "undefined";
   return [
     `const _resolution = _afResolveFailure(${policySource(step)}, e, ${fallback});`,
+    `if (_resolution.suppressEmit) _suppressImplicitEmit = true;`,
+    // #G16 — the declared failure emit must be sent BEFORE the terminal/retry
+    // throws. Behind them it is dead code on every terminal path, which is how
+    // an agent could lose a candidate silently: the run retires and the only
+    // consumer that can escalate to a human never learns it happened.
+    `if (_resolution.emitEvent && !_resolution.suppressEmit) {`,
+    `  await step.sendEvent(${emitStepIdExpr}, { name: _resolution.emitEvent, data: _afFailurePayload(_resolution) });`,
+    `  _explicitEmitCount++;`,
+    `}`,
     `if (_resolution.disposition === "terminal") {`,
     `  throw new NonRetriableError("terminal action failure: " + _resolution.facts.message, { cause: e instanceof Error ? e : new Error(String(e)) });`,
     `}`,
@@ -288,11 +311,6 @@ function policyFailureLines(
     `  throw new Error("[" + _tag + "] step ${id}: " + _resolution.facts.message, { cause: e instanceof Error ? e : undefined });`,
     `}`,
     `logger.warn(${JSON.stringify(`${spec.slug} step ${id} failed — continue by ordered error policy`)}, { action: _resolution.policyAction, facts: _resolution.facts });`,
-    `if (_resolution.suppressEmit) _suppressImplicitEmit = true;`,
-    `if (_resolution.emitEvent) {`,
-    `  await step.sendEvent(${emitStepIdExpr}, { name: _resolution.emitEvent, data: _afFailurePayload(_resolution) });`,
-    `  _explicitEmitCount++;`,
-    `}`,
     `${lastVar} = _resolution.defaultResult;`,
   ];
 }
@@ -349,7 +367,7 @@ function renderForeachBody(
       } else if (child.kind === "invoke") {
         const target = child.invoke ?? id;
         const eventData = `{ ...(${env.inputExpr}), ...${locals} }`;
-        const payload = `_invokePayload({ eventData: ${eventData}, invokeInput: ${JSON.stringify(child.invokeInput ?? {})}, forwardLastResult: ${String(child.forwardLastResult ?? true)}, forwardResults: ${String(child.forwardResults ?? false)}, lastResult: ${localLast}, results: ${resultsExpr} })`;
+        const payload = `_invokePayload({ eventData: ${eventData}, invokeInput: ${renderedInvokeInput(child.invokeInput as Record<string, unknown> | undefined, localScope)}, forwardLastResult: ${String(child.forwardLastResult ?? true)}, forwardResults: ${String(child.forwardResults ?? false)}, lastResult: ${localLast}, results: ${resultsExpr} })`;
         execute.push(`${localLast} = await step.invoke(${childStepExpr}, { function: _resolveInvokeTarget(${JSON.stringify(target)}), data: ${payload}${child.timeoutS ? `, timeout: ${JSON.stringify(`${child.timeoutS}s`)}` : ""} });`);
       } else if (child.kind === "emit") {
         execute.push(...emitPayloadLines(child, localScope, `_selected${n}`, `_payload${n}`));
@@ -465,6 +483,20 @@ function renderForeachStep(
   ];
 }
 
+/** #G8 — deterministic precondition over the declared required input anchors. */
+function renderRequiredInputGuard(fields: IoField[] | undefined): string[] {
+  const required = (fields ?? [])
+    .filter((f) => f && f.field && f.required)
+    .map((f) => f.field);
+  if (required.length === 0) return [];
+  return [
+    `    const _missingAnchors = ${JSON.stringify(required)}.filter((k) => mapped[k] == null || String(mapped[k]).trim() === "");`,
+    `    if (_missingAnchors.length > 0) {`,
+    `      throw new NonRetriableError(AGENT_ID + " missing required input anchors: " + _missingAnchors.join(", "));`,
+    `    }`,
+  ];
+}
+
 // ── #SLOT-3 controlFlow(plan[] 驱动的真实步骤)──────────────────────────────────
 /** 渲染 plan[] 步骤为真实执行代码(step.run 稳定 id + 条件门控 + onError 策略)。 */
 function renderPlanSteps(spec: GeneratedAgentSpec, plan: PlanStep[]): string {
@@ -474,7 +506,10 @@ function renderPlanSteps(spec: GeneratedAgentSpec, plan: PlanStep[]): string {
     const id = p.stepId || p.tool || p.kind;
     const deps = (p.dependsOn ?? []).filter(Boolean);
     const baseId = stepId(p.kind === "tool" ? "call" : p.kind === "invoke" ? "invoke" : "do", `${spec.slug}-${id}`);
-    const idExpr = p.idempotencyKeyFrom ? `${JSON.stringify(baseId)} + idSuffix(mapped, ${JSON.stringify(p.idempotencyKeyFrom)})` : JSON.stringify(baseId);
+    // #G6 — resolve the suffix against the whole scope, so "input.x",
+    // "results.<step>.y" and "lastResult.z" all address something real.
+    const idScope = `{ input: mapped, event: { name: ${JSON.stringify(evName)}, data: mapped }, lastResult: last, results }`;
+    const idExpr = p.idempotencyKeyFrom ? `${JSON.stringify(baseId)} + idSuffix(${idScope}, ${JSON.stringify(p.idempotencyKeyFrom)})` : JSON.stringify(baseId);
 
     let execute: string[];
     switch (p.kind) {
@@ -484,6 +519,13 @@ function renderPlanSteps(spec: GeneratedAgentSpec, plan: PlanStep[]): string {
           `      _cond[${JSON.stringify(id)}] = evalCondition(${JSON.stringify(p.condition ?? "")}, { event: { name: ${JSON.stringify(evName)}, data: mapped }, lastResult: last, results, input: mapped });`,
           `      results[${JSON.stringify(id)}] = { evaluated: _cond[${JSON.stringify(id)}] };`,
         );
+        if (p.routes?.onTrue && p.routes.onFalse) {
+          // #G2 — bind the verdict to a terminal event so the emit block can
+          // read it. Without this the result is computed and discarded.
+          out.push(
+            `      _route = _cond[${JSON.stringify(id)}] ? ${JSON.stringify(p.routes.onTrue)} : ${JSON.stringify(p.routes.onFalse)};`,
+          );
+        }
         continue;
       case "tool":
         {
@@ -495,11 +537,13 @@ function renderPlanSteps(spec: GeneratedAgentSpec, plan: PlanStep[]): string {
           ];
         }
         break;
-      case "invoke":
+      case "invoke": {
+        const scope = `{ event: { name: ${JSON.stringify(evName)}, data: mapped }, lastResult: last, results, input: mapped }`;
         execute = [
-          `last = await step.invoke(${idExpr}, { function: _resolveInvokeTarget(${JSON.stringify(p.invoke ?? id)}), data: _invokePayload({ eventData: mapped, invokeInput: ${JSON.stringify(p.invokeInput ?? {})}, forwardLastResult: ${String(p.forwardLastResult ?? true)}, forwardResults: ${String(p.forwardResults ?? false)}, lastResult: last, results })${p.timeoutS ? `, timeout: ${JSON.stringify(`${p.timeoutS}s`)}` : ""} });`,
+          `last = await step.invoke(${idExpr}, { function: _resolveInvokeTarget(${JSON.stringify(p.invoke ?? id)}), data: _invokePayload({ eventData: mapped, invokeInput: ${renderedInvokeInput(p.invokeInput as Record<string, unknown> | undefined, scope)}, forwardLastResult: ${String(p.forwardLastResult ?? true)}, forwardResults: ${String(p.forwardResults ?? false)}, lastResult: last, results })${p.timeoutS ? `, timeout: ${JSON.stringify(`${p.timeoutS}s`)}` : ""} });`,
         ];
         break;
+      }
       case "emit": {
         const scope = `{ event: { name: ${JSON.stringify(evName)}, data: mapped }, lastResult: last, results, input: mapped }`;
         execute = [
@@ -625,11 +669,17 @@ export function renderTsFunctionModule(spec: GeneratedAgentSpec, opts: TsFunctio
     emits.length <= 1
       ? `      await step.sendEvent(${JSON.stringify(stepId("emit", successEmit))}, { name: ${JSON.stringify(successEmit)}, data: { ...carry(), ...decision } });`
       : [
-          `      // #SLOT-3 多路收敛:真实事件选择(决策核心显式 emit ∈ 声明集优先;失败 → ${failEmit})`,
+          // #G1 — the terminal event is a function of the computed verdict, never
+          // of an LLM's free-text `emit`. A model that answered "REJECTED", or
+          // answered nothing at all, used to decide whether a candidate was
+          // rejected or an invitation was declared sent — with no evidence
+          // behind either. A plan's routing condition (#G2) decides first;
+          // otherwise the pass/fail verdict does.
+          `      // #SLOT-3 多路收敛:终态由计算出的判定决定(路由条件优先;失败 → ${failEmit})`,
           `      const _declared = ${JSON.stringify(emits)};`,
           `      const _failed = decision.pass === false || decision.ok === false;`,
           `      let _chosen = _failed ? ${JSON.stringify(failEmit)} : ${JSON.stringify(successEmit)};`,
-          `      if (typeof decision.emit === "string" && _declared.includes(decision.emit)) _chosen = decision.emit;`,
+          `      if (typeof _route === "string" && _declared.includes(_route)) _chosen = _route;`,
           `      const _data = { ...carry(), ...decision };`,
           ...emits.map((e, i) => `      ${i === 0 ? "if" : "else if"} (_chosen === ${JSON.stringify(e)}) await step.sendEvent(${JSON.stringify(stepId("emit", e))}, { name: ${JSON.stringify(e)}, data: _data });`),
           `      else await step.sendEvent(${JSON.stringify(stepId("emit", failEmit))}, { name: ${JSON.stringify(failEmit)}, data: _data });`,
@@ -680,11 +730,19 @@ export function renderTsFunctionModule(spec: GeneratedAgentSpec, opts: TsFunctio
     `    // generic function 只消费 canonical event.data；tenant adapter 必须在进入 handler 前完成旧信封解包。`,
     `    const raw = (event.data ?? {}) as Record<string, unknown>;`,
     `    const mapped = mapFields(raw);`,
+    // #G8 — inputSchema.required was declared and then dropped: a missing anchor
+    // was only noticed by whichever tool step happened to bind it, which for a
+    // resume flow is AFTER a paid vendor parse and a 90s child invoke. Fail
+    // closed here instead, before anything is spent, and do it with a
+    // NonRetriableError so a permanently malformed event is not retried 4 times.
+    ...renderRequiredInputGuard(spec.inputSchema),
     `    let last: unknown = undefined;`,
     `    const results: Record<string, unknown> = {};`,
     `    const carry = (): Record<string, unknown> => ({ ...mapped, ...(last && typeof last === "object" ? (last as Record<string, unknown>) : {}), results: { ...results } });`,
     `    let _explicitEmitCount = 0;`,
     `    let _suppressImplicitEmit = false;`,
+    // #G2 — the terminal event a routing condition selected, if the plan has one.
+    `    let _route: string | undefined = undefined;`,
     ...(gatingDecls ? [gatingDecls] : []),
     ...(opts.pauseGate ? [`    // 暂停闸(fleet kill-switch)——任何工作之前。`, `    // const paused = await ${opts.pauseGate}(AGENT_ID, logger); if (paused) return paused;`] : []),
     `    logger.info("${esc(spec.slug)} handler.start", { keys: Object.keys(mapped) });`,

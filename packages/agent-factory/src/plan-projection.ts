@@ -229,6 +229,15 @@ export function parsePlan(raw: unknown): PlanStep[] {
         } satisfies PlanResultMap;
       })(),
       condition: rawCondition ? normalizeConditionReferences(rawCondition, priorStepIds) : undefined,
+      // #G2 — the two declared events this condition routes to.
+      routes: (() => {
+        const raw = (o.routes ?? o.route) as Record<string, unknown> | undefined;
+        if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+        const onTrue = raw.onTrue ?? raw.on_true;
+        const onFalse = raw.onFalse ?? raw.on_false;
+        if (typeof onTrue !== "string" || typeof onFalse !== "string") return undefined;
+        return { onTrue, onFalse };
+      })(),
       invoke: o.invoke != null ? String(o.invoke) : undefined,
       invokeInput: o.invokeInput && typeof o.invokeInput === "object" && !Array.isArray(o.invokeInput)
         ? (o.invokeInput as Record<string, unknown>)
@@ -368,6 +377,24 @@ export function validatePlan(
       if (syntaxError) errors.push(`${at}: invalid condition — ${syntaxError}`);
       for (const match of s.condition.matchAll(/\bresults\.([A-Za-z_$][A-Za-z0-9_$-]*)/g)) {
         if (!seen.has(match[1]!)) errors.push(`${at}: condition references unknown/forward result "${match[1]}"`);
+      }
+    }
+    // #G2 — a condition whose result nothing reads is dead logic. It is only
+    // read by later steps that depend on it, or by the emit block through
+    // `routes`; with neither, the designer's routing rule is evaluated and then
+    // silently discarded, and an LLM ends up choosing the terminal event.
+    if (s.kind === "condition" && s.routes) {
+      for (const [side, event] of Object.entries(s.routes)) {
+        if (!event) errors.push(`${at}: routes.${side} needs a declared event name`);
+        else if (opts?.declaredEvents && !opts.declaredEvents.includes(event)) {
+          errors.push(`${at}: routes.${side} "${event}" is not in the agent's declared emit allow-list`);
+        }
+      }
+    }
+    if (s.kind === "condition" && !s.routes) {
+      const readLater = plan.some((other, j) => j > i && (other.dependsOn ?? []).includes(s.stepId));
+      if (!readLater) {
+        warnings.push(`${at}: condition result is never read — no later step depends on it and it declares no routes, so this routing rule has no effect`);
       }
     }
     if (s.kind === "tool" && s.tool && opts?.knownTools && !opts.knownTools.includes(s.tool)) {
@@ -520,7 +547,10 @@ function actionForStep(step: PlanStep, order: number): ManifestAction {
     a.on_error = step.onError;
   }
   if (step.defaultResult !== undefined) a.default_result = step.defaultResult;
-  if (step.kind === "condition") a.condition = step.condition ?? "true";
+  if (step.kind === "condition") {
+    a.condition = step.condition ?? "true";
+    if (step.routes) a.routes = { on_true: step.routes.onTrue, on_false: step.routes.onFalse };
+  }
   if (step.kind === "invoke") {
     a.invoke = step.invoke;
     if (step.invokeInput) a.invoke_input = step.invokeInput;
