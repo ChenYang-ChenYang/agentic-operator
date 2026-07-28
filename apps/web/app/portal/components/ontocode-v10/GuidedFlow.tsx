@@ -10,6 +10,9 @@ export interface GuidedFlowProps {
   goal: { title: string; chips: string[] } | null;
   items: FlowItemVM[];
   renderCard: (item: Extract<FlowItemVM, { kind: "actionCard" }>) => React.ReactNode;
+  /** 停下正在跑的作业。缺省不显示——没有作业在跑时不该有停止按钮。 */
+  onStop?: () => void;
+  stopping?: boolean;
 }
 
 export function GuidedFlow(props: GuidedFlowProps) {
@@ -110,6 +113,18 @@ export function GuidedFlow(props: GuidedFlowProps) {
                 <span className={styles.spin} />
                 {item.text}
                 <span className={styles.statusMeta}>实时同步中</span>
+                {/* 在此之前，作业跑飞了的唯一出路是删掉整个 Session——
+                    连带消息、事件、产物、证据一起没了。 */}
+                {props.onStop ? (
+                  <button
+                    type="button"
+                    className={styles.mini}
+                    onClick={props.onStop}
+                    disabled={props.stopping}
+                  >
+                    {props.stopping ? "停止中…" : "停止"}
+                  </button>
+                ) : null}
               </div>
             );
           default:

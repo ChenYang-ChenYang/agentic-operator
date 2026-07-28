@@ -19,6 +19,7 @@ import {
   useOntoCodeMessages,
   useOntoCodeProjects,
   useOntoCodeSession,
+  useCancelOntoCodeJob,
   useOntoCodeSessionEvents,
   useOntoCodeSessions,
   useOntoCodeSuiteOverview,
@@ -107,6 +108,7 @@ export function WorkbenchSessionConnected() {
   const messagesQ = useOntoCodeMessages(tenant, sessionId);
   const jobsQ = useOntoCodeHarnessJobs(tenant, sessionId);
   const eventsQ = useOntoCodeSessionEvents(tenant, sessionId);
+  const cancelJob = useCancelOntoCodeJob(tenant, sessionId);
   const configTasksQ = useOntoCodeConfigurationTasks(tenant, sessionId);
   const commandsQ = useOntoCodeCommands(tenant, sessionId);
   const candidateHeadQ = useOntoCodeCandidateHead(tenant, sessionId);
@@ -553,7 +555,17 @@ export function WorkbenchSessionConnected() {
             </div>
           </div>
         ) : (
-          <GuidedFlow goal={goal} items={flowItems} renderCard={renderCard} />
+          <GuidedFlow
+            goal={goal}
+            items={flowItems}
+            renderCard={renderCard}
+            {...(runningJob
+              ? {
+                  onStop: () => cancelJob.mutate({ jobId: runningJob.id }),
+                  stopping: cancelJob.isPending,
+                }
+              : {})}
+          />
         )
       }
       composer={

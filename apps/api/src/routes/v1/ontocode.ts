@@ -104,6 +104,7 @@ import {
   appendOntoCodeUserMessage,
   assertOntoCodeOntologyBinding,
   closeOntoCodeSession,
+  cancelOntoCodeSessionJob,
   deleteOntoCodeSession,
   commitOntoCodeChangeSet,
   createOntoCodeArtifact,
@@ -353,6 +354,35 @@ export async function ontocodeRoutes(app: FastifyInstance): Promise<void> {
           cancelledJobs: receipt.cancelledJobs,
         },
       });
+      return reply.ok(receipt);
+    },
+  );
+
+  // Stop the live Harness job without scrapping the Session. Until this
+  // existed, an FDE watching a job run away had exactly one escape: delete the
+  // whole Session — which cascades away its messages, events, artifacts and
+  // evidence. 「停下这一步」和「这次尝试作废」是两个意图，不该共用一个按钮。
+  app.post<{ Params: { sessionId: string }; Body?: { jobId?: string } }>(
+    "/ontocode/sessions/:sessionId/cancel-job",
+    async (req, reply) => {
+      const ctx = actorContext(req, "workflows.write");
+      const jobId =
+        typeof req.body?.jobId === "string" && req.body.jobId.trim()
+          ? req.body.jobId.trim()
+          : undefined;
+      const receipt = cancelOntoCodeSessionJob(ctx, req.params.sessionId, {
+        ...(jobId ? { jobId } : {}),
+      });
+      if (receipt.cancelled) {
+        writeAudit({
+          tenantId: ctx.tenantId,
+          actorUserId: ctx.actorId ?? undefined,
+          action: "ontocode.harness_job.cancelled",
+          targetType: "ontocode_session",
+          targetId: receipt.sessionId,
+          meta: { jobIds: receipt.jobIds },
+        });
+      }
       return reply.ok(receipt);
     },
   );

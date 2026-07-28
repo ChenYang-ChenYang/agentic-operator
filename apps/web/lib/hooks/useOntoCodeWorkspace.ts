@@ -512,6 +512,31 @@ export function useDeleteOntoCodeSession(tenant: string) {
   });
 }
 
+/** 停下正在跑的作业，但保留 Session。
+ *  在此之前，眼看作业跑飞了的唯一出路是删掉整个 Session——连带消息、事件、
+ *  产物、证据一起没了。「停下这一步」和「这次尝试作废」是两个意图。 */
+export function useCancelOntoCodeJob(tenant: string, sessionId: string) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { jobId?: string } = {}) =>
+      callV1<{ cancelled: boolean; sessionId: string; jobIds: string[] }>(
+        tenant,
+        `/v1/ontocode/sessions/${encodeURIComponent(sessionId)}/cancel-job`,
+        { method: "POST", body: JSON.stringify(input) },
+      ),
+    onSuccess: () => {
+      for (const queryKey of [
+        ONTOCODE_KEYS.jobs(tenant, sessionId),
+        ONTOCODE_KEYS.events(tenant, sessionId),
+        ONTOCODE_KEYS.session(tenant, sessionId),
+        ONTOCODE_KEYS.sessions(tenant),
+      ]) {
+        void client.invalidateQueries({ queryKey });
+      }
+    },
+  });
+}
+
 export function useConfirmOntoCodeHumanBoundary(
   tenant: string,
   sessionId: string,

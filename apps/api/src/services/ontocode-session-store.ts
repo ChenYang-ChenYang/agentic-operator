@@ -1397,6 +1397,100 @@ export function closeOntoCodeSession(
 }
 
 /**
+ * Stop the Session's live Harness job, keeping the Session and everything in it.
+ *
+ * Until this existed, an FDE watching a job run away had exactly one escape:
+ * delete the whole Session — which cascades away its messages, events,
+ * artifacts and evidence. "Stop this step" and "throw away this attempt" are
+ * different intentions and must not share a button.
+ *
+ * No new abort plumbing is needed. The worker's heartbeat re-asserts ownership
+ * with `status = 'running' AND startedAt = leaseToken`; flipping the row to
+ * `cancelled` makes that predicate stop matching, and the worker aborts itself
+ * within one heartbeat interval. Cancelling is therefore a fact about the job
+ * row, not a request the worker may ignore.
+ */
+export function cancelOntoCodeSessionJob(
+  ctx: OntoCodeStoreContext,
+  sessionId: string,
+  opts: { jobId?: string } = {},
+): {
+  cancelled: boolean;
+  sessionId: string;
+  jobIds: string[];
+} {
+  return getDb().transaction((tx) => {
+    const session = tx
+      .select({ id: ontocodeSessions.id })
+      .from(ontocodeSessions)
+      .where(
+        tenantScope(ctx, ontocodeSessions)(eq(ontocodeSessions.id, sessionId)),
+      )
+      .get();
+    if (!session) {
+      throw new OntoCodeStoreError(
+        "ontocode_session_not_found",
+        "This OntoCode Session does not exist in the current Business Domain",
+        404,
+        { sessionId },
+      );
+    }
+    // `waiting_user` is deliberately NOT cancellable here: it is not running,
+    // it is waiting for this very person, and answering it is the normal way
+    // forward. Scrapping a parked Session remains `deleteOntoCodeSession`.
+    const live = tx
+      .select({ id: ontocodeHarnessJobs.id })
+      .from(ontocodeHarnessJobs)
+      .where(
+        tenantScope(
+          ctx,
+          ontocodeHarnessJobs,
+        )(
+          and(
+            eq(ontocodeHarnessJobs.sessionId, sessionId),
+            inArray(ontocodeHarnessJobs.status, [
+              "queued",
+              "leased",
+              "running",
+              "retry_scheduled",
+            ]),
+            ...(opts.jobId ? [eq(ontocodeHarnessJobs.id, opts.jobId)] : []),
+          ),
+        ),
+      )
+      .all();
+    if (live.length === 0) {
+      // Idempotent: re-cancelling a job that already stopped is not an error,
+      // it is the state the caller asked for.
+      return { cancelled: false, sessionId, jobIds: [] };
+    }
+    const now = new Date();
+    const jobIds = live.map((row) => row.id);
+    tx.update(ontocodeHarnessJobs)
+      .set({
+        status: "cancelled",
+        finishedAt: now,
+        updatedAt: now,
+        errorMessage: "已由使用者停止",
+      })
+      .where(
+        tenantScope(
+          ctx,
+          ontocodeHarnessJobs,
+        )(inArray(ontocodeHarnessJobs.id, jobIds)),
+      )
+      .run();
+    tx.update(ontocodeSessions)
+      .set({ activityState: "idle", updatedAt: now })
+      .where(
+        tenantScope(ctx, ontocodeSessions)(eq(ontocodeSessions.id, sessionId)),
+      )
+      .run();
+    return { cancelled: true, sessionId, jobIds };
+  });
+}
+
+/**
  * Hard-delete a Build Session and everything scoped to it.
  *
  * `closeOntoCodeSession` is the graceful path and deliberately refuses to run

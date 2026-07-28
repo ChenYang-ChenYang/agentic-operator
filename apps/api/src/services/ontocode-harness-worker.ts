@@ -3009,10 +3009,37 @@ export class OntoCodeHarnessWorkerAdapter {
       250,
       Math.min(10_000, Math.floor(this.leaseTimeoutMs / 3)),
     );
+    // The heartbeat runs a synchronous better-sqlite3 UPDATE inside a timer
+    // callback. Unguarded, a throw here — a WAL checkpoint stall, writer-lease
+    // contention, a transient SQLITE_BUSY — escapes as an uncaughtException and
+    // takes down the whole API process. This repo has documented history with
+    // writer-lease stalls, so that is not a hypothetical trigger.
+    //
+    // A throw and a lost lease are different facts and must be treated
+    // differently: `changes !== 1` PROVES another worker owns the job, so abort.
+    // A throw proves nothing about ownership — keep running, and only give up
+    // after enough consecutive failures that the DB is clearly not coming back.
+    const MAX_CONSECUTIVE_HEARTBEAT_FAULTS = 5;
+    let heartbeatFaults = 0;
     const heartbeatTimer = setInterval(() => {
-      if (!this.heartbeat(claim)) {
-        abort(new OntoCodeHarnessLostLeaseError(claim.jobId));
+      let owned: boolean;
+      try {
+        owned = this.heartbeat(claim);
+        heartbeatFaults = 0;
+      } catch (error) {
+        heartbeatFaults += 1;
+        if (heartbeatFaults >= MAX_CONSECUTIVE_HEARTBEAT_FAULTS) {
+          abort(
+            new OntoCodeHarnessExecutionError(
+              "harness_heartbeat_unavailable",
+              `The harness lease heartbeat failed ${heartbeatFaults} times in a row: ${error instanceof Error ? error.message : String(error)}`,
+              { recoverable: true, retryable: true },
+            ),
+          );
+        }
+        return;
       }
+      if (!owned) abort(new OntoCodeHarnessLostLeaseError(claim.jobId));
     }, heartbeatEvery);
     heartbeatTimer.unref?.();
 
@@ -5662,11 +5689,23 @@ class DefaultOntoCodeHarnessWorkerController implements OntoCodeHarnessWorkerCon
 
   private active = false;
   private timer: ReturnType<typeof setTimeout> | null = null;
-  private inFlight: Promise<OntoCodeHarnessRunResult> | null = null;
+  /** Jobs currently executing. Was a single slot: one long Build starved every
+   *  session of every tenant, and the FDE's only escape was deleting the
+   *  Session — which cascades away its messages, events, artifacts and evidence.
+   *  `claimNextJob` is already an atomic compare-and-swap and already refuses to
+   *  claim a second job for a session that has one in flight, so widening the
+   *  pool changes throughput without weakening either guarantee. */
+  private readonly inFlight = new Set<Promise<OntoCodeHarnessRunResult>>();
+  private readonly concurrency: number;
   private lifecycleAbort = new AbortController();
 
   constructor(options: OntoCodeHarnessWorkerOptions) {
     this.adapter = new OntoCodeHarnessWorkerAdapter(options);
+    const configured = Number(process.env.ONTOCODE_HARNESS_CONCURRENCY);
+    this.concurrency =
+      Number.isFinite(configured) && configured >= 1
+        ? Math.min(Math.floor(configured), 8)
+        : 3;
   }
 
   get running(): boolean {
@@ -5683,13 +5722,19 @@ class DefaultOntoCodeHarnessWorkerController implements OntoCodeHarnessWorkerCon
   }
 
   async runOnce(): Promise<OntoCodeHarnessRunResult> {
-    if (this.inFlight) return this.inFlight;
-    this.inFlight = this.adapter
+    // All slots busy: report "nothing claimed" rather than queueing behind a
+    // long job — the scheduler then simply retries on its poll interval.
+    if (this.inFlight.size >= this.concurrency) {
+      const settled = await Promise.race([...this.inFlight]).catch(() => null);
+      return settled ?? { claimed: false };
+    }
+    const run = this.adapter
       .runNext({ signal: this.lifecycleAbort.signal })
       .finally(() => {
-        this.inFlight = null;
+        this.inFlight.delete(run);
       });
-    return this.inFlight;
+    this.inFlight.add(run);
+    return run;
   }
 
   async stop(options: { abortActive?: boolean } = {}): Promise<void> {
@@ -5707,7 +5752,7 @@ class DefaultOntoCodeHarnessWorkerController implements OntoCodeHarnessWorkerCon
         ),
       );
     }
-    await this.inFlight;
+    await Promise.allSettled([...this.inFlight]);
   }
 
   private schedule(delayMs: number): void {
@@ -5716,7 +5761,12 @@ class DefaultOntoCodeHarnessWorkerController implements OntoCodeHarnessWorkerCon
       this.timer = null;
       void this.runOnce()
         .then((result) => {
-          this.schedule(result.claimed ? 0 : this.adapter.pollIntervalMs);
+          // Claimed one and a slot is still free → look for the next job at
+          // once; that is what makes the pool actually parallel rather than
+          // just a deeper queue.
+          const canTakeMore =
+            result.claimed && this.inFlight.size < this.concurrency;
+          this.schedule(canTakeMore ? 0 : this.adapter.pollIntervalMs);
         })
         .catch(() => {
           // A job-state failure is intentionally durable and handled inside
