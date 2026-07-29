@@ -22,6 +22,7 @@ import {
   ontocodeChangeSets,
   ontocodeCommands,
   ontocodeConfigurationTasks,
+  ontocodeEvidenceInvalidations,
   ontocodeEvidenceRecords,
   ontocodeHarnessJobs,
   ontocodePackageVersions,
@@ -1553,6 +1554,80 @@ export function deleteOntoCodeSession(
         ),
       )
       .run();
+    // #DELETE-RESTRICT —— SQLite 在做级联清扫【之前】就先判 ON DELETE RESTRICT，
+    // 所以任何一条没被显式扫掉的 RESTRICT 边都会让整次删除直接失败。
+    //
+    // ontocode_evidence_invalidations 是唯一够不着的那条：它自己【没有】
+    // session_id（只有 tenant/evidence/changeset/package_version），所以一阶
+    // 级联永远碰不到它；而它对 ontocode_package_versions 的外键是 RESTRICT。
+    // 后果：一个产出过候选包的 Session——也就是一次【成功 Build 之后】的
+    // Session——根本删不掉，报的还是一句没有上下文的 FOREIGN KEY constraint
+    // failed。今天库里 0 个候选包，所以这颗雷是哑的；第一次 Build 成功那天
+    // 它就会响。已在库副本上实测：造出 package_version + evidence +
+    // invalidation 后删 session 必失败，先扫掉 invalidation 再删即成功。
+    //
+    // 三条来路各扫一遍（证据 / 变更集 / 候选包），因为只按其中一条扫是不够的。
+    const packageVersionIds = tx
+      .select({ id: ontocodePackageVersions.id })
+      .from(ontocodePackageVersions)
+      .where(
+        tenantScope(
+          ctx,
+          ontocodePackageVersions,
+        )(eq(ontocodePackageVersions.sessionId, sessionId)),
+      )
+      .all()
+      .map((row) => row.id);
+    const changeSetIds = tx
+      .select({ id: ontocodeChangeSets.id })
+      .from(ontocodeChangeSets)
+      .where(
+        tenantScope(
+          ctx,
+          ontocodeChangeSets,
+        )(eq(ontocodeChangeSets.sessionId, sessionId)),
+      )
+      .all()
+      .map((row) => row.id);
+    const evidenceIds = tx
+      .select({ id: ontocodeEvidenceRecords.id })
+      .from(ontocodeEvidenceRecords)
+      .where(
+        tenantScope(
+          ctx,
+          ontocodeEvidenceRecords,
+        )(eq(ontocodeEvidenceRecords.sessionId, sessionId)),
+      )
+      .all()
+      .map((row) => row.id);
+    const invalidationPredicates = [
+      packageVersionIds.length
+        ? inArray(
+            ontocodeEvidenceInvalidations.causedByPackageVersionId,
+            packageVersionIds,
+          )
+        : undefined,
+      changeSetIds.length
+        ? inArray(
+            ontocodeEvidenceInvalidations.causedByChangeSetId,
+            changeSetIds,
+          )
+        : undefined,
+      evidenceIds.length
+        ? inArray(ontocodeEvidenceInvalidations.evidenceId, evidenceIds)
+        : undefined,
+    ].filter(Boolean);
+    if (invalidationPredicates.length > 0) {
+      tx.delete(ontocodeEvidenceInvalidations)
+        .where(
+          tenantScope(
+            ctx,
+            ontocodeEvidenceInvalidations,
+          )(or(...invalidationPredicates)),
+        )
+        .run();
+    }
+
     tx.delete(ontocodeSessions)
       .where(
         tenantScope(ctx, ontocodeSessions)(eq(ontocodeSessions.id, sessionId)),

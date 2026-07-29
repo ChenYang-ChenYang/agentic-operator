@@ -18,7 +18,11 @@ import { eq } from "drizzle-orm";
 import {
   getDb,
   ontocodeArtifactBlobs,
+  ontocodeChangeSets,
+  ontocodeEvidenceInvalidations,
+  ontocodeEvidenceRecords,
   ontocodeHarnessJobs,
+  ontocodePackageVersions,
   ontocodeSessionPurges,
   ontocodeSessions,
   tenants,
@@ -240,6 +244,130 @@ describe("OntoCode session delete — external state purge", () => {
       }),
     );
     expect(listed.items.some((item) => item.sessionId === sessionId)).toBe(true);
+  });
+
+  it("a Session that produced a Candidate package can still be deleted (#DELETE-RESTRICT)", async () => {
+    // SQLite 在做级联清扫【之前】就先判 ON DELETE RESTRICT。
+    // ontocode_evidence_invalidations 自己没有 session_id（只有 tenant /
+    // evidence / changeset / package_version），所以一阶级联永远碰不到它；
+    // 而它对 ontocode_package_versions 的外键是 RESTRICT。
+    //
+    // 后果：一个产出过候选包的 Session——也就是【一次成功 Build 之后】的
+    // Session——根本删不掉，报的还是一句没有上下文的 FOREIGN KEY constraint
+    // failed。库里今天 0 个候选包，所以这颗雷是哑的；第一次 Build 成功那天
+    // 它就会响，而那恰好是最不该删不掉的时刻。
+    const now = new Date();
+    const second = (
+      await success<{ session: { id: string } }>(
+        await env.fetch("/v1/ontocode/sessions", {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            projectId,
+            title: `${fixture.name} 已交付 Session`,
+            goal: "Exercise the post-Build delete",
+          }),
+        }),
+      )
+    ).session.id;
+
+    const ids = {
+      pkg: `ocpv-restrict-${suffix}`,
+      evidence: `ocev-restrict-${suffix}`,
+      changeSet: `occs-restrict-${suffix}`,
+      invalidation: `ocei-restrict-${suffix}`,
+    };
+    getDb()
+      .insert(ontocodePackageVersions)
+      .values({
+        id: ids.pkg,
+        tenantId: fixture.id,
+        projectId,
+        sessionId: second,
+        ontologyHash: "oh",
+        dependencyRoot: "root",
+        artifactRefsJson: "[]",
+        executionOwnersJson: "[]",
+        status: "draft",
+        validationJson: "{}",
+        idempotencyKey: `${ids.pkg}-idem`,
+        createdAt: now,
+        updatedAt: now,
+      } as typeof ontocodePackageVersions.$inferInsert)
+      .run();
+    getDb()
+      .insert(ontocodeEvidenceRecords)
+      .values({
+        id: ids.evidence,
+        tenantId: fixture.id,
+        projectId,
+        sessionId: second,
+        kind: "sandbox",
+        outcome: "passed",
+        subjectType: "agent",
+        subjectId: "a1",
+        subjectDigest: "d1",
+        dependencySetJson: "[]",
+        validityPredicateJson: "{}",
+        refsJson: "[]",
+        summary: "s",
+        producer: "p",
+        idempotencyKey: `${ids.evidence}-idem`,
+        createdAt: now,
+      } as typeof ontocodeEvidenceRecords.$inferInsert)
+      .run();
+    getDb()
+      .insert(ontocodeChangeSets)
+      .values({
+        id: ids.changeSet,
+        tenantId: fixture.id,
+        projectId,
+        sessionId: second,
+        status: "committed",
+        summary: "s",
+        baseOntologyHash: "oh",
+        expectedSessionRevision: 1,
+        idempotencyKey: `${ids.changeSet}-idem`,
+        createdBy: "u",
+        createdAt: now,
+        updatedAt: now,
+      } as typeof ontocodeChangeSets.$inferInsert)
+      .run();
+    getDb()
+      .insert(ontocodeEvidenceInvalidations)
+      .values({
+        id: ids.invalidation,
+        tenantId: fixture.id,
+        evidenceId: ids.evidence,
+        causedByChangeSetId: ids.changeSet,
+        causedByPackageVersionId: ids.pkg,
+        reason: "superseded",
+        dependencyKeysJson: "[]",
+        createdAt: now,
+      } as typeof ontocodeEvidenceInvalidations.$inferInsert)
+      .run();
+
+    const response = await env.fetch(`/v1/ontocode/sessions/${second}`, {
+      method: "DELETE",
+      headers: bodylessHeaders,
+    });
+    // 修复前这里是 500 FOREIGN KEY constraint failed。
+    expect(response.status).toBe(200);
+    expect(
+      getDb()
+        .select({ id: ontocodeSessions.id })
+        .from(ontocodeSessions)
+        .where(eq(ontocodeSessions.id, second))
+        .get(),
+    ).toBeUndefined();
+    // 那条够不着的行确实被扫掉了，没有留成孤儿。
+    expect(
+      getDb()
+        .select({ id: ontocodeEvidenceInvalidations.id })
+        .from(ontocodeEvidenceInvalidations)
+        .where(eq(ontocodeEvidenceInvalidations.id, ids.invalidation))
+        .get(),
+    ).toBeUndefined();
   });
 
   it("a retry is idempotent — an already-removed target is not a failure", async () => {
