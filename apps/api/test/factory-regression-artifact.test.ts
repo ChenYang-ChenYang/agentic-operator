@@ -341,8 +341,10 @@ describe("versioned Agent Factory regression artifacts", () => {
     const store = new FsAgentDraftStore();
     const ev = await evidence();
     const { sandboxDesignReview: _missing, ...withoutReview } = ev;
+    // 文案被有意泛化过：这道门现在由【人工 sandboxDesignReview 或 autopilot
+    // 评审】任一满足，所以措辞不再专指人工回执。源码不回退，测试跟上。
     await expect(store.save("regression-domain", [spec()], withoutReview))
-      .rejects.toThrow(/sandbox design review receipt is missing/);
+      .rejects.toThrow(/sandbox review evidence is missing/);
     await expect(store.save("regression-domain", [spec()], {
       ...ev,
       sandboxDesignReview: { ...ev.sandboxDesignReview!, fingerprint: "sandbox-evidence:v2:other" },

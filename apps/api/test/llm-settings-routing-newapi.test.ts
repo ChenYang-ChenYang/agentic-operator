@@ -85,6 +85,14 @@ describe("AI settings persistence, routing API, and NewAPI aliases", () => {
     ),
   );
   const settingsPath = join(temporaryDirectory, "llm-settings.json");
+  // 系统临时目录，刻意【不】在 data/test-runs/ 下——生产姿态的用例要用它。
+  const durableSettingsDirectory = mkdtempSync(
+    join(tmpdir(), "agentic-llm-settings-durable-"),
+  );
+  const durableSettingsPath = join(
+    durableSettingsDirectory,
+    "llm-settings.json",
+  );
   const envMirrorPath = join(temporaryDirectory, ".env.local");
   const vaultPath = join(temporaryDirectory, "provider-keys.json");
   const databasePath = join(temporaryDirectory, "agentic.db");
@@ -111,6 +119,8 @@ describe("AI settings persistence, routing API, and NewAPI aliases", () => {
       "DATABASE_URL",
       "LLM_DEFAULT_PROVIDER",
       "LLM_DEFAULT_MODEL",
+      "CUSTOM_LLM_BASE_URL",
+      "CUSTOM_LLM_API_KEY",
       "LLM_ALLOW_INSECURE_GATEWAYS",
       "LLM_GATEWAY_ALLOWED_HOSTS",
       "AUTH_MODE",
@@ -180,8 +190,28 @@ describe("AI settings persistence, routing API, and NewAPI aliases", () => {
     await app.ready();
   });
 
+  /**
+   * 进入「生产姿态」——SSRF / 私网拦截只在 NODE_ENV=production 下生效。
+   *
+   * 但 NODE_ENV=production 同时会武装 assertDurableLlmSettingsPath：本套件的
+   * 设置文件落在 data/test-runs/ 这棵一次性目录树下，而那正是该守卫存在的
+   * 理由（生产不许把运营方的路由配置写进用完即删的目录）。守卫是对的，是这
+   * 两个用例的环境自相矛盾。所以进入生产姿态时把设置文件挪到一个【持久】的
+   * 系统临时目录，而不是放宽守卫。
+   */
+  const enterProductionPosture = (): void => {
+    process.env.NODE_ENV = "production";
+    process.env.AGENTIC_LLM_SETTINGS_PATH = durableSettingsPath;
+  };
+
   beforeEach(() => {
     process.env.NODE_ENV = "test";
+    process.env.AGENTIC_LLM_SETTINGS_PATH = settingsPath;
+    rmSync(durableSettingsPath, { force: true });
+    process.env.LLM_DEFAULT_PROVIDER = "mock";
+    process.env.LLM_DEFAULT_MODEL = "mock-model-v1";
+    delete process.env.CUSTOM_LLM_BASE_URL;
+    delete process.env.CUSTOM_LLM_API_KEY;
     delete process.env.LLM_ALLOW_INSECURE_GATEWAYS;
     delete process.env.LLM_GATEWAY_ALLOWED_HOSTS;
     rmSync(settingsPath, { force: true });
@@ -757,6 +787,123 @@ describe("AI settings persistence, routing API, and NewAPI aliases", () => {
     });
   });
 
+  it("refreshes revision-zero custom settings from the environment and uses its credential only at the exact endpoint", async () => {
+    const firstBaseUrl = "https://localhost:4140/v1";
+    const currentBaseUrl = "https://localhost:4141/v1/";
+    const currentApiKey = "sk-env-custom-current-414141414141";
+    process.env.LLM_DEFAULT_PROVIDER = "custom";
+    process.env.LLM_DEFAULT_MODEL = "vendor/env-model";
+    process.env.CUSTOM_LLM_BASE_URL = firstBaseUrl;
+    process.env.CUSTOM_LLM_API_KEY = "sk-env-custom-first-404040404040";
+
+    const initial = settingsStore.getLlmSettings("__system");
+    expect(initial.settings).toMatchObject({
+      revision: 0,
+      defaultProfile: {
+        candidates: [{ route: "custom/vendor/env-model", enabled: true }],
+      },
+    });
+    expect(
+      initial.settings.gatewayInstances.find(
+        (instance) => instance.id === "custom",
+      )?.baseUrl,
+    ).toBe(firstBaseUrl);
+
+    process.env.CUSTOM_LLM_BASE_URL = currentBaseUrl;
+    process.env.CUSTOM_LLM_API_KEY = currentApiKey;
+    const refreshed = settingsStore.getLlmSettings("__system");
+    expect(refreshed.settings.revision).toBe(0);
+    expect(
+      refreshed.settings.gatewayInstances.find(
+        (instance) => instance.id === "custom",
+      )?.baseUrl,
+    ).toBe(currentBaseUrl);
+    expect(readFileSync(settingsPath, "utf8")).not.toContain(currentApiKey);
+    expect(readFileSync(envMirrorPath, "utf8")).not.toContain(currentApiKey);
+
+    installGatewayFetchMock();
+    llmService.resetLLMGateway();
+    await expect(callRoute("custom/vendor/env-model")).resolves.toMatchObject({
+      routing: {
+        effectiveRoute: "custom/vendor/env-model",
+        gatewayInstanceId: "custom",
+      },
+    });
+    expect(capturedRequests).toEqual([
+      {
+        url: "https://localhost:4141/v1/chat/completions",
+        authorization: `Bearer ${currentApiKey}`,
+        model: "vendor/env-model",
+      },
+    ]);
+  });
+
+  it("keeps revision-one custom settings pinned and refuses the env credential after the configured endpoint changes", async () => {
+    const pinnedBaseUrl = "https://localhost:4142/v1";
+    process.env.LLM_DEFAULT_PROVIDER = "custom";
+    process.env.LLM_DEFAULT_MODEL = "vendor/pinned-model";
+    process.env.CUSTOM_LLM_BASE_URL = pinnedBaseUrl;
+    process.env.CUSTOM_LLM_API_KEY = "sk-env-custom-pinned-424242424242";
+
+    const generated = settingsStore.getLlmSettings("__system");
+    const saved = settingsStore.saveLlmSettings(
+      "__system",
+      generated.settings,
+      0,
+    );
+    expect(saved.settings.revision).toBe(1);
+
+    process.env.CUSTOM_LLM_BASE_URL = "https://localhost:4143/v1";
+    process.env.CUSTOM_LLM_API_KEY = "sk-env-custom-other-434343434343";
+    const reread = settingsStore.getLlmSettings("__system");
+    expect(reread.settings.revision).toBe(1);
+    expect(
+      reread.settings.gatewayInstances.find(
+        (instance) => instance.id === "custom",
+      )?.baseUrl,
+    ).toBe(pinnedBaseUrl);
+
+    llmService.resetLLMGateway();
+    const fetchSpy = vi.fn();
+    globalThis.fetch = fetchSpy as typeof fetch;
+    await expect(callRoute("custom/vendor/pinned-model")).rejects.toMatchObject(
+      { code: "not_configured" },
+    );
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("does not use the workspace custom env credential for a tenant-scoped canonical instance", async () => {
+    const baseUrl = "https://localhost:4144/v1";
+    process.env.CUSTOM_LLM_BASE_URL = baseUrl;
+    process.env.CUSTOM_LLM_API_KEY = "sk-env-custom-workspace-444444444444";
+    settingsStore.getLlmSettings("__system");
+    settingsStore.saveLlmSettings(
+      "__system",
+      settingsDocument({
+        defaultRoute: "custom/vendor/tenant-model",
+        gateways: [
+          {
+            id: "custom",
+            displayName: "Custom",
+            kind: "openai-compatible",
+            baseUrl,
+            credentialRef: "custom",
+            credentialScope: "tenant",
+          },
+        ],
+      }),
+      0,
+    );
+
+    llmService.resetLLMGateway();
+    const fetchSpy = vi.fn();
+    globalThis.fetch = fetchSpy as typeof fetch;
+    await expect(callRoute("custom/vendor/tenant-model")).rejects.toMatchObject(
+      { code: "not_configured" },
+    );
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   it("never resolves a dynamic credentialRef named openai to the static OpenAI secret", async () => {
     const staticOpenAiSecret = "sk-static-openai-must-not-forward-202020202020";
     providerKeys.setGatewayCredential("openai", {
@@ -808,7 +955,7 @@ describe("AI settings persistence, routing API, and NewAPI aliases", () => {
   });
 
   it("blocks a production private-network connection test before fetch", async () => {
-    process.env.NODE_ENV = "production";
+    enterProductionPosture();
     process.env.LLM_ALLOW_INSECURE_GATEWAYS = "true";
     delete process.env.LLM_GATEWAY_ALLOWED_HOSTS;
     const fetchSpy = vi.fn();
@@ -858,7 +1005,7 @@ describe("AI settings persistence, routing API, and NewAPI aliases", () => {
     "https://100.64.0.1:4444",
     "https://198.18.0.1:4444",
   ])("blocks non-public special address %s in production", async (baseUrl) => {
-    process.env.NODE_ENV = "production";
+    enterProductionPosture();
     delete process.env.LLM_GATEWAY_ALLOWED_HOSTS;
     await expect(assertSafeGatewayBaseUrl(baseUrl)).rejects.toThrow(
       /private gateway hosts require/i,
