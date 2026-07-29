@@ -20,6 +20,7 @@ import {
   useOntoCodeProjects,
   useOntoCodeSession,
   useCancelOntoCodeJob,
+  type OntoCodeSessionDeleteReceipt,
   useOntoCodeSessionEvents,
   useOntoCodeSessions,
   useOntoCodeSuiteOverview,
@@ -130,6 +131,10 @@ export function WorkbenchSessionConnected() {
   const [inspectorOpen, setInspectorOpen] = useState(true);
   const [inspectorFullscreen, setInspectorFullscreen] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
+  // 删除的结果必须落到界面上：成功要说清删了什么、保留了什么；失败要说话。
+  const [deleteReceipt, setDeleteReceipt] =
+    useState<OntoCodeSessionDeleteReceipt | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>("artifacts");
   const [busySystem, setBusySystem] = useState<string | null>(null);
 
@@ -449,8 +454,79 @@ export function WorkbenchSessionConnected() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionQ.isError, sessionQ.errorUpdatedAt]);
 
+  // #SESSION-PURGE —— 删除的结果必须落到界面上。一次静默成功和一次静默失败
+  // 在界面上长得一模一样，而后者正是「无法真正删除」这个印象的由来。
+  const deleteOutcome =
+    deleteError || deleteReceipt ? (
+      <div
+        className={styles.overlayBackdrop}
+        role="dialog"
+        aria-modal="true"
+        onClick={(e) => {
+          if (e.target !== e.currentTarget) return;
+          setDeleteError(null);
+          setDeleteReceipt(null);
+        }}
+      >
+        <div className={styles.createPanel}>
+          <div className={styles.goalLabel}>
+            {deleteError ? "删除失败" : "已删除"}
+          </div>
+          <h2 className={styles.goalTitle}>
+            {deleteError
+              ? "这个 Session 没有被删除"
+              : (deleteReceipt?.title ?? "Session")}
+          </h2>
+          {deleteError ? (
+            <div className={styles.cardError}>{deleteError}</div>
+          ) : (
+            <>
+              <div className={styles.iEmpty} style={{ textAlign: "left" }}>
+                {deleteReceipt?.purge
+                  ? `数据库记录已随 Session 一并删除；另清除 ${deleteReceipt.purge.removed} 项外部存储（${Math.round((deleteReceipt.purge.bytesRemoved / 1024) * 10) / 10} KB）——包括大脑运行转录与压缩归档，后者是 recall 的检索面。`
+                  : "数据库记录已随 Session 一并删除。"}
+              </div>
+              {deleteReceipt?.purge?.failures.length ? (
+                <div className={styles.cardError}>
+                  有 {deleteReceipt.purge.failures.length} 项外部存储未能清除，
+                  已记为待重试：
+                  {deleteReceipt.purge.failures
+                    .slice(0, 3)
+                    .map((f) => f.error)
+                    .join("；")}
+                </div>
+              ) : null}
+              {deleteReceipt?.purge?.retained.length ? (
+                <div className={styles.iEmpty} style={{ textAlign: "left" }}>
+                  <strong>刻意保留：</strong>
+                  {deleteReceipt.purge.retained.map((r) => (
+                    <div key={r.what}>
+                      · {r.what} —— {r.why}
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+            </>
+          )}
+          <div className={styles.cardBtns}>
+            <button
+              type="button"
+              className={styles.btn}
+              onClick={() => {
+                setDeleteError(null);
+                setDeleteReceipt(null);
+              }}
+            >
+              知道了
+            </button>
+          </div>
+        </div>
+      </div>
+    ) : null;
+
   return (
     <>
+    {deleteOutcome}
     <CreateSessionPanel
       tenant={tenant}
       open={createOpen}
@@ -495,13 +571,24 @@ export function WorkbenchSessionConnected() {
               return;
             }
             deleteSession.mutate(id, {
-              onSuccess: () => {
+              onSuccess: (receipt) => {
+                // 删除必须说清自己删了什么、【没】删什么——一次静默成功和一次
+                // 静默失败在界面上长得一模一样，而后者正是「无法真正删除」的
+                // 由来。
+                setDeleteReceipt(receipt);
                 if (id !== sessionId) return;
                 const next = railRows.find((r) => r.id !== id);
                 router.replace(
                   next
                     ? `/portal/${encodeURIComponent(tenant)}/ontocode-workspace/${encodeURIComponent(next.id)}`
                     : `/portal/${encodeURIComponent(tenant)}/ontocode-workspace`,
+                );
+              },
+              onError: (error) => {
+                // 以前这里什么都没有：请求失败时按钮解禁、Session 还在、
+                // 没有任何提示——点了像没反应。
+                setDeleteError(
+                  error instanceof Error ? error.message : String(error),
                 );
               },
             });

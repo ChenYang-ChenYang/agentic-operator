@@ -237,6 +237,30 @@ function jsonHeaders(
   };
 }
 
+/**
+ * 请求头。**只有真的带请求体时才声明请求体的类型。**
+ *
+ * Fastify 对「声明了 application/json 却没有 body」的请求一律 400
+ * （FST_ERR_CTP_EMPTY_JSON_BODY）。这里原本无条件加 Content-Type，于是每一个
+ * 无 body 的 DELETE 在进路由之前就被拒了——删除 Session 的按钮点下去什么也不
+ * 会发生，服务端连一行日志都没有。仓库里其它 hook（useModelFleet /
+ * useApiTokens / useIntegrations / useBusinessOntologyDomains）都做了这个判断，
+ * 只有这里没有。
+ */
+export function ontocodeRequestHeaders(
+  tenant: string,
+  init: Pick<RequestInit, "body" | "headers"> = {},
+): Record<string, string> {
+  const merged: Record<string, string> = {
+    ...jsonHeaders(tenant),
+    ...(init.headers as Record<string, string> | undefined),
+  };
+  if (init.body === undefined || init.body === null) {
+    delete merged["Content-Type"];
+  }
+  return merged;
+}
+
 async function callV1<T>(
   tenant: string,
   path: string,
@@ -246,10 +270,7 @@ async function callV1<T>(
   return fetchApiData<T>(path, {
     credentials: "same-origin",
     ...rest,
-    headers: {
-      ...jsonHeaders(tenant),
-      ...(headers as Record<string, string> | undefined),
-    },
+    headers: ontocodeRequestHeaders(tenant, { body: rest.body, headers }),
   });
 }
 
@@ -489,21 +510,41 @@ export function useMarkSystemsHumanBoundary(tenant: string) {
   });
 }
 
+export interface OntoCodeSessionDeleteReceipt {
+  deleted: true;
+  sessionId: string;
+  title: string;
+  cancelledJobs: number;
+  /** 外部存储的清除结果；服务端未采集到足迹时为 null。 */
+  purge: {
+    id: string;
+    status: "completed" | "partial";
+    removed: number;
+    bytesRemoved: number;
+    failures: Array<{ kind: string; ref: string; error: string }>;
+    /** 刻意保留的东西 + 理由。删除必须说清自己没删什么。 */
+    retained: Array<{ what: string; why: string }>;
+  } | null;
+}
+
 export function useDeleteOntoCodeSession(tenant: string) {
   const client = useQueryClient();
   return useMutation({
     mutationFn: (sessionId: string) =>
-      callV1<{
-        deleted: true;
-        sessionId: string;
-        title: string;
-        cancelledJobs: number;
-      }>(tenant, `/v1/ontocode/sessions/${encodeURIComponent(sessionId)}`, {
-        method: "DELETE",
-      }),
+      callV1<OntoCodeSessionDeleteReceipt>(
+        tenant,
+        `/v1/ontocode/sessions/${encodeURIComponent(sessionId)}`,
+        { method: "DELETE" },
+      ),
     onSuccess: (receipt) => {
+      // 以前只清了 session 这一个 key，其余十来个 session 作用域的查询（消息、
+      // 作业、事件、命令、产物、配置任务、助手运行、候选头、变更集、套件概览）
+      // 全部留在缓存里：回到这个 id 仍然渲染已删内容，后台重取还会打到一个不
+      // 存在的 Session。删干净就要连缓存一起删干净。
+      // 每个 session 作用域的 key 都是 ["ontocode", tenant, "session", id, …]，
+      // 所以按前缀一次清干净——逐个列举迟早会漏掉一个，而漏掉一个就复活一片。
       client.removeQueries({
-        queryKey: ONTOCODE_KEYS.session(tenant, receipt.sessionId),
+        queryKey: ["ontocode", tenant, "session", receipt.sessionId],
       });
       void client.invalidateQueries({
         queryKey: ONTOCODE_KEYS.sessions(tenant),

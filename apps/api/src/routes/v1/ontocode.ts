@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { factorySourceOntologyHash } from "@agentic/agent-factory";
@@ -140,6 +141,13 @@ import {
   updateOntoCodeSession,
   type OntoCodeStoreContext,
 } from "../../services/ontocode-session-store";
+import {
+  collectOntoCodeSessionFootprint,
+  listOntoCodeSessionPurges,
+  purgeCollectedTargets,
+  recordOntoCodeSessionPurge,
+  retryOntoCodeSessionPurge,
+} from "../../services/ontocode-session-purge";
 
 const IdempotencyKeySchema = z.string().trim().min(8).max(256);
 
@@ -342,7 +350,27 @@ export async function ontocodeRoutes(app: FastifyInstance): Promise<void> {
     "/ontocode/sessions/:sessionId",
     async (req, reply) => {
       const ctx = actorContext(req, "workflows.write");
-      const receipt = deleteOntoCodeSession(ctx, req.params.sessionId);
+      const sessionId = req.params.sessionId;
+      // #SESSION-PURGE 四拍，顺序不能换：采集（行还在）→ 落记录 → 删行 →
+      // 清外部 → 结算。这些文件全都按【作业 id】命名，而作业行是把文件映射回
+      // Session 的唯一线索——cascade 恰恰先删作业行。所以采集必须在最前面，
+      // 否则从那一刻起这些字节永久不可归属。
+      const footprint = await collectOntoCodeSessionFootprint(ctx, sessionId);
+      if (!footprint) {
+        // 与 store 的 404 保持一致，由它抛出规范化的错误。
+        deleteOntoCodeSession(ctx, sessionId);
+      }
+      const purgeId = `ocp-${randomUUID().replaceAll("-", "").slice(0, 16)}`;
+      if (footprint) recordOntoCodeSessionPurge(ctx, footprint, purgeId);
+
+      const receipt = deleteOntoCodeSession(ctx, sessionId);
+
+      // 清理失败绝不能把「Session 已删」这个既成事实变成错误：记进 partial
+      // 工单，返回里如实带上，可重试。
+      const purge = footprint
+        ? await purgeCollectedTargets(ctx, purgeId, footprint.targets)
+        : null;
+
       writeAudit({
         tenantId: ctx.tenantId,
         actorUserId: ctx.actorId ?? undefined,
@@ -352,9 +380,86 @@ export async function ontocodeRoutes(app: FastifyInstance): Promise<void> {
         meta: {
           title: receipt.title,
           cancelledJobs: receipt.cancelledJobs,
+          purgeId: footprint ? purgeId : null,
+          purgeStatus: purge?.status ?? null,
+          bytesRemoved: purge?.bytesRemoved ?? 0,
+          removed: purge?.removed.length ?? 0,
+          failed: purge?.failures.length ?? 0,
         },
       });
-      return reply.ok(receipt);
+      return reply.ok({
+        ...receipt,
+        purge: purge
+          ? {
+              id: purgeId,
+              status: purge.status,
+              removed: purge.removed.length,
+              bytesRemoved: purge.bytesRemoved,
+              failures: purge.failures,
+              // 删除必须说清自己【没】删什么——否则「无法真正删除」的印象
+              // 就是这么来的。
+              retained: footprint?.retained ?? [],
+            }
+          : null,
+      });
+    },
+  );
+
+  // #SESSION-PURGE —— 已删除 Session 的持久记录。
+  //
+  // 这是「这个 Session 曾经存在过」的唯一凭证：什么时候被谁删的、当时有多少
+  // 消息/事件/产物、清掉了哪些外部字节、哪些是【刻意保留】的以及为什么。
+  // 同时它也是工单：清理失败的记录停在 partial，可以重试补完，而不是留下一堆
+  // 没人知道属于谁的文件。
+  app.get(
+    "/ontocode/session-purges",
+    async (req, reply) => {
+      const ctx = actorContext(req, "workflows.read");
+      const query = z
+        .object({
+          status: z.enum(["pending", "completed", "partial"]).optional(),
+          limit: z.coerce.number().int().min(1).max(200).default(50),
+        })
+        .strict()
+        .parse(req.query);
+      reply.header("Cache-Control", "no-store");
+      return reply.ok({
+        items: listOntoCodeSessionPurges(ctx, {
+          ...(query.status ? { status: query.status } : {}),
+          limit: query.limit,
+        }),
+      });
+    },
+  );
+
+  app.post<{ Params: { purgeId: string } }>(
+    "/ontocode/session-purges/:purgeId/retry",
+    async (req, reply) => {
+      const ctx = actorContext(req, "workflows.write");
+      const result = await retryOntoCodeSessionPurge(ctx, req.params.purgeId);
+      if (!result) {
+        return reply.code(404).send({
+          ok: false,
+          error: {
+            code: "ontocode_session_purge_not_found",
+            message: "没有这条清除记录",
+          },
+        });
+      }
+      writeAudit({
+        tenantId: ctx.tenantId,
+        actorUserId: ctx.actorId ?? undefined,
+        action: "ontocode.session_purge.retried",
+        targetType: "ontocode_session_purge",
+        targetId: req.params.purgeId,
+        meta: {
+          status: result.status,
+          removed: result.removed.length,
+          failed: result.failures.length,
+          bytesRemoved: result.bytesRemoved,
+        },
+      });
+      return reply.ok(result);
     },
   );
 
