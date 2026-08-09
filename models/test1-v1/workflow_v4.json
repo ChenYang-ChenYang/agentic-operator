@@ -1,0 +1,297 @@
+{
+  "$schemaVersion": 2,
+  "agents": [
+    {
+      "id": "test-1",
+      "name": "test1",
+      "title": "test1",
+      "description": "perform test LLM calls",
+      "actor": [
+        "Agent"
+      ],
+      "trigger": [
+        "TEST1_START"
+      ],
+      "actions": [
+        {
+          "id": "understand",
+          "order": "1",
+          "name": "Understand & plan",
+          "description": "Validate the event, identify the goal, and form a bounded execution plan.",
+          "type": "logic",
+          "action_prompt": "Validate the event, identify the goal, and form a bounded execution plan.",
+          "retries": 3,
+          "timeout_s": 120
+        },
+        {
+          "id": "execute",
+          "order": "2",
+          "name": "Execute & verify",
+          "description": "Use approved context and tools, verify the result, and emit the output contract.",
+          "type": "logic",
+          "action_prompt": "Use approved context and tools, verify the result, and emit the output contract.",
+          "retries": 3,
+          "timeout_s": 120
+        }
+      ],
+      "triggered_event": [
+        "TEST1_END",
+        "TEST_1_TO_AUTOMATED_STEP_1"
+      ],
+      "ontology_instructions": "You are the test1 agent, a purpose-built autonomous workflow agent. Your mission is to perform test LLM calls as requested by the user. You operate within the test1 tenant and are triggered exclusively by the TEST1_START event. Your completion criteria: emit a TEST1_END event containing the result of the test LLM call, with all required fields populated and validated.\n\n## Event Inputs\n\nYou receive a runtime event envelope with the following fields automatically populated by the platform. Do not ask the user to provide any of these.\n\n- `event_type`: Must equal \"TEST1_START\". If not, reject the invocation.\n- `event_name`: Alias of event_type.\n- `event_id`: Unique persisted event id.\n- `request_id`: Correlation id from caller or runtime.\n- `run_id`: Unique run id if reserved.\n- `session_id`: Conversation session id from Test Lab.\n- `correlation_id`: Stable trace id.\n- `prompt` / `input`: The user's exact current chat message. Use this as the primary request.\n- `context`: Supporting task context (may equal prompt if not supplied).\n- `subject`: Optional workflow subject.\n\n**Validation**: Confirm `event_type` is \"TEST1_START\". If missing or malformed, emit an error event (see Error Recovery). Use `prompt` (or `input`) as the user's request. Treat `context` as additional background.\n\n## Operating Procedure\n\nFollow these two steps in order. Do not skip or reorder.\n\n### Step 1: Understand & Plan\n\n1. Parse the user's request from `prompt`. Identify the goal: typically a test LLM call (e.g., \"generate a test response\", \"summarize this text\", \"answer a question\").\n2. Determine if ontology context is needed. If the request references entities, relationships, or knowledge that may be stored in the ontology, plan to use `ontology.query` to retrieve relevant data. Otherwise, proceed without it.\n3. Form a bounded execution plan: decide what to generate and whether to query the ontology first. Keep the plan simple and directly aligned with the user's request.\n\n### Step 2: Execute & Verify\n\n1. If ontology context is required, call `ontology.query` with the appropriate operation (e.g., `search_nodes`, `get_node`, `neighbors`, `find_paths`, `schema`). Validate the tool result:\n   - Ensure the response is not empty unless expected.\n   - If the tool returns an error, log it and decide whether to proceed without context or request human review (see Error Recovery).\n2. Generate the test LLM response using your own language model capabilities. The response should be a direct answer to the user's request, incorporating any ontology context if retrieved. Do not fabricate data; if you lack information, state that clearly.\n3. Verify the output:\n   - It must be a coherent, relevant response to the user's prompt.\n   - It must not contain sensitive, private, or tenant-isolated data unless explicitly allowed by the ontology query (which already applies tenant predicates).\n   - It must not include any runtime event fields or internal identifiers.\n4. Construct the output artifact for the TEST1_END event. The output schema is template-defined; use the following structure:\n   ```json\n   {\n     \"result\": \"<the generated test LLM response as a string>\",\n     \"ontology_used\": <boolean>,\n     \"ontology_query_result\": <the raw result from ontology.query if used, else null>\n   }\n   ```\n5. Emit the TEST1_END event with this artifact. Ensure all required fields are present.\n\n## Tool Usage\n\nYou have one tool: `ontology.query`. Use it only when the user's request requires knowledge retrieval. Follow these rules:\n\n- Choose the operation based on the need: `search_nodes` for text search, `get_node` by ID, `neighbors` for related nodes, `find_paths` between two nodes, `schema` for ontology structure.\n- Provide only the parameters required for the operation. Do not include extra fields.\n- Validate the tool result: check for errors, empty results, or unexpected data. If the result is unusable, proceed without it and note in the output.\n- Never use the tool to bypass tenant isolation; the SDK already applies tenant predicates.\n\n## Output Quality & Emitted Events\n\n- The TEST1_END event must contain a valid JSON object with at least the fields described above.\n- The `result` field must be a string that directly addresses the user's request. It should be clear, concise, and accurate.\n- If ontology was used, include the raw query result for transparency.\n- Do not emit any other events unless an error occurs (see below).\n\n## Safety, Privacy, Tenant Isolation, and Non-Fabrication\n\n- **Tenant isolation**: All ontology queries automatically apply the tenant predicate. Do not attempt to bypass or override this.\n- **Privacy**: Never include runtime event fields (event_id, run_id, etc.) in the output. Do not expose internal identifiers.\n- **Non-fabrication**: Do not invent facts, data, or relationships. If you lack information, state that you cannot answer or need more context. If ontology query returns no results, do not pretend to have knowledge.\n- **Safety**: Do not generate harmful, offensive, or misleading content. If the user's request is inappropriate, refuse politely and emit an error event.\n\n## Error Recovery & Uncertainty\n\n- **Missing or malformed event**: If `event_type` is not \"TEST1_START\" or required fields are missing, emit a TEST1_END event with an error object: `{\"error\": \"Invalid event\", \"details\": \"<description>\"}`.\n- **Tool failure**: If `ontology.query` fails (network error, invalid parameters, etc.), log the error, proceed without ontology context, and include a note in the output: `\"ontology_used\": false, \"ontology_error\": \"<error message>\"`.\n- **Uncertainty**: If the user's request is ambiguous, ask for clarification by emitting a TEST1_END event with a `result` that requests more information. Do not guess.\n- **Human review**: If you encounter a situation that violates safety, privacy, or tenant isolation, or if the request is outside your scope (e.g., requires a tool you don't have), emit a TEST1_END event with `\"requires_human_review\": true` and a description of the issue.\n\n## Final Notes\n\n- You are an autonomous agent; do not ask the user to provide runtime fields or wrap their request in JSON.\n- Your only output is the TEST1_END event. Do not produce any other side effects.\n- Stay within the bounds of the test1 agent specification. Do not invent new tools, credentials, or business rules.\n\nArchetype contract: Blank agent. A safe, event-driven foundation for a purpose-built agent.\n- One model-driven execution step\n- Typed event input and output artifact\n- Ontology retrieval available by default",
+      "tool_use": [
+        {
+          "name": "ontology.query",
+          "description": "The model chooses a bounded retrieval operation and values, never raw Cypher. The SDK generates the statement, requests Query API accessMode Read, projects only server-allowlisted properties, and applies the tenant predicate to every matched node (including all nodes in a path). The Neo4j principal must also be read-only because accessMode controls routing, not authorization.",
+          "input_schema": {
+            "type": "object",
+            "required": [
+              "operation"
+            ],
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "search_nodes",
+                  "get_node",
+                  "neighbors",
+                  "find_paths",
+                  "schema"
+                ]
+              },
+              "query": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "start_id": {
+                "type": "string"
+              },
+              "end_id": {
+                "type": "string"
+              },
+              "max_depth": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 4
+              },
+              "labels": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "properties": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "relationship_types": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "neighbor_labels": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 100
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      ],
+      "generated": true,
+      "stage": 0,
+      "template": "blank",
+      "trigger_bindings": {
+        "TEST1_START": {
+          "payload": {
+            "path": "$"
+          }
+        }
+      },
+      "inputs": [
+        {
+          "id": "prompt",
+          "label": "Request",
+          "description": "Natural-language request supplied by chat or synthesized from the trigger event.",
+          "kind": "prompt",
+          "required": false,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          },
+          "default": "Process the incoming event as test1.",
+          "sensitivity": "none"
+        },
+        {
+          "id": "payload",
+          "label": "Event payload",
+          "description": "The complete runtime-owned trigger event payload.",
+          "kind": "value",
+          "required": false,
+          "schema": {
+            "type": "object"
+          },
+          "default": {},
+          "sensitivity": "confidential"
+        }
+      ],
+      "user_prompt_template": "Trigger payload:\n{{json inputs.payload}}",
+      "outputs": [
+        {
+          "id": "result",
+          "label": "Blank agent result",
+          "description": "A safe, event-driven foundation for a purpose-built agent.",
+          "required": true,
+          "schema": {
+            "description": "Template-defined result. Customize the schema in Agent Studio."
+          },
+          "sensitivity": "none"
+        }
+      ],
+      "output_config": {
+        "format": "json",
+        "strict": false,
+        "repair_attempts": 0,
+        "unwrap_single_output": true,
+        "artifact": {
+          "filename": "output.json",
+          "persist_individual_outputs": false,
+          "persist_run_input": true,
+          "persist_run_record": true,
+          "persist_raw_response": false
+        }
+      },
+      "provider": "openrouter",
+      "model": "deepseek/deepseek-v4-flash",
+      "temperature": 0.2,
+      "timeout_s": 120,
+      "retries": 3,
+      "concurrency": {
+        "enabled": true,
+        "max_concurrent_executions": 8
+      },
+      "tool_loop": {
+        "max_iterations": 6
+      },
+      "extensions": {
+        "authored_by": "new-agent-wizard",
+        "archetype_name": "Blank agent",
+        "model_selection": {
+          "provider": "openrouter",
+          "model": "deepseek/deepseek-v4-flash",
+          "profile": "balanced",
+          "source": "template_default",
+          "reason": "The Blank agent archetype defaults to the balanced model profile."
+        },
+        "canvas": {
+          "position": {
+            "x": 120.18359375,
+            "y": 96.32162475585938
+          }
+        }
+      }
+    },
+    {
+      "id": "automated-step-1",
+      "name": "automatedStep1",
+      "title": "New automated step",
+      "description": "Process the incoming workflow request and return a verified result.",
+      "actor": [
+        "Agent"
+      ],
+      "trigger": [
+        "AUTOMATED_STEP_1_REQUESTED",
+        "TEST_1_TO_AUTOMATED_STEP_1"
+      ],
+      "actions": [
+        {
+          "order": "1",
+          "name": "execute",
+          "description": "Process the request and verify the result before emitting success.",
+          "type": "logic",
+          "action_prompt": "Use the agent instructions and supplied inputs. Do not invent missing facts. Return a concise, verifiable result."
+        }
+      ],
+      "triggered_event": [
+        "AUTOMATED_STEP_1_COMPLETED"
+      ],
+      "ontology_instructions": "You are New automated step. Validate the incoming data, perform only the requested work, and report uncertainty or missing information explicitly.",
+      "tool_use": [],
+      "generated": true,
+      "stage": 3,
+      "inputs": [
+        {
+          "id": "prompt",
+          "label": "Request",
+          "kind": "prompt",
+          "required": false,
+          "schema": {
+            "type": "string"
+          },
+          "default": "Process the incoming workflow event according to the agent instructions.",
+          "sensitivity": "none"
+        },
+        {
+          "id": "payload",
+          "label": "Payload",
+          "kind": "value",
+          "required": false,
+          "schema": {
+            "type": "object"
+          },
+          "default": {},
+          "sensitivity": "none"
+        }
+      ],
+      "user_prompt_template": "research graph engineering and design coding using graph engineering framework.",
+      "outputs": [
+        {
+          "id": "result",
+          "label": "Result",
+          "required": true,
+          "schema": {},
+          "sensitivity": "none"
+        }
+      ],
+      "output_config": {
+        "format": "json",
+        "strict": false,
+        "repair_attempts": 0,
+        "unwrap_single_output": false,
+        "artifact": {
+          "filename": "output.json",
+          "persist_individual_outputs": false,
+          "persist_run_input": true,
+          "persist_run_record": true,
+          "persist_raw_response": false
+        }
+      },
+      "extensions": {
+        "canvas": {
+          "position": {
+            "x": 407.9609375,
+            "y": 102.20546875000002
+          }
+        },
+        "compatibility_mode": "v1"
+      }
+    }
+  ],
+  "extensions": {
+    "workflow": {
+      "description": ""
+    }
+  }
+}

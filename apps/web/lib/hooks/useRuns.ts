@@ -16,6 +16,7 @@ import {
 } from "@tanstack/react-query";
 import type { UseQueryResult } from "@tanstack/react-query";
 import { fetchApiData } from "@/lib/api-response";
+import type { RunUsageSummary } from "@agentic/contracts";
 import { RUN_KEYS, COUNT_KEYS } from "./useStream";
 import { tenantHeader } from "./tenant-header";
 
@@ -95,6 +96,7 @@ export interface RunListRow extends CodeActReceiptFields {
   durationMs: number | null;
   tokensIn: number | null;
   tokensOut: number | null;
+  provider?: string | null;
   model: string | null;
   currentStepName: string | null;
   currentStepOrd: number | null;
@@ -315,10 +317,12 @@ export interface RunDetail {
   steps: StepRow[];
   /** Present + non-null while the run is blocked on a human task. */
   waitingTask?: RunWaitingTask | null;
+  usage: RunUsageSummary;
 }
 
 export function useRun(
   id: string | null | undefined,
+  options: { live?: boolean } = {},
 ): UseQueryResult<RunDetail> {
   return useQuery({
     queryKey: id
@@ -326,6 +330,15 @@ export function useRun(
       : (["runs", "detail", "__none__"] as const),
     queryFn: () => callV1<RunDetail>(`/v1/runs/${encodeURIComponent(id!)}`),
     enabled: Boolean(id),
+    refetchInterval: options.live
+      ? (queryState) => {
+          const detail = queryState.state.data as RunDetail | undefined;
+          return detail &&
+            ["ok", "failed", "cancelled"].includes(detail.run.status)
+            ? false
+            : 1_000;
+        }
+      : false,
   });
 }
 

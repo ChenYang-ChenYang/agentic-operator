@@ -154,6 +154,35 @@ export const StepRow = z.object({
 });
 export type StepRow = z.infer<typeof StepRow>;
 
+/**
+ * Provider-attempt usage for one run.
+ *
+ * This is intentionally a safe aggregate rather than the raw `llm_calls`
+ * ledger. Test Lab users can inspect the run they are allowed to execute
+ * without receiving tenant-admin billing metadata or provider request IDs.
+ * `costUsdNanos` stays null when no attempt has an authoritative price so the
+ * UI can distinguish "unpriced" from a real zero-dollar call.
+ */
+export const RunUsageSummary = z.object({
+  logicalCalls: z.number().int().nonnegative(),
+  attempts: z.number().int().nonnegative(),
+  succeeded: z.number().int().nonnegative(),
+  failed: z.number().int().nonnegative(),
+  inFlight: z.number().int().nonnegative(),
+  tokensIn: z.number().int().nonnegative(),
+  tokensOut: z.number().int().nonnegative(),
+  cachedInputTokens: z.number().int().nonnegative(),
+  reasoningTokens: z.number().int().nonnegative(),
+  costUsdNanos: z.number().int().nonnegative().nullable(),
+  pricedCalls: z.number().int().nonnegative(),
+  unpricedCalls: z.number().int().nonnegative(),
+  providers: z.array(z.string()),
+  models: z.array(z.string()),
+  latestProvider: z.string().nullable(),
+  latestModel: z.string().nullable(),
+});
+export type RunUsageSummary = z.infer<typeof RunUsageSummary>;
+
 export const ListRunsQuery = z.object({
   limit: z.coerce.number().int().positive().max(500).optional(),
   status: z.string().optional(),
@@ -240,6 +269,7 @@ export const GetRunResponse = z.object({
   steps: z.array(StepRow),
   /** Present + non-null while the run is blocked on a human task. */
   waitingTask: RunWaitingTask.nullable().optional(),
+  usage: RunUsageSummary,
 });
 
 export const ReplayRunResponse = z.object({

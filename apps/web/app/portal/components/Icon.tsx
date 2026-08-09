@@ -34,6 +34,7 @@ export type IconName =
   | "x"
   | "check"
   | "alert"
+  | "info"
   | "spark"
   | "human"
   | "dot"
@@ -270,6 +271,16 @@ export function Icon({ name, size = 14, color, style }: IconProps) {
           <g {...common}>
             <path d="M8 2 L14 13 H2 Z" />
             <path d="M8 6 V9 M8 11 V11.5" strokeLinecap="round" />
+          </g>
+        </svg>
+      );
+    case "info":
+      return (
+        <svg style={s} viewBox="0 0 16 16" aria-hidden="true">
+          <g {...common}>
+            <circle cx="8" cy="8" r="6" />
+            <path d="M8 7v4" />
+            <path d="M8 4.5h.01" strokeWidth="2" />
           </g>
         </svg>
       );

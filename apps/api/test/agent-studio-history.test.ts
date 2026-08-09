@@ -24,6 +24,7 @@ import {
   agents,
   artifacts,
   getDb,
+  llmCalls,
   runMessages,
   runs,
   runTraceEvents,
@@ -187,6 +188,41 @@ describe("Agent Studio history routes", () => {
         },
       ])
       .run();
+    db.insert(llmCalls)
+      .values([
+        {
+          id: makeId("llm"),
+          logicalCallId: `logical-${SUFFIX}-priced`,
+          tenantId: tenantAId,
+          runId: runNewestId,
+          provider: "mock",
+          requestedModel: "mock-model-v1",
+          responseModel: "mock-model-v1",
+          attempt: 1,
+          status: "ok",
+          inputTokens: 10,
+          outputTokens: 6,
+          cachedInputTokens: 2,
+          reasoningTokens: 1,
+          costUsdNanos: 123_456,
+          startedAt: new Date(queuedAt.getTime() + 20),
+          endedAt: new Date(queuedAt.getTime() + 80),
+        },
+        {
+          id: makeId("llm"),
+          logicalCallId: `logical-${SUFFIX}-failed`,
+          tenantId: tenantAId,
+          runId: runNewestId,
+          provider: "mock",
+          requestedModel: "mock-model-v1",
+          attempt: 1,
+          status: "failed",
+          startedAt: new Date(queuedAt.getTime() + 10),
+          endedAt: new Date(queuedAt.getTime() + 15),
+          errorCode: "provider_error",
+        },
+      ])
+      .run();
     db.insert(steps)
       .values({
         id: makeId("stp"),
@@ -345,6 +381,24 @@ describe("Agent Studio history routes", () => {
     expect(detail.steps[0]).toMatchObject({
       inputRef: "/artifacts/input.json",
       outputRef: "/artifacts/output.json",
+    });
+    expect(detail.usage).toEqual({
+      logicalCalls: 2,
+      attempts: 2,
+      succeeded: 1,
+      failed: 1,
+      inFlight: 0,
+      tokensIn: 10,
+      tokensOut: 6,
+      cachedInputTokens: 2,
+      reasoningTokens: 1,
+      costUsdNanos: 123_456,
+      pricedCalls: 1,
+      unpricedCalls: 0,
+      providers: ["mock"],
+      models: ["mock-model-v1"],
+      latestProvider: "mock",
+      latestModel: "mock-model-v1",
     });
   });
 

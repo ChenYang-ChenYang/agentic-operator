@@ -23,6 +23,7 @@ import { requirePermission } from "../../plugins/rbac";
 import { writeAudit } from "../../plugins/audit";
 import {
   getRun,
+  getRunUsageSummary,
   listRecentRuns,
   listRunsPaged,
   listSteps,
@@ -112,7 +113,8 @@ export async function runsRoutes(app: FastifyInstance) {
       )
       .orderBy(desc(tasks.createdAt))
       .all()[0];
-    return reply.ok({ run, steps, waitingTask: waiting ?? null });
+    const usage = getRunUsageSummary(auth.tenantId, run.id);
+    return reply.ok({ run, steps, waitingTask: waiting ?? null, usage });
   });
 
   // GET /v1/runs/:id/chain — the whole cross-run cascade sharing this run's

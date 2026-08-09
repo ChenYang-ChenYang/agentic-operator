@@ -19,11 +19,17 @@ import {
   events,
   eventTypes,
   getDb,
+  llmCalls,
   runs,
   steps,
   tenants,
 } from "@agentic/db";
-import type { RunRow, StepRow, EventRow } from "@agentic/contracts";
+import type {
+  EventRow,
+  RunRow,
+  RunUsageSummary,
+  StepRow,
+} from "@agentic/contracts";
 
 /**
  * Resolve a stored payload reference to its real JSON, for the run-detail
@@ -780,6 +786,74 @@ export async function listSteps(
       output: await resolvePayloadRef(outputRef, maxPayloadBytes),
     })),
   ) as Promise<StepRow[]>;
+}
+
+/**
+ * Return a tenant-scoped, operator-safe usage summary for a single run.
+ * Raw ledger rows remain on the tenant-admin usage surface; Test Lab only
+ * needs live counts, authoritative token totals, and exact recorded cost.
+ */
+export function getRunUsageSummary(
+  tenantId: string,
+  runId: string,
+): RunUsageSummary {
+  const rows = getDb()
+    .select({
+      logicalCallId: llmCalls.logicalCallId,
+      status: llmCalls.status,
+      provider: llmCalls.provider,
+      requestedModel: llmCalls.requestedModel,
+      responseModel: llmCalls.responseModel,
+      inputTokens: llmCalls.inputTokens,
+      outputTokens: llmCalls.outputTokens,
+      cachedInputTokens: llmCalls.cachedInputTokens,
+      reasoningTokens: llmCalls.reasoningTokens,
+      costUsdNanos: llmCalls.costUsdNanos,
+      startedAt: llmCalls.startedAt,
+      attempt: llmCalls.attempt,
+    })
+    .from(llmCalls)
+    .where(and(eq(llmCalls.tenantId, tenantId), eq(llmCalls.runId, runId)))
+    .orderBy(desc(llmCalls.startedAt), desc(llmCalls.attempt))
+    .all();
+
+  const priced = rows.filter((row) => row.costUsdNanos !== null);
+  const providers = Array.from(new Set(rows.map((row) => row.provider)));
+  const models = Array.from(
+    new Set(rows.map((row) => row.responseModel ?? row.requestedModel)),
+  );
+  const latest = rows[0];
+  return {
+    logicalCalls: new Set(rows.map((row) => row.logicalCallId)).size,
+    attempts: rows.length,
+    succeeded: rows.filter((row) => row.status === "ok").length,
+    failed: rows.filter((row) => row.status === "failed").length,
+    inFlight: rows.filter((row) => row.status === "started").length,
+    tokensIn: rows.reduce((sum, row) => sum + (row.inputTokens ?? 0), 0),
+    tokensOut: rows.reduce((sum, row) => sum + (row.outputTokens ?? 0), 0),
+    cachedInputTokens: rows.reduce(
+      (sum, row) => sum + (row.cachedInputTokens ?? 0),
+      0,
+    ),
+    reasoningTokens: rows.reduce(
+      (sum, row) => sum + (row.reasoningTokens ?? 0),
+      0,
+    ),
+    costUsdNanos:
+      priced.length === 0
+        ? null
+        : priced.reduce((sum, row) => sum + row.costUsdNanos!, 0),
+    pricedCalls: priced.length,
+    unpricedCalls: rows.filter(
+      (row) => row.status === "ok" && row.costUsdNanos === null,
+    ).length,
+    providers,
+    models,
+    latestProvider: latest?.provider ?? null,
+    latestModel: latest
+      ? (latest.responseModel ?? latest.requestedModel)
+      : null,
+  };
 }
 
 export async function listRecentEvents(

@@ -19,8 +19,9 @@ import {
   type ReasoningSummary,
   type TextVerbosity,
 } from "@agentic/contracts";
-import { Badge, Button, Empty, Splitter } from "@/app/portal/components";
+import { Badge, Button, Empty, Icon, Splitter } from "@/app/portal/components";
 import { useTenant } from "@/app/portal/lib/use-tenant";
+import { fmtDur, fmtNum } from "@/app/portal/lib/format";
 import { useI18n } from "@/app/portal/lib/preferences-context";
 import {
   useAgentRunHistory,
@@ -33,7 +34,13 @@ import {
   type CreateAgentRunRequest,
   type RunTraceEvent,
 } from "@/lib/hooks/useAgentStudio";
-import { useCancelRun, useRunArtifacts } from "@/lib/hooks/useRuns";
+import {
+  useCancelRun,
+  useRun,
+  useRunArtifacts,
+  type RunDetail,
+} from "@/lib/hooks/useRuns";
+import { formatUsdNanos } from "@/lib/format-usd";
 import { useRunLogStream } from "@/lib/hooks/useRunLogStream";
 import { useAvailableModels } from "@/lib/hooks/useModelFleet";
 import {
@@ -271,6 +278,296 @@ function TraceRow({ event }: { event: RunTraceEvent }) {
         {event.durationMs == null ? "" : `${event.durationMs}ms`}
       </span>
     </div>
+  );
+}
+
+function traceEventTitle(event: RunTraceEvent, t: StudioTranslate): string {
+  const known: Record<string, string> = {
+    "run.queued": "Run queued",
+    "run.started": "Runtime started",
+    "run.completed": "Run completed",
+    "input.validation": "Inputs validated",
+    "prompt.compiled": "Prompt prepared",
+    "llm.call": "Model call",
+    "llm.output_repair": "Output repair",
+    "output.validation": "Output validated",
+    "output.repair.validation": "Repaired output validated",
+    "output.persisted": "Output saved",
+  };
+  const known_ = known[event.name];
+  return known_ ? studioUi(t, known_) : event.name;
+}
+
+/** Collapse running/terminal updates for one activity in the compact card. */
+function compactProgressEvents(events: RunTraceEvent[]): RunTraceEvent[] {
+  const latest = new Map<string, RunTraceEvent>();
+  for (const event of events) {
+    if (event.name === "llm.reasoning_summary") continue;
+    const iteration =
+      event.data && typeof event.data.iteration === "number"
+        ? `:${event.data.iteration}`
+        : "";
+    const key = `${event.kind}:${event.stepId ?? "run"}:${event.name}${iteration}`;
+    latest.set(key, event);
+  }
+  return Array.from(latest.values()).sort(
+    (left, right) => left.seq - right.seq,
+  );
+}
+
+/**
+ * The "Test Lab uses the real runtime" explainer, as a hover/focus hint next
+ * to the Conversation heading rather than a standing banner — the notice is
+ * read once but the vertical space it costs is paid on every run.
+ */
+function RuntimeHint() {
+  const { t } = useI18n();
+  return (
+    <span className="agent-studio-runtime-hint">
+      <button
+        type="button"
+        className="agent-studio-runtime-hint__trigger"
+        aria-label={studioUi(t, "How Test Lab runs are executed")}
+        aria-describedby="agent-studio-runtime-hint-content"
+      >
+        <Icon name="info" size={12} />
+      </button>
+      <span
+        id="agent-studio-runtime-hint-content"
+        className="agent-studio-runtime-hint__tooltip"
+        role="tooltip"
+      >
+        <strong>{studioUi(t, "Test Lab uses the real runtime.")}</strong>{" "}
+        {studioUi(
+          t,
+          "Send publishes a runtime event and copies this message into the agent's prompt input. Structured variables stay separate. Runs, traces, logs, and artifacts are saved in history.",
+        )}
+      </span>
+    </span>
+  );
+}
+
+/**
+ * Live execution card shown inline in the chat while a run is in flight.
+ *
+ * Token counts and cost come from the run's `usage` aggregate
+ * (`GET /v1/runs/:id` → `getRunUsageSummary`) rather than the run row, so
+ * retried provider attempts are counted once logically but billed in full.
+ * Falls back to the run/history row when no attempt has been recorded yet.
+ */
+function RunProgressCard({
+  runId,
+  historyRow,
+  detail,
+  traceEvents,
+  traceLoading,
+  expectedSteps,
+  onOpenTrace,
+}: {
+  runId: string;
+  historyRow: AgentStudioRunRow | undefined;
+  detail: RunDetail | undefined;
+  traceEvents: RunTraceEvent[];
+  traceLoading: boolean;
+  expectedSteps: number;
+  onOpenTrace: () => void;
+}) {
+  const { t } = useI18n();
+  const run = detail?.run;
+  const usage = detail?.usage;
+  const status = run?.status ?? historyRow?.status ?? "queued";
+  const live = !isTerminalStatus(status);
+  const startedAt = run?.startedAt ?? historyRow?.startedAt;
+  const startedMs = startedAt ? new Date(startedAt).getTime() : Number.NaN;
+  const durationMs =
+    run?.durationMs ??
+    historyRow?.durationMs ??
+    (live && Number.isFinite(startedMs)
+      ? Math.max(0, Date.now() - startedMs)
+      : null);
+  const steps = detail?.steps ?? [];
+  const completedSteps = steps.filter((step) =>
+    ["ok", "failed", "skipped"].includes(step.status),
+  ).length;
+  const currentStep = [...steps]
+    .reverse()
+    .find((step) => step.status === "running" || step.status === "pending");
+  const progressEvents = compactProgressEvents(traceEvents);
+  const visibleEvents = progressEvents.slice(-6);
+  const latestEvent = progressEvents.at(-1);
+  const totalSteps = Math.max(expectedSteps, steps.length);
+  const tokensIn =
+    usage && usage.attempts > 0
+      ? usage.tokensIn
+      : (run?.tokensIn ?? historyRow?.tokensIn ?? 0);
+  const tokensOut =
+    usage && usage.attempts > 0
+      ? usage.tokensOut
+      : (run?.tokensOut ?? historyRow?.tokensOut ?? 0);
+  const provider =
+    usage?.latestProvider ?? run?.provider ?? historyRow?.provider ?? null;
+  const model = usage?.latestModel ?? run?.model ?? historyRow?.model ?? null;
+  const phase =
+    status === "queued"
+      ? studioUi(t, "Waiting for the runtime")
+      : status === "ok"
+        ? studioUi(t, "Response completed")
+        : status === "failed"
+          ? studioUi(t, "Run failed")
+          : status === "cancelled"
+            ? studioUi(t, "Run cancelled")
+            : currentStep
+              ? studioUi(t, "Running {step}", { step: currentStep.name })
+              : (latestEvent?.summary ?? "") ||
+                studioUi(t, "Agent is working");
+  const cost =
+    usage?.costUsdNanos != null
+      ? formatUsdNanos(usage.costUsdNanos)
+      : usage?.inFlight
+        ? studioUi(t, "Calculating")
+        : usage?.unpricedCalls
+          ? studioUi(t, "Unpriced")
+          : "—";
+  const callValue = usage ? fmtNum(usage.logicalCalls) : "—";
+
+  return (
+    <section
+      className={`agent-studio-run-progress agent-studio-run-progress--${status}`}
+      aria-label={studioUi(t, "Execution progress for run {id}", {
+        id: runId,
+      })}
+      aria-live="polite"
+    >
+      <div className="agent-studio-run-progress__header">
+        <div className="agent-studio-run-progress__identity">
+          <span
+            className={`agent-studio-run-progress__pulse${live ? " is-live" : ""}`}
+            aria-hidden="true"
+          />
+          <span>
+            <span className="agent-studio-run-progress__eyebrow">
+              {studioUi(t, "Execution")}
+            </span>
+            <strong>{phase}</strong>
+          </span>
+        </div>
+        <div className="agent-studio-run-progress__header-meta">
+          <Badge tone={statusTone(status)}>{studioUi(t, status)}</Badge>
+          <span className="mono">{fmtDur(durationMs)}</span>
+        </div>
+      </div>
+
+      {(provider || model) && (
+        <div className="agent-studio-run-progress__model mono">
+          {provider ?? studioUi(t, "default provider")} /{" "}
+          {model ?? studioUi(t, "default model")}
+        </div>
+      )}
+
+      <div className="agent-studio-run-progress__metrics">
+        <div>
+          <span>{studioUi(t, "Steps")}</span>
+          <strong>
+            {completedSteps}
+            {totalSteps > 0 ? ` / ${totalSteps}` : ""}
+          </strong>
+        </div>
+        <div>
+          <span>{studioUi(t, "Model calls")}</span>
+          <strong>{callValue}</strong>
+          {usage && usage.attempts > usage.logicalCalls && (
+            <small>
+              {studioUi(t, "{n} attempts", { n: usage.attempts })}
+            </small>
+          )}
+        </div>
+        <div>
+          <span>{studioUi(t, "Tokens")}</span>
+          <strong>
+            {studioUi(t, "{in} in · {out} out", {
+              in: fmtNum(tokensIn),
+              out: fmtNum(tokensOut),
+            })}
+          </strong>
+          {usage &&
+            (usage.cachedInputTokens > 0 || usage.reasoningTokens > 0) && (
+              <small>
+                {usage.cachedInputTokens > 0
+                  ? studioUi(t, "{n} cached", {
+                      n: fmtNum(usage.cachedInputTokens),
+                    })
+                  : ""}
+                {usage.cachedInputTokens > 0 && usage.reasoningTokens > 0
+                  ? " · "
+                  : ""}
+                {usage.reasoningTokens > 0
+                  ? studioUi(t, "{n} reasoning", {
+                      n: fmtNum(usage.reasoningTokens),
+                    })
+                  : ""}
+              </small>
+            )}
+        </div>
+        <div>
+          <span>{studioUi(t, "LLM cost")}</span>
+          <strong>{cost}</strong>
+          {usage && usage.unpricedCalls > 0 && usage.costUsdNanos != null && (
+            <small>
+              {studioUi(t, "+ {n} unpriced calls", { n: usage.unpricedCalls })}
+            </small>
+          )}
+        </div>
+      </div>
+
+      <div className="agent-studio-run-progress__timeline">
+        <div className="agent-studio-run-progress__timeline-heading">
+          <span>{studioUi(t, "Live activity")}</span>
+          <button type="button" onClick={onOpenTrace}>
+            {studioUi(t, "Open full trace")}
+          </button>
+        </div>
+        {traceLoading && visibleEvents.length === 0 ? (
+          <div className="agent-studio-run-progress__waiting">
+            {studioUi(t, "Waiting for the first runtime event…")}
+          </div>
+        ) : visibleEvents.length > 0 ? (
+          <div className="agent-studio-run-progress__events">
+            {progressEvents.length > visibleEvents.length && (
+              <div className="agent-studio-run-progress__earlier mono">
+                {studioUi(t, "+{n} earlier activities", {
+                  n: progressEvents.length - visibleEvents.length,
+                })}
+              </div>
+            )}
+            {visibleEvents.map((event) => (
+              <div
+                className={`agent-studio-run-progress__event agent-studio-run-progress__event--${event.status}`}
+                key={event.id}
+              >
+                <span className="agent-studio-run-progress__event-dot" />
+                <span className="agent-studio-run-progress__event-copy">
+                  <span>
+                    <strong>{traceEventTitle(event, t)}</strong>
+                    <small>{event.kind.replaceAll("_", " ")}</small>
+                  </span>
+                  {event.summary && <p>{event.summary}</p>}
+                </span>
+                <span className="mono agent-studio-run-progress__event-time">
+                  {event.durationMs == null ? "" : fmtDur(event.durationMs)}
+                </span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="agent-studio-run-progress__waiting">
+            {studioUi(
+              t,
+              "The run was accepted. Detailed activity will appear here.",
+            )}
+          </div>
+        )}
+      </div>
+    </section>
   );
 }
 
@@ -631,6 +928,8 @@ export function TestLab({
   );
   const trace = useRunTrace(selectedRunId, 0, runIsLive);
   const output = useRunOutput(selectedRunId, runIsLive);
+  // Carries the run's `usage` aggregate for the inline execution card.
+  const runDetail = useRun(selectedRunId, { live: runIsLive });
   const artifacts = useRunArtifacts(selectedRunId);
   const logs = useRunLogStream(selectedRunId, {
     follow: runIsLive,
@@ -1094,15 +1393,9 @@ export function TestLab({
 
   return (
     <div className="agent-studio-test-lab" style={{ display: "grid", gap: 14 }}>
-      <InlineNotice
-        tone="signal"
-        title={studioUi(t, "Test Lab uses the real runtime")}
-      >
-        {studioUi(
-          t,
-          "Send publishes a runtime event that triggers this agent. Your chat message is copied exactly into the event as the agent's prompt input. Structured variables stay separate, and every run, trace event, log, and JSON artifact is retained in history.",
-        )}
-      </InlineNotice>
+      {/* The standing "uses the real runtime" banner is now the `RuntimeHint`
+          hover/focus tooltip beside the Conversation heading — it is read once
+          but the vertical space it took was paid on every run. */}
       {hasPreviewSteps && (
         <InlineNotice
           tone="amber"
@@ -1970,6 +2263,7 @@ export function TestLab({
                 >
                   {studioUi(t, "Conversation")}
                 </span>
+                <RuntimeHint />
                 {activeStatus && (
                   <Badge tone={statusTone(activeStatus)}>
                     {studioUi(t, activeStatus)}
@@ -2199,6 +2493,17 @@ export function TestLab({
                       onInspectRun={setSelectedRunId}
                     />
                   </>
+                )}
+                {selectedRunId && (
+                  <RunProgressCard
+                    runId={selectedRunId}
+                    historyRow={selectedHistory}
+                    detail={runDetail.data}
+                    traceEvents={trace.data?.events ?? []}
+                    traceLoading={trace.isLoading}
+                    expectedSteps={definition.actions.length}
+                    onOpenTrace={() => setResultTab("trace")}
+                  />
                 )}
                 <div ref={chatEndRef} aria-hidden="true" />
               </div>

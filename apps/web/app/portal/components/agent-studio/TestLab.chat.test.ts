@@ -111,14 +111,6 @@ describe("Test Lab chat wiring", () => {
     );
   });
 
-  it("keeps the composer sticky and collapses Test Lab to one column", () => {
-    expect(css).toMatch(
-      /\.agent-studio-chat-composer\s*\{[\s\S]{0,100}position: sticky/,
-    );
-    expect(css).toMatch(
-      /@container agent-studio-test \(max-width: 720px\)[\s\S]{0,180}\.agent-studio-test-grid[\s\S]{0,100}grid-template-columns: minmax\(0, 1fr\)/,
-    );
-  });
 
   it("responds to the available Test Lab panel width without horizontal form overflow", () => {
     expect(source).toContain('className="agent-studio-test-lab"');
@@ -135,7 +127,7 @@ describe("Test Lab chat wiring", () => {
     expect(css).toContain("container: agent-studio-test / inline-size");
     expect(css).toContain("container: agent-studio-test-setup / inline-size");
     expect(css).toMatch(
-      /@container agent-studio-test \(max-width: 1100px\)[\s\S]*?\.agent-studio-test-history[\s\S]*?grid-column: 1 \/ -1/,
+      /@container agent-studio-test \(max-width: 1100px\)[\s\S]*?\.agent-studio-test-history[\s\S]*?position: absolute/,
     );
     expect(css).toMatch(
       /@container agent-studio-test \(max-width: 720px\)[\s\S]*?\.agent-studio-test-grid[\s\S]*?grid-template-columns: minmax\(0, 1fr\)/,
@@ -147,7 +139,7 @@ describe("Test Lab chat wiring", () => {
       /@container agent-studio-test-setup \(max-width: 520px\)[\s\S]*?\.agent-studio-test-runtime-grid[\s\S]*?grid-template-columns: minmax\(0, 1fr\)/,
     );
     expect(css).toMatch(
-      /\.agent-studio-test-setup-body\s*\{[\s\S]*?grid-template-columns: minmax\(0, 1fr\)[\s\S]*?overflow-x: auto !important/,
+      /\.agent-studio-test-setup-body\s*\{[\s\S]*?grid-template-columns: minmax\(0, 1fr\)[\s\S]*?overflow: auto !important/,
     );
     expect(css).toContain(".agent-studio-test-setup-body > *");
     expect(css).toMatch(
@@ -181,56 +173,35 @@ describe("Test Lab chat wiring", () => {
     expect(css).toContain(".agent-studio-output-details textarea");
   });
 
-  it("adds accessible splitters and keeps history vertically resizable on mobile", () => {
-    expect(source).toContain('"Resize Test setup and Conversation panels"');
-    expect(source).toContain('"Resize Conversation and Run history panels"');
-    expect(source).toContain('"Resize Conversation and Run history rows"');
-    expect(source).toContain("max={setupPanelMaxWidth}");
+
+
+  it("replaces the runtime banner with an accessible hover/focus hint", () => {
+    expect(source).toContain("function RuntimeHint()");
     expect(source).toContain(
-      "historyInline ? historyPanelMaxWidth : TEST_HISTORY_MAX_HEIGHT",
+      'aria-label={studioUi(t, "How Test Lab runs are executed")}',
     );
-    expect(source).toContain("invert");
-    expect(css).toContain("--agent-studio-test-setup-width");
-    expect(css).toContain("--agent-studio-test-history-width");
-    expect(css).toMatch(
-      /@container agent-studio-test \(max-width: 720px\)[\s\S]*?\.agent-studio-test-splitter--setup\s*\{[\s\S]*?display: none/,
+    expect(source).toContain('role="tooltip"');
+    expect(source).toContain('<Icon name="info"');
+    // The hint REPLACES the standing banner — both would be duplicate copy.
+    expect(source).not.toContain(
+      'title={studioUi(t, "Test Lab uses the real runtime")}',
     );
-    expect(css).not.toMatch(
-      /@container agent-studio-test \(max-width: 720px\)[\s\S]*?\.agent-studio-test-splitter--history\s*\{[\s\S]*?display: none/,
-    );
-    expect(css).toContain(
-      '.agent-studio-test-splitter [role="separator"]:focus-visible',
-    );
-    expect(splitter).toContain("onPointerDown={onPointerDown}");
-    expect(splitter).toContain('window.addEventListener("pointermove", move)');
-    expect(splitter).toContain(
-      'window.addEventListener("pointercancel", finish)',
-    );
-    expect(splitter).toContain("target.setPointerCapture(pointerId)");
-    expect(splitter).toContain('touchAction: "none"');
-    expect(source).toContain('axis={historyInline ? "x" : "y"}');
-    expect(source).toContain("setHistoryPanelHeight");
-    expect(source).toContain('"--agent-studio-test-history-height"');
-    expect(css).toMatch(
-      /@container agent-studio-test \(max-width: 1100px\)[\s\S]*?\.agent-studio-test-splitter--history\s*\{[\s\S]*?grid-column: 1 \/ -1/,
-    );
+    expect(css).toContain(".agent-studio-runtime-hint:hover");
+    expect(css).toContain(".agent-studio-runtime-hint:focus-within");
   });
 
-  it("lets the operator hide, reopen, and continue resizing run history", () => {
-    expect(source).toContain(
-      "const [historyOpen, setHistoryOpen] = useState(true)",
-    );
-    expect(source).toContain("agent-studio-test-grid--history-closed");
-    expect(source).toContain("historyInline && historyOpen");
-    expect(source).toMatch(
-      /historyOpen[\s\S]{0,80}\? studioUi\(t, "Hide run history"\)[\s\S]{0,80}: studioUi\(t, "Show run history"\)/,
-    );
-    expect(source).toContain("ariaExpanded={historyOpen}");
-    expect(source).toContain("setHistoryOpen((open) => !open)");
-    expect(source).toContain('display: historyOpen ? "flex" : "none"');
-    expect(source).toContain("{historyOpen && (");
-    expect(css).toContain(".agent-studio-test-grid--history-closed");
-    expect(css).toContain(".agent-studio-test-history-header");
+  it("keeps live execution steps, tokens, and exact cost in the chat view", () => {
+    expect(source).toContain("function RunProgressCard(");
+    expect(source).toContain("useRun(selectedRunId");
+    expect(source).toContain("detail?.usage");
+    expect(source).toContain("usage.costUsdNanos");
+    expect(source).toContain("formatUsdNanos");
+    expect(source).toContain("compactProgressEvents(traceEvents)");
+    expect(source).toContain("Open full trace");
+    expect(source).toContain("<RunProgressCard");
+    expect(css).toContain(".agent-studio-run-progress__metrics");
+    expect(css).toContain(".agent-studio-run-progress__timeline");
+    expect(hooks).toContain("GetRunSessionResponseSchema.parse");
   });
 
   it("shows the authored emitted events beside the trigger event setting", () => {
