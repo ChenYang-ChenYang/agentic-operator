@@ -83,64 +83,6 @@ describe("production interfaces do not silently substitute fake success", () => 
     );
   });
 
-  it("keeps the standalone Reasoning entry and example independent of Agent Factory context", () => {
-    const sidebar = read("app/portal/components/shell/sidebar.tsx");
-    const page = read("app/portal/[tenant]/(views)/reasoning-agent/page.tsx");
-
-    expect(sidebar).toContain("reasoningAgentHref(tenantSlug)");
-    expect(sidebar).not.toContain("href={`${base}/reasoning-agent`}");
-    expect(page).toContain("reasoning_not_configured");
-    expect(page).toContain("reasoningWorkspaceHref");
-    expect(page).not.toContain("disabled={actionOptions.length === 0}");
-  });
-
-  it("keeps Reasoning business inputs in the right sidebar instead of the chat canvas", () => {
-    const page = read("app/portal/[tenant]/(views)/reasoning-agent/page.tsx");
-    const styles = read(
-      "app/portal/[tenant]/(views)/reasoning-agent/reasoning-agent.module.css",
-    );
-    const mainStart = page.indexOf("<main className={styles.chat}>");
-    const asideStart = page.indexOf("<aside", mainStart);
-    const mainSource = page.slice(mainStart, asideStart);
-    const sidebarSource = page.slice(asideStart);
-
-    expect(mainStart).toBeGreaterThan(-1);
-    expect(asideStart).toBeGreaterThan(mainStart);
-    expect(mainSource).toContain("styles.messages");
-    expect(mainSource).toContain("styles.composer");
-    expect(mainSource).not.toContain("reasoning-business-input-");
-    expect(sidebarSource).toContain("reasoning-business-input-");
-    expect(sidebarSource).toContain('inspectorTab === "input"');
-    expect(page).toContain('useState<InspectorTab>("input")');
-    expect(page).toContain('setInspectorTab("flow")');
-    expect(page).toContain('role="tabpanel"');
-    expect(page).toContain("onInspectorTabKeyDown");
-    expect(styles).toContain("grid-template-columns: repeat(4");
-    expect(styles).toContain(".inputAccordion");
-    expect(styles).toMatch(
-      /@media \(max-width: 820px\)[\s\S]*\.inspector[\s\S]*position: fixed/,
-    );
-  });
-
-  it("renders a continuous auditable fact-to-rule-to-assessment chain", () => {
-    const page = read("app/portal/[tenant]/(views)/reasoning-agent/page.tsx");
-    const auditView = read(
-      "app/portal/[tenant]/(views)/reasoning-agent/audit-view.ts",
-    );
-
-    expect(page).toContain('data-testid="reasoning-evidence-analysis"');
-    expect(page).toContain('data-testid="reasoning-selected-rule-pool"');
-    expect(page).toContain('data-testid="qualified-agent-assessments"');
-    expect(page).toContain('t("reasoningAgent.page.whyEnteredRuleBundle")');
-    expect(page).toContain(
-      't("reasoningAgent.page.perRuleAssessmentEvidence")',
-    );
-    expect(page).toContain("publicAuditPayload(step.output, t)");
-    expect(auditView).toContain("legacy_input_projection");
-    expect(auditView).toContain("reasoningcontent");
-    expect(page).not.toContain("agent-factory");
-  });
-
   it("preserves cancelled as an accessible status across run projections", () => {
     const atoms = read("app/portal/components/atoms.tsx");
     expect(atoms).toContain('| "cancelled"');

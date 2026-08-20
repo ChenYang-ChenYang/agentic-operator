@@ -13,7 +13,6 @@ import { metricsRoute } from "./routes/metrics";
 import { eventsRoutes } from "./routes/v1/events";
 import { runsRoutes } from "./routes/v1/runs";
 import { reasoningRoutes } from "./routes/v1/reasoning";
-import { reasoningAgentRoutes } from "./routes/v1/reasoning-agent";
 import { operatorChecksRoutes } from "./routes/v1/operator-checks";
 import { runsLogsRoute } from "./routes/v1/runs-logs";
 import { tasksRoutes } from "./routes/v1/tasks";
@@ -300,7 +299,6 @@ export async function build() {
         await v1.register(eventsRoutes);
         await v1.register(runsRoutes);
         await v1.register(reasoningRoutes);
-        await v1.register(reasoningAgentRoutes);
         await v1.register(runsLogsRoute);
         await v1.register(tasksRoutes);
         await v1.register(agentsRoutes);

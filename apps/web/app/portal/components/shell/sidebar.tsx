@@ -33,7 +33,6 @@ import { Logo } from "./logo";
 import { NavGroup, NavItem } from "./nav";
 import { TenantSwitcher, type TenantOption } from "./tenant-switcher";
 import { useI18n } from "../../lib/preferences-context";
-import { reasoningAgentHref } from "@/lib/reasoning-workspace";
 import styles from "./sidebar.module.css";
 
 export interface SidebarProps {
@@ -237,12 +236,6 @@ export function Sidebar({
               href={`${base}/workflows`}
               icon="workflow"
               label={t("nav.workflows")}
-            />
-            <NavItem
-              href={reasoningAgentHref(tenantSlug)}
-              icon="spark"
-              label={t("nav.reasoningAgent")}
-              matchPrefix
             />
             <NavItem
               href={`${base}/agents`}
