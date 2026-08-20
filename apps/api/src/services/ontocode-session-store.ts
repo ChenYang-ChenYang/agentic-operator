@@ -9,14 +9,18 @@ import {
   isNull,
   like,
   or,
+  sql,
   type SQL,
 } from "drizzle-orm";
 import {
   businessOntologyDomains,
+  factoryConversations,
+  factoryRuns,
   getDb,
   ontocodeArtifactBlobs,
   ontocodeArtifacts,
   ontocodeArtifactVersions,
+  ontocodeBuildExecutions,
   ontocodeCandidateHeads,
   ontocodeChangeSetOperations,
   ontocodeChangeSets,
@@ -36,6 +40,8 @@ import {
 import { canonicalEvidenceJson } from "@agentic/shared";
 import {
   ONTOCODE_COMMAND_POLICY,
+  resolveOntoCodeAutonomyActionPolicy,
+  resolveOntoCodeCommandBudget,
   OntoCodeArtifactSchema,
   OntoCodeArtifactVersionSchema,
   OntoCodeBuildSessionSchema,
@@ -75,6 +81,7 @@ import {
   type OntoCodeSessionEvent,
   type PostOntoCodeMessageRequest,
   type PostOntoCodeTurnRequest,
+  type OntoCodeTurnAction,
   type OntoCodeTurnReceipt,
   type OntoCodeWorkspaceDirective,
   type UpdateOntoCodeSessionRequest,
@@ -311,8 +318,7 @@ function projectFromRow(
   return OntoCodeProjectSchema.parse({
     id: row.id,
     tenantId: row.tenantId,
-    ontologyDomainRegistrationId:
-      row.ontologyDomainRegistrationId ?? null,
+    ontologyDomainRegistrationId: row.ontologyDomainRegistrationId ?? null,
     runtimeProfileVersionId: row.runtimeProfileVersionId ?? null,
     domain: row.domain,
     name: row.name,
@@ -404,6 +410,8 @@ function harnessJobFromRow(
     sessionId: row.sessionId,
     commandId: row.commandId ?? null,
     runtimeProfileVersionId: row.runtimeProfileVersionId ?? null,
+    buildExecutionId: row.buildExecutionId ?? null,
+    attemptNo: row.attemptNo,
     kind: row.kind,
     status: row.status,
     inputHash: row.inputHash ?? null,
@@ -544,8 +552,7 @@ function evidenceFromRow(
     outcome: row.outcome,
     state: row.state,
     staleReason: row.staleReason ?? null,
-    invalidatedByPackageVersionId:
-      row.invalidatedByPackageVersionId ?? null,
+    invalidatedByPackageVersionId: row.invalidatedByPackageVersionId ?? null,
     invalidatedAt: timestamp(row.invalidatedAt),
     subjectType: row.subjectType,
     subjectId: row.subjectId,
@@ -662,10 +669,8 @@ function requireWritableSessionRow(
       {
         sessionId: session.id,
         projectId: project.id,
-        sessionRuntimeProfileVersionId:
-          session.runtimeProfileVersionId ?? null,
-        projectRuntimeProfileVersionId:
-          project.runtimeProfileVersionId ?? null,
+        sessionRuntimeProfileVersionId: session.runtimeProfileVersionId ?? null,
+        projectRuntimeProfileVersionId: project.runtimeProfileVersionId ?? null,
       },
     );
   }
@@ -879,10 +884,7 @@ export function createOntoCodeProject(
           ontocodeProjects,
         )(
           and(
-            eq(
-              ontocodeProjects.ontologyDomainRegistrationId,
-              registration.id,
-            ),
+            eq(ontocodeProjects.ontologyDomainRegistrationId, registration.id),
             runtimeProfileVersionId
               ? eq(
                   ontocodeProjects.runtimeProfileVersionId,
@@ -925,10 +927,7 @@ export function createOntoCodeProject(
           ontocodeProjects,
         )(
           and(
-            eq(
-              ontocodeProjects.ontologyDomainRegistrationId,
-              registration.id,
-            ),
+            eq(ontocodeProjects.ontologyDomainRegistrationId, registration.id),
             runtimeProfileVersionId
               ? eq(
                   ontocodeProjects.runtimeProfileVersionId,
@@ -1038,8 +1037,7 @@ export function createOntoCodeSession(
         payload: {
           sessionId: id,
           projectId: input.projectId,
-          ontologyDomainRegistrationId:
-            project.ontologyDomainRegistrationId,
+          ontologyDomainRegistrationId: project.ontologyDomainRegistrationId,
           runtimeProfileVersionId: project.runtimeProfileVersionId ?? null,
           ontologyDomainId: project.domain,
           ontologySnapshotHash: session.ontologySnapshotHash,
@@ -1094,6 +1092,93 @@ export function getOntoCodeSession(
   return sessionFromRow(requireSessionRow(getDb(), ctx, sessionId));
 }
 
+export const ONTOCODE_ONTOLOGY_SHADOWED_EVENT = "ontology.source.shadowed";
+
+/**
+ * #ONTOLOGY-SHADOW —— 一次「静默切换」的持久记录。
+ *
+ * 无绑定回退路径上，同 id 的上传包会盖过一个已配置的在线源，而【谁都看不见】：
+ * 读到的本体是上传的那份，配置里写的却是 Allmeta。平台不改谁赢——那是 FDE 的
+ * 裁量——但不能继续替它隐瞒。所以新鲜度读取一旦测到这件事，就在 Session 的事件
+ * 账本里留一条 user 可见的记录。
+ *
+ * 幂等：同一个 Session/域/被盖过的传输只记一次，否则前端轮询会把账本刷爆。返回
+ * null 表示这条事实早就在账本里了。
+ */
+export function recordOntoCodeOntologyShadowing(
+  ctx: Pick<OntoCodeStoreContext, "tenantId">,
+  sessionId: string,
+  input: {
+    ontologyDomainId: string;
+    baseTransport: "allmeta" | "manifest" | null;
+    currentHash: string | null;
+  },
+): OntoCodeSessionEvent | null {
+  return getDb().transaction((tx) => {
+    const session = requireSessionRow(tx, ctx, sessionId);
+    const existing = tx
+      .select()
+      .from(ontocodeSessionEvents)
+      .where(
+        tenantScope(
+          ctx,
+          ontocodeSessionEvents,
+        )(
+          and(
+            eq(ontocodeSessionEvents.sessionId, sessionId),
+            eq(ontocodeSessionEvents.type, ONTOCODE_ONTOLOGY_SHADOWED_EVENT),
+          ),
+        ),
+      )
+      .all()
+      .find((row) => {
+        const payload = JSON.parse(row.payloadJson) as Record<string, unknown>;
+        return (
+          payload.ontologyDomainId === input.ontologyDomainId &&
+          (payload.baseTransport ?? null) === input.baseTransport
+        );
+      });
+    if (existing) return null;
+    return appendEvent(
+      tx,
+      ctx,
+      {
+        projectId: session.projectId,
+        sessionId,
+        type: ONTOCODE_ONTOLOGY_SHADOWED_EVENT,
+        payload: {
+          sessionId,
+          projectId: session.projectId,
+          ontologyDomainId: input.ontologyDomainId,
+          servedBy: "upload",
+          baseTransport: input.baseTransport,
+          currentHash: input.currentHash,
+        },
+        correlationId: makeOntoCodeId("cor"),
+        causationId: sessionId,
+        visibility: "user",
+      },
+      new Date(),
+    );
+  });
+}
+
+const AUTONOMY_CHANGE_BLOCKING_JOB_STATUSES = [
+  "queued",
+  "leased",
+  "running",
+  "waiting_user",
+  "retry_scheduled",
+] as const;
+
+const AUTONOMY_CHANGE_BLOCKING_COMMAND_STATUSES = [
+  "proposed",
+  "awaiting_approval",
+  "approved",
+  "queued",
+  "running",
+] as const;
+
 export function updateOntoCodeSession(
   ctx: OntoCodeStoreContext,
   sessionId: string,
@@ -1109,6 +1194,80 @@ export function updateOntoCodeSession(
         409,
         { sessionId },
       );
+    }
+    if (
+      input.autonomyMode !== undefined &&
+      input.autonomyMode !== current.autonomyMode
+    ) {
+      // A mode switch cannot retroactively add/remove approval from an already
+      // accepted Command, and a running Factory conversation treats its
+      // interaction policy as immutable. Refuse the switch while either kind
+      // of work is live instead of letting UI state diverge from execution.
+      const blockingJob = tx
+        .select({
+          id: ontocodeHarnessJobs.id,
+          kind: ontocodeHarnessJobs.kind,
+          status: ontocodeHarnessJobs.status,
+        })
+        .from(ontocodeHarnessJobs)
+        .where(
+          tenantScope(
+            ctx,
+            ontocodeHarnessJobs,
+          )(
+            and(
+              eq(ontocodeHarnessJobs.sessionId, sessionId),
+              inArray(
+                ontocodeHarnessJobs.status,
+                AUTONOMY_CHANGE_BLOCKING_JOB_STATUSES,
+              ),
+            ),
+          ),
+        )
+        .orderBy(
+          desc(ontocodeHarnessJobs.updatedAt),
+          desc(ontocodeHarnessJobs.id),
+        )
+        .limit(1)
+        .get();
+      const blockingCommand = tx
+        .select({
+          id: ontocodeCommands.id,
+          type: ontocodeCommands.type,
+          status: ontocodeCommands.status,
+        })
+        .from(ontocodeCommands)
+        .where(
+          tenantScope(
+            ctx,
+            ontocodeCommands,
+          )(
+            and(
+              eq(ontocodeCommands.sessionId, sessionId),
+              inArray(
+                ontocodeCommands.status,
+                AUTONOMY_CHANGE_BLOCKING_COMMAND_STATUSES,
+              ),
+            ),
+          ),
+        )
+        .orderBy(desc(ontocodeCommands.updatedAt), desc(ontocodeCommands.id))
+        .limit(1)
+        .get();
+      if (blockingJob || blockingCommand) {
+        throw new OntoCodeStoreError(
+          "ontocode_autonomy_change_blocked",
+          "Cannot change autonomy mode while this Session has a live Harness Job or pending Command",
+          409,
+          {
+            sessionId,
+            currentAutonomyMode: current.autonomyMode,
+            requestedAutonomyMode: input.autonomyMode,
+            blockingJob: blockingJob ?? null,
+            blockingCommand: blockingCommand ?? null,
+          },
+        );
+      }
     }
     const now = new Date();
     const revision = current.revision + 1;
@@ -1177,6 +1336,8 @@ export function updateOntoCodeSession(
           previousPhase: current.phase,
           phase: session.phase,
           activityState: session.activityState,
+          previousAutonomyMode: current.autonomyMode,
+          autonomyMode: session.autonomyMode,
         },
         correlationId: makeOntoCodeId("cor"),
         causationId: sessionId,
@@ -1440,7 +1601,10 @@ export function cancelOntoCodeSessionJob(
     // it is waiting for this very person, and answering it is the normal way
     // forward. Scrapping a parked Session remains `deleteOntoCodeSession`.
     const live = tx
-      .select({ id: ontocodeHarnessJobs.id })
+      .select({
+        id: ontocodeHarnessJobs.id,
+        buildExecutionId: ontocodeHarnessJobs.buildExecutionId,
+      })
       .from(ontocodeHarnessJobs)
       .where(
         tenantScope(
@@ -1481,6 +1645,48 @@ export function cancelOntoCodeSessionJob(
         )(inArray(ontocodeHarnessJobs.id, jobIds)),
       )
       .run();
+    const buildExecutionIds = [
+      ...new Set(
+        live.flatMap((job) =>
+          job.buildExecutionId ? [job.buildExecutionId] : [],
+        ),
+      ),
+    ];
+    if (buildExecutionIds.length > 0) {
+      const executionUpdate = tx
+        .update(ontocodeBuildExecutions)
+        .set({
+          state: "cancelled",
+          pendingInteractionId: null,
+          pendingInteractionKind: null,
+          pendingInteractionSubjectDigest: null,
+          pendingAnswerId: null,
+          pendingAnswerDigest: null,
+          pendingAnswerStatus: null,
+          revision: sql`${ontocodeBuildExecutions.revision} + 1`,
+          updatedAt: now,
+        })
+        .where(
+          tenantScope(
+            ctx,
+            ontocodeBuildExecutions,
+          )(
+            and(
+              eq(ontocodeBuildExecutions.sessionId, sessionId),
+              inArray(ontocodeBuildExecutions.id, buildExecutionIds),
+            ),
+          ),
+        )
+        .run();
+      if (executionUpdate.changes !== buildExecutionIds.length) {
+        throw new OntoCodeStoreError(
+          "ontocode_build_execution_cancel_raced",
+          "A live Build execution changed while cancellation was being committed",
+          409,
+          { sessionId, jobIds, buildExecutionIds },
+        );
+      }
+    }
     tx.update(ontocodeSessions)
       .set({ activityState: "idle", updatedAt: now })
       .where(
@@ -1488,6 +1694,303 @@ export function cancelOntoCodeSessionJob(
       )
       .run();
     return { cancelled: true, sessionId, jobIds };
+  });
+}
+
+/**
+ * Explicitly retry one recoverable Harness failure without creating a second
+ * Command or Job identity. Keeping both identities is essential for Factory
+ * human-gate recovery: the original input_resolved audit edge points at this
+ * exact Job, and replacing it would make a valid checkpoint look stale.
+ */
+export function retryOntoCodeSessionJob(
+  ctx: OntoCodeStoreContext,
+  sessionId: string,
+  jobId: string,
+): {
+  retried: true;
+  sessionId: string;
+  jobId: string;
+  attempt: number;
+  sessionRevision: number;
+  event: OntoCodeSessionEvent;
+} {
+  return getDb().transaction((tx) => {
+    const session = requireWritableSessionRow(tx, ctx, sessionId);
+    const job = tx
+      .select()
+      .from(ontocodeHarnessJobs)
+      .where(
+        tenantScope(
+          ctx,
+          ontocodeHarnessJobs,
+        )(
+          and(
+            eq(ontocodeHarnessJobs.id, jobId),
+            eq(ontocodeHarnessJobs.sessionId, sessionId),
+          ),
+        ),
+      )
+      .get();
+    if (!job) {
+      throw new OntoCodeStoreError(
+        "ontocode_harness_job_not_found",
+        "The Harness Job does not belong to this Session",
+        404,
+        { sessionId, jobId },
+      );
+    }
+    if (job.status !== "failed_recoverable") {
+      throw new OntoCodeStoreError(
+        "ontocode_harness_job_not_retryable",
+        "Only a recoverable failed Harness Job can be explicitly retried",
+        409,
+        { sessionId, jobId, status: job.status },
+      );
+    }
+    if (!job.commandId) {
+      throw new OntoCodeStoreError(
+        "ontocode_harness_retry_command_missing",
+        "A user-requested Harness retry requires its original policy-derived Command",
+        409,
+        { sessionId, jobId },
+      );
+    }
+    const live = tx
+      .select({ id: ontocodeHarnessJobs.id })
+      .from(ontocodeHarnessJobs)
+      .where(
+        tenantScope(
+          ctx,
+          ontocodeHarnessJobs,
+        )(
+          and(
+            eq(ontocodeHarnessJobs.sessionId, sessionId),
+            inArray(ontocodeHarnessJobs.status, [
+              "queued",
+              "leased",
+              "running",
+              "retry_scheduled",
+            ]),
+          ),
+        ),
+      )
+      .get();
+    if (live) {
+      throw new OntoCodeStoreError(
+        "ontocode_harness_retry_conflict",
+        "Another Harness Job is already active in this Session",
+        409,
+        { sessionId, jobId, activeJobId: live.id },
+      );
+    }
+    const command = tx
+      .select()
+      .from(ontocodeCommands)
+      .where(
+        tenantScope(
+          ctx,
+          ontocodeCommands,
+        )(
+          and(
+            eq(ontocodeCommands.id, job.commandId),
+            eq(ontocodeCommands.sessionId, sessionId),
+          ),
+        ),
+      )
+      .get();
+    if (!command || command.status !== "failed") {
+      throw new OntoCodeStoreError(
+        "ontocode_harness_retry_command_stale",
+        "The failed Harness Job's original Command is missing or no longer failed",
+        409,
+        {
+          sessionId,
+          jobId,
+          commandId: job.commandId,
+          commandStatus: command?.status ?? null,
+        },
+      );
+    }
+    // Attempt identity is owned by the Job row. Session events are immutable
+    // audit output and must not be counted to reconstruct mutable state.
+    const attempt = job.attemptNo;
+    if (attempt < 1) {
+      throw new OntoCodeStoreError(
+        "ontocode_harness_retry_attempt_missing",
+        "The failed Harness Job has no durable started attempt to retry",
+        409,
+        { sessionId, jobId },
+      );
+    }
+
+    const now = new Date();
+    const sessionRevision = session.revision + 1;
+    const buildExecution = job.buildExecutionId
+      ? tx
+          .select()
+          .from(ontocodeBuildExecutions)
+          .where(
+            tenantScope(
+              ctx,
+              ontocodeBuildExecutions,
+            )(
+              and(
+                eq(ontocodeBuildExecutions.id, job.buildExecutionId),
+                eq(ontocodeBuildExecutions.sessionId, sessionId),
+              ),
+            ),
+          )
+          .get()
+      : null;
+    if (
+      job.buildExecutionId &&
+      (!buildExecution ||
+        buildExecution.projectId !== session.projectId ||
+        buildExecution.state !== "failed_recoverable" ||
+        (buildExecution.runtimeProfileVersionId ?? null) !==
+          (job.runtimeProfileVersionId ?? null))
+    ) {
+      throw new OntoCodeStoreError(
+        "ontocode_build_execution_retry_stale",
+        "The recoverable Job is no longer bound to an exact failed OntoCode Build execution",
+        409,
+        {
+          sessionId,
+          jobId,
+          buildExecutionId: job.buildExecutionId,
+          executionState: buildExecution?.state ?? null,
+        },
+      );
+    }
+    const jobUpdate = tx
+      .update(ontocodeHarnessJobs)
+      .set({
+        status: "retry_scheduled",
+        errorMessage: null,
+        startedAt: null,
+        finishedAt: null,
+        updatedAt: now,
+      })
+      .where(
+        tenantScope(
+          ctx,
+          ontocodeHarnessJobs,
+        )(
+          and(
+            eq(ontocodeHarnessJobs.id, jobId),
+            eq(ontocodeHarnessJobs.status, "failed_recoverable"),
+          ),
+        ),
+      )
+      .run();
+    const executionUpdate = buildExecution
+      ? tx
+          .update(ontocodeBuildExecutions)
+          .set({
+            state: "resuming",
+            revision: sql`${ontocodeBuildExecutions.revision} + 1`,
+            updatedAt: now,
+          })
+          .where(
+            tenantScope(
+              ctx,
+              ontocodeBuildExecutions,
+            )(
+              and(
+                eq(ontocodeBuildExecutions.id, buildExecution.id),
+                eq(ontocodeBuildExecutions.sessionId, sessionId),
+                eq(ontocodeBuildExecutions.revision, buildExecution.revision),
+                eq(ontocodeBuildExecutions.state, "failed_recoverable"),
+              ),
+            ),
+          )
+          .run()
+      : null;
+    const commandUpdate = tx
+      .update(ontocodeCommands)
+      .set({ status: "queued", updatedAt: now })
+      .where(
+        tenantScope(
+          ctx,
+          ontocodeCommands,
+        )(
+          and(
+            eq(ontocodeCommands.id, command.id),
+            eq(ontocodeCommands.status, "failed"),
+          ),
+        ),
+      )
+      .run();
+    const sessionUpdate = tx
+      .update(ontocodeSessions)
+      .set({
+        activityState: "queued",
+        revision: sessionRevision,
+        updatedAt: now,
+      })
+      .where(
+        tenantScope(
+          ctx,
+          ontocodeSessions,
+        )(
+          and(
+            eq(ontocodeSessions.id, sessionId),
+            eq(ontocodeSessions.revision, session.revision),
+          ),
+        ),
+      )
+      .run();
+    if (
+      jobUpdate.changes !== 1 ||
+      commandUpdate.changes !== 1 ||
+      sessionUpdate.changes !== 1 ||
+      (executionUpdate !== null && executionUpdate.changes !== 1)
+    ) {
+      throw new OntoCodeStoreError(
+        "ontocode_harness_retry_raced",
+        "The Harness Job changed while its retry was being scheduled",
+        409,
+        { sessionId, jobId },
+      );
+    }
+    const event = appendEvent(
+      tx,
+      ctx,
+      {
+        projectId: session.projectId,
+        sessionId,
+        type: "harness.job.retry_scheduled",
+        payload: {
+          jobId,
+          kind: job.kind,
+          attempt,
+          status: "retry_scheduled",
+          retryAfterMs: 0,
+          source: "fde",
+          error: {
+            code: "operator_retry",
+            message:
+              "The FDE explicitly retried this recoverable Harness failure",
+            recoverable: true,
+            retryable: true,
+          },
+        },
+        correlationId: makeOntoCodeId("cor"),
+        causationId: jobId,
+        commandId: command.id,
+        harnessJobId: jobId,
+      },
+      now,
+    );
+    return {
+      retried: true,
+      sessionId,
+      jobId,
+      attempt,
+      sessionRevision,
+      event,
+    };
   });
 }
 
@@ -1753,6 +2256,12 @@ interface CreateOntoCodeTurnServerInput extends PostOntoCodeTurnRequest {
    */
   assistantText?: string;
   assistantRecommendations?: Array<Record<string, unknown>>;
+  /**
+   * The compiled-context refs the answer stands on. Persisted as data so the
+   * workspace can resolve them into links, instead of the model spelling
+   * machine ids into the FDE's prose.
+   */
+  assistantCitedRefs?: string[];
   directiveTarget?: string;
   persistedRequestContent?: Record<string, unknown>;
   /** Server-only actor for automatic continuations such as verified config. */
@@ -1773,7 +2282,46 @@ function turnRequestContent(input: CreateOntoCodeTurnServerInput) {
   };
 }
 
-function turnAssistantAcknowledgement(
+/**
+ * What each action is called when an FDE is the reader.
+ *
+ * The workspace already renders this vocabulary for job kinds; the server had
+ * no equivalent and was spelling the raw command token (`propose_blueprint`)
+ * straight into chat. One map, kept small, keyed on the action itself rather
+ * than on the job kind — several actions share a job kind and would otherwise
+ * be described as work they are not.
+ */
+const TURN_ACTION_LABEL: Record<
+  OntoCodeTurnAction,
+  { zh: string; en: string }
+> = {
+  analyze_ontology: { zh: "本体解读", en: "Reading the ontology" },
+  analyze_scope: { zh: "范围分析", en: "The scope analysis" },
+  propose_blueprint: { zh: "蓝图", en: "The blueprint" },
+  create_configuration_task: {
+    zh: "配置准备",
+    en: "The configuration setup",
+  },
+  verify_configuration: { zh: "配置验证", en: "The configuration check" },
+  generate_package: { zh: "代码生成", en: "The code generation" },
+  patch_artifact: { zh: "改动", en: "The edit" },
+  generate_tests: { zh: "测试编写", en: "Writing the tests" },
+  run_tests: { zh: "验证", en: "The test run" },
+  debug_failure: { zh: "修复", en: "The fix" },
+  compare_candidate: { zh: "回归对比", en: "The regression comparison" },
+  prepare_release: { zh: "上线准备", en: "The release preparation" },
+  deploy_release: { zh: "部署", en: "The deployment" },
+};
+
+/**
+ * The fallback acknowledgement, used whenever the planner authored no text.
+ * Exported so #HUMAN-TEXT-GUARD can be applied to every branch it can produce.
+ *
+ * Every branch is written for the FDE: no ids, no engine object names, no
+ * instructions about where to look. What survives is what is load-bearing —
+ * whether anything was executed, and whether it will wait for approval.
+ */
+export function turnAssistantAcknowledgement(
   input: CreateOntoCodeTurnServerInput,
   session: OntoCodeBuildSession,
   directive: OntoCodeWorkspaceDirective,
@@ -1784,27 +2332,1192 @@ function turnAssistantAcknowledgement(
   const chinese = /[\u3400-\u9fff]/u.test(`${input.text}\n${session.goal}`);
   if (directive.behavior === "navigate") {
     return chinese
-      ? `已按你的要求切换右侧工作区：“${input.text.slice(0, 200)}”。这次只改变视图，没有创建 Command 或 Harness Job。`
-      : `I switched the right-hand workspace for “${input.text.slice(0, 200)}”. This changed only the view; no Command or Harness Job was created.`;
+      ? `已切换视图：“${input.text.slice(0, 200)}”，没有执行任何操作。`
+      : `Switched the view to “${input.text.slice(0, 200)}”; nothing was executed.`;
   }
   if (directive.behavior === "explain") {
+    // The Session's phase and activity are state-machine tokens; they used to be
+    // printed raw. What the FDE needs from this turn is that nothing ran.
     return chinese
-      ? `当前 Session 位于 ${session.phase}，活动状态为 ${session.activityState}。我会留在对话区解释持久化结果；这次没有执行或修改任何工件。`
-      : `This Session is in ${session.phase} with activity ${session.activityState}. I will keep the explanation in chat; this turn did not execute or change any artifact.`;
+      ? "我在这里回答，不会执行或改动任何东西。"
+      : "I am answering here; nothing was executed or changed.";
   }
   if (directive.behavior === "clarify") {
     return chinese
-      ? "我还不能安全判断你是想查看结果、了解原因，还是启动真实执行。请明确说“打开测试结果”“解释当前阻塞”或“运行测试”。在你明确前，我不会创建 Command 或 Job。"
-      : "I cannot safely tell whether you want to inspect results, understand the state, or start a real execution. Try “open test results”, “explain the current blocker”, or “run tests”. I will not create a Command or Job until that is clear.";
+      ? "我还分不清你是想看结果、想听解释，还是要真的跑一次；在你说清楚之前，我不会执行任何操作。"
+      : "I cannot tell yet whether you want to see results, hear an explanation, or actually run something, so I will not do anything until you say which.";
   }
+  const label = TURN_ACTION_LABEL[directive.action];
   if (directive.requiresHuman) {
+    // Load-bearing: this will not run until the FDE approves it.
     return chinese
-      ? `已准备 ${directive.action}，但服务器策略要求 FDE 审批。Command ${directive.commandId} 与等待中的 Harness Job ${directive.harnessJobId} 已持久化，审批前不会执行。`
-      : `I prepared ${directive.action}, but server policy requires FDE approval. Command ${directive.commandId} and waiting Harness Job ${directive.harnessJobId} are persisted and will not execute before approval.`;
+      ? `${label.zh}已就绪，你批准之后才会执行。`
+      : `${label.en} is ready and will not run until you approve it.`;
   }
-  return chinese
-    ? `已接收 ${directive.action}。Command ${directive.commandId} 与 Harness Job ${directive.harnessJobId} 已按服务器策略入队；右侧执行托盘会显示真实进度与结果。`
-    : `I accepted ${directive.action}. Command ${directive.commandId} and Harness Job ${directive.harnessJobId} were queued under server policy; the execution tray will show real progress and results.`;
+  return chinese ? `${label.zh}已排队执行。` : `${label.en} is queued to run.`;
+}
+
+const LEGACY_BUILD_EXECUTION_ADOPTION_SCHEMA =
+  "ontocode-legacy-build-execution-adoption/v1" as const;
+
+type PendingBuildInteractionKind =
+  | "clarify"
+  | "test_approval"
+  | "boundary"
+  | "execution_readiness"
+  | "legacy_answer";
+
+interface LegacyBuildExecutionAdoptionDescriptor {
+  schema: typeof LEGACY_BUILD_EXECUTION_ADOPTION_SCHEMA;
+  sourceHarnessJobId: string;
+  projectId: string;
+  sessionId: string;
+  ontologyHash: string;
+  runtimeProfileVersionId: string | null;
+  engineRunId: string | null;
+  interaction: {
+    id: string;
+    kind: PendingBuildInteractionKind;
+    subjectDigest: string;
+  };
+}
+
+function nonEmptyStoreString(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function sha256StoreValue(value: unknown): string {
+  return createHash("sha256")
+    .update(canonicalEvidenceJson(value))
+    .digest("hex");
+}
+
+function isSha256StoreValue(value: string): boolean {
+  return /^[a-f0-9]{64}$/.test(value);
+}
+
+function parseLegacyWaitingEventPayload(
+  payloadJson: string,
+  waitingJobId: string,
+): Record<string, unknown> {
+  let payload: Record<string, unknown> | null = null;
+  try {
+    payload = recordValue(JSON.parse(payloadJson) as unknown);
+  } catch {
+    // Fall through to the fail-closed error below. A malformed audit row is
+    // not a source from which a product lifecycle may be reconstructed.
+  }
+  if (!payload || payload.jobId !== waitingJobId || payload.kind !== "build") {
+    throw new OntoCodeStoreError(
+      "ontocode_legacy_build_waiting_receipt_invalid",
+      "The legacy waiting Build does not have one valid server-authored waiting receipt",
+      409,
+      { waitingJobId },
+    );
+  }
+  return payload;
+}
+
+function interactionKindForLegacyWaitingReceipt(
+  interaction: Record<string, unknown> | null,
+  question: Record<string, unknown> | null,
+): PendingBuildInteractionKind {
+  const kind = nonEmptyStoreString(interaction?.kind);
+  if (
+    kind === "clarify" ||
+    kind === "test_approval" ||
+    kind === "boundary" ||
+    kind === "execution_readiness" ||
+    kind === "legacy_answer"
+  ) {
+    return kind;
+  }
+  return question?.kind === "config" ? "execution_readiness" : "clarify";
+}
+
+function legacyInteractionEnvelope(input: {
+  waitingJobId: string;
+  payload: Record<string, unknown>;
+}): {
+  id: string;
+  kind: PendingBuildInteractionKind;
+  subjectDigest: string;
+} {
+  const receipt = recordValue(input.payload.receipt);
+  const interaction = recordValue(receipt?.interaction);
+  const question = recordValue(input.payload.question);
+  if (!interaction && !question) {
+    throw new OntoCodeStoreError(
+      "ontocode_legacy_build_interaction_missing",
+      "The legacy waiting Build has no exact interaction envelope to answer",
+      409,
+      { waitingJobId: input.waitingJobId },
+    );
+  }
+  if (interaction && interaction.awaitingAnswer !== true) {
+    throw new OntoCodeStoreError(
+      "ontocode_legacy_build_interaction_invalid",
+      "The legacy Build receipt does not identify an active pending interaction",
+      409,
+      { waitingJobId: input.waitingJobId },
+    );
+  }
+
+  const receiptInteractionId = nonEmptyStoreString(interaction?.interactionId);
+  const questionId = nonEmptyStoreString(question?.id);
+  if (
+    receiptInteractionId &&
+    questionId &&
+    receiptInteractionId !== questionId
+  ) {
+    throw new OntoCodeStoreError(
+      "ontocode_legacy_build_interaction_ambiguous",
+      "The legacy waiting receipt names two different pending interactions",
+      409,
+      {
+        waitingJobId: input.waitingJobId,
+        receiptInteractionId,
+        questionId,
+      },
+    );
+  }
+
+  // Prefer the engine-facing envelope because the resume bridge validates the
+  // same digest against the private checkpoint. A pre-execution structured
+  // question has no such envelope, so its complete server-authored object is
+  // the immutable subject instead.
+  const subject = interaction
+    ? {
+        question: nonEmptyStoreString(interaction.question) ?? "OntoCode input",
+        context: interaction.context ?? null,
+        options: Array.isArray(interaction.options) ? interaction.options : [],
+        items: Array.isArray(interaction.items) ? interaction.items : [],
+      }
+    : question!;
+  const subjectDigest = sha256StoreValue(subject);
+  const id =
+    receiptInteractionId ?? questionId ?? `oci-${subjectDigest.slice(0, 16)}`;
+  return {
+    id,
+    kind: interactionKindForLegacyWaitingReceipt(interaction, question),
+    subjectDigest,
+  };
+}
+
+function validateExistingLegacyExecutionDirective(input: {
+  execution: typeof ontocodeBuildExecutions.$inferSelect;
+  descriptor: LegacyBuildExecutionAdoptionDescriptor;
+  requestedActionIds: string[];
+}): void {
+  let directive: Record<string, unknown> | null = null;
+  try {
+    directive = recordValue(
+      JSON.parse(input.execution.directiveJson) as unknown,
+    );
+  } catch {
+    // Handled below.
+  }
+  const computedHash = directive ? sha256StoreValue(directive) : null;
+  const descriptorMatches =
+    directive?.schema === LEGACY_BUILD_EXECUTION_ADOPTION_SCHEMA &&
+    computedHash === input.execution.directiveHash &&
+    canonicalEvidenceJson(directive) ===
+      canonicalEvidenceJson(input.descriptor);
+  const directiveActionIds = Array.isArray(directive?.requestedActionIds)
+    ? directive.requestedActionIds.flatMap((value) =>
+        typeof value === "string" && value.trim() ? [value.trim()] : [],
+      )
+    : [];
+  const expectedActions = new Set(input.requestedActionIds);
+  const existingActions = new Set(directiveActionIds);
+  const modernDirectiveMatches =
+    directive?.schema === "agent-factory-generation-directive/v1" &&
+    directive.sourceOntologyHash === input.descriptor.ontologyHash &&
+    (input.requestedActionIds.length === 0 ||
+      (expectedActions.size === existingActions.size &&
+        [...expectedActions].every((id) => existingActions.has(id))));
+  if (!descriptorMatches && !modernDirectiveMatches) {
+    throw new OntoCodeStoreError(
+      "ontocode_legacy_build_execution_conflict",
+      "An existing OntoCode Build execution has a different immutable generation directive",
+      409,
+      { buildExecutionId: input.execution.id },
+    );
+  }
+}
+
+/**
+ * Adopt the one pre-execution-identity waiting Build shape that can be proven
+ * from durable server records. This is intentionally transaction-local: a
+ * half-created execution must never escape if the answer transfer later loses
+ * its CAS.
+ */
+function adoptLegacyWaitingBuildExecution(
+  tx: Transaction,
+  ctx: OntoCodeStoreContext,
+  input: {
+    session: typeof ontocodeSessions.$inferSelect;
+    command: typeof ontocodeCommands.$inferSelect;
+    childJob: typeof ontocodeHarnessJobs.$inferSelect;
+    waitingJob: typeof ontocodeHarnessJobs.$inferSelect;
+    now: Date;
+  },
+): string {
+  const waitingEvents = tx
+    .select({ payloadJson: ontocodeSessionEvents.payloadJson })
+    .from(ontocodeSessionEvents)
+    .where(
+      tenantScope(
+        ctx,
+        ontocodeSessionEvents,
+      )(
+        and(
+          eq(ontocodeSessionEvents.sessionId, input.session.id),
+          eq(ontocodeSessionEvents.harnessJobId, input.waitingJob.id),
+          eq(ontocodeSessionEvents.type, "harness.build.waiting_user"),
+        ),
+      ),
+    )
+    .all();
+  if (waitingEvents.length !== 1) {
+    throw new OntoCodeStoreError(
+      "ontocode_legacy_build_waiting_receipt_ambiguous",
+      "A legacy waiting Build must have exactly one durable waiting receipt",
+      409,
+      {
+        waitingJobId: input.waitingJob.id,
+        waitingReceiptCount: waitingEvents.length,
+      },
+    );
+  }
+  const waitingPayload = parseLegacyWaitingEventPayload(
+    waitingEvents[0]!.payloadJson,
+    input.waitingJob.id,
+  );
+  const receipt = recordValue(waitingPayload.receipt);
+  if (
+    receipt &&
+    (receipt.schema !== "ontocode-build-receipt/v1" ||
+      receipt.status !== "waiting_human")
+  ) {
+    throw new OntoCodeStoreError(
+      "ontocode_legacy_build_waiting_receipt_invalid",
+      "The legacy Build receipt is not an OntoCode waiting-human receipt",
+      409,
+      { waitingJobId: input.waitingJob.id },
+    );
+  }
+  const interaction = legacyInteractionEnvelope({
+    waitingJobId: input.waitingJob.id,
+    payload: waitingPayload,
+  });
+
+  const project = tx
+    .select()
+    .from(ontocodeProjects)
+    .where(
+      tenantScope(
+        ctx,
+        ontocodeProjects,
+      )(eq(ontocodeProjects.id, input.session.projectId)),
+    )
+    .get();
+  if (!project || !project.ontologyDomainRegistrationId) {
+    throw new OntoCodeStoreError(
+      "ontocode_legacy_build_project_binding_missing",
+      "The legacy waiting Build is not pinned to one exact Ontology Domain registration",
+      409,
+      { waitingJobId: input.waitingJob.id },
+    );
+  }
+  const registration = tx
+    .select()
+    .from(businessOntologyDomains)
+    .where(
+      and(
+        eq(businessOntologyDomains.tenantId, ctx.tenantId),
+        eq(businessOntologyDomains.id, project.ontologyDomainRegistrationId),
+        eq(businessOntologyDomains.ontologyDomainId, project.domain),
+        eq(businessOntologyDomains.status, "active"),
+        isNull(businessOntologyDomains.archivedAt),
+      ),
+    )
+    .get();
+  if (!registration) {
+    throw new OntoCodeStoreError(
+      "ontocode_legacy_build_project_binding_stale",
+      "The legacy waiting Build's exact Ontology Domain registration is no longer active",
+      409,
+      { waitingJobId: input.waitingJob.id },
+    );
+  }
+
+  const runtimeProfileVersionId = input.session.runtimeProfileVersionId ?? null;
+  const runtimeBindings = [
+    project.runtimeProfileVersionId ?? null,
+    registration.runtimeProfileVersionId ?? null,
+    input.waitingJob.runtimeProfileVersionId ?? null,
+    input.childJob.runtimeProfileVersionId ?? null,
+  ];
+  if (runtimeBindings.some((value) => value !== runtimeProfileVersionId)) {
+    throw new OntoCodeStoreError(
+      "ontocode_build_execution_runtime_changed",
+      "The legacy waiting Build is not pinned to the Session's exact Runtime Profile",
+      409,
+      {
+        waitingJobId: input.waitingJob.id,
+        sessionRuntimeProfileVersionId: runtimeProfileVersionId,
+        projectRuntimeProfileVersionId: project.runtimeProfileVersionId ?? null,
+        registrationRuntimeProfileVersionId:
+          registration.runtimeProfileVersionId ?? null,
+        waitingRuntimeProfileVersionId:
+          input.waitingJob.runtimeProfileVersionId ?? null,
+        followUpRuntimeProfileVersionId:
+          input.childJob.runtimeProfileVersionId ?? null,
+      },
+    );
+  }
+
+  const waitingCommand = input.waitingJob.commandId
+    ? tx
+        .select()
+        .from(ontocodeCommands)
+        .where(
+          tenantScope(
+            ctx,
+            ontocodeCommands,
+          )(
+            and(
+              eq(ontocodeCommands.id, input.waitingJob.commandId),
+              eq(ontocodeCommands.sessionId, input.session.id),
+            ),
+          ),
+        )
+        .get()
+    : null;
+  if (input.waitingJob.commandId && !waitingCommand) {
+    throw new OntoCodeStoreError(
+      "ontocode_legacy_build_command_missing",
+      "The legacy waiting Build's source Command no longer exists",
+      409,
+      { waitingJobId: input.waitingJob.id },
+    );
+  }
+  if (waitingCommand && waitingCommand.type !== "generate_package") {
+    throw new OntoCodeStoreError(
+      "ontocode_waiting_job_kind_mismatch",
+      "The legacy waiting Build is not owned by a code-generation Command",
+      409,
+      { waitingJobId: input.waitingJob.id, commandType: waitingCommand.type },
+    );
+  }
+
+  const ontologyCandidates = [
+    input.session.ontologySnapshotHash,
+    input.command.baseOntologyHash,
+    waitingCommand?.baseOntologyHash,
+    registration.ontologySnapshotHash,
+    nonEmptyStoreString(receipt?.ontologyHash),
+    nonEmptyStoreString(waitingPayload.ontologyHash),
+  ].flatMap((value) => (value ? [value] : []));
+  if (
+    ontologyCandidates.length === 0 ||
+    ontologyCandidates.some((value) => !isSha256StoreValue(value)) ||
+    new Set(ontologyCandidates).size !== 1
+  ) {
+    throw new OntoCodeStoreError(
+      "ontocode_legacy_build_ontology_ambiguous",
+      "The legacy waiting Build cannot be bound to one exact authoritative Ontology snapshot",
+      409,
+      {
+        waitingJobId: input.waitingJob.id,
+        ontologyHashes: [...new Set(ontologyCandidates)],
+      },
+    );
+  }
+  const ontologyHash = ontologyCandidates[0]!;
+
+  const factoryStartedRows = tx
+    .select({ payloadJson: ontocodeSessionEvents.payloadJson })
+    .from(ontocodeSessionEvents)
+    .where(
+      tenantScope(
+        ctx,
+        ontocodeSessionEvents,
+      )(
+        and(
+          eq(ontocodeSessionEvents.sessionId, input.session.id),
+          eq(ontocodeSessionEvents.harnessJobId, input.waitingJob.id),
+          eq(ontocodeSessionEvents.type, "harness.build.factory_started"),
+        ),
+      ),
+    )
+    .all();
+  const factoryRunCandidates = [
+    nonEmptyStoreString(receipt?.factoryRunId),
+    ...factoryStartedRows.map((row) => {
+      let payload: Record<string, unknown> | null = null;
+      try {
+        payload = recordValue(JSON.parse(row.payloadJson) as unknown);
+      } catch {
+        // Rejected immediately below.
+      }
+      if (!payload || payload.jobId !== input.waitingJob.id) {
+        throw new OntoCodeStoreError(
+          "ontocode_legacy_build_engine_evidence_invalid",
+          "A legacy Build start record does not belong to the exact waiting Job",
+          409,
+          { waitingJobId: input.waitingJob.id },
+        );
+      }
+      const runId = nonEmptyStoreString(payload.factoryRunId);
+      if (!runId) {
+        throw new OntoCodeStoreError(
+          "ontocode_legacy_build_engine_evidence_invalid",
+          "A legacy Build start record does not identify its private generation run",
+          409,
+          { waitingJobId: input.waitingJob.id },
+        );
+      }
+      return runId;
+    }),
+  ].flatMap((value) => (value ? [value] : []));
+  const distinctFactoryRunIds = [...new Set(factoryRunCandidates)];
+  if (distinctFactoryRunIds.length > 1) {
+    throw new OntoCodeStoreError(
+      "ontocode_legacy_build_engine_ambiguous",
+      "The legacy waiting Build names more than one private generation run",
+      409,
+      {
+        waitingJobId: input.waitingJob.id,
+        factoryRunIds: distinctFactoryRunIds,
+      },
+    );
+  }
+  const engineRunId = distinctFactoryRunIds[0] ?? null;
+  if (engineRunId) {
+    const factoryRun = tx
+      .select()
+      .from(factoryRuns)
+      .where(eq(factoryRuns.id, engineRunId))
+      .get();
+    const conversation = tx
+      .select({
+        tenantId: factoryConversations.tenantId,
+        domain: factoryConversations.domain,
+      })
+      .from(factoryConversations)
+      .where(eq(factoryConversations.id, engineRunId))
+      .get();
+    if (
+      !factoryRun ||
+      factoryRun.tenantId !== ctx.tenantId ||
+      factoryRun.domain !== project.domain ||
+      factoryRun.status !== "waiting_human" ||
+      factoryRun.deletedAt !== null ||
+      (factoryRun.ontologyDomainRegistrationId ?? null) !==
+        project.ontologyDomainRegistrationId ||
+      (factoryRun.runtimeProfileVersionId ?? null) !==
+        runtimeProfileVersionId ||
+      !conversation ||
+      conversation.tenantId !== ctx.tenantId ||
+      conversation.domain !== project.domain
+    ) {
+      throw new OntoCodeStoreError(
+        "ontocode_legacy_build_engine_stale",
+        "The legacy waiting Build's private generation checkpoint is missing or bound to different immutable inputs",
+        409,
+        { waitingJobId: input.waitingJob.id, engineRunId },
+      );
+    }
+  }
+
+  const rawRequestedActionIds = commandFromRow(input.command).arguments
+    .actionIds;
+  const requestedActionIds = Array.isArray(rawRequestedActionIds)
+    ? rawRequestedActionIds.flatMap((value: unknown) =>
+        typeof value === "string" && value.trim() ? [value.trim()] : [],
+      )
+    : [];
+  const descriptor: LegacyBuildExecutionAdoptionDescriptor = {
+    schema: LEGACY_BUILD_EXECUTION_ADOPTION_SCHEMA,
+    sourceHarnessJobId: input.waitingJob.id,
+    projectId: project.id,
+    sessionId: input.session.id,
+    ontologyHash,
+    runtimeProfileVersionId,
+    engineRunId,
+    interaction,
+  };
+  const deterministicExecutionId = `ocx-${input.waitingJob.id.replace(
+    /^ocj-/,
+    "",
+  )}`;
+  const receiptExecutionId = nonEmptyStoreString(receipt?.buildExecutionId);
+  const engineOwner = engineRunId
+    ? tx
+        .select()
+        .from(ontocodeBuildExecutions)
+        .where(
+          and(
+            eq(ontocodeBuildExecutions.tenantId, ctx.tenantId),
+            eq(ontocodeBuildExecutions.engineKind, "agent_factory"),
+            eq(ontocodeBuildExecutions.engineRunId, engineRunId),
+          ),
+        )
+        .get()
+    : null;
+  const deterministicExecution = tx
+    .select()
+    .from(ontocodeBuildExecutions)
+    .where(
+      and(
+        eq(ontocodeBuildExecutions.tenantId, ctx.tenantId),
+        eq(ontocodeBuildExecutions.id, deterministicExecutionId),
+      ),
+    )
+    .get();
+  const receiptExecution = receiptExecutionId
+    ? tx
+        .select()
+        .from(ontocodeBuildExecutions)
+        .where(
+          and(
+            eq(ontocodeBuildExecutions.tenantId, ctx.tenantId),
+            eq(ontocodeBuildExecutions.id, receiptExecutionId),
+          ),
+        )
+        .get()
+    : null;
+  if (receiptExecutionId && !receiptExecution) {
+    throw new OntoCodeStoreError(
+      "ontocode_legacy_build_execution_conflict",
+      "The waiting receipt names an OntoCode Build execution that no longer exists",
+      409,
+      {
+        waitingJobId: input.waitingJob.id,
+        buildExecutionId: receiptExecutionId,
+      },
+    );
+  }
+  const existingCandidates = [
+    engineOwner,
+    deterministicExecution,
+    receiptExecution,
+  ].flatMap((value) => (value ? [value] : []));
+  if (new Set(existingCandidates.map((row) => row.id)).size > 1) {
+    throw new OntoCodeStoreError(
+      "ontocode_legacy_build_execution_conflict",
+      "The legacy waiting Build points at conflicting OntoCode executions",
+      409,
+      {
+        waitingJobId: input.waitingJob.id,
+        buildExecutionIds: [
+          ...new Set(existingCandidates.map((row) => row.id)),
+        ],
+      },
+    );
+  }
+  const existing = existingCandidates[0] ?? null;
+  const executionId = existing?.id ?? deterministicExecutionId;
+
+  if (existing) {
+    if (
+      existing.projectId !== project.id ||
+      existing.sessionId !== input.session.id ||
+      existing.state !== "waiting_user" ||
+      existing.ontologyHash !== ontologyHash ||
+      existing.engineKind !== "agent_factory" ||
+      (existing.engineRunId ?? null) !== engineRunId ||
+      (existing.runtimeProfileVersionId ?? null) !== runtimeProfileVersionId ||
+      existing.pendingInteractionId !== interaction.id ||
+      existing.pendingInteractionKind !== interaction.kind ||
+      existing.pendingInteractionSubjectDigest !== interaction.subjectDigest ||
+      existing.pendingAnswerId !== null ||
+      existing.pendingAnswerDigest !== null ||
+      existing.pendingAnswerStatus !== null
+    ) {
+      throw new OntoCodeStoreError(
+        "ontocode_legacy_build_execution_conflict",
+        "An existing OntoCode Build execution does not match the exact legacy waiting checkpoint",
+        409,
+        { waitingJobId: input.waitingJob.id, buildExecutionId: existing.id },
+      );
+    }
+    validateExistingLegacyExecutionDirective({
+      execution: existing,
+      descriptor,
+      requestedActionIds,
+    });
+  } else {
+    const descriptorJson = canonicalEvidenceJson(descriptor);
+    tx.insert(ontocodeBuildExecutions)
+      .values({
+        id: executionId,
+        tenantId: ctx.tenantId,
+        projectId: project.id,
+        sessionId: input.session.id,
+        state: "waiting_user",
+        ontologyHash,
+        directiveJson: descriptorJson,
+        directiveHash: sha256StoreValue(descriptor),
+        runtimeProfileVersionId,
+        engineKind: "agent_factory",
+        // No historical private run is invented here. The worker may create
+        // the first one later; it may never create a second one by guessing.
+        engineRunId,
+        checkpointDigest: sha256StoreValue(waitingPayload),
+        checkpointRevision:
+          Number.isSafeInteger(waitingPayload.attempt) &&
+          Number(waitingPayload.attempt) > 0
+            ? Number(waitingPayload.attempt)
+            : Math.max(1, input.waitingJob.attemptNo),
+        pendingInteractionId: interaction.id,
+        pendingInteractionKind: interaction.kind,
+        pendingInteractionSubjectDigest: interaction.subjectDigest,
+        pendingAnswerId: null,
+        pendingAnswerDigest: null,
+        pendingAnswerStatus: null,
+        revision: 1,
+        createdAt: input.waitingJob.createdAt,
+        updatedAt: input.now,
+      })
+      .run();
+  }
+
+  const otherExecutionJobs = tx
+    .select({ id: ontocodeHarnessJobs.id })
+    .from(ontocodeHarnessJobs)
+    .where(
+      and(
+        eq(ontocodeHarnessJobs.tenantId, ctx.tenantId),
+        eq(ontocodeHarnessJobs.buildExecutionId, executionId),
+      ),
+    )
+    .all()
+    .filter((row) => row.id !== input.waitingJob.id);
+  if (otherExecutionJobs.length > 0) {
+    throw new OntoCodeStoreError(
+      "ontocode_legacy_build_execution_conflict",
+      "The adopted OntoCode Build execution is already owned by another Harness Job",
+      409,
+      {
+        waitingJobId: input.waitingJob.id,
+        buildExecutionId: executionId,
+        conflictingJobIds: otherExecutionJobs.map((row) => row.id),
+      },
+    );
+  }
+
+  const parentBinding = tx
+    .update(ontocodeHarnessJobs)
+    .set({ buildExecutionId: executionId, updatedAt: input.now })
+    .where(
+      tenantScope(
+        ctx,
+        ontocodeHarnessJobs,
+      )(
+        and(
+          eq(ontocodeHarnessJobs.id, input.waitingJob.id),
+          eq(ontocodeHarnessJobs.sessionId, input.session.id),
+          eq(ontocodeHarnessJobs.kind, "build"),
+          eq(ontocodeHarnessJobs.status, "waiting_user"),
+          isNull(ontocodeHarnessJobs.buildExecutionId),
+        ),
+      ),
+    )
+    .run();
+  if (parentBinding.changes !== 1) {
+    throw new OntoCodeStoreError(
+      "ontocode_legacy_build_execution_changed",
+      "The legacy waiting Build changed while its OntoCode execution was being adopted",
+      409,
+      { waitingJobId: input.waitingJob.id },
+    );
+  }
+
+  if (!input.session.ontologySnapshotHash) {
+    const pinned = tx
+      .update(ontocodeSessions)
+      .set({ ontologySnapshotHash: ontologyHash, updatedAt: input.now })
+      .where(
+        tenantScope(
+          ctx,
+          ontocodeSessions,
+        )(
+          and(
+            eq(ontocodeSessions.id, input.session.id),
+            isNull(ontocodeSessions.ontologySnapshotHash),
+          ),
+        ),
+      )
+      .run();
+    if (pinned.changes !== 1) {
+      throw new OntoCodeStoreError(
+        "ontocode_legacy_build_ontology_changed",
+        "The Session Ontology pin changed while the legacy Build was being adopted",
+        409,
+        { waitingJobId: input.waitingJob.id },
+      );
+    }
+  }
+  for (const commandRow of [input.command, waitingCommand].filter(
+    (row): row is typeof ontocodeCommands.$inferSelect =>
+      Boolean(row && !row.baseOntologyHash),
+  )) {
+    const pinned = tx
+      .update(ontocodeCommands)
+      .set({ baseOntologyHash: ontologyHash, updatedAt: input.now })
+      .where(
+        tenantScope(
+          ctx,
+          ontocodeCommands,
+        )(
+          and(
+            eq(ontocodeCommands.id, commandRow.id),
+            eq(ontocodeCommands.sessionId, input.session.id),
+            isNull(ontocodeCommands.baseOntologyHash),
+          ),
+        ),
+      )
+      .run();
+    if (pinned.changes !== 1) {
+      throw new OntoCodeStoreError(
+        "ontocode_legacy_build_ontology_changed",
+        "A Build Command's Ontology pin changed during legacy adoption",
+        409,
+        { waitingJobId: input.waitingJob.id, commandId: commandRow.id },
+      );
+    }
+  }
+  return executionId;
+}
+
+/**
+ * Atomically move one exact OntoCode Build human gate onto its follow-up Job.
+ *
+ * Both the chat-turn API and the lower-level Command + Harness Job API can
+ * create continuations. Keeping this transaction-local prevents those entry
+ * points from disagreeing about the stable Build identity or reconstructing a
+ * one-shot answer from audit events.
+ */
+function attachOntoCodeBuildContinuation(
+  tx: Transaction,
+  ctx: OntoCodeStoreContext,
+  input: {
+    session: typeof ontocodeSessions.$inferSelect;
+    command: typeof ontocodeCommands.$inferSelect | null;
+    childJobId: string;
+    childJobKind: OntoCodeHarnessJob["kind"];
+    answerReferenceId: string;
+    sourceMessageId?: string;
+    correlationId: string;
+    causationId: string;
+    now: Date;
+  },
+): typeof ontocodeHarnessJobs.$inferSelect | null {
+  if (!input.command) return null;
+  let command = commandFromRow(input.command);
+  const commandArguments = command.arguments;
+  const hasWaitingJobArgument = Object.prototype.hasOwnProperty.call(
+    commandArguments,
+    "resumeWaitingUserJobId",
+  );
+  const hasAnswerArgument = Object.prototype.hasOwnProperty.call(
+    commandArguments,
+    "clarificationAnswer",
+  );
+  if (!hasWaitingJobArgument && !hasAnswerArgument) return null;
+
+  const resumeWaitingUserJobId =
+    typeof commandArguments.resumeWaitingUserJobId === "string"
+      ? commandArguments.resumeWaitingUserJobId.trim()
+      : "";
+  const clarificationAnswer =
+    typeof commandArguments.clarificationAnswer === "string"
+      ? commandArguments.clarificationAnswer.trim()
+      : "";
+  if (!resumeWaitingUserJobId) {
+    throw new OntoCodeStoreError(
+      "ontocode_build_execution_parent_missing",
+      "A Build clarification answer must reference the exact waiting OntoCode Job",
+      409,
+      { commandId: command.id },
+    );
+  }
+  if (!clarificationAnswer) {
+    throw new OntoCodeStoreError(
+      "ontocode_build_execution_answer_missing",
+      "The Build continuation must answer the exact pending OntoCode interaction",
+      409,
+      { resumeWaitingUserJobId },
+    );
+  }
+  if (command.type !== "generate_package" || input.childJobKind !== "build") {
+    throw new OntoCodeStoreError(
+      "ontocode_waiting_job_kind_mismatch",
+      "Only a Build Command may continue a waiting OntoCode Build interaction",
+      409,
+      {
+        commandId: command.id,
+        commandType: command.type,
+        followUpJobKind: input.childJobKind,
+      },
+    );
+  }
+  if (resumeWaitingUserJobId === input.childJobId) {
+    throw new OntoCodeStoreError(
+      "ontocode_build_execution_parent_cycle",
+      "A Build continuation must reference a different waiting OntoCode Job",
+      409,
+      { resumeWaitingUserJobId, childJobId: input.childJobId },
+    );
+  }
+
+  const childJob = tx
+    .select()
+    .from(ontocodeHarnessJobs)
+    .where(
+      tenantScope(
+        ctx,
+        ontocodeHarnessJobs,
+      )(
+        and(
+          eq(ontocodeHarnessJobs.id, input.childJobId),
+          eq(ontocodeHarnessJobs.sessionId, input.session.id),
+        ),
+      ),
+    )
+    .get();
+  if (!childJob || childJob.kind !== "build") {
+    throw new OntoCodeStoreError(
+      "ontocode_build_execution_job_missing",
+      "The follow-up Build Job disappeared before its execution could be attached",
+      409,
+      { childJobId: input.childJobId },
+    );
+  }
+  let waitingJob = tx
+    .select()
+    .from(ontocodeHarnessJobs)
+    .where(
+      tenantScope(
+        ctx,
+        ontocodeHarnessJobs,
+      )(
+        and(
+          eq(ontocodeHarnessJobs.id, resumeWaitingUserJobId),
+          eq(ontocodeHarnessJobs.sessionId, input.session.id),
+        ),
+      ),
+    )
+    .get();
+  if (!waitingJob || waitingJob.status !== "waiting_user") {
+    throw new OntoCodeStoreError(
+      "ontocode_waiting_job_not_resumable",
+      "The referenced Harness Job is not waiting for input in this Session",
+      409,
+      { resumeWaitingUserJobId },
+    );
+  }
+  if (waitingJob.kind !== "build") {
+    throw new OntoCodeStoreError(
+      "ontocode_waiting_job_kind_mismatch",
+      "The referenced waiting Job is not an OntoCode Build",
+      409,
+      {
+        resumeWaitingUserJobId,
+        waitingJobKind: waitingJob.kind,
+        followUpJobKind: childJob.kind,
+      },
+    );
+  }
+  if (!waitingJob.buildExecutionId) {
+    adoptLegacyWaitingBuildExecution(tx, ctx, {
+      session: input.session,
+      command: input.command,
+      childJob,
+      waitingJob,
+      now: input.now,
+    });
+    waitingJob = tx
+      .select()
+      .from(ontocodeHarnessJobs)
+      .where(
+        tenantScope(
+          ctx,
+          ontocodeHarnessJobs,
+        )(
+          and(
+            eq(ontocodeHarnessJobs.id, resumeWaitingUserJobId),
+            eq(ontocodeHarnessJobs.sessionId, input.session.id),
+          ),
+        ),
+      )
+      .get()!;
+    const reboundCommand = tx
+      .select()
+      .from(ontocodeCommands)
+      .where(
+        tenantScope(
+          ctx,
+          ontocodeCommands,
+        )(eq(ontocodeCommands.id, input.command.id)),
+      )
+      .get();
+    if (!reboundCommand || !waitingJob.buildExecutionId) {
+      throw new OntoCodeStoreError(
+        "ontocode_build_execution_missing",
+        "The waiting Build could not be bound to its stable OntoCode execution",
+        409,
+        { resumeWaitingUserJobId },
+      );
+    }
+    command = commandFromRow(reboundCommand);
+  }
+  const runtimeProfileVersionId = input.session.runtimeProfileVersionId ?? null;
+  if (
+    (waitingJob.runtimeProfileVersionId ?? null) !== runtimeProfileVersionId ||
+    (childJob.runtimeProfileVersionId ?? null) !== runtimeProfileVersionId
+  ) {
+    throw new OntoCodeStoreError(
+      "ontocode_build_execution_runtime_changed",
+      "The waiting and follow-up Builds are not pinned to the same Runtime Profile",
+      409,
+      {
+        buildExecutionId: waitingJob.buildExecutionId,
+        waitingRuntimeProfileVersionId:
+          waitingJob.runtimeProfileVersionId ?? null,
+        followUpRuntimeProfileVersionId:
+          childJob.runtimeProfileVersionId ?? null,
+        sessionRuntimeProfileVersionId: runtimeProfileVersionId,
+      },
+    );
+  }
+
+  const execution = tx
+    .select()
+    .from(ontocodeBuildExecutions)
+    .where(
+      tenantScope(
+        ctx,
+        ontocodeBuildExecutions,
+      )(
+        and(
+          eq(ontocodeBuildExecutions.id, waitingJob.buildExecutionId),
+          eq(ontocodeBuildExecutions.sessionId, input.session.id),
+        ),
+      ),
+    )
+    .get();
+  if (
+    !execution ||
+    execution.projectId !== input.session.projectId ||
+    execution.engineKind !== "agent_factory" ||
+    (execution.runtimeProfileVersionId ?? null) !== runtimeProfileVersionId ||
+    command.baseOntologyHash !== execution.ontologyHash
+  ) {
+    throw new OntoCodeStoreError(
+      "ontocode_build_execution_binding_mismatch",
+      "The pending OntoCode Build no longer matches this Session, Ontology, or Runtime Profile",
+      409,
+      {
+        buildExecutionId: waitingJob.buildExecutionId,
+        commandOntologyHash: command.baseOntologyHash,
+        executionOntologyHash: execution?.ontologyHash ?? null,
+      },
+    );
+  }
+  if (
+    execution.state !== "waiting_user" ||
+    !execution.pendingInteractionId ||
+    !execution.pendingInteractionKind ||
+    !execution.pendingInteractionSubjectDigest ||
+    execution.pendingAnswerId !== null ||
+    execution.pendingAnswerDigest !== null ||
+    execution.pendingAnswerStatus !== null
+  ) {
+    throw new OntoCodeStoreError(
+      "ontocode_build_execution_interaction_changed",
+      "The pending OntoCode Build interaction changed before this answer could be attached",
+      409,
+      {
+        buildExecutionId: execution.id,
+        resumeWaitingUserJobId,
+      },
+    );
+  }
+
+  const answerDigest = createHash("sha256")
+    .update(clarificationAnswer)
+    .digest("hex");
+  const executionUpdate = tx
+    .update(ontocodeBuildExecutions)
+    .set({
+      state: "resuming",
+      pendingAnswerId: input.answerReferenceId,
+      pendingAnswerDigest: answerDigest,
+      pendingAnswerStatus: "pending",
+      revision: sql`${ontocodeBuildExecutions.revision} + 1`,
+      updatedAt: input.now,
+    })
+    .where(
+      tenantScope(
+        ctx,
+        ontocodeBuildExecutions,
+      )(
+        and(
+          eq(ontocodeBuildExecutions.id, execution.id),
+          eq(ontocodeBuildExecutions.sessionId, input.session.id),
+          eq(ontocodeBuildExecutions.revision, execution.revision),
+          eq(ontocodeBuildExecutions.state, "waiting_user"),
+          eq(
+            ontocodeBuildExecutions.pendingInteractionId,
+            execution.pendingInteractionId,
+          ),
+          isNull(ontocodeBuildExecutions.pendingAnswerId),
+          isNull(ontocodeBuildExecutions.pendingAnswerDigest),
+          isNull(ontocodeBuildExecutions.pendingAnswerStatus),
+        ),
+      ),
+    )
+    .run();
+  if (executionUpdate.changes !== 1) {
+    throw new OntoCodeStoreError(
+      "ontocode_build_execution_interaction_changed",
+      "The pending OntoCode Build interaction changed before this answer could be attached",
+      409,
+      {
+        buildExecutionId: execution.id,
+        resumeWaitingUserJobId,
+      },
+    );
+  }
+
+  const childUpdate = tx
+    .update(ontocodeHarnessJobs)
+    .set({ buildExecutionId: execution.id, updatedAt: input.now })
+    .where(
+      tenantScope(
+        ctx,
+        ontocodeHarnessJobs,
+      )(
+        and(
+          eq(ontocodeHarnessJobs.id, childJob.id),
+          eq(ontocodeHarnessJobs.sessionId, input.session.id),
+          eq(ontocodeHarnessJobs.kind, "build"),
+          isNull(ontocodeHarnessJobs.buildExecutionId),
+        ),
+      ),
+    )
+    .run();
+  if (childUpdate.changes !== 1) {
+    throw new OntoCodeStoreError(
+      "ontocode_build_execution_job_binding_changed",
+      "The follow-up Job changed while its OntoCode Build execution was being attached",
+      409,
+      { buildExecutionId: execution.id, childJobId: childJob.id },
+    );
+  }
+
+  const parentUpdate = tx
+    .update(ontocodeHarnessJobs)
+    .set({
+      status: "cancelled",
+      finishedAt: input.now,
+      updatedAt: input.now,
+    })
+    .where(
+      tenantScope(
+        ctx,
+        ontocodeHarnessJobs,
+      )(
+        and(
+          eq(ontocodeHarnessJobs.id, waitingJob.id),
+          eq(ontocodeHarnessJobs.sessionId, input.session.id),
+          eq(ontocodeHarnessJobs.status, "waiting_user"),
+          eq(ontocodeHarnessJobs.buildExecutionId, execution.id),
+        ),
+      ),
+    )
+    .run();
+  if (parentUpdate.changes !== 1) {
+    throw new OntoCodeStoreError(
+      "ontocode_build_execution_parent_changed",
+      "The waiting Build changed before its follow-up Job could take ownership",
+      409,
+      { buildExecutionId: execution.id, resumeWaitingUserJobId },
+    );
+  }
+
+  const existingResolution = tx
+    .select({ id: ontocodeSessionEvents.id })
+    .from(ontocodeSessionEvents)
+    .where(
+      tenantScope(
+        ctx,
+        ontocodeSessionEvents,
+      )(
+        and(
+          eq(ontocodeSessionEvents.sessionId, input.session.id),
+          eq(ontocodeSessionEvents.harnessJobId, childJob.id),
+          eq(ontocodeSessionEvents.type, "harness.job.input_resolved"),
+        ),
+      ),
+    )
+    .get();
+  if (existingResolution) {
+    throw new OntoCodeStoreError(
+      "ontocode_build_execution_resolution_ambiguous",
+      "The follow-up Build already has an input-resolution audit link",
+      409,
+      { buildExecutionId: execution.id, childJobId: childJob.id },
+    );
+  }
+  appendEvent(
+    tx,
+    ctx,
+    {
+      projectId: input.session.projectId,
+      sessionId: input.session.id,
+      type: "harness.job.input_resolved",
+      payload: {
+        waitingJobId: waitingJob.id,
+        followUpJobId: childJob.id,
+        buildExecutionId: execution.id,
+        interactionId: execution.pendingInteractionId,
+        pendingAnswerId: input.answerReferenceId,
+        ...(input.sourceMessageId
+          ? { sourceMessageId: input.sourceMessageId }
+          : {}),
+      },
+      correlationId: input.correlationId,
+      causationId: input.causationId,
+      commandId: command.id,
+      harnessJobId: childJob.id,
+    },
+    input.now,
+  );
+
+  const reboundJob = tx
+    .select()
+    .from(ontocodeHarnessJobs)
+    .where(
+      tenantScope(
+        ctx,
+        ontocodeHarnessJobs,
+      )(eq(ontocodeHarnessJobs.id, childJob.id)),
+    )
+    .get();
+  if (!reboundJob) {
+    throw new OntoCodeStoreError(
+      "ontocode_build_execution_job_missing",
+      "The follow-up Build Job disappeared while its execution was attached",
+      409,
+      { childJobId: childJob.id },
+    );
+  }
+  return reboundJob;
 }
 
 /**
@@ -1972,6 +3685,31 @@ export function createOntoCodeTurn(
         );
       }
       const policy = ONTOCODE_COMMAND_POLICY[input.action];
+      const commandBudget = resolveSessionCommandBudget(
+        tx,
+        ctx,
+        session.id,
+        input.action,
+        input.arguments,
+      );
+      const autonomyPolicy = resolveOntoCodeAutonomyActionPolicy(
+        session.autonomyMode,
+        input.action,
+      );
+      if (!autonomyPolicy.allowed) {
+        throw new OntoCodeStoreError(
+          "ontocode_autonomy_analysis_only",
+          "This Session is in analysis-only mode and cannot create a mutating or sandbox Command",
+          409,
+          {
+            sessionId,
+            autonomyMode: session.autonomyMode,
+            action: input.action,
+            riskClass: policy.riskClass,
+          },
+        );
+      }
+      const requiresHuman = autonomyPolicy.requiresHuman;
       const candidateTestCases = parseCandidateTestCases(
         input.arguments.testCases,
       );
@@ -2001,8 +3739,8 @@ export function createOntoCodeTurn(
           input.requestedCapabilities,
         ),
         riskClass: policy.riskClass,
-        status: policy.requiresHuman ? "awaiting_approval" : "queued",
-        requiresHuman: policy.requiresHuman,
+        status: requiresHuman ? "awaiting_approval" : "queued",
+        requiresHuman,
         rationaleSummary: input.text.slice(0, 4_000),
         idempotencyKey: turnChildIdempotencyKey(
           input.idempotencyKey,
@@ -2052,13 +3790,14 @@ export function createOntoCodeTurn(
         tenantId: ctx.tenantId,
         sessionId,
         commandId,
-        runtimeProfileVersionId:
-          session.runtimeProfileVersionId ?? null,
+        runtimeProfileVersionId: session.runtimeProfileVersionId ?? null,
+        buildExecutionId: null,
+        attemptNo: 0,
         kind: policy.jobKind,
-        status: policy.requiresHuman ? "waiting_user" : "queued",
+        status: requiresHuman ? "waiting_user" : "queued",
         idempotencyKey: turnChildIdempotencyKey(input.idempotencyKey, "job"),
         inputHash: candidateInputHash,
-        budgetJson: canonicalEvidenceJson(policy.budget),
+        budgetJson: canonicalEvidenceJson(commandBudget),
         candidatePackageVersionId: candidateTarget?.packageVersionId ?? null,
         candidateDependencyRoot: candidateTarget?.dependencyRoot ?? null,
         candidateHeadId: candidateTarget?.headId ?? null,
@@ -2072,8 +3811,19 @@ export function createOntoCodeTurn(
         updatedAt: now,
       };
       tx.insert(ontocodeHarnessJobs).values(jobRow).run();
+      const continuationJob = attachOntoCodeBuildContinuation(tx, ctx, {
+        session,
+        command: commandRow as typeof ontocodeCommands.$inferSelect,
+        childJobId: jobId,
+        childJobKind: policy.jobKind,
+        answerReferenceId: userMessageId,
+        sourceMessageId: userMessageId,
+        correlationId,
+        causationId: userMessageId,
+        now,
+      });
       job = harnessJobFromRow(
-        jobRow as typeof ontocodeHarnessJobs.$inferSelect,
+        continuationJob ?? (jobRow as typeof ontocodeHarnessJobs.$inferSelect),
       );
       appendEvent(
         tx,
@@ -2081,7 +3831,7 @@ export function createOntoCodeTurn(
         {
           projectId: session.projectId,
           sessionId,
-          type: policy.requiresHuman
+          type: requiresHuman
             ? "harness.job.waiting_user"
             : "harness.job.queued",
           payload: { job, policyDerived: true },
@@ -2092,85 +3842,6 @@ export function createOntoCodeTurn(
         },
         now,
       );
-
-      const resumeWaitingUserJobId =
-        typeof input.arguments.resumeWaitingUserJobId === "string"
-          ? input.arguments.resumeWaitingUserJobId.trim()
-          : "";
-      if (resumeWaitingUserJobId) {
-        const waitingRow = tx
-          .select()
-          .from(ontocodeHarnessJobs)
-          .where(
-            tenantScope(
-              ctx,
-              ontocodeHarnessJobs,
-            )(
-              and(
-                eq(ontocodeHarnessJobs.id, resumeWaitingUserJobId),
-                eq(ontocodeHarnessJobs.sessionId, sessionId),
-              ),
-            ),
-          )
-          .get();
-        if (!waitingRow || waitingRow.status !== "waiting_user") {
-          throw new OntoCodeStoreError(
-            "ontocode_waiting_job_not_resumable",
-            "The referenced Harness Job is not waiting for input in this Session",
-            409,
-            { resumeWaitingUserJobId },
-          );
-        }
-        if (waitingRow.kind !== policy.jobKind) {
-          throw new OntoCodeStoreError(
-            "ontocode_waiting_job_kind_mismatch",
-            "The follow-up action does not match the waiting Harness operation",
-            409,
-            {
-              resumeWaitingUserJobId,
-              waitingJobKind: waitingRow.kind,
-              followUpJobKind: policy.jobKind,
-            },
-          );
-        }
-        tx.update(ontocodeHarnessJobs)
-          .set({
-            status: "cancelled",
-            finishedAt: now,
-            updatedAt: now,
-          })
-          .where(
-            tenantScope(
-              ctx,
-              ontocodeHarnessJobs,
-            )(
-              and(
-                eq(ontocodeHarnessJobs.id, resumeWaitingUserJobId),
-                eq(ontocodeHarnessJobs.status, "waiting_user"),
-              ),
-            ),
-          )
-          .run();
-        appendEvent(
-          tx,
-          ctx,
-          {
-            projectId: session.projectId,
-            sessionId,
-            type: "harness.job.input_resolved",
-            payload: {
-              waitingJobId: resumeWaitingUserJobId,
-              followUpJobId: jobId,
-              sourceMessageId: userMessageId,
-            },
-            correlationId,
-            causationId: userMessageId,
-            commandId,
-            harnessJobId: jobId,
-          },
-          now,
-        );
-      }
     }
 
     const directiveId = makeOntoCodeId("ocd");
@@ -2212,6 +3883,10 @@ export function createOntoCodeTurn(
         );
       }
       const policy = ONTOCODE_COMMAND_POLICY[input.action];
+      const autonomyPolicy = resolveOntoCodeAutonomyActionPolicy(
+        session.autonomyMode,
+        input.action,
+      );
       directive = {
         id: directiveId,
         sessionId,
@@ -2224,8 +3899,8 @@ export function createOntoCodeTurn(
         commandType: policy.commandType,
         jobKind: policy.jobKind,
         riskClass: policy.riskClass,
-        requiresHuman: policy.requiresHuman,
-        budget: policy.budget,
+        requiresHuman: autonomyPolicy.requiresHuman,
+        budget: job.budget ?? resolveOntoCodeCommandBudget(input.action),
       };
     }
     directive = OntoCodeWorkspaceDirectiveSchema.parse(directive);
@@ -2251,6 +3926,12 @@ export function createOntoCodeTurn(
               recommendationSchema: "ontocode-assistant-recommendations/v1",
             }
           : {}),
+        ...(input.assistantCitedRefs?.length
+          ? {
+              citedRefs: input.assistantCitedRefs,
+              citationSchema: "ontocode-assistant-citations/v1",
+            }
+          : {}),
       }),
       idempotencyKey: turnChildIdempotencyKey(
         input.idempotencyKey,
@@ -2271,7 +3952,13 @@ export function createOntoCodeTurn(
         projectId: session.projectId,
         sessionId,
         type: "workspace.directive.emitted",
-        payload: { directive, assistantMessageId },
+        // `sourceMessageId` 提到顶层：推理面板按顶层字段把事件归到某一轮对话，
+        // 不递归进 `directive`。嵌着的时候这条指令帧永远落进兜底泳道。
+        payload: {
+          directive,
+          assistantMessageId,
+          sourceMessageId: directive.sourceMessageId,
+        },
         correlationId,
         causationId: directiveId,
         commandId: command?.id ?? null,
@@ -2454,6 +4141,37 @@ export function createOntoCodeCommand(
     }
 
     requireExpectedRevision(session, input.expectedSessionRevision);
+    const autonomyPolicy = resolveOntoCodeAutonomyActionPolicy(
+      session.autonomyMode,
+      input.type,
+    );
+    if (!autonomyPolicy.allowed) {
+      throw new OntoCodeStoreError(
+        "ontocode_autonomy_analysis_only",
+        "This Session is in analysis-only mode and cannot create a mutating or sandbox Command",
+        409,
+        {
+          sessionId,
+          autonomyMode: session.autonomyMode,
+          action: input.type,
+          riskClass: input.riskClass,
+        },
+      );
+    }
+    if (input.requiresHuman !== autonomyPolicy.requiresHuman) {
+      throw new OntoCodeStoreError(
+        "ontocode_autonomy_policy_mismatch",
+        "Command approval does not match the Session autonomy mode",
+        409,
+        {
+          sessionId,
+          autonomyMode: session.autonomyMode,
+          action: input.type,
+          expectedRequiresHuman: autonomyPolicy.requiresHuman,
+          receivedRequiresHuman: input.requiresHuman,
+        },
+      );
+    }
     const now = new Date();
     const id = makeOntoCodeId("occ");
     const correlationId = makeOntoCodeId("cor");
@@ -2920,8 +4638,7 @@ function resolveExactCandidateJobTarget(
           },
         }
       : {}),
-    ...(requested?.headRevision &&
-    requested.headRevision !== head.revision
+    ...(requested?.headRevision && requested.headRevision !== head.revision
       ? {
           headRevision: {
             expected: head.revision,
@@ -2964,39 +4681,6 @@ export function createOntoCodeHarnessJob(
 } {
   return getDb().transaction((tx) => {
     const session = requireWritableSessionRow(tx, ctx, sessionId);
-    const existing = tx
-      .select()
-      .from(ontocodeHarnessJobs)
-      .where(
-        tenantScope(
-          ctx,
-          ontocodeHarnessJobs,
-        )(
-          and(
-            eq(ontocodeHarnessJobs.sessionId, sessionId),
-            eq(ontocodeHarnessJobs.idempotencyKey, input.idempotencyKey),
-          ),
-        ),
-      )
-      .get();
-    if (existing) {
-      const job = harnessJobFromRow(existing);
-      if (!sameHarnessJobRequest(job, input)) {
-        throw new OntoCodeStoreError(
-          "ontocode_idempotency_conflict",
-          "This idempotency key was already used for a different harness job",
-          409,
-        );
-      }
-      return {
-        job,
-        event: requireCausationEvent(tx, ctx, sessionId, job.id),
-        sessionRevision: session.revision,
-        mode: "attached" as const,
-      };
-    }
-
-    requireExpectedRevision(session, input.expectedSessionRevision);
     let command: typeof ontocodeCommands.$inferSelect | undefined;
     if (input.commandId) {
       command = tx
@@ -3021,15 +4705,88 @@ export function createOntoCodeHarnessJob(
           404,
         );
       }
-      if (command.status !== "approved") {
+    }
+    // Command policy is the server-owned ceiling. An omitted request gets the
+    // policy default; a caller may tighten individual limits but cannot widen
+    // them and accidentally turn a bounded Harness job into an unbounded run.
+    const parsedCommand = command ? commandFromRow(command) : null;
+    const policyBudget = parsedCommand
+      ? resolveSessionCommandBudget(
+          tx,
+          ctx,
+          sessionId,
+          parsedCommand.type,
+          parsedCommand.arguments,
+        )
+      : null;
+    const effectiveBudget: OntoCodeHarnessJob["budget"] = policyBudget
+      ? {
+          ...(input.budget?.maxTokens === undefined
+            ? {}
+            : { maxTokens: input.budget.maxTokens }),
+          ...(input.budget?.maxCostUsd === undefined
+            ? {}
+            : { maxCostUsd: input.budget.maxCostUsd }),
+          maxWallClockMs: Math.min(
+            input.budget?.maxWallClockMs ?? policyBudget.maxWallClockMs,
+            policyBudget.maxWallClockMs,
+          ),
+          maxModelCalls: Math.min(
+            input.budget?.maxModelCalls ?? policyBudget.maxModelCalls,
+            policyBudget.maxModelCalls,
+          ),
+          maxToolCalls: Math.min(
+            input.budget?.maxToolCalls ?? policyBudget.maxToolCalls,
+            policyBudget.maxToolCalls,
+          ),
+        }
+      : (input.budget ?? null);
+    const existing = tx
+      .select()
+      .from(ontocodeHarnessJobs)
+      .where(
+        tenantScope(
+          ctx,
+          ontocodeHarnessJobs,
+        )(
+          and(
+            eq(ontocodeHarnessJobs.sessionId, sessionId),
+            eq(ontocodeHarnessJobs.idempotencyKey, input.idempotencyKey),
+          ),
+        ),
+      )
+      .get();
+    if (existing) {
+      const job = harnessJobFromRow(existing);
+      if (
+        !sameHarnessJobRequest(job, {
+          ...input,
+          ...(effectiveBudget === null ? {} : { budget: effectiveBudget }),
+        })
+      ) {
         throw new OntoCodeStoreError(
-          "ontocode_command_not_approved",
-          "The command must be approved before a harness job can start",
+          "ontocode_idempotency_conflict",
+          "This idempotency key was already used for a different harness job",
           409,
-          { commandId: command.id, status: command.status },
         );
       }
+      return {
+        job,
+        event: requireCausationEvent(tx, ctx, sessionId, job.id),
+        sessionRevision: session.revision,
+        mode: "attached" as const,
+      };
     }
+
+    if (command && command.status !== "approved") {
+      throw new OntoCodeStoreError(
+        "ontocode_command_not_approved",
+        "The command must be approved before a harness job can start",
+        409,
+        { commandId: command.id, status: command.status },
+      );
+    }
+    requireExpectedRevision(session, input.expectedSessionRevision);
 
     const testCases = parseCandidateTestCases(input.testCases);
     const candidateTarget = resolveExactCandidateJobTarget(
@@ -3092,12 +4849,16 @@ export function createOntoCodeHarnessJob(
       sessionId,
       commandId: input.commandId ?? null,
       runtimeProfileVersionId: session.runtimeProfileVersionId ?? null,
+      buildExecutionId: null,
+      attemptNo: 0,
       kind: input.kind,
       status: "queued",
       idempotencyKey: input.idempotencyKey,
       inputHash: canonicalInputHash,
       budgetJson:
-        input.budget === undefined ? null : canonicalEvidenceJson(input.budget),
+        effectiveBudget === null
+          ? null
+          : canonicalEvidenceJson(effectiveBudget),
       candidatePackageVersionId: candidateTarget?.packageVersionId ?? null,
       candidateDependencyRoot: candidateTarget?.dependencyRoot ?? null,
       candidateHeadId: candidateTarget?.headId ?? null,
@@ -3137,8 +4898,18 @@ export function createOntoCodeHarnessJob(
         ),
       )
       .run();
+    const continuationJob = attachOntoCodeBuildContinuation(tx, ctx, {
+      session,
+      command: command ?? null,
+      childJobId: id,
+      childJobKind: input.kind,
+      answerReferenceId: command?.id ?? id,
+      correlationId,
+      causationId: command?.id ?? id,
+      now,
+    });
     const job = harnessJobFromRow(
-      row as typeof ontocodeHarnessJobs.$inferSelect,
+      continuationJob ?? (row as typeof ontocodeHarnessJobs.$inferSelect),
     );
     const event = appendEvent(
       tx,
@@ -3770,6 +5541,107 @@ function requireLatestArtifactVersionRow(
     );
   }
   return row;
+}
+
+function recordValue(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function actionCountFromHarnessReceipt(content: string): number | null {
+  let root: Record<string, unknown> | null = null;
+  try {
+    root = recordValue(JSON.parse(content) as unknown);
+  } catch {
+    return null;
+  }
+  if (!root) return null;
+  const candidates = [
+    root.actionIds,
+    recordValue(root.scope)?.actionIds,
+    recordValue(root.recommendation)?.actionIds,
+  ];
+  for (const candidate of candidates) {
+    if (!Array.isArray(candidate)) continue;
+    const count = new Set(
+      candidate
+        .filter((value): value is string => typeof value === "string")
+        .map((value) => value.trim())
+        .filter(Boolean),
+    ).size;
+    if (count > 0) return count;
+  }
+  return null;
+}
+
+/**
+ * Follow-up Build commands intentionally carry only the FDE's answer and the
+ * waiting Job id. Their immutable Action scope lives in prior server-produced
+ * receipts, so budget sizing must recover it there instead of trusting a
+ * client-supplied count or falling back to the one-Action allowance.
+ */
+function authoritativeSessionBuildActionCount(
+  db: DbLike,
+  ctx: Pick<OntoCodeStoreContext, "tenantId">,
+  sessionId: string,
+): number | null {
+  const receipts = db
+    .select()
+    .from(ontocodeArtifacts)
+    .where(
+      tenantScope(
+        ctx,
+        ontocodeArtifacts,
+      )(
+        and(
+          eq(ontocodeArtifacts.sessionId, sessionId),
+          eq(ontocodeArtifacts.kind, "harness_receipt"),
+        ),
+      ),
+    )
+    .orderBy(desc(ontocodeArtifacts.createdAt), desc(ontocodeArtifacts.id))
+    .limit(50)
+    .all();
+  for (const artifact of receipts) {
+    if (!artifact.logicalName.startsWith("harness/")) continue;
+    const version = latestArtifactVersionRow(db, ctx, artifact.id);
+    if (!version) continue;
+    const blob = db
+      .select()
+      .from(ontocodeArtifactBlobs)
+      .where(
+        tenantScope(
+          ctx,
+          ontocodeArtifactBlobs,
+        )(eq(ontocodeArtifactBlobs.id, version.blobId)),
+      )
+      .get();
+    if (!blob || blob.sha256 !== version.blobHash) continue;
+    const count = actionCountFromHarnessReceipt(blob.contentText);
+    if (count !== null) return count;
+  }
+  return null;
+}
+
+function resolveSessionCommandBudget(
+  db: DbLike,
+  ctx: Pick<OntoCodeStoreContext, "tenantId">,
+  sessionId: string,
+  action: OntoCodeCommand["type"],
+  args: Record<string, unknown>,
+) {
+  // #BUDGET-FOLLOWS-WORK — every Build-kind Command drives the same per-Action
+  // generation harness, including the follow-up turns ("save the draft",
+  // "continue") an FDE issues against an unfinished Build. Recovering the
+  // Session's immutable Action scope for all of them keeps a continuation from
+  // being budgeted as if it were a one-off edit.
+  return resolveOntoCodeCommandBudget(action, args, {
+    authoritativeActionCount:
+      ONTOCODE_COMMAND_POLICY[action].jobKind === "build"
+        ? authoritativeSessionBuildActionCount(db, ctx, sessionId)
+        : null,
+  });
 }
 
 function artifactContentHash(content: string): string {

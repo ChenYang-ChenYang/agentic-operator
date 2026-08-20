@@ -84,7 +84,7 @@ function retentionUntil(
   definition: AgentDefinitionV2,
   from = new Date(),
 ): Date {
-  const days = definition.observability?.retention_days ?? 30;
+  const days = definition.observability?.retention_days ?? 3_650;
   return new Date(from.getTime() + days * 24 * 60 * 60 * 1_000);
 }
 

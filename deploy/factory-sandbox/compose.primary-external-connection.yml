@@ -6,7 +6,7 @@ services:
   api:
     environment:
       FACTORY_PRODUCTION_IMAGE_ATTESTATION_TOPOLOGY: external_sandbox
-      FACTORY_SANDBOX_REMOTE_CONFIG_REFS: '{"runnerUrlEnv":"FACTORY_SB_RUNNER_URL","requestSigningKeyEnv":"FACTORY_SB_REQUEST_HMAC","resultSigningKeyEnv":"FACTORY_SB_RESULT_HMAC","receiptSigningKeyEnv":"FACTORY_SB_RECEIPT_HMAC","keyIdEnv":"FACTORY_SB_KEY_ID","runnerIdEnv":"FACTORY_SB_RUNNER_ID","allowedBuildIdsEnv":"FACTORY_SB_ALLOWED_BUILD_IDS","allowedImageDigestsEnv":"FACTORY_SB_ALLOWED_IMAGE_DIGESTS"}'
+      FACTORY_SANDBOX_REMOTE_CONFIG_REFS: '{"runnerUrlEnv":"FACTORY_SB_RUNNER_URL","requestSigningKeyEnv":"FACTORY_SB_REQUEST_HMAC","resultSigningKeyEnv":"FACTORY_SB_RESULT_HMAC","receiptSigningKeyEnv":"FACTORY_SB_RECEIPT_HMAC","keyIdEnv":"FACTORY_SB_KEY_ID","runnerIdEnv":"FACTORY_SB_RUNNER_ID","allowedBuildIdsEnv":"FACTORY_SB_ALLOWED_BUILD_IDS","allowedImageDigestsEnv":"FACTORY_SB_ALLOWED_IMAGE_DIGESTS","executionPlaneIdEnv":"FACTORY_SB_EXECUTION_PLANE_ID","executionPlaneTrustDomainEnv":"FACTORY_SB_EXECUTION_PLANE_TRUST_DOMAIN","platformAttestorKeyIdEnv":"FACTORY_SB_PLATFORM_ATTESTOR_KEY_ID","platformAttestorPublicKeyEnv":"FACTORY_SB_PLATFORM_ATTESTOR_PUBLIC_KEY","primaryHostIdentityHashEnv":"FACTORY_PRIMARY_HOST_IDENTITY_HASH","primaryDockerDaemonIdentityHashEnv":"FACTORY_PRIMARY_DOCKER_DAEMON_IDENTITY_HASH","allowedControlHostIdentityHashesEnv":"FACTORY_SB_ALLOWED_CONTROL_HOST_IDENTITY_HASHES","allowedWorkloadHostIdentityHashesEnv":"FACTORY_SB_ALLOWED_WORKLOAD_HOST_IDENTITY_HASHES","allowedDockerDaemonIdentityHashesEnv":"FACTORY_SB_ALLOWED_DOCKER_DAEMON_IDENTITY_HASHES"}'
       FACTORY_SB_RUNNER_URL: "${EXTERNAL_SANDBOX_PUBLIC_RUNNER_ORIGIN:?set the certificate-verified remote runner HTTPS origin}"
       FACTORY_SB_RUNNER_HTTP_ALLOWED_HOSTS: ""
       FACTORY_SB_REQUEST_HMAC: ""
@@ -19,6 +19,16 @@ services:
       FACTORY_SB_RUNNER_ID: "${EXTERNAL_SANDBOX_RUNNER_ID:?set the external runner id}"
       FACTORY_SB_ALLOWED_BUILD_IDS: '["${EXTERNAL_SANDBOX_RUNNER_BUILD_ID:?set the exact external runner build id}"]'
       FACTORY_SB_ALLOWED_IMAGE_DIGESTS: '["${EXTERNAL_SANDBOX_RUNTIME_IMAGE_DIGEST:?set the exact external workload OCI digest}"]'
+      FACTORY_SB_EXECUTION_PLANE_ID: "${EXTERNAL_SANDBOX_EXECUTION_PLANE_ID:?set the signed external execution plane id}"
+      FACTORY_SB_EXECUTION_PLANE_TRUST_DOMAIN: "${EXTERNAL_SANDBOX_EXECUTION_PLANE_TRUST_DOMAIN:?set the signed external trust domain}"
+      FACTORY_SB_PLATFORM_ATTESTOR_KEY_ID: "${EXTERNAL_SANDBOX_PLATFORM_ATTESTOR_KEY_ID:?set the platform attestor key id}"
+      FACTORY_SB_PLATFORM_ATTESTOR_PUBLIC_KEY: ""
+      FACTORY_SB_PLATFORM_ATTESTOR_PUBLIC_KEY_FILE: /run/attestations/platform-attestor-public.pem
+      FACTORY_PRIMARY_HOST_IDENTITY_HASH: "${EXTERNAL_SANDBOX_PRIMARY_HOST_IDENTITY_HASH:?set the domain-separated primary host hash}"
+      FACTORY_PRIMARY_DOCKER_DAEMON_IDENTITY_HASH: "${EXTERNAL_SANDBOX_PRIMARY_DOCKER_DAEMON_IDENTITY_HASH:?set the domain-separated primary daemon hash}"
+      FACTORY_SB_ALLOWED_CONTROL_HOST_IDENTITY_HASHES: '["${EXTERNAL_SANDBOX_CONTROL_HOST_IDENTITY_HASH:?set the signed remote control-host hash}"]'
+      FACTORY_SB_ALLOWED_WORKLOAD_HOST_IDENTITY_HASHES: '["${EXTERNAL_SANDBOX_WORKLOAD_HOST_IDENTITY_HASH:?set the signed remote workload-host hash}"]'
+      FACTORY_SB_ALLOWED_DOCKER_DAEMON_IDENTITY_HASHES: '["${EXTERNAL_SANDBOX_DOCKER_DAEMON_IDENTITY_HASH:?set the signed remote daemon hash}"]'
     volumes:
       - type: bind
         source: "${FACTORY_SB_RECEIPT_HMAC_HOST_FILE:?copy the external receipt HMAC into the primary secret store}"
@@ -26,4 +36,9 @@ services:
         read_only: true
         bind:
           create_host_path: false
-
+      - type: bind
+        source: "${EXTERNAL_SANDBOX_ATTESTATION_ROOT:?set the absolute verified attestation document root}/platform-attestor-public.pem"
+        target: /run/attestations/platform-attestor-public.pem
+        read_only: true
+        bind:
+          create_host_path: false

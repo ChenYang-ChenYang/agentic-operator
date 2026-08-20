@@ -2288,3 +2288,9 @@ a {
     grid-column: 1 / -1;
   }
 }
+/* OntoCode owns its contextual header. Hiding the generic portal top bar only
+ * while the workbench route is mounted preserves the reference layout's
+ * full-height two-pane canvas without changing any other portal view. */
+html[data-ontocode-workbench="true"] [data-portal-topbar] {
+  display: none !important;
+}

@@ -1,6 +1,7 @@
 export const FACTORY_TEST_FIXTURE_ASSET_SCHEMA = "agent-factory-test-fixture-asset/v1" as const;
 
 export type FactoryTestFixtureAssetShape = "base64_string" | "data_url" | "object";
+export type FactoryTestFixtureAssetProvenance = "uploaded" | "synthetic_resume_pdf";
 
 /** Secret-free metadata returned by the tenant/run-scoped fixture store. */
 export interface FactoryTestFixtureAssetMetadata {
@@ -10,6 +11,7 @@ export interface FactoryTestFixtureAssetMetadata {
   mimeType?: string;
   filename?: string;
   expiresAt: string;
+  provenance?: FactoryTestFixtureAssetProvenance;
 }
 
 /** The only binary value persisted in a Factory conversation/regression suite.
@@ -37,6 +39,21 @@ export interface FactoryTestFixtureAssetReader {
     conversationId: string;
     assetId: string;
   }): Promise<FactoryTestFixtureAsset | null>;
+  /** Server-side deterministic fixture creation. This is sandbox test input,
+   * never integration evidence, and stays tenant/domain/conversation scoped. */
+  createSyntheticResume?(input: {
+    domainId: string;
+    conversationId: string;
+    caseId: string;
+    path: string;
+    persona?: {
+      name?: string;
+      title?: string;
+      skills?: string[];
+      email?: string;
+      years?: number;
+    };
+  }): Promise<FactoryTestFixtureAsset | null>;
 }
 
 export function isFactoryTestFixtureAssetBinding(value: unknown): value is FactoryTestFixtureAssetBinding {
@@ -50,5 +67,6 @@ export function isFactoryTestFixtureAssetBinding(value: unknown): value is Facto
     && typeof item.expiresAt === "string" && Number.isFinite(Date.parse(item.expiresAt))
     && (item.as === "base64_string" || item.as === "data_url" || item.as === "object")
     && (item.mimeType === undefined || typeof item.mimeType === "string")
-    && (item.filename === undefined || typeof item.filename === "string");
+    && (item.filename === undefined || typeof item.filename === "string")
+    && (item.provenance === undefined || item.provenance === "uploaded" || item.provenance === "synthetic_resume_pdf");
 }

@@ -14,6 +14,7 @@
     "clean": "rm -rf dist .turbo"
   },
   "dependencies": {
+    "@agentic/contracts": "workspace:*",
     "@agentic/shared": "workspace:*",
     "openai": "^4.85.0",
     "zod": "^4.4.3"

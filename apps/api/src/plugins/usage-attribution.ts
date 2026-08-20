@@ -3,6 +3,7 @@ import {
   runWithUsageAttribution,
   type UsageAttribution,
 } from "@agentic/llm-gateway";
+import { runWithLlmCallContext } from "@agentic/agent-factory";
 
 const SURFACE_HEADER = "x-agentic-product-surface";
 const ACTION_HEADER = "x-agentic-product-action";
@@ -58,6 +59,15 @@ function requestedInteractionId(req: FastifyRequest): string | undefined {
  * Attach authenticated HTTP/product dimensions to all LLM calls made in the
  * request's async chain. Client headers may name a surface/action/interaction
  * but never control the billed account or principal.
+ *
+ * The Agent Factory keeps its own attribution scope because its calls can also
+ * originate outside any request (the Factory run path, the OntoCode Harness
+ * worker). Entering it here means a route never has to remember to: routes that
+ * reach a Factory model — `POST /agent-factory/scope/recommend`,
+ * `POST /agent-factory/runs/:id/analyze` — were unattributable, and the adapter
+ * correctly refused them before the provider was called. An unauthenticated
+ * request enters an EMPTY scope on purpose: no tenant is better than the last
+ * one served, and the adapter fails closed on it.
  */
 export async function registerUsageAttribution(
   app: FastifyInstance,
@@ -87,6 +97,14 @@ export async function registerUsageAttribution(
       httpMethod: req.method.toUpperCase(),
       requestId: req.id,
     };
-    runWithUsageAttribution(attribution, done);
+    runWithUsageAttribution(attribution, () =>
+      runWithLlmCallContext(
+        {
+          ...(auth?.tenantId ? { tenantId: auth.tenantId } : {}),
+          ...(auth?.tenantSlug ? { tenantSlug: auth.tenantSlug } : {}),
+        },
+        done,
+      ),
+    );
   });
 }

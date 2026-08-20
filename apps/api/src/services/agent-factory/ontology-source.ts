@@ -17,15 +17,20 @@ import type {
   OntologyRule,
 } from "@agentic/agent-factory";
 import { resolveModelsRoot as resolveConfiguredModelsRoot } from "@agentic/runtime";
+import type { OntologyTransportDescriptor } from "./ontology-transport-descriptor";
 
 function resolveModelsRoot(): string {
   const root = resolveConfiguredModelsRoot();
-  if (!root) throw new Error("AGENTIC_MODELS_DIR is not configured and no Agentic Operator workspace root was found");
+  if (!root)
+    throw new Error(
+      "AGENTIC_MODELS_DIR is not configured and no Agentic Operator workspace root was found",
+    );
   return root;
 }
 
 /** Strip a trailing version suffix from a local legacy folder identity. */
-const tenantSlugFromFolder = (folder: string): string => folder.toLowerCase().replace(/-v\d+(\.\d+)*$/i, "");
+const tenantSlugFromFolder = (folder: string): string =>
+  folder.toLowerCase().replace(/-v\d+(\.\d+)*$/i, "");
 
 /** Pick the highest-versioned `base[-_]v<N>.json` (handles both hyphen + underscore
  *  naming present in models/), falling back to `base.json`. */
@@ -66,12 +71,18 @@ function unwrap(raw: unknown, key: string): Record<string, unknown>[] {
     if (Array.isArray(obj[key])) list = obj[key] as unknown[];
   }
   if (list) {
-    if (list.some((entry) => !entry || typeof entry !== "object" || Array.isArray(entry))) {
+    if (
+      list.some(
+        (entry) => !entry || typeof entry !== "object" || Array.isArray(entry),
+      )
+    ) {
       throw new Error(`ontology ${key}[] entries must be objects`);
     }
     return list as Record<string, unknown>[];
   }
-  throw new Error(`ontology JSON must be an array or an object containing ${key}[]`);
+  throw new Error(
+    `ontology JSON must be an array or an object containing ${key}[]`,
+  );
 }
 
 function asStrArr(v: unknown, field: string): string[] {
@@ -85,16 +96,26 @@ function asStrArr(v: unknown, field: string): string[] {
   });
 }
 
-function optionalObjectArray(value: unknown, field: string): Array<Record<string, unknown>> | undefined {
+function optionalObjectArray(
+  value: unknown,
+  field: string,
+): Array<Record<string, unknown>> | undefined {
   if (value === undefined) return undefined;
   if (!Array.isArray(value)) throw new Error(`${field} must be an array`);
-  if (value.some((entry) => !entry || typeof entry !== "object" || Array.isArray(entry))) {
+  if (
+    value.some(
+      (entry) => !entry || typeof entry !== "object" || Array.isArray(entry),
+    )
+  ) {
     throw new Error(`${field} entries must be objects`);
   }
   return value as Array<Record<string, unknown>>;
 }
 
-function optionalObject(value: unknown, field: string): Record<string, unknown> | undefined {
+function optionalObject(
+  value: unknown,
+  field: string,
+): Record<string, unknown> | undefined {
   if (value === undefined) return undefined;
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error(`${field} must be an object`);
@@ -102,10 +123,14 @@ function optionalObject(value: unknown, field: string): Record<string, unknown> 
   return value as Record<string, unknown>;
 }
 
-function toOntologyAction(a: Record<string, unknown>, index: number): OntologyAction {
+function toOntologyAction(
+  a: Record<string, unknown>,
+  index: number,
+): OntologyAction {
   const name = typeof a.name === "string" ? a.name.trim() : "";
   if (!name) throw new Error(`actions[${index}].name is required`);
-  const id = a.id === undefined ? name : typeof a.id === "string" ? a.id.trim() : "";
+  const id =
+    a.id === undefined ? name : typeof a.id === "string" ? a.id.trim() : "";
   if (!id) throw new Error(`actions[${index}].id must be a non-empty string`);
   const actor = asStrArr(a.actor, `actions[${index}].actor`);
   if (!actor.length) throw new Error(`actions[${index}].actor is required`);
@@ -116,13 +141,17 @@ function toOntologyAction(a: Record<string, unknown>, index: number): OntologyAc
   } else {
     const rawTools = Array.isArray(a.tool_use) ? a.tool_use : [a.tool_use];
     toolUse = rawTools.map((tool, toolIndex) => {
-      const value = typeof tool === "string"
-        ? tool
-        : tool && typeof tool === "object" && !Array.isArray(tool)
-          ? (tool as { name?: unknown; id?: unknown }).name ?? (tool as { id?: unknown }).id
-          : undefined;
+      const value =
+        typeof tool === "string"
+          ? tool
+          : tool && typeof tool === "object" && !Array.isArray(tool)
+            ? ((tool as { name?: unknown; id?: unknown }).name ??
+              (tool as { id?: unknown }).id)
+            : undefined;
       if (typeof value !== "string" || !value.trim()) {
-        throw new Error(`actions[${index}].tool_use[${toolIndex}] must be a name/id string`);
+        throw new Error(
+          `actions[${index}].tool_use[${toolIndex}] must be a name/id string`,
+        );
       }
       return value.trim();
     });
@@ -135,19 +164,33 @@ function toOntologyAction(a: Record<string, unknown>, index: number): OntologyAc
     category: a.category ? String(a.category) : undefined,
     actor,
     trigger: asStrArr(a.trigger, `actions[${index}].trigger`),
-    triggered_event: asStrArr(a.triggered_event, `actions[${index}].triggered_event`),
-    target_objects: asStrArr(a.target_objects, `actions[${index}].target_objects`),
+    triggered_event: asStrArr(
+      a.triggered_event,
+      `actions[${index}].triggered_event`,
+    ),
+    target_objects: asStrArr(
+      a.target_objects,
+      `actions[${index}].target_objects`,
+    ),
     // tool_use on disk is Array<{name}> | string[] | "" — normalize to string[].
     tool_use: toolUse,
     system_prompt: String(a.system_prompt ?? ""),
     user_prompt: String(a.user_prompt ?? ""),
     inputs: optionalObjectArray(a.inputs, `actions[${index}].inputs`),
     outputs: optionalObjectArray(a.outputs, `actions[${index}].outputs`),
-    submission_criteria: a.submission_criteria ? String(a.submission_criteria) : undefined,
-    side_effects: optionalObject(a.side_effects, `actions[${index}].side_effects`),
+    submission_criteria: a.submission_criteria
+      ? String(a.submission_criteria)
+      : undefined,
+    side_effects: optionalObject(
+      a.side_effects,
+      `actions[${index}].side_effects`,
+    ),
     // Execution-bearing ontology fields: dropping either makes the factory flatten a real
     // multi-step action into a prompt-only shell and loses declared external/data-store edges.
-    action_steps: optionalObjectArray(a.action_steps, `actions[${index}].action_steps`),
+    action_steps: optionalObjectArray(
+      a.action_steps,
+      `actions[${index}].action_steps`,
+    ),
     integration: optionalObject(a.integration, `actions[${index}].integration`),
   };
 }
@@ -155,16 +198,31 @@ function toOntologyAction(a: Record<string, unknown>, index: number): OntologyAc
 export class ManifestOntologySource implements OntologySource {
   constructor(private readonly root: string = resolveModelsRoot()) {}
 
+  /** Self-description for resolution provenance. `configured` is MEASURED: a
+   *  manifest transport only "would have answered" for a domain that actually
+   *  has a published local folder. */
+  async describeTransport(
+    domainId: string,
+  ): Promise<OntologyTransportDescriptor> {
+    return {
+      kind: "manifest",
+      configured: (await this.listDomains()).some((d) => d.id === domainId),
+    };
+  }
+
   private folders(): string[] {
-    return fs.readdirSync(this.root).filter((f) => {
-      if (f.startsWith(".")) return false;
-      try {
-        return fs.statSync(path.join(this.root, f)).isDirectory();
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
-        throw error;
-      }
-    }).sort();
+    return fs
+      .readdirSync(this.root)
+      .filter((f) => {
+        if (f.startsWith(".")) return false;
+        try {
+          return fs.statSync(path.join(this.root, f)).isDirectory();
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+          throw error;
+        }
+      })
+      .sort();
   }
 
   /** Build the one-to-one public-id → folder identity map.
@@ -194,66 +252,141 @@ export class ManifestOntologySource implements OntologySource {
     // listDomains() publishes tenantSlugFromFolder(folder) as the canonical id.
     // Runtime fetches must use that exact id; accepting folder names, casing or
     // version aliases here would silently remap a persisted binding.
-    return this.canonicalFolders().find((entry) => entry.id === domainId)?.folder ?? null;
+    return (
+      this.canonicalFolders().find((entry) => entry.id === domainId)?.folder ??
+      null
+    );
   }
 
   async listDomains() {
-    return this.canonicalFolders()
-      .map(({ id, folder }) => {
-        const dir = path.join(this.root, folder);
-        const actions = unwrap(readJson(pickVersioned(dir, "actions")), "actions");
-        const events = unwrap(readJson(pickVersioned(dir, "events")), "events");
-        const objects = unwrap(readJson(pickVersioned(dir, "objects")), "payload");
-        const rules = unwrap(readJson(pickVersioned(dir, "rules")), "payload");
-        const workflow = unwrap(readJson(pickVersioned(dir, "workflow")), "agents");
-        return {
-          id,
-          name: folder,
-          counts: { actions: actions.length, events: events.length, objects: objects.length, rules: rules.length, workflow: workflow.length },
-        };
-      })
-      // Hide DEPLOYMENT ARTIFACTS from the factory picker (they're not ontology SOURCES):
-      //   · `-sb` = throwaway sandbox tenants (each sandbox_run writes a new workflow_vN.json).
-      //   · ontology-LESS folders = a PROMOTED workflow (only workflow*.json, no actions/events/
-      //     objects/rules) — e.g. `agents-generation-v1`, which otherwise shadows live Allmeta
-      //     an exact live Allmeta domain in BOTH listDomains AND composite routing.
-      // A real local legacy ontology folder has at least one source list, so it remains available
-      // only to the migration-only `auto` binding path.
-      .filter((d) => !/-sb$/.test(d.id) && d.counts.actions + d.counts.events + d.counts.objects + d.counts.rules > 0);
+    return (
+      this.canonicalFolders()
+        .map(({ id, folder }) => {
+          const dir = path.join(this.root, folder);
+          const actions = unwrap(
+            readJson(pickVersioned(dir, "actions")),
+            "actions",
+          );
+          const events = unwrap(
+            readJson(pickVersioned(dir, "events")),
+            "events",
+          );
+          const objects = unwrap(
+            readJson(pickVersioned(dir, "objects")),
+            "payload",
+          );
+          const rules = unwrap(
+            readJson(pickVersioned(dir, "rules")),
+            "payload",
+          );
+          const workflow = unwrap(
+            readJson(pickVersioned(dir, "workflow")),
+            "agents",
+          );
+          return {
+            id,
+            name: folder,
+            counts: {
+              actions: actions.length,
+              events: events.length,
+              objects: objects.length,
+              rules: rules.length,
+              workflow: workflow.length,
+            },
+            source: "manifest" as const,
+          };
+        })
+        // Hide DEPLOYMENT ARTIFACTS from the factory picker (they're not ontology SOURCES):
+        //   · `-sb` = throwaway sandbox tenants (each sandbox_run writes a new workflow_vN.json).
+        //   · ontology-LESS folders = a PROMOTED workflow (only workflow*.json, no actions/events/
+        //     objects/rules) — e.g. `agents-generation-v1`, which otherwise shadows live Allmeta
+        //     an exact live Allmeta domain in BOTH listDomains AND composite routing.
+        // A real local legacy ontology folder has at least one source list, so it remains available
+        // only to the migration-only `auto` binding path.
+        .filter(
+          (d) =>
+            !/-sb$/.test(d.id) &&
+            d.counts.actions +
+              d.counts.events +
+              d.counts.objects +
+              d.counts.rules >
+              0,
+        )
+    );
   }
 
   async fetchOntology(domainId: string): Promise<DomainOntology> {
     const folder = this.folderFor(domainId);
-    if (!folder) throw new Error(`本体源里找不到业务域「${domainId}」——models/ 下没有匹配的目录。`);
+    if (!folder)
+      throw new Error(
+        `本体源里找不到业务域「${domainId}」——models/ 下没有匹配的目录。`,
+      );
     const dir = path.join(this.root, folder);
 
-    const actions = unwrap(readJson(pickVersioned(dir, "actions")), "actions").map(toOntologyAction);
-    if (!actions.length) throw new Error(`业务域「${domainId}」没有可用的动作定义——不生成空壳（避免幻觉）。`);
+    const actions = unwrap(
+      readJson(pickVersioned(dir, "actions")),
+      "actions",
+    ).map(toOntologyAction);
+    if (!actions.length)
+      throw new Error(
+        `业务域「${domainId}」没有可用的动作定义——不生成空壳（避免幻觉）。`,
+      );
 
-    const objects = unwrap(readJson(pickVersioned(dir, "objects")), "payload") as unknown as OntologyObject[];
-    const events = unwrap(readJson(pickVersioned(dir, "events")), "events") as unknown as OntologyEvent[];
-    const rules = unwrap(readJson(pickVersioned(dir, "rules")), "payload") as unknown as OntologyRule[];
+    const objects = unwrap(
+      readJson(pickVersioned(dir, "objects")),
+      "payload",
+    ) as unknown as OntologyObject[];
+    const events = unwrap(
+      readJson(pickVersioned(dir, "events")),
+      "events",
+    ) as unknown as OntologyEvent[];
+    const rules = unwrap(
+      readJson(pickVersioned(dir, "rules")),
+      "payload",
+    ) as unknown as OntologyRule[];
     const workflow = unwrap(readJson(pickVersioned(dir, "workflow")), "agents");
-    return { domainId, objects, rules, actions, events, workflow, source: "snapshot" };
+    return {
+      domainId,
+      objects,
+      rules,
+      actions,
+      events,
+      workflow,
+      source: "snapshot",
+    };
   }
 
-  async fetchActionRules(domainId: string, actionName: string): Promise<unknown[]> {
+  async fetchActionRules(
+    domainId: string,
+    actionName: string,
+  ): Promise<unknown[]> {
     const folder = this.folderFor(domainId);
-    if (!folder) throw new Error(`本体源里找不到业务域「${domainId}」，无法读取 action rules。`);
+    if (!folder)
+      throw new Error(
+        `本体源里找不到业务域「${domainId}」，无法读取 action rules。`,
+      );
     const dir = path.join(this.root, folder);
     const actions = unwrap(readJson(pickVersioned(dir, "actions")), "actions");
     const action = actions.find((a) => a.name === actionName);
     if (!action) {
-      throw new Error(`业务域「${domainId}」没有动作「${actionName}」，无法读取 action rules。`);
+      throw new Error(
+        `业务域「${domainId}」没有动作「${actionName}」，无法读取 action rules。`,
+      );
     }
     // Preferred: rules nested under the action's steps.
     if (action && Array.isArray(action.action_steps)) {
-      return (action.action_steps as Array<Record<string, unknown>>).flatMap((s) => (Array.isArray(s.rules) ? (s.rules as unknown[]) : []));
+      return (action.action_steps as Array<Record<string, unknown>>).flatMap(
+        (s) => (Array.isArray(s.rules) ? (s.rules as unknown[]) : []),
+      );
     }
     // Fallback: rules_v*.json, prefix-matched on the hierarchical id (action "3" owns "3-1"…).
     if (action.id) {
       const rules = unwrap(readJson(pickVersioned(dir, "rules")), "payload");
-      return rules.filter((r) => typeof r?.id === "string" && (r.id as string).startsWith(`${String(action.id)}-`));
+      return rules.filter(
+        (r) =>
+          typeof r?.id === "string" &&
+          (r.id as string).startsWith(`${String(action.id)}-`),
+      );
     }
     return [];
   }

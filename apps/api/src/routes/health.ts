@@ -33,6 +33,7 @@ import {
   inngestRegistrationStatus,
 } from "../services/inngest-sync";
 import { getMcpManager, type McpServerStatus } from "@agentic/mcp";
+import { hasFactoryModelAdapter } from "@agentic/agent-factory";
 import {
   checkFactorySandboxRunner,
   checkProductionCodeActExecutor,
@@ -72,7 +73,10 @@ export async function readApiBuildStatus(
 function enabledTenantScope(): Set<string> | null {
   const raw = process.env.AGENTIC_ENABLED_TENANTS?.trim();
   if (!raw) return null;
-  const slugs = raw.split(",").map((slug) => slug.trim()).filter(Boolean);
+  const slugs = raw
+    .split(",")
+    .map((slug) => slug.trim())
+    .filter(Boolean);
   return slugs.length ? new Set(slugs) : null;
 }
 
@@ -175,7 +179,8 @@ export async function healthRoute(app: FastifyInstance) {
       sharedBlob.ok;
     const executionPlanesReady =
       productionCodeActExecutor.ok && factorySandboxRunner.ok;
-    const ready = ok && schedules.ok && executionPlanesReady && productionImageTrust.ok;
+    const ready =
+      ok && schedules.ok && executionPlanesReady && productionImageTrust.ok;
     const report: HealthReport = {
       ok: ready,
       ts: Date.now(),
@@ -234,6 +239,7 @@ async function checkLLMGateway(): Promise<
       ...(live.note ? { note: live.note } : {}),
       // #NOMOCK — explicit flag so a mock runtime can never masquerade as real (one curl reveals it).
       mock,
+      factoryCentralRouting: hasFactoryModelAdapter(),
     };
   } catch {
     return { ok: false };
@@ -611,9 +617,9 @@ export async function checkSqlite(): Promise<HealthReport["sqlite"]> {
     const dbPath =
       process.env.DATABASE_URL?.replace(/^file:/, "") ?? "./agentic.db";
     if (
-      process.env.AGENTIC_SQLITE_WRITER_SUPERVISED?.trim() === "1"
-      && process.env.AGENTIC_DATABASE_READONLY?.trim() !== "1"
-      && process.env.AGENTIC_DATABASE_READONLY?.trim().toLowerCase() !== "true"
+      process.env.AGENTIC_SQLITE_WRITER_SUPERVISED?.trim() === "1" &&
+      process.env.AGENTIC_DATABASE_READONLY?.trim() !== "1" &&
+      process.env.AGENTIC_DATABASE_READONLY?.trim().toLowerCase() !== "true"
     ) {
       // Re-prove the canonical token on every readiness probe. If an owner
       // record changes, health turns non-ready immediately instead of waiting

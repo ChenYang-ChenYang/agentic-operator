@@ -618,6 +618,22 @@ describe("tenant-native Agent Factory tool provider", () => {
         allowed_operations: { required: true },
       },
     });
+    expect(
+      agentsGenerationRegistry.tools?.["reasoning.evaluateRules"]?.factory,
+    ).toMatchObject({
+      operation: "compute",
+      effectScope: "external",
+      sandboxPolicy: "live_external",
+      argsSchema: {
+        context: { type: "object" },
+        facts: { type: "object|array" },
+        rules: { type: "array" },
+      },
+      returnsSchema: {
+        data: { type: "object", required: true },
+        meta: { type: "object", required: true },
+      },
+    });
     await expect(
       agentsGenerationRegistry.tools!["facts.query"]!.handler({
         agentName: "processResume",
@@ -769,6 +785,29 @@ describe("tenant-native Agent Factory tool provider", () => {
       tenantVersion: "0.1.0",
       domainId: domain,
     });
+    expect(
+      executionTools.find((tool) => tool.name === "ontology.query"),
+    ).toMatchObject({
+      operation: "read",
+      effectScope: "external",
+      capabilities: [
+        expect.objectContaining({
+          systems: expect.arrayContaining(["Allmeta_Ontology_System"]),
+          kinds: expect.arrayContaining(["graph_db"]),
+          roles: expect.arrayContaining(["read"]),
+          operations: expect.arrayContaining(["query", "graph.verify"]),
+          objectTypes: ["*"],
+        }),
+      ],
+      catalogDefinition: {
+        capabilities: [
+          expect.objectContaining({
+            systems: expect.arrayContaining(["Allmeta_Ontology_System"]),
+            kinds: expect.arrayContaining(["graph_db"]),
+          }),
+        ],
+      },
+    });
     const factTools = executionTools.filter(
       (tool) => tool.name === "facts.query",
     );
@@ -908,6 +947,27 @@ describe("tenant-native Agent Factory tool provider", () => {
       bindingKind: "runtime",
       bindingId: "agent-runtime.reason",
     });
+    for (const capability of [
+      "rules.judge — Prompt Compiler 编译后逐条判定",
+      "field.semantic_equivalence — 模糊身份字段语义等价判定",
+    ]) {
+      expect(
+        resolveIntegrationBindings(
+          action({
+            name: "LLM_Gateway",
+            kind: "llm",
+            role: "execute",
+            capability,
+            objects: ["Candidate"],
+          }),
+          [],
+          { capabilityProviders: providers },
+        ).bindings[0],
+      ).toMatchObject({
+        bindingKind: "runtime",
+        bindingId: "agent-runtime.reason",
+      });
+    }
     expect(
       resolveIntegrationBindings(
         action({

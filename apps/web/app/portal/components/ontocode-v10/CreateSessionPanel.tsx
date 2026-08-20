@@ -2,6 +2,7 @@
 // OntoCode v10 · 原生新建 Session：选活跃 Ontology 域 + 一句业务目标 → 创建并进入。
 // 复用旧 Hub 的创建语义（确保 Project → 创建 Session → bootstrap），零 mock。
 import React, { useMemo, useState } from "react";
+import type { OntoCodeAutonomyMode } from "@agentic/contracts";
 import { useBusinessOntologyDomains } from "@/lib/hooks/useBusinessOntologyDomains";
 import {
   useBootstrapOntoCodeSession,
@@ -11,6 +12,7 @@ import {
 } from "@/lib/hooks/useOntoCodeWorkspace";
 import { HelpTip } from "@/app/portal/components";
 import styles from "./workbench.module.css";
+import { AUTONOMY_MODE_COPY } from "./autonomy-copy";
 
 const SOURCE_LABEL: Record<string, string> = {
   allmeta: "Allmeta 实时源",
@@ -36,6 +38,8 @@ export function CreateSessionPanel(props: CreateSessionPanelProps) {
 
   const [goal, setGoal] = useState("");
   const [registrationId, setRegistrationId] = useState<string | null>(null);
+  const [autonomyMode, setAutonomyMode] =
+    useState<OntoCodeAutonomyMode>("copilot");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -56,7 +60,7 @@ export function CreateSessionPanel(props: CreateSessionPanelProps) {
 
   const submit = async () => {
     if (!selected) {
-      setError("当前 Business Domain 还没有活跃的 Ontology 域——先在「管理 Ontology Domains」注册或上传一个。");
+      setError("当前业务域还没有活跃的本体域——先在「管理本体域」注册或上传一个。");
       return;
     }
     if (!selected.executionReadiness.executable) {
@@ -65,7 +69,7 @@ export function CreateSessionPanel(props: CreateSessionPanelProps) {
     }
     const goalText =
       goal.trim() ||
-      "根据当前 Ontology 分析业务范围，并生成可测试、可审查的 Agent 套件。";
+      "根据当前本体分析业务范围，并生成可测试、可审查的 Agent 套件。";
     setBusy(true);
     setError(null);
     try {
@@ -85,8 +89,15 @@ export function CreateSessionPanel(props: CreateSessionPanelProps) {
         projectId: project.id,
         title: goalText.slice(0, 56) || "新的 Agent 构建",
         goal: goalText,
-        autonomyMode: "copilot",
+        autonomyMode,
       });
+      // Only a goal sentence is supplied here — no scope picker — so bootstrap
+      // routes this through the conversational planner, which is the single
+      // authority for turning free text into an action. The planner may answer
+      // a question-shaped goal with an explanation and NO Harness Job; that is
+      // a successful bootstrap. Navigation is therefore unconditional: the FDE
+      // lands in the Session on the assistant's reply. Never gate entry on a
+      // Job existing — doing so is what forced every Session into a scope run.
       await bootstrap.mutateAsync({
         sessionId: receipt.session.id,
         goal: goalText,
@@ -101,13 +112,11 @@ export function CreateSessionPanel(props: CreateSessionPanelProps) {
 
   const body = (
     <div className={styles.createPanel}>
-      <div className={styles.goalLabel}>新建 Session</div>
-      <h2 className={styles.goalTitle}>你想构建什么？</h2>
+      <h2 className={styles.goalTitle}>新建 Session</h2>
       <label className={styles.createLabel} htmlFor="oc-create-domain">
         Ontology 域
         <HelpTip>
-          只列出当前 Business Domain 下活跃的注册项。需要新增或上传域时，去「Business
-          Domains」页注册一次即可长期复用。
+          只列出活跃注册项；新增或上传去「Business Domains」页。
         </HelpTip>
       </label>
       <select
@@ -118,7 +127,7 @@ export function CreateSessionPanel(props: CreateSessionPanelProps) {
         disabled={busy || registrations.length === 0}
       >
         {registrations.length === 0 ? (
-          <option value="">（无活跃域——请先注册或上传）</option>
+          <option value="">（无可用域）</option>
         ) : (
           registrations.map((r) => (
             <option key={r.id} value={r.id}>
@@ -135,16 +144,41 @@ export function CreateSessionPanel(props: CreateSessionPanelProps) {
         </div>
       ) : null}
       <label className={styles.createLabel} htmlFor="oc-create-goal">
-        业务目标（一句话即可）
+        业务目标
       </label>
       <textarea
         id="oc-create-goal"
         className={styles.createGoal}
-        placeholder="例：基于当前 Ontology 的全部可执行 Actions，生成可测试、可审查的 Agent 套件…"
+        placeholder="例：生成可测试、可审查的 Agent 套件…"
         value={goal}
         onChange={(e) => setGoal(e.target.value)}
         disabled={busy}
       />
+      <label className={styles.createLabel} htmlFor="oc-create-autonomy">
+        执行方式
+        {/* 模式的能力边界事实收进 HelpTip（与 Composer 共享同一份权威文案）。 */}
+        <HelpTip>
+          {
+            AUTONOMY_MODE_COPY.find((option) => option.value === autonomyMode)!
+              .description
+          }
+        </HelpTip>
+      </label>
+      <select
+        id="oc-create-autonomy"
+        className={styles.createSelect}
+        value={autonomyMode}
+        onChange={(event) =>
+          setAutonomyMode(event.target.value as OntoCodeAutonomyMode)
+        }
+        disabled={busy}
+      >
+        {AUTONOMY_MODE_COPY.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
       {error ? <div className={styles.cardError}>{error}</div> : null}
       <div className={styles.cardBtns}>
         <button
@@ -153,7 +187,7 @@ export function CreateSessionPanel(props: CreateSessionPanelProps) {
           onClick={() => void submit()}
           disabled={busy}
         >
-          {busy ? "创建中…" : "创建并开始"}
+          {busy ? "创建中…" : "创建"}
         </button>
         {props.onClose ? (
           <button

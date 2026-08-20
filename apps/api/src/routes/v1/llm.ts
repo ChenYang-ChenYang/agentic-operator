@@ -93,6 +93,21 @@ function providerAvailableInThisProcess(id: ProviderId): boolean {
   return process.env.NODE_ENV === "test" || !NON_RUNTIME_PROVIDERS.has(id);
 }
 
+/**
+ * Whether a request naming this provider could actually be served. Mirrors the
+ * exact conditions `resolveModel` rejects on (unregistered adapter, or a
+ * registered adapter with no credential), so a caller that honours this never
+ * gets a `provider is not configured` surprise at generation time.
+ */
+function providerConfiguredForTraffic(id: ProviderId): boolean {
+  if (!providerAvailableInThisProcess(id)) return false;
+  const info = getLLMGateway()
+    .listProviders()
+    .find((provider) => provider.id === id);
+  if (!info) return false;
+  return info.hasKey || id === "mock";
+}
+
 function requireRuntimeProvider(id: ProviderId) {
   if (providerAvailableInThisProcess(id)) return;
   const err: Error & { statusCode?: number; code?: string } = new Error(
@@ -940,7 +955,15 @@ export async function llmRoutes(app: FastifyInstance): Promise<void> {
   // ── Model fleet ─────────────────────────────────────────────────────────
   app.get("/llm/fleet", async (req, reply) => {
     const auth = requireAuth(req);
-    return reply.ok(listFleet(auth.tenantSlug));
+    // A fleet entry records intent; credentials can be removed afterwards.
+    // Report usability alongside each entry so callers can avoid selecting a
+    // model whose provider would be rejected at request time.
+    return reply.ok(
+      listFleet(auth.tenantSlug).map((entry) => ({
+        ...entry,
+        providerConfigured: providerConfiguredForTraffic(entry.provider),
+      })),
+    );
   });
 
   app.post<{
@@ -956,6 +979,11 @@ export async function llmRoutes(app: FastifyInstance): Promise<void> {
   }>("/llm/fleet", async (req, reply) => {
     const auth = requireTenantAdmin(req);
     try {
+      // Every other provider-scoped mutation gates on this; without it the
+      // fleet becomes a side door for adding a non-runtime provider (mock,
+      // bedrock, vertex) that the model picker would then offer.
+      const requested = req.body?.provider ?? "";
+      if (isProviderId(requested)) requireRuntimeProvider(requested);
       const entry = addFleetEntry({
         tenantSlug: auth.tenantSlug,
         provider: req.body?.provider ?? "",

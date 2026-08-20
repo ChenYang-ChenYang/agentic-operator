@@ -51,7 +51,11 @@ export {
   type DeclarativeToolFailureKind,
 } from "./declarative/http-tool";
 export { isPrivateHost, assertPublicUrl, safeFetch } from "./declarative/ssrf";
-export { validateToolSchema, type SchemaValidationIssue } from "./declarative/schema-validation";
+export {
+  normalizeToolSchema,
+  validateToolSchema,
+  type SchemaValidationIssue,
+} from "./declarative/schema-validation";
 
 // Re-export the category sub-packages so external consumers can import
 // the descriptors directly when they want (e.g. for tests).
@@ -69,6 +73,7 @@ export * as objectStore from "./object-store";
 export * as postgres from "./postgres";
 export * as crypto from "./crypto";
 export * as document from "./document";
+export * as config from "./config";
 
 // DI seam: apps/api injects a resolver at boot so DB-backed integration
 // credentials (configured in Settings → Integrations) reach the GoHire tool

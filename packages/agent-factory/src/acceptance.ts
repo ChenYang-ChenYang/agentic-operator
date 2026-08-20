@@ -19,6 +19,7 @@ import { deriveIntegrationRequirements } from "./integration-binding";
 import type { IntegrationBindingStatus, IntegrationRequirement } from "./integration-binding";
 import type { RealTool } from "./tool-catalog";
 import { assessRuleGate } from "./rule-gate-evidence";
+import { authorRuleGates } from "./rule-gate-authoring";
 import type { SandboxBrokerRegistrationProof, SandboxToolDispatchReceipt } from "./ports";
 import type { SandboxExecutionPlaneReceipt } from "./sandbox-execution-plane";
 import { sandboxExecutionReceiptIssues } from "./sandbox-execution-plane";
@@ -410,6 +411,19 @@ export function acceptanceReport(
     const assessment = ruleAssessments.get(spec)!;
     return assessment.isRuleGate && !assessment.readerBound;
   });
+  // #RULE-GATE-AUTHOR — recompute, from the Ontology and the spec's own plan, which rule-gate
+  // declarations this agent SHOULD carry, and compare with what it actually carries. Independent of
+  // the generator on purpose: a spec that was designed before the generator emitted gates (or by a
+  // path that skipped it) shows up as undeclared here rather than as "nothing to declare".
+  const ruleGateAuthoring = new Map(specs.map((spec) => {
+    const action = ontologyActions.get(spec.actionName);
+    return [
+      spec,
+      action
+        ? authorRuleGates({ action, rules: (ontology?.rules ?? []) as Array<Record<string, unknown>>, spec })
+        : null,
+    ] as const;
+  }));
   const realSpecs = specs.filter((s) => !/-mock-/.test(s.slug)); // mocks are sandbox stand-ins, not deliverables
   const registrationIssues = sandboxRegistrationEvidenceIssues(
     sandbox
@@ -637,6 +651,25 @@ export function acceptanceReport(
     if (!s.isSubAgent) items.push({ key: "typed_payloads", label: "I/O 已类型化", pass: !!(s.inputSchema?.length || s.outputSchema?.length), detail: s.inputSchema?.length || s.outputSchema?.length ? "有 schema" : "无 schema" });
     const ruleAssessment = ruleAssessments.get(s)!;
     if (ruleAssessment.isRuleGate) items.push({ key: "rule_gate_bound", label: "规则闸已绑定规则读取能力", pass: ruleAssessment.readerBound, detail: ruleAssessment.readerBound ? `已绑定：${ruleAssessment.readers.join("、")}` : `未绑定；结构证据：${ruleAssessment.evidence.join("、")}` });
+    // #RULE-GATE-AUTHOR — only applicable where the Ontology actually attaches rules to a tool this
+    // agent dispatches. "Nothing to declare" is not padded into a green tick: the item is absent.
+    const expectedGates = ruleGateAuthoring.get(s) ?? null;
+    if (expectedGates?.gates.length) {
+      const declared = new Map((s.ruleGates ?? []).map((gate) => [gate.tool, gate]));
+      const missing = expectedGates.gates.filter((gate) => {
+        const actual = declared.get(gate.tool);
+        return !actual || gate.declaration.rules.ids.some((id) => !actual.declaration.rules.ids.includes(id));
+      });
+      const openGaps = [...(s.ruleGateGaps ?? []), ...expectedGates.gaps];
+      items.push({
+        key: "rule_gate_declared",
+        label: "规则义务已写进 manifest 规则闸",
+        pass: missing.length === 0,
+        detail: missing.length
+          ? `未声明规则闸：${missing.map((gate) => `${gate.tool}(${gate.declaration.rules.ids.length} 条规则)`).join("、")}`
+          : `已声明 ${expectedGates.gates.length} 个工具的规则闸（mode=report）${openGaps.length ? ` · ${openGaps.length} 处义务无法接线：${[...new Set(openGaps.map((gap) => gap.kind))].join("、")}` : ""}`,
+      });
+    }
     if (realSandbox) {
       items.push({ key: "ran_no_degrade", label: "沙箱真跑无降级", pass: !degradedSet.has(s.short), detail: degradedSet.has(s.short) ? "降级" : "正常" });
       const agentHasExternalWrite = [

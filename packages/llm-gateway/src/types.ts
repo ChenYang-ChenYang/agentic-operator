@@ -207,6 +207,20 @@ export interface LlmRoutingMetadata {
   logicalCallId?: string;
   /** Route fallback candidates reserve 100 attempt ordinals each. */
   attemptBase?: number;
+  /**
+   * Caller-supplied ORDERED model preference (strongest wish first). It is a
+   * ranking hint over the routes the tenant/workspace policy already allows —
+   * it can reorder that set but never widen it, so a process-wide caller
+   * setting can never beat tenant policy. Difficulty-routed callers (the Agent
+   * Factory tiers) express task difficulty here.
+   */
+  modelPreference?: string[];
+  /** Opaque caller label for that preference (e.g. the difficulty tier). */
+  modelPreferenceTier?: string;
+  /** Resolution outcome: did an allowed candidate match the preference? */
+  modelPreferenceSatisfied?: boolean;
+  /** Why the preference was (not) met — never silently dropped. */
+  modelPreferenceReason?: string;
   /** Test/evaluation calls may explicitly override saved profile controls. */
   parameterPrecedence?: "policy" | "request";
   /** Caller supplied a legacy provider/model override; bypass task policy. */

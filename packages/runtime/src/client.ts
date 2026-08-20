@@ -984,6 +984,41 @@ export function tenantInngestIsolationIdentity(
   };
 }
 
+/** Development-only variant used by a signed same-host Sandbox.
+ *
+ * Local development tenants commonly share the platform Inngest credentials
+ * instead of owning production-style tenant env refs. The Sandbox still gets
+ * only fingerprints and must prove that its dedicated broker, event key,
+ * signing key and App namespace differ. This function is intentionally
+ * unavailable in production and therefore cannot supply promotion evidence.
+ */
+export function tenantInngestDiagnosticIsolationIdentity(
+  targetSlug: string,
+): TargetInngestIsolationIdentity {
+  const target = resolveTenantInngestConfig(targetSlug);
+  if (
+    process.env.NODE_ENV === "production" ||
+    !targetSlug ||
+    isFactorySandboxTenant(targetSlug) ||
+    targetSlug === SYSTEM_SLUG ||
+    target.status.readiness === "blocked" ||
+    (target.status.source !== "tenant_env_refs" &&
+      target.status.source !== "shared_env") ||
+    !target.eventKey ||
+    !target.signingKey
+  ) {
+    throw new TenantInngestConfigurationError(target.status);
+  }
+  return {
+    schema: TARGET_INNGEST_ISOLATION_IDENTITY_SCHEMA,
+    targetTenantSlug: targetSlug,
+    eventChannelFingerprint: isolationFingerprint("event", target.eventKey),
+    signatureChannelFingerprint: isolationFingerprint("signing", target.signingKey),
+    brokerFingerprint: isolationFingerprint("broker", brokerIsolationValue(target)),
+    appNamespaceFingerprint: isolationFingerprint("app", appIdForTenant(targetSlug)),
+  };
+}
+
 function validTargetIsolationIdentity(
   identity: TargetInngestIsolationIdentity | undefined,
   targetSlug: string,
@@ -1206,14 +1241,32 @@ export function disposeTenantInngestClient(slug: string): boolean {
 }
 
 /**
+ * 这些角色被刻意剥夺了 broker 凭据，因此不能在模块加载时去要 __system 的
+ * Inngest 配置——它们拿不到，只会在容器启动瞬间崩掉。
+ *
+ * 判据是「这个角色有没有 broker 凭据」，不是名字前缀。曾经只豁免
+ * `sandbox-runner*`，结果 production-codeact-executor 同样无凭据却不在名单里：
+ * 它在 external_sandbox 拓扑下每次 `docker compose up` 都因
+ * TenantInngestConfigurationError 起不来，并按依赖关系连带挡住 api。
+ * 契约见 apps/api/test/isolated-role-inngest-import.test.ts。
+ */
+function isCredentialIsolatedRole(role: string | undefined): boolean {
+  if (!role) return false;
+  return (
+    role.startsWith("sandbox-runner")
+    || role === "production-codeact-executor"
+  );
+}
+
+/**
  * Back-compat alias — the platform/system client (`agentic-operator-__system`).
  * Existing `import { inngest }` sites (helloFn, system-cron, retention,
  * code-agent fns) resolve to the __system app. Per-tenant agent + cron
  * functions bind via `getTenantInngest(slug)` instead.
  */
-export const inngest = process.env.AGENTIC_PROCESS_ROLE?.startsWith("sandbox-runner")
-  // The external runner never serves or syncs the production __system App.
-  // Construct an inert client without global tenant credentials so importing
+export const inngest = isCredentialIsolatedRole(process.env.AGENTIC_PROCESS_ROLE)
+  // These roles never serve or sync the production __system App. Construct an
+  // inert client without global tenant credentials so importing
   // runtime/bootstrap cannot force production secrets into the isolated
   // container. Nonce sandbox apps still use getTenantInngest(slug) and the
   // dedicated INNGEST_SANDBOX_CONFIG_REFS contract.

@@ -32,6 +32,7 @@ import { events, idempotencyKeys, runs, tasks, getDb } from "@agentic/db";
 import { and, isNull, lt, sql } from "drizzle-orm";
 import { inngest } from "./client";
 import { validateCronExpression } from "./scheduler";
+import { walkAndRotate } from "./log-rotate";
 
 export interface RetentionResult {
   events: { tombstoned: number };
@@ -224,10 +225,13 @@ function createRetentionSweepFn(cron: string): InngestFunction.Any {
     },
     async () => {
       const result = await runRetentionSweep();
-      console.log(
-        `[retention] sweep: events=${result.events.tombstoned} runs=${result.runs.tombstoned} tasks=${result.tasks.tombstoned} idempotency_keys=${result.idempotencyKeys.purged} (events/tasks cutoff ${result.retentionDays}d, runs cutoff ${result.runRetentionDays === 0 ? "off — permanent" : `${result.runRetentionDays}d`})`,
+      const logRotation = await walkAndRotate(
+        process.env.AGENTIC_LOGS_DIR ?? "./logs",
       );
-      return result;
+      console.log(
+        `[retention] sweep: events=${result.events.tombstoned} runs=${result.runs.tombstoned} tasks=${result.tasks.tombstoned} idempotency_keys=${result.idempotencyKeys.purged} logs_rotated=${logRotation.rotated} (events/tasks cutoff ${result.retentionDays}d, runs cutoff ${result.runRetentionDays === 0 ? "off — permanent" : `${result.runRetentionDays}d`})`,
+      );
+      return { ...result, logRotation };
     },
   );
 }

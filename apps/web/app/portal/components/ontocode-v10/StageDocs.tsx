@@ -3,14 +3,19 @@
 // 渲染成可读的表格（而不是折叠成一行「完成 · 7s」或裸 JSON）。
 // 直接回应用户诉求：blueprint 内容要可见 + 分析用表格展示。
 import React from "react";
+import { HelpTip } from "@/app/portal/components";
 import styles from "./workbench.module.css";
+import {
+  AnalystPresentationView,
+  parseAnalystPresentation,
+} from "./AnalystPresentation";
 
 export type StageDocKind = "scope" | "blueprint" | "analysis";
 
 const STAGE_LABEL: Record<StageDocKind, string> = {
   scope: "范围分析",
   blueprint: "Agent 蓝图",
-  analysis: "Ontology 理解",
+  analysis: "本体理解",
 };
 
 export function stageDocLabel(kind: StageDocKind): string {
@@ -69,9 +74,19 @@ function parseScope(json: unknown): {
 
 interface BlueprintPhase {
   agent: string;
+  title: string;
   intent: string;
   anchorCount: number;
   stepCount: number;
+  deliberation: string | null;
+  steps: Array<{
+    label: string;
+    agent: string | null;
+    reads: string[];
+    writes: string[];
+    emits: string[];
+    anchors: string[];
+  }>;
 }
 
 function parseBlueprint(json: unknown): {
@@ -97,9 +112,49 @@ function parseBlueprint(json: unknown): {
         return [
           {
             agent,
+            title: typeof p.title === "string" ? p.title : agent,
             intent: typeof p.intent === "string" ? p.intent : "",
             anchorCount: Array.isArray(p.anchors) ? p.anchors.length : 0,
             stepCount: steps.length,
+            deliberation:
+              typeof p.deliberation === "string" ? p.deliberation : null,
+            steps: steps.flatMap((rawStep) => {
+              if (!isRecord(rawStep)) return [];
+              const strList = (value: unknown): string[] =>
+                Array.isArray(value)
+                  ? value.filter(
+                      (item): item is string => typeof item === "string",
+                    )
+                  : [];
+              const anchors = Array.isArray(rawStep.anchors)
+                ? rawStep.anchors.flatMap((rawAnchor) => {
+                    if (!isRecord(rawAnchor)) return [];
+                    const kind =
+                      typeof rawAnchor.kind === "string"
+                        ? rawAnchor.kind
+                        : null;
+                    const id =
+                      typeof rawAnchor.id === "string" ? rawAnchor.id : null;
+                    return kind && id ? [`${kind}:${id}`] : [];
+                  })
+                : [];
+              return [
+                {
+                  label:
+                    typeof rawStep.label === "string"
+                      ? rawStep.label
+                      : "未命名步骤",
+                  agent:
+                    typeof rawStep.agent === "string"
+                      ? rawStep.agent
+                      : null,
+                  reads: strList(rawStep.reads),
+                  writes: strList(rawStep.writes),
+                  emits: strList(rawStep.emits),
+                  anchors,
+                },
+              ];
+            }),
           },
         ];
       })
@@ -230,7 +285,7 @@ export function StageDocView(props: StageDocViewProps) {
     return <div className={styles.iEmpty}>加载中…</div>;
   }
   if (props.content === null) {
-    return <div className={styles.iEmpty}>无法读取该阶段产物内容。</div>;
+    return <div className={styles.iEmpty}>读取失败</div>;
   }
   let json: unknown;
   try {
@@ -252,7 +307,7 @@ export function StageDocView(props: StageDocViewProps) {
             <thead>
               <tr>
                 <th style={{ width: "34%" }}>Action</th>
-                <th>为什么纳入本次范围</th>
+                <th>纳入理由</th>
               </tr>
             </thead>
             <tbody>
@@ -276,6 +331,10 @@ export function StageDocView(props: StageDocViewProps) {
   }
 
   if (props.kind === "analysis") {
+    const presentation = parseAnalystPresentation(json);
+    if (presentation) {
+      return <AnalystPresentationView presentation={presentation} />;
+    }
     const a = parseAnalysis(json);
     if (!a) return <pre className={styles.codeBox}>{props.content}</pre>;
     return (
@@ -288,7 +347,7 @@ export function StageDocView(props: StageDocViewProps) {
         </div>
         {a.relationshipKinds.length > 0 ? (
           <>
-            <div className={styles.secTitle}>关系类型（真实边）</div>
+            <div className={styles.secTitle}>关系类型</div>
             <div className={styles.docTableWrap}>
               <table className={styles.docTable}>
                 <thead>
@@ -350,7 +409,7 @@ export function StageDocView(props: StageDocViewProps) {
         ) : null}
         {a.findings.length > 0 ? (
           <>
-            <div className={styles.secTitle}>结论（含核查状态）</div>
+            <div className={styles.secTitle}>结论</div>
             <div className={styles.docTableWrap}>
               <table className={styles.docTable}>
                 <thead>
@@ -439,11 +498,55 @@ export function StageDocView(props: StageDocViewProps) {
               <tr key={`${p.agent}-${i}`}>
                 <td className={styles.docMono}>
                   {p.agent}
-                  <div className={styles.docSub}>
-                    {p.stepCount} 步 · {p.anchorCount} 锚点
-                  </div>
+                  <div className={styles.docSub}>{p.stepCount} 步</div>
                 </td>
-                <td>{p.intent}</td>
+                <td>
+                  <strong>{p.title}</strong>
+                  {p.deliberation ? (
+                    <HelpTip>{`设计说明：${p.deliberation}`}</HelpTip>
+                  ) : null}
+                  {p.intent ? <div>{p.intent}</div> : null}
+                  {p.steps.length > 0 ? (
+                    <ol className={styles.blueprintSteps}>
+                      {p.steps.map((step, stepIndex) => (
+                        <li
+                          key={`${p.agent}-${step.label}-${stepIndex}`}
+                          className={styles.blueprintStep}
+                        >
+                          <div>
+                            {step.label}
+                            {step.agent && step.agent !== p.agent
+                              ? ` · ${step.agent}`
+                              : ""}
+                          </div>
+                          {/* 「依据」原始锚点是内部 id，默认收进 hover。 */}
+                          <div
+                            className={styles.docSub}
+                            title={
+                              step.anchors.length
+                                ? `依据 ${step.anchors.join("、")}`
+                                : undefined
+                            }
+                          >
+                            {[
+                              step.reads.length
+                                ? `读取 ${step.reads.join("、")}`
+                                : null,
+                              step.writes.length
+                                ? `写入 ${step.writes.join("、")}`
+                                : null,
+                              step.emits.length
+                                ? `发出 ${step.emits.join("、")}`
+                                : null,
+                            ]
+                              .filter(Boolean)
+                              .join(" · ")}
+                          </div>
+                        </li>
+                      ))}
+                    </ol>
+                  ) : null}
+                </td>
               </tr>
             ))}
           </tbody>
@@ -453,7 +556,6 @@ export function StageDocView(props: StageDocViewProps) {
         共 {bp.phases.length} 个 Agent 蓝图
         {bp.domain ? ` · 域 ${bp.domain}` : ""}
         {bp.unresolved > 0 ? ` · ${bp.unresolved} 项待解析` : ""}
-        {" · 下一步：发送「继续」生成 Agent 代码"}
       </div>
     </div>
   );

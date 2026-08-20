@@ -17,14 +17,62 @@ const actualType = (value: unknown): string => {
   return typeof value;
 };
 
-const STANDARD_KEYS = new Set(["$schema", "$id", "$ref", "type", "properties", "required", "items", "enum", "const", "anyOf", "oneOf", "allOf", "nullable", "additionalProperties"]);
+/**
+ * Is this already JSON Schema, or a factory field map?
+ *
+ * Asking "does any top-level key look like a keyword?" gets this wrong on real
+ * data: `ontology.query` and `ontology.writeInstance` both declare an argument
+ * field literally named `properties`, so their field maps were read as JSON
+ * Schema and passed through unchanged — no `type: "object"`, no usable
+ * properties map, and therefore a meaningless contract wherever that object is
+ * published or validated against.
+ *
+ * The reliable discriminator is the SHAPE of `type`, not the presence of a key:
+ * every JSON Schema describing an argument object declares `type` as a string
+ * (or an array of strings), whereas in a field map `type` — if a field happens
+ * to be called that — is a field spec OBJECT. `$schema`/`$ref` are also
+ * unambiguous, since neither is a plausible argument name.
+ */
+const SCHEMA_KEYWORDS = new Set([
+  "$schema",
+  "$id",
+  "$ref",
+  "type",
+  "properties",
+  "required",
+  "items",
+  "enum",
+  "const",
+  "anyOf",
+  "oneOf",
+  "allOf",
+  "nullable",
+  "additionalProperties",
+  "description",
+]);
+
+function isJsonSchemaShaped(input: Record<string, unknown>): boolean {
+  // `type: "object"` / `type: ["object","null"]` — a field map's `type` field,
+  // if one is named that, holds a field spec OBJECT instead.
+  if (typeof input.type === "string" || Array.isArray(input.type)) return true;
+  if (typeof input.$schema === "string" || typeof input.$ref === "string") return true;
+  // A bare `{ required: [...] }` fragment is legitimate JSON Schema. In a field
+  // map a field named `required` would carry an object spec, not an array.
+  if (Array.isArray(input.required)) return true;
+  // Finally: a `properties` map is only the JSON-Schema keyword when nothing
+  // else at this level looks like an argument name.
+  return (
+    isRecord(input.properties) &&
+    Object.keys(input).every((key) => SCHEMA_KEYWORDS.has(key))
+  );
+}
 
 /** Factory schema extraction historically produced a field map (`{id:{type,
  * required}}`) while operators may also provide JSON Schema. Normalize both to
  * one JSON-Schema-like representation before validating. */
 export function normalizeToolSchema(input: Record<string, unknown> | undefined): Schema | undefined {
   if (!input || Object.keys(input).length === 0) return undefined;
-  if (Object.keys(input).some((key) => STANDARD_KEYS.has(key))) return input;
+  if (isJsonSchemaShaped(input)) return input;
   const required: string[] = [];
   const properties: Record<string, unknown> = {};
   for (const [name, field] of Object.entries(input)) {
@@ -40,6 +88,21 @@ export function normalizeToolSchema(input: Record<string, unknown> | undefined):
   return { type: "object", properties, ...(required.length ? { required } : {}) };
 }
 
+/** Types `matchesType` can actually decide. Anything else is undecidable. */
+const CHECKABLE_TYPES = new Set([
+  "string",
+  "number",
+  "integer",
+  "boolean",
+  "object",
+  "array",
+  "null",
+  "undefined",
+  "bigint",
+  "symbol",
+  "function",
+]);
+
 function declaredTypes(schema: Schema): string[] {
   const raw = schema.type;
   const values = Array.isArray(raw)
@@ -52,12 +115,19 @@ function declaredTypes(schema: Schema): string[] {
     const normalized = value.toLocaleLowerCase();
     if (normalized.endsWith("[]")) {
       out.add("array");
-    } else if (normalized === "record") {
+    } else if (normalized === "record" || normalized.startsWith("record<")) {
       out.add("object");
     } else if (normalized === "any" || normalized === "unknown") {
       out.add("unknown");
-    } else {
+    } else if (CHECKABLE_TYPES.has(normalized)) {
       out.add(normalized);
+    } else {
+      // A token we cannot evaluate — authored types in the live catalog include
+      // quoted-literal unions (`'search_nodes'|'get_node'`) and generic shapes.
+      // Treating it as a type name would make `typeof value === "'get_node'"`
+      // false for EVERY value, turning an undecidable declaration into a
+      // rejection of all valid calls. "Cannot check" must not mean "no match".
+      out.add("unknown");
     }
   }
   if (schema.nullable === true) out.add("null");

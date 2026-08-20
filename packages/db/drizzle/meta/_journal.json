@@ -526,6 +526,34 @@
       "when": 1785945621000,
       "tag": "0074_ontocode_session_purges",
       "breakpoints": true
+    },
+    {
+      "idx": 75,
+      "version": "6",
+      "when": 1786032021000,
+      "tag": "0075_factory_tool_revisions",
+      "breakpoints": true
+    },
+    {
+      "idx": 76,
+      "version": "6",
+      "when": 1786118421000,
+      "tag": "0076_ontocode_ontology_comprehension",
+      "breakpoints": true
+    },
+    {
+      "idx": 77,
+      "version": "6",
+      "when": 1786204821000,
+      "tag": "0077_llm_call_difficulty_preference",
+      "breakpoints": true
+    },
+    {
+      "idx": 78,
+      "version": "6",
+      "when": 1786291221000,
+      "tag": "0078_ontocode_build_executions",
+      "breakpoints": true
     }
   ]
 }

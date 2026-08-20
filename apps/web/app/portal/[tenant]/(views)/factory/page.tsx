@@ -2044,7 +2044,11 @@ export default function FactoryPage() {
   const completeDraftSandbox = (receipt: DraftSandboxFinishReceipt) => {
     setDraftSandbox(null);
     setDraftSandboxMsg(
-      t("factory.page.draft.sandboxComplete", { versionId: receipt.versionId }),
+      receipt.diagnosticOnly
+        ? t("factory.page.draft.sandboxDiagnosticComplete")
+        : t("factory.page.draft.sandboxComplete", {
+            versionId: receipt.versionId,
+          }),
     );
     setDraftEditMsg("");
     setPromoteMsg("");

@@ -62,17 +62,17 @@ The canonical list is in `.env.production.example`. Each variable in
 that file has a comment explaining what it does and a safe production
 default. Key dimensions:
 
-| Group | Variables | Notes |
-|---|---|---|
-| Runtime mode | `NODE_ENV`, `AUTH_MODE`, `LOG_LEVEL` | `AUTH_MODE=production` outside dev. |
-| HTTP | `PORT`, `HOST`, `WEB_ORIGIN`, `AGENTIC_API_URL` | `WEB_ORIGIN` is the CORS allow-list. |
-| Storage | `DATABASE_URL`, `AGENTIC_DATA_DIR`, `AGENTIC_MODELS_DIR`, `AGENTIC_LOGS_DIR`, `AGENTIC_ARTIFACTS_DIR`, `AGENTIC_TENANTS_DIR` | All container-internal paths. |
-| Limits | `AGENTIC_BODY_LIMIT_BYTES`, `AGENTIC_RATE_LIMIT_PER_MIN`, `AGENTIC_SHUTDOWN_TIMEOUT_MS` | Defaults are fine for ≤8 vCPU. |
-| Inngest | `INNGEST_EVENT_KEY`, `INNGEST_SIGNING_KEY`, `INNGEST_BASE_URL` | Both keys are 32-byte hex. |
-| Auth | `JWT_SECRET`, `AUTH_SESSION_SECRET`, `RESEND_API_KEY`, `AUTH_FROM_EMAIL` | Required when AUTH_MODE=production. |
-| Webhooks | `WEBHOOK_HMAC_SECRET_*` (per provider) | One per inbound webhook source. |
-| LLM gateway | `LLM_DEFAULT_PROVIDER`, `LLM_DEFAULT_MODEL`, `LLM_REQUEST_TIMEOUT_MS`, per-provider keys | `mock` for dry-runs only. |
-| Schedules | `AGENTIC_SYSTEM_CRON`, `AGENTIC_SYSTEM_CRON_DISABLED`, `AGENTIC_RETENTION_DAYS` | Retention sweep runs daily. |
+| Group        | Variables                                                                                                                    | Notes                                |
+| ------------ | ---------------------------------------------------------------------------------------------------------------------------- | ------------------------------------ |
+| Runtime mode | `NODE_ENV`, `AUTH_MODE`, `LOG_LEVEL`                                                                                         | `AUTH_MODE=production` outside dev.  |
+| HTTP         | `PORT`, `HOST`, `WEB_ORIGIN`, `AGENTIC_API_URL`                                                                              | `WEB_ORIGIN` is the CORS allow-list. |
+| Storage      | `DATABASE_URL`, `AGENTIC_DATA_DIR`, `AGENTIC_MODELS_DIR`, `AGENTIC_LOGS_DIR`, `AGENTIC_ARTIFACTS_DIR`, `AGENTIC_TENANTS_DIR` | All container-internal paths.        |
+| Limits       | `AGENTIC_BODY_LIMIT_BYTES`, `AGENTIC_RATE_LIMIT_PER_MIN`, `AGENTIC_SHUTDOWN_TIMEOUT_MS`                                      | Defaults are fine for ≤8 vCPU.       |
+| Inngest      | `INNGEST_EVENT_KEY`, `INNGEST_SIGNING_KEY`, `INNGEST_BASE_URL`                                                               | Both keys are 32-byte hex.           |
+| Auth         | `JWT_SECRET`, `AUTH_SESSION_SECRET`, `RESEND_API_KEY`, `AUTH_FROM_EMAIL`                                                     | Required when AUTH_MODE=production.  |
+| Webhooks     | `WEBHOOK_HMAC_SECRET_*` (per provider)                                                                                       | One per inbound webhook source.      |
+| LLM gateway  | `LLM_DEFAULT_PROVIDER`, `LLM_DEFAULT_MODEL`, `LLM_REQUEST_TIMEOUT_MS`, per-provider keys                                     | `mock` for dry-runs only.            |
+| Schedules    | `AGENTIC_SYSTEM_CRON`, `AGENTIC_SYSTEM_CRON_DISABLED`, `AGENTIC_RETENTION_DAYS`                                              | Retention sweep runs daily.          |
 
 Validate the contract with `docker compose --env-file .env.production
 config` before every deploy.
@@ -209,15 +209,15 @@ unauthenticated by design**; restrict access via:
 
 Series produced:
 
-| Type | Name | Labels |
-|---|---|---|
-| Counter | `runs_total` | `tenant, agent, model, status` |
-| Counter | `tokens_total` | `tenant, agent, model, direction` |
-| Counter | `cost_usd_total` | `tenant, agent, model` |
-| Counter | `http_requests_total` | `route, method, status` |
-| Counter | `llm_provider_errors_total` | `tenant, provider, model, code` |
-| Histogram | `run_duration_ms` | `tenant, agent` |
-| Histogram | `http_request_duration_ms` | `route, method` |
+| Type      | Name                        | Labels                            |
+| --------- | --------------------------- | --------------------------------- |
+| Counter   | `runs_total`                | `tenant, agent, model, status`    |
+| Counter   | `tokens_total`              | `tenant, agent, model, direction` |
+| Counter   | `cost_usd_total`            | `tenant, agent, model`            |
+| Counter   | `http_requests_total`       | `route, method, status`           |
+| Counter   | `llm_provider_errors_total` | `tenant, provider, model, code`   |
+| Histogram | `run_duration_ms`           | `tenant, agent`                   |
+| Histogram | `http_request_duration_ms`  | `route, method`                   |
 
 Bucket boundaries: see `apps/api/src/services/metrics.ts`. The run
 histogram is exponential (100ms → 10m); the HTTP histogram covers
@@ -255,8 +255,9 @@ response body includes it.
 
 `pnpm db:backup` (or `bash scripts/db-backup.sh`) runs `VACUUM INTO`
 into `data/backups/agentic-YYYYMMDD-HHMMSS.db`, verifies the snapshot
-has schema rows, and prunes anything older than 14 days
-(`BACKUP_RETENTION_DAYS` override).
+has schema rows, snapshots append-only logs and step artifacts into the
+matching `agentic-YYYYMMDD-HHMMSS-evidence/` directory, and prunes both
+parts after 90 days (`BACKUP_RETENTION_DAYS` override).
 
 Cron suggestion (host-side):
 
@@ -272,6 +273,8 @@ Phase 4.5 once the production scheduler is wired (`AGENTIC_SYSTEM_CRON`).
 ```
 docker compose stop api
 cp data/backups/agentic-20260520-030000.db data/agentic.db
+cp -R data/backups/agentic-20260520-030000-evidence/logs data/logs
+cp -R data/backups/agentic-20260520-030000-evidence/artifacts data/artifacts
 rm -f data/agentic.db-wal data/agentic.db-shm
 docker compose start api
 curl -sf http://localhost:3501/health | jq '.sqlite.ok'   # expect true
@@ -292,7 +295,7 @@ returns inconsistent reads.
   correct mount.
 - Check disk space: `docker exec agentic-api df -h /app/data`.
 - If the WAL got large: `docker exec agentic-api sqlite3
-  /app/data/agentic.db 'PRAGMA wal_checkpoint(TRUNCATE);'`.
+/app/data/agentic.db 'PRAGMA wal_checkpoint(TRUNCATE);'`.
 
 ### 8.2 `/health` 503 — inngest.ok=false
 
@@ -304,9 +307,9 @@ returns inconsistent reads.
 ### 8.3 5xx burst
 
 - `curl -s http://localhost:3501/metrics | grep http_requests_total |
-  grep 'status="5'` for the breakdown by route.
+grep 'status="5'` for the breakdown by route.
 - Pull recent error logs: `docker compose logs --tail=200 api | grep
-  '"level":50'`.
+'"level":50'`.
 - `requestId` from the customer ticket → grep into Loki/CloudWatch
   filtered on that field for the full request trace.
 
@@ -350,13 +353,13 @@ means our `AGENTIC_RATE_LIMIT_PER_MIN` cap is too tight. Either:
 
 ## 9. Capacity + Limits
 
-| Resource | Default | Tune via |
-|---|---|---|
-| HTTP body size | 1 MiB | `AGENTIC_BODY_LIMIT_BYTES` |
-| Rate limit | 100 req/min/tenant | `AGENTIC_RATE_LIMIT_PER_MIN` |
-| SIGTERM drain window | 30 s | `AGENTIC_SHUTDOWN_TIMEOUT_MS` |
-| Run-log retention | 30 days | `AGENTIC_RETENTION_DAYS` |
-| LLM request timeout | 60 s | `LLM_REQUEST_TIMEOUT_MS` |
+| Resource             | Default            | Tune via                      |
+| -------------------- | ------------------ | ----------------------------- |
+| HTTP body size       | 1 MiB              | `AGENTIC_BODY_LIMIT_BYTES`    |
+| Rate limit           | 100 req/min/tenant | `AGENTIC_RATE_LIMIT_PER_MIN`  |
+| SIGTERM drain window | 30 s               | `AGENTIC_SHUTDOWN_TIMEOUT_MS` |
+| Run-log retention    | 30 days            | `AGENTIC_RETENTION_DAYS`      |
+| LLM request timeout  | 60 s               | `LLM_REQUEST_TIMEOUT_MS`      |
 
 SQLite handles roughly 10k writes/s on a modern SSD; the api's
 concurrency is bounded by Fastify (default 1000 in-flight requests) and

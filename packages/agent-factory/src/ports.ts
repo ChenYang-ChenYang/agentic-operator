@@ -23,18 +23,45 @@ import type {
   FactoryHumanAuthorizationReceipt,
 } from "./authorization-challenge";
 
+export interface OntologyInstancePage {
+  items: Array<Record<string, unknown>>;
+  nextCursor: string | null;
+}
+
 /** Reads the business ontology the factory grounds agents in.
  *  OLD: Neo4j/Allmeta (lib/ontology-generator/ontology-source).
  *  NEW: manifest JSON under models/<tenant>/ (the new monorepo dropped Neo4j). */
 export interface OntologySource {
   /** front-desk intent: enumerate available domains (the list_domains tool). */
-  listDomains(): Promise<Array<{ id: string; name?: string; counts?: Record<string, number> }>>;
+  listDomains(): Promise<
+    Array<{
+      id: string;
+      name?: string;
+      counts?: Record<string, number>;
+      /**
+       * Catalog provenance is part of a selectable ontology identity.  UI
+       * clients must never guess the transport from a tenant name or a
+       * decorated display label.
+       */
+      source?: "allmeta" | "upload" | "manifest";
+    }>
+  >;
   /** Strict, no-fallback live read — the factory refuses to hallucinate against a
    *  stub, so a missing domain throws rather than returning an empty ontology. */
   fetchOntology(domainId: string): Promise<DomainOntology>;
   /** Action→step→Rule edges fetched live, so rule-check BINDS rules at run time
    *  instead of baking them into a prompt (the fetchActionRules tool). */
   fetchActionRules(domainId: string, actionName: string): Promise<unknown[]>;
+  /**
+   * Optional, bounded read of real instance rows. Metadata-only/upload sources
+   * intentionally omit this capability; callers must distinguish "unsupported"
+   * from a supported source that truthfully returned zero rows.
+   */
+  listInstances?(
+    domainId: string,
+    objectType: string,
+    opts: { limit: number },
+  ): Promise<OntologyInstancePage>;
 }
 
 /** #TESTER-WIRE — one spec's P2.5 function-tester verdict: its rendered .ts deliverable was
@@ -57,7 +84,8 @@ export interface FunctionTesterEntry {
   fixtureMode?: "evidence" | "scripted" | "missing";
 }
 
-export const SANDBOX_RUN_DRAIN_RECEIPT_SCHEMA = "agent-factory-sandbox-run-drain/v1" as const;
+export const SANDBOX_RUN_DRAIN_RECEIPT_SCHEMA =
+  "agent-factory-sandbox-run-drain/v1" as const;
 
 export interface SandboxRunDrainReceipt {
   schema: typeof SANDBOX_RUN_DRAIN_RECEIPT_SCHEMA;
@@ -78,7 +106,8 @@ export interface SandboxRunDrainReceipt {
   evidenceHash: string;
 }
 
-export const SANDBOX_CLEANUP_RECEIPT_SCHEMA = "agent-factory-sandbox-cleanup/v2" as const;
+export const SANDBOX_CLEANUP_RECEIPT_SCHEMA =
+  "agent-factory-sandbox-cleanup/v2" as const;
 
 /** Secret-free proof that the exact ephemeral app used for one candidate was
  * deleted and then read back as absent. This is factory evidence, not a live
@@ -198,7 +227,12 @@ export interface SandboxDeployResult {
    *  contradiction where a correct rejection used to fail a success-only chain gate). */
   caseVerdicts?: {
     allPass: boolean;
-    results: Array<{ caseId?: string; kind: string; pass: boolean; reason: string }>;
+    results: Array<{
+      caseId?: string;
+      kind: string;
+      pass: boolean;
+      reason: string;
+    }>;
     byKind: Record<string, { total: number; passed: number }>;
   };
   /** T2 — mock external-platform agents auto-synthesized to close external handoffs in the sandbox
@@ -307,7 +341,11 @@ export interface SandboxDeployer {
       dryRun?: boolean;
       // T1: a test case may carry its KIND so the deployer fires it on a distinct subject and
       // judges its outcome per-kind (reject reaching a FAIL terminal = pass).
-      testCases?: Array<Pick<TestCase, "entryEvent" | "payload" | "kind" | "expectedEvent"> & { id?: string }>;
+      testCases?: Array<
+        Pick<TestCase, "entryEvent" | "payload" | "kind" | "expectedEvent"> & {
+          id?: string;
+        }
+      >;
       /** #D — the user's boundary classification, threaded to the verdict so an external-handoff
        *  emit (consumed by an external platform) counts as a legitimate terminal, not a broken chain. */
       boundaryEvents?: Array<{ event: string; kind: string }>;
@@ -331,10 +369,16 @@ export interface SandboxDeployer {
  *  NEW: Drizzle/SQLite. Rehydrate-before-resume is what survives a server restart. */
 export interface ConversationStore {
   has(conversationId: string): Promise<boolean>;
-  load(conversationId: string): Promise<{ messages: unknown[]; ctx: Record<string, unknown> } | null>;
+  load(
+    conversationId: string,
+  ): Promise<{ messages: unknown[]; ctx: Record<string, unknown> } | null>;
   save(
     conversationId: string,
-    snapshot: { domain: string; messages: unknown[]; ctx: Record<string, unknown> },
+    snapshot: {
+      domain: string;
+      messages: unknown[];
+      ctx: Record<string, unknown>;
+    },
   ): Promise<void>;
   /** Lease queued human messages to inject at the next turn boundary (HITL).
    *  Durable implementations redeliver the same deliveryId until acked. */
@@ -354,12 +398,25 @@ export interface ReflectionWriter {
     domainId: string,
     // Phase 5 — `kind` carries the real failure/success/caveat distinction so it round-trips into
     // the next build's lessons (was dropped: stores hardcoded "caveat", flattening the signal).
-    reflection: { summary: string; lesson: string; failedStep?: string; kind?: "failure" | "success" | "caveat" },
+    reflection: {
+      summary: string;
+      lesson: string;
+      failedStep?: string;
+      kind?: "failure" | "success" | "caveat";
+    },
   ): Promise<void>;
   /** prior reflections for this domain, newest first — injected into the system prompt. */
   list(
     domainId: string,
-  ): Promise<Array<{ kind: "failure" | "success" | "caveat"; summary: string; rootCause?: string; lesson: string; createdAt: string }>>;
+  ): Promise<
+    Array<{
+      kind: "failure" | "success" | "caveat";
+      summary: string;
+      rootCause?: string;
+      lesson: string;
+      createdAt: string;
+    }>
+  >;
 }
 
 /** A reusable SKILL the brain authored — woven into agent prompts + persisted across
@@ -386,7 +443,9 @@ export interface LibrarySkill {
 export interface SkillStore {
   /** skills usable for a domain (domain-specific + general), ranked by effectiveness then use. */
   list(domain: string): Promise<LibrarySkill[]>;
-  save(skill: Omit<LibrarySkill, "useCount" | "evalCount" | "successCount">): Promise<void>;
+  save(
+    skill: Omit<LibrarySkill, "useCount" | "evalCount" | "successCount">,
+  ): Promise<void>;
   bumpUse(slug: string): Promise<void>;
   /** record whether a run that USED this skill ended green (effectiveness signal). */
   recordEval(slug: string, ok: boolean): Promise<void>;
@@ -394,7 +453,9 @@ export interface SkillStore {
 
 /** Optional web search for the brain's research (web_search tool). */
 export interface WebSearch {
-  search(query: string): Promise<Array<{ title: string; url: string; snippet: string }>>;
+  search(
+    query: string,
+  ): Promise<Array<{ title: string; url: string; snippet: string }>>;
 }
 
 export interface DeclarativeMultipartFileSpec {
@@ -542,6 +603,11 @@ export interface DeclarativeTool {
   /** Evidence mode of the representative receipt used for catalog display.
    * Exact sandbox/promotion decisions must select a receipt by hash instead. */
   probeEvidenceMode?: "live-probe" | "signed-fixture" | "runtime-record";
+  /** Current tenant/domain integration profiles for this persisted adapter.
+   * The execution-resource snapshot needs the same profile provenance as
+   * global and tenant-native tools; otherwise a just-confirmed declarative
+   * sandbox profile cannot be revalidated by the generated spec. */
+  integrationProfiles?: import("./integration-profile").IntegrationProfile[];
   definitionHash?: string;
   probeEvidence?: Record<string, unknown>;
   verifiedAt?: string;
@@ -551,12 +617,31 @@ export interface DeclarativeTool {
  *  authors so a domain that lacks a needed tool can grow one. */
 export interface ToolStore {
   list(domain: string): Promise<DeclarativeTool[]>;
-  save(tool: DeclarativeTool): Promise<void>;
+  /** Persist an AI-authored contract as an immutable, non-executable revision.
+   * Implementations must not expose it through list()/the runtime overlay until
+   * an authenticated human activates the exact probe-backed revision. */
+  saveDraft(tool: DeclarativeTool): Promise<{
+    revisionId: string;
+    version: number;
+    definitionHash: string;
+    status: "draft" | "active" | "retired" | "rejected";
+    activation?: {
+      eligible: boolean;
+      blockers: Array<{
+        code: "managed_write_probe_lifecycle_unavailable";
+        message: string;
+        next: "fde_register_code_owned_write_lifecycle";
+      }>;
+    };
+  }>;
   /** Optional live probe surface. Implementations must enforce guarded I/O,
    * redact evidence, and persist a definition/config-bound receipt. */
   probe?(request: {
     domain: string;
     name: string;
+    /** Optional immutable draft identity. When present the probe must resolve
+     * this exact tenant/domain revision, never the current active projection. */
+    revisionId?: string;
     args: Record<string, unknown>;
     config?: Record<string, unknown>;
     /** System attribution for read-only probes. Side-effecting probes ignore
@@ -582,6 +667,12 @@ export interface ToolStore {
     observedEvidence?: DeclarativeProbeObservedEvidence;
     next?: "ask_user";
     missing?: string[];
+    blockerCode?: "managed_write_probe_lifecycle_unavailable";
+    blockers?: Array<{
+      code: "managed_write_probe_lifecycle_unavailable";
+      message: string;
+      next: "fde_register_code_owned_write_lifecycle";
+    }>;
     writeProbeProof?: import("@agentic/shared/cassette").WriteProbeCassetteProof;
   }>;
   /** Prepare the exact subject for a sandbox-only signed fixture. This is
@@ -654,6 +745,27 @@ export interface AuthoritativeOntologyEvidence {
   domainId: string;
   source: DomainOntology["source"];
   contentHash: string;
+  /** A scenario-only Action can be tested and delivered as a draft, but it is
+   * not part of the authoritative source yet. Promotion re-read deliberately
+   * cannot reproduce this marker and therefore remains fail-closed until the
+   * Action is explicitly modeled in Ontology and regenerated. */
+  sessionOverlay?: {
+    kind: "virtual_scenario";
+    authoritative: false;
+    actionId: string;
+    actionName: string;
+    scenarioHash: string;
+  };
+}
+
+export interface FactoryAutopilotSandboxReviewEvidence {
+  schema: "agent-factory-autopilot-sandbox-review/v1";
+  fingerprint: string;
+  subjectDigest: string;
+  assumptionId: string;
+  appliedAt: number;
+  policy: "autopilot_safe";
+  conversationId?: string;
 }
 
 /** Evidence copied into the immutable draft version when `finish` succeeds.
@@ -681,7 +793,12 @@ export interface AgentDraftRegressionEvidence {
    * are never persisted in this evidence. */
   modelUsage?: import("./sandbox-model-usage").SandboxModelUsageEvidence;
   approvedTestCases: TestCase[];
-  testCoverage?: { required: string[]; covered: string[]; backfilled: string[]; uncoveredNeedingData: string[] };
+  testCoverage?: {
+    required: string[];
+    covered: string[];
+    backfilled: string[];
+    uncoveredNeedingData: string[];
+  };
   testCoverageWaiver?: { cells: string[]; note?: string; confirmedAt: number };
   testDataOverrides?: Record<string, unknown>;
   boundaryEvents?: BoundaryEvent[];
@@ -701,6 +818,10 @@ export interface AgentDraftRegressionEvidence {
     subjectDigest: string;
     receipt: FactoryHumanAuthorizationReceipt;
   };
+  /** Non-human review accepted only for a fully covered, read-only sandbox
+   * attempt. Production promotion still requires its independent human HMAC
+   * sign-off and never treats this as operator authorization. */
+  sandboxAutopilotReview?: FactoryAutopilotSandboxReviewEvidence;
   cassetteRefs?: Array<{
     bindingId?: string;
     specSlugs?: string[];
@@ -724,6 +845,18 @@ export interface AgentDraftRegressionEvidence {
   }>;
 }
 
+/** Atomic identity returned by a durable draft write. `specsFingerprint`
+ * covers the complete generated specs (prompt, tools, policies and code), not
+ * only the rendered source bytes. A caller that later packages this draft must
+ * re-read `versionId` and match the fingerprint instead of consulting the
+ * mutable latest projection. */
+export interface AgentDraftSaveReceipt {
+  schema: "agent-factory-draft-save/v1";
+  persisted: number;
+  versionId: string;
+  specsFingerprint: string;
+}
+
 /** Persists the agents the factory GENERATED as durable, reviewable DRAFTS — the OLD
  *  repo's syncDomainDrafts (which wrote draft AgentVersion rows). Without this port a
  *  finished run threw its agents away (they lived only in the transcript). With it,
@@ -732,9 +865,24 @@ export interface AgentDraftRegressionEvidence {
  *  throw back into the finish gate so delivery is never reported as durable. */
 export interface AgentDraftStore {
   /** Persist this run's accepted specs for the domain; returns how many were written. */
-  save(domain: string, specs: GeneratedAgentSpec[], regression?: AgentDraftRegressionEvidence): Promise<number>;
+  save(
+    domain: string,
+    specs: GeneratedAgentSpec[],
+    regression?: AgentDraftRegressionEvidence,
+  ): Promise<number>;
+  /** Persist and atomically return the immutable version identity. Older
+   * adapters may omit this method; their drafts remain reviewable but cannot
+   * be recovered or packaged as a Candidate by guessing from `latest`. */
+  saveWithReceipt?(
+    domain: string,
+    specs: GeneratedAgentSpec[],
+    regression?: AgentDraftRegressionEvidence,
+  ): Promise<AgentDraftSaveReceipt>;
   /** List a domain's persisted drafts (newest spec per slug). */
   list(domain: string): Promise<AgentDraft[]>;
+  /** Exact immutable-version read. Candidate recovery requires this method and
+   * fails closed when an older adapter exposes only the mutable list view. */
+  getVersion?(domain: string, versionId: string): Promise<AgentDraft[]>;
 }
 
 /** The dependency-injection root the brain is constructed with. */
@@ -754,6 +902,10 @@ export interface FactoryPorts {
   /** optional: authenticated persistence surface used only after an exact
    * one-shot ask_user confirmation. */
   integrationProfiles?: IntegrationProfileStore;
+  /** One human confirmation can authorize an exact, server-derived bundle of
+   * sandbox profiles and signed replay fixtures. Implementations must commit
+   * all ready-state rows atomically and must never perform live external I/O. */
+  sandboxEvidencePlans?: import("./sandbox-evidence-plan").SandboxEvidencePlanStore;
   /** Server-owned one-shot challenge issuer/consumer. A model never receives
    * a method for manufacturing or marking these receipts consumed. */
   authorizationChallenges?: FactoryAuthorizationChallengeStore;
@@ -774,12 +926,28 @@ export interface FactoryPorts {
    * example the host runtime's `reason` RPC) self-declare their exact
    * integration coverage and current availability through this port. */
   integrationCapabilities?: IntegrationCapabilityRegistry;
+  /** Tenant-confirmed System Profile alias groups (外部系统档案): each group
+   * lists every name one external system answers to. The ONLY sanctioned
+   * synonym source for cross-name system matching in integration binding.
+   * Absent → exact-label matching only. */
+  systemAliases?: { list(): Promise<string[][]> };
+  /** Tenant-confirmed System Profiles marked governance.humanBoundary:true —
+   * every name (id + aliases) of a system a person deliberately handles
+   * manually. Pre-seeds design-time human-boundary confirmations so an
+   * identity-gap for such a system is NOT re-asked every run. Execution-stage
+   * gates still treat human_boundary as unresolved. Absent → no pre-seed. */
+  systemHumanBoundaries?: { list(): Promise<string[]> };
   /** optional: when absent, finish() doesn't persist drafts (agents live only in the
    *  transcript). When wired, a finished run writes durable, promotable agent drafts. */
   drafts?: AgentDraftStore;
   /** optional (#SCALE-TOOLS): record per-tool sandbox outcomes so ranking can demote empirically
    *  failing tools. No-op when unwired; fail-safe. */
-  toolStats?: { record(toolName: string, ok: boolean): Promise<void>; successRates(): Promise<Record<string, { invoked: number; succeeded: number }>> };
+  toolStats?: {
+    record(toolName: string, ok: boolean): Promise<void>;
+    successRates(): Promise<
+      Record<string, { invoked: number; succeeded: number }>
+    >;
+  };
   /** optional (P1-6): persist per-criterion acceptance verdicts so pass-rate can be trended without
    *  replaying transcripts. No-op when unwired; fail-safe (never throws into the finish gate). */
   acceptance?: AcceptanceRecorder;
@@ -793,8 +961,16 @@ export interface FactoryPorts {
   /** optional (#POLICY-LEARN): per-domain 前置路由 arm 统计（(pipeline|band) → {n,ok,fidelityBad}）。
    *  conductor 选路前 load 做证据偏置、run 收束时 save。No-op when unwired; fail-safe. */
   policyStats?: {
-    load(domain: string): Promise<Record<string, { n: number; ok: number; fidelityBad: number }> | null>;
-    save(domain: string, stats: Record<string, { n: number; ok: number; fidelityBad: number }>): Promise<void>;
+    load(
+      domain: string,
+    ): Promise<Record<
+      string,
+      { n: number; ok: number; fidelityBad: number }
+    > | null>;
+    save(
+      domain: string,
+      stats: Record<string, { n: number; ok: number; fidelityBad: number }>,
+    ): Promise<void>;
   };
   /** optional (#MEM-WRITE, Mem0 式写路径): 工厂长期记忆——按 domain 作用域读写。Wired by the api
    *  over the runtime's createMemoryHandle（agent_memory_long + 向量驱动——架构审计标记的"建成但
@@ -821,9 +997,20 @@ export interface DomainInsightPack {
   ontologySig: string;
   mode: "shallow" | "deep";
   digest: string;
-  coverage?: { itemsAnalyzed: number; itemsTotal: number; batches: number; oversized: number; complete: boolean };
+  coverage?: {
+    itemsAnalyzed: number;
+    itemsTotal: number;
+    batches: number;
+    oversized: number;
+    complete: boolean;
+  };
   perspectives?: {
-    selected: Array<{ id: string; label: string; focus: string; adapted: boolean }>;
+    selected: Array<{
+      id: string;
+      label: string;
+      focus: string;
+      adapted: boolean;
+    }>;
     okCount: number;
     total: number;
     source: "llm" | "fallback";
@@ -848,7 +1035,11 @@ export const GENERAL_MEMORY_SUBJECT = "__general__";
  *  Mem0 (arXiv 2504.19413): the consolidator retrieves semantically-near candidates, then an LLM
  *  chooses ADD/UPDATE/DELETE/NOOP per extracted fact — no separate classifier. */
 export interface FactoryMemoryPort {
-  search(domain: string, query: string, k: number): Promise<Array<{ key: string; value: string; score: number }>>;
+  search(
+    domain: string,
+    query: string,
+    k: number,
+  ): Promise<Array<{ key: string; value: string; score: number }>>;
   put(domain: string, key: string, value: string): Promise<void>;
   del(domain: string, key: string): Promise<void>;
 }
@@ -856,7 +1047,11 @@ export interface FactoryMemoryPort {
 /** A human-authored, domain-scoped decision.  This is deliberately separate
  * from the LLM-managed Mem0 store above: a consolidation pass must never
  * rewrite or delete a pinned fact that a person explicitly confirmed. */
-export type FactoryHumanMemoryKind = "clarify" | "boundary" | "test_approval" | "directive";
+export type FactoryHumanMemoryKind =
+  | "clarify"
+  | "boundary"
+  | "test_approval"
+  | "directive";
 
 export interface FactoryHumanMemory {
   id: string;
@@ -902,13 +1097,29 @@ export interface FactoryHumanMemoryStore {
  *  G2 回流飞轮：条目可携带近期【生产】运行战绩（prodRuns/prodFailRate，系统 B → 系统 A），
  *  capability_resolve 在复用判定旁展示，让"复用一个正在生产上翻车的 agent"当场可见。 */
 export interface FleetCatalog {
-  list(): Promise<Array<{ kebabId: string; name: string; title?: string; enabled: boolean; trigger: string[]; emit: string[]; prodRuns?: number; prodFailRate?: number }>>;
+  list(): Promise<
+    Array<{
+      kebabId: string;
+      name: string;
+      title?: string;
+      enabled: boolean;
+      trigger: string[];
+      emit: string[];
+      prodRuns?: number;
+      prodFailRate?: number;
+    }>
+  >;
 }
 
 /** Starts/polls an ontology-analysis report job. Artifacts download at /v1/artifacts/:id and the
  *  job is visible in the portal's 后台任务 panel (report-jobs is the single implementation). */
 export interface ReportRunner {
-  start(opts: { domain: string; format: "html" | "pdf" | "both"; focus?: string; extraHtml?: string }): Promise<{ id: string }>;
+  start(opts: {
+    domain: string;
+    format: "html" | "pdf" | "both";
+    focus?: string;
+    extraHtml?: string;
+  }): Promise<{ id: string }>;
   status(id: string): Promise<{
     status: "running" | "done" | "error";
     phase?: string;
@@ -921,7 +1132,17 @@ export interface ReportRunner {
 
 /** #P1-6 — records one row per acceptance criterion per run (for trend dashboards). */
 export interface AcceptanceRecorder {
-  record(runId: string, domain: string, tenantId: string | undefined, criteria: Array<{ key: string; label: string; pass: boolean; detail: string }>): Promise<void>;
+  record(
+    runId: string,
+    domain: string,
+    tenantId: string | undefined,
+    criteria: Array<{
+      key: string;
+      label: string;
+      pass: boolean;
+      detail: string;
+    }>,
+  ): Promise<void>;
 }
 
 /** The real global tool registry surfaced to the factory (config-injected, see FactoryPorts.toolRegistry). */

@@ -10,6 +10,16 @@ export const RunStatus = z.enum([
 ]);
 export type RunStatus = z.infer<typeof RunStatus>;
 
+export const RunBusinessResult = z.enum([
+  "pending",
+  "produced",
+  "completed",
+  "no_output",
+  "invalid",
+  "failed",
+]);
+export type RunBusinessResult = z.infer<typeof RunBusinessResult>;
+
 export const CodeActAttestationStatus = z.enum([
   "production_verified",
   "sandbox_verified",
@@ -26,8 +36,15 @@ export type CodeActAttestationStatus = z.infer<typeof CodeActAttestationStatus>;
 const CodeActReceiptFields = {
   codeRan: z.boolean().nullable().optional(),
   codeExecuted: z.boolean().nullable().optional(),
-  codeIsolation: z.enum(["worker_thread", "isolated_subprocess", "isolated_container"]).nullable().optional(),
-  codeSha256: z.string().regex(/^[a-f0-9]{64}$/).nullable().optional(),
+  codeIsolation: z
+    .enum(["worker_thread", "isolated_subprocess", "isolated_container"])
+    .nullable()
+    .optional(),
+  codeSha256: z
+    .string()
+    .regex(/^[a-f0-9]{64}$/)
+    .nullable()
+    .optional(),
   codeAttestation: CodeActAttestationStatus.nullable().optional(),
   codeExecutionFailure: z.string().nullable().optional(),
 } as const;
@@ -63,6 +80,8 @@ export const RunRow = z.object({
   invocationSource: z
     .enum(["studio", "event", "api", "replay", "demo"])
     .optional(),
+  /** Operator-facing outcome, derived from status/output validation/emitted event. */
+  businessResult: RunBusinessResult.optional(),
   definitionHash: z.string().nullable().optional(),
   outputValid: z.boolean().nullable().optional(),
   sideEffectMode: z.enum(["suppressed", "safe", "live"]).optional(),
@@ -159,6 +178,14 @@ export const ListRunsQuery = z.object({
   status: z.string().optional(),
   agent: z.string().optional(),
   q: z.string().optional(),
+  triggerEvent: z.string().optional(),
+  invocationSource: z
+    .enum(["studio", "event", "api", "replay", "demo"])
+    .optional(),
+  businessResult: RunBusinessResult.optional(),
+  testRun: z.enum(["1", "true", "0", "false"]).optional(),
+  from: z.coerce.number().int().nonnegative().optional(),
+  to: z.coerce.number().int().nonnegative().optional(),
   /** Filter to a parent run's children (trace-tree lazy expand). */
   parentRunId: z.string().optional(),
   /**
@@ -221,6 +248,60 @@ export const BulkDeleteRunsResponse = z.object({
   note: z.string(),
 });
 export type BulkDeleteRunsResponse = z.infer<typeof BulkDeleteRunsResponse>;
+
+/** Filter snapshot used by "select all matching" bulk actions. */
+export const RunSelectionFilter = z.object({
+  status: z.string().optional(),
+  agent: z.string().optional(),
+  q: z.string().optional(),
+  triggerEvent: z.string().optional(),
+  invocationSource: z
+    .enum(["studio", "event", "api", "replay", "demo"])
+    .optional(),
+  businessResult: RunBusinessResult.optional(),
+  testRun: z.boolean().optional(),
+  from: z.number().int().nonnegative().optional(),
+  to: z.number().int().nonnegative().optional(),
+  deleted: z.boolean().optional(),
+});
+export type RunSelectionFilter = z.infer<typeof RunSelectionFilter>;
+
+export const RunSelection = z.discriminatedUnion("mode", [
+  z.object({
+    mode: z.literal("ids"),
+    ids: z.array(z.string().min(1)).min(1).max(2_000),
+  }),
+  z.object({
+    mode: z.literal("filter"),
+    filter: RunSelectionFilter,
+    excludeIds: z.array(z.string().min(1)).max(2_000).default([]),
+  }),
+]);
+export type RunSelection = z.infer<typeof RunSelection>;
+
+export const BulkRunActionBody = z.object({
+  action: z.enum(["delete", "restore", "purge", "replay"]),
+  selection: RunSelection,
+});
+export type BulkRunActionBody = z.infer<typeof BulkRunActionBody>;
+
+export const BulkRunActionResponse = z.object({
+  action: z.enum(["delete", "restore", "purge", "replay"]),
+  matched: z.number().int().nonnegative(),
+  affected: z.number().int().nonnegative(),
+  skipped: z.number().int().nonnegative(),
+  replayedRunIds: z.array(z.string()).optional(),
+  failures: z
+    .array(
+      z.object({
+        runId: z.string(),
+        error: z.string(),
+      }),
+    )
+    .optional(),
+  note: z.string(),
+});
+export type BulkRunActionResponse = z.infer<typeof BulkRunActionResponse>;
 
 /**
  * A human task this run is currently blocked on (HITL `waitForEvent`). Lets

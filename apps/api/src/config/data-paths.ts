@@ -31,6 +31,30 @@ function workspaceDataDirectory(cwd: string): string {
 }
 
 /**
+ * Resolve the data root the way every OTHER filesystem surface in the repo does
+ * (`packages/tools/src/fs/_shared.ts`): the env var when set (absolute, or
+ * relative to cwd), otherwise the workspace root's `data/`, otherwise
+ * `<cwd>/data`.
+ *
+ * `ensureCanonicalDataPaths` normalises `AGENTIC_DATA_ROOT` at api bootstrap,
+ * so in a live server the two agree. This is the resolver for stores that can
+ * also be reached OUTSIDE that bootstrap (tests, CLIs, workers): a bare
+ * `"./data"` default there resolves against whatever cwd the process happens to
+ * have, which strands files in `apps/api/data/` — the exact split
+ * `ensureCanonicalDataPaths` exists to prevent. Read-side and delete-side of the
+ * same store MUST share this one function, or a purge looks in a directory
+ * nothing was ever written to.
+ */
+export function resolveDataRootPath(
+  env: NodeJS.ProcessEnv = process.env,
+  cwd = process.cwd(),
+): string {
+  const configured = env.AGENTIC_DATA_ROOT?.trim();
+  if (configured) return path.resolve(cwd, configured);
+  return workspaceDataDirectory(cwd);
+}
+
+/**
  * Make every API-owned file store share the SQLite data directory.
  *
  * pnpm runs a filtered workspace script with `apps/api` as cwd. Historical

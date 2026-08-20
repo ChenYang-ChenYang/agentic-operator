@@ -3,7 +3,7 @@
 /** Settings only exposes sections backed by working persistence/API routes. */
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Icon, ViewHeader } from "@/app/portal/components";
 import { useTenant } from "@/app/portal/lib/use-tenant";
 import { useSession } from "@/app/portal/lib/session-context";
@@ -11,6 +11,7 @@ import { useI18n } from "@/app/portal/lib/preferences-context";
 import { useDirty } from "@/app/portal/lib/dirty-context";
 import {
   SETTINGS_SECTIONS,
+  resolveDeepLinkedSection,
   type SettingsSectionId,
 } from "@/app/portal/components/settings/data";
 import { WorkspaceSection } from "@/app/portal/components/settings/sections/Workspace";
@@ -19,8 +20,17 @@ import { PeopleSection } from "@/app/portal/components/settings/sections/People"
 import { AISection } from "@/app/portal/components/settings/sections/AI";
 import { ModelsSection } from "@/app/portal/components/settings/sections/Models";
 import { TokensSection } from "@/app/portal/components/settings/sections/Tokens";
-import { IntegrationsSection } from "@/app/portal/components/settings/sections/Integrations";
+import {
+  IntegrationsSection,
+  type IntegrationConfigurationTaskContext,
+} from "@/app/portal/components/settings/sections/Integrations";
 import { BillingSection } from "@/app/portal/components/settings/sections/Billing";
+import {
+  ontocodeConfigurationTaskProvider,
+  ontocodeConfigurationTaskSessionHref,
+  ontocodeConfigurationTaskSystemName,
+  useOntoCodeConfigurationTask,
+} from "@/lib/hooks/useOntoCodeWorkspace";
 
 // P3-FE-03 / P3-FE-05 — these section ids deep-link to their own sub-routes
 // instead of being rendered inline (the views are too heavy to live in the
@@ -39,7 +49,12 @@ const ROUTED_SECTIONS: Record<string, string> = {
 const REGION = (process.env.NEXT_PUBLIC_AGENTIC_REGION ?? "").trim() || "—";
 
 export default function SettingsPage() {
-  const [section, setSection] = useState<SettingsSectionId>("workspace");
+  const searchParams = useSearchParams();
+  // Honor a `?section=` deep-link on entry (e.g. OntoCode's "去配置" → Integrations)
+  // so callers can land the operator on the relevant tab, not the default one.
+  const [section, setSection] = useState<SettingsSectionId>(() =>
+    resolveDeepLinkedSection(searchParams.get("section")),
+  );
   const sec =
     SETTINGS_SECTIONS.find((s) => s.id === section) ?? SETTINGS_SECTIONS[0];
   const router = useRouter();
@@ -48,6 +63,82 @@ export default function SettingsPage() {
   const session = useSession();
   const { t } = useI18n();
   const operatorName = session?.name ?? "—";
+  const rawConfigurationTaskId = searchParams.get("configTask");
+  const configurationTaskId =
+    rawConfigurationTaskId &&
+    /^ocfg-[a-f0-9]{32}$/u.test(rawConfigurationTaskId.trim())
+      ? rawConfigurationTaskId.trim()
+      : "";
+  // #CONFIG-GAPS — arriving from a paused Build carries its Session id, which
+  // turns the integration list into "what THIS Build still needs". Shape-check
+  // it the same way the configTask id is checked: a malformed value must not
+  // become a query.
+  const rawBuildSessionId = searchParams.get("session");
+  const buildSessionId =
+    rawBuildSessionId && /^ocs-[a-f0-9]{16}$/u.test(rawBuildSessionId.trim())
+      ? rawBuildSessionId.trim()
+      : null;
+  const configurationTaskQuery = useOntoCodeConfigurationTask(
+    tenant,
+    configurationTaskId,
+  );
+  const resolvedConfigurationTask = configurationTaskQuery.data?.task;
+  let configurationTask: IntegrationConfigurationTaskContext | undefined;
+  if (rawConfigurationTaskId !== null) {
+    if (!configurationTaskId) {
+      configurationTask = {
+        state: "error",
+        id: rawConfigurationTaskId,
+      };
+    } else if (configurationTaskQuery.isLoading) {
+      configurationTask = {
+        state: "loading",
+        id: configurationTaskId,
+      };
+    } else if (
+      configurationTaskQuery.isError ||
+      !resolvedConfigurationTask ||
+      resolvedConfigurationTask.id !== configurationTaskId
+    ) {
+      configurationTask = {
+        state: "error",
+        id: configurationTaskId,
+      };
+    } else {
+      const provider = ontocodeConfigurationTaskProvider(
+        resolvedConfigurationTask,
+      );
+      configurationTask = provider
+        ? {
+            state: "ready",
+            id: resolvedConfigurationTask.id,
+            provider,
+            systemName: ontocodeConfigurationTaskSystemName(
+              resolvedConfigurationTask,
+            ),
+            taskTitle: resolvedConfigurationTask.title,
+            requirementSummary: resolvedConfigurationTask.requirement.summary,
+            status: resolvedConfigurationTask.status,
+            returnHref: ontocodeConfigurationTaskSessionHref(
+              tenant,
+              resolvedConfigurationTask,
+            ),
+          }
+        : {
+            state: "error",
+            id: resolvedConfigurationTask.id,
+          };
+    }
+  }
+  // A configuration-task link trusts only its opaque task id. The provider
+  // query remains available for ordinary Settings links, but is ignored as
+  // soon as a task is present.
+  const initialIntegrationProvider =
+    rawConfigurationTaskId !== null
+      ? configurationTask?.state === "ready"
+        ? configurationTask.provider
+        : null
+      : searchParams.get("provider");
 
   function pick(id: SettingsSectionId) {
     if (id === section) return;
@@ -130,7 +221,13 @@ export default function SettingsPage() {
             {section === "ai" && <AISection />}
             {section === "models" && <ModelsSection />}
             {section === "tokens" && <TokensSection />}
-            {section === "integrations" && <IntegrationsSection />}
+            {section === "integrations" && (
+              <IntegrationsSection
+                initialProvider={initialIntegrationProvider}
+                configurationTask={configurationTask}
+                buildSessionId={buildSessionId}
+              />
+            )}
             {section === "billing" && <BillingSection />}
           </div>
         </div>

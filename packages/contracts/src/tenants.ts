@@ -61,6 +61,11 @@ export const Tenant = z.object({
   createdAt: z.number(),
   updatedAt: z.number(),
   archivedAt: z.number().nullable(),
+  /** Product taxonomy. Runtime namespaces retain history/execution adapters
+   * but are hidden from the default Business Domain switcher. */
+  productKind: z
+    .enum(["business_domain", "runtime_namespace"])
+    .default("business_domain"),
   /** Desired manifest-workflow deployment state on this process's Inngest. */
   inngestEnabled: z.boolean(),
 });

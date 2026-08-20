@@ -14,6 +14,10 @@ import type { DomainOntology, OntologyEvent, OntologyObject } from "./ontology-t
 import type { OntologyReadinessIssue } from "./ontology-readiness";
 import { blockingIssuesForAction } from "./ontology-normalize";
 import { rankRealTools, type RealTool } from "./tool-catalog";
+import {
+  canonicalRegisteredToolName,
+  resolveBoundedExecutionToolProjection,
+} from "./execution-tool-projection";
 
 export interface ActionBriefInput {
   ontology: DomainOntology;
@@ -122,14 +126,83 @@ export function buildActionBrief(input: ActionBriefInput): string {
   const integrationSystems = ((action.integration as Record<string, unknown> | undefined)?.systems as Array<Record<string, unknown>> | undefined) ?? [];
   const integrations = integrationSystems.map((s) => `· ${String(s.name ?? "?")}（${String(s.kind ?? "?")}/${String(s.role ?? "?")}${s.capability ? ` · ${clip(String(s.capability), 50)}` : ""}）`);
 
-  const declaredTools = (action.tool_use ?? []).filter(Boolean);
+  const stepDeclaredTools = (action.action_steps ?? []).flatMap((step) => {
+    const name = typeof step.tool === "string" ? step.tool.trim() : "";
+    return name ? [name] : [];
+  });
+  const integrationDeclaredTools = integrationSystems.flatMap((system) => {
+    const name = String(
+      system.via_tool ?? system.viaTool ?? system.tool ?? "",
+    ).trim();
+    return name ? [name] : [];
+  });
+  const declaredTools = [
+    ...new Set([
+      ...(action.tool_use ?? []).map(String).map((value) => value.trim()).filter(Boolean),
+      ...stepDeclaredTools,
+      ...integrationDeclaredTools,
+    ]),
+  ];
   const ranked = input.realTools?.length ? rankRealTools(action, input.realTools, 4) : [];
+  const boundedProjection = input.realTools?.length
+    ? resolveBoundedExecutionToolProjection({
+        action,
+        registry: input.realTools,
+      })
+    : undefined;
+  const bindingLines = boundedProjection?.finalBinding.bindings.map((binding) => {
+    const executionSurface =
+      binding.toolName ??
+      (binding.bindingKind === "tool" ? binding.bindingId : undefined);
+    const candidates = binding.selectionCandidates
+      ?.map((candidate) => candidate.toolName ?? candidate.bindingId)
+      .filter((value): value is string => Boolean(value));
+    const selected = executionSurface
+      ? `=> ${executionSurface} [${binding.status}]`
+      : binding.selectionRequired && candidates?.length
+        ? `=> 待唯一选择（${candidates.join(" / ")}）`
+        : `=> 未解析 [${binding.status}]`;
+    return `· ${binding.requirement.id} ${binding.requirement.system}/${binding.requirement.kind}/${binding.requirement.role} ${selected}`;
+  }) ?? [];
+  const declaredCanonical = declaredTools.map((declared) => {
+    const registered = canonicalRegisteredToolName(
+      declared,
+      input.realTools ?? [],
+    );
+    const projected = boundedProjection?.projection.get(declared);
+    if (registered) {
+      return `· ${declared} → ${registered} [${registered === declared ? "registered canonical" : "registry alias"}]`;
+    }
+    if (projected) {
+      return `· ${declared} → ${projected} [final bounded integration projection]`;
+    }
+    return `· BLOCKER ${declared} → 不可投影（source-only；不能拿语义相近/排名候选替换）`;
+  });
+  const canonicalExecutionTools = new Set(
+    declaredTools.flatMap((declared) => {
+      const canonical =
+        canonicalRegisteredToolName(declared, input.realTools ?? []) ??
+        boundedProjection?.projection.get(declared);
+      return canonical ? [canonical] : [];
+    }),
+  );
   const toolLines = [
-    declaredTools.length ? `本体声明工具（优先采用）: ${declaredTools.join("、")}` : "本体未声明工具",
-    ...ranked.filter((n) => !declaredTools.includes(n)).map((n) => {
+    declaredTools.length
+      ? `本体源声明工具 source declarations（action_steps / integration / tool_use；不是 available_tools）: ${declaredTools.join("、")}`
+      : "本体未声明工具 source symbol",
+    ...(declaredCanonical.length
+      ? ["逐符号 final/bounded projection（每个 source 独立判定）:", ...declaredCanonical]
+      : []),
+    ...(bindingLines.length
+      ? [
+          "结构化 integration 的 authoring 执行面（final bounded；不能覆盖上面已注册的精确 source 工具；needs_config / needs_probe 只阻断 sandbox/晋升）:",
+          ...bindingLines,
+        ]
+      : []),
+    ...ranked.filter((n) => !canonicalExecutionTools.has(n)).map((n) => {
       const rt = input.realTools!.find((t) => t.name === n);
       const cred = rt?.credentialEnv?.length ? `（需凭证 ${rt.credentialEnv.join("/")}）` : "";
-      return `候选真实工具: ${n}${rt?.summary ? ` — ${clip(rt.summary, 60)}` : ""}${cred}`;
+      return `补充候选真实工具（只可补充；不得替换 registered canonical 或不可投影 blocker）: ${n}${rt?.summary ? ` — ${clip(rt.summary, 60)}` : ""}${cred}`;
     }),
   ];
 

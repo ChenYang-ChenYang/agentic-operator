@@ -84,6 +84,12 @@ describe("Factory HITL state machine", () => {
     let snapshot: { messages: unknown[]; ctx: Record<string, unknown> } | undefined;
     const openClarify: BrainTool = {
       name: "open_clarify",
+      effect: {
+        sideEffect: "write",
+        scope: "conversation",
+        checkpoint: "turn",
+        gate: "any",
+      },
       description: "test gate",
       parameters: { type: "object", properties: {} },
       async execute(_args, ctx) {
@@ -127,6 +133,12 @@ describe("Factory HITL state machine", () => {
   it("uses clarify > approval > boundary when several restored flags coexist", async () => {
     const openAll: BrainTool = {
       name: "open_all_gates",
+      effect: {
+        sideEffect: "write",
+        scope: "conversation",
+        checkpoint: "turn",
+        gate: "any",
+      },
       description: "test gate priority",
       parameters: { type: "object", properties: {} },
       async execute(_args, ctx) {

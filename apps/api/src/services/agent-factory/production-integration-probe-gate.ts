@@ -17,6 +17,7 @@ import {
 import {
   findVerifiedToolProbeReceipt,
   listGlobalToolProbeReceipts,
+  type GlobalToolProbeReceipt,
 } from "./tool-probe-store";
 import { UNVERIFIED_WRITE_PROBE_IDEMPOTENCY_HASH } from "./integration-probe";
 
@@ -164,6 +165,191 @@ async function containedCassettePath(dataRoot: string, value: unknown): Promise<
   } catch {
     return undefined;
   }
+}
+
+export type ToolRevisionActivationEvidenceResult =
+  | {
+      ok: true;
+      receipt: GlobalToolProbeReceipt;
+      definitionHash: string;
+      attestationKeyId: string;
+      attestationExpiresAt: string;
+    }
+  | {
+      ok: false;
+      code:
+        | "production_live_probe_missing"
+        | "production_cassette_invalid"
+        | "production_write_probe_incomplete";
+      message: string;
+    };
+
+/**
+ * Activation boundary for a managed tool revision.
+ *
+ * `factory_tool_probes` is deliberately treated as a search index only. Every
+ * candidate is resolved to a contained cassette, re-read, HMAC-verified, and
+ * checked for a signed exact revision identity, successful HTTP exchange,
+ * return schema, and (for writes) complete canary cleanup proof.
+ */
+export async function verifyToolRevisionActivationEvidence(input: {
+  tenantId: string;
+  tenantSlug: string;
+  domainId: string;
+  revisionId: string;
+  revisionDefinitionHash: string;
+  tool: RealTool;
+  dataRoot?: string;
+}): Promise<ToolRevisionActivationEvidenceResult> {
+  const dataRoot = path.resolve(
+    input.dataRoot?.trim() ||
+      process.env.AGENTIC_DATA_ROOT?.trim() ||
+      "./data",
+  );
+  const candidates = listGlobalToolProbeReceipts(
+    input.tenantId,
+    input.domainId,
+  )
+    .filter(
+      (receipt) =>
+        receipt.toolName === input.tool.name &&
+        Boolean(
+          findVerifiedToolProbeReceipt([receipt], {
+            toolName: input.tool.name,
+            definitionHash: receipt.definitionHash,
+            productionOnly: true,
+          }),
+        ),
+    )
+    .sort((left, right) =>
+      (right.verifiedAt ?? "").localeCompare(left.verifiedAt ?? ""),
+    );
+  if (candidates.length === 0) {
+    return {
+      ok: false,
+      code: "production_live_probe_missing",
+      message:
+        "这个 exact revision 没有未过期的 API-attested live probe。",
+    };
+  }
+
+  let sawIncompleteWriteProof = false;
+  for (const receipt of candidates) {
+    const cassettePath = await containedCassettePath(
+      dataRoot,
+      receipt.evidence?.cassettePath,
+    );
+    if (!cassettePath) continue;
+    try {
+      const stat = await fs.stat(cassettePath);
+      if (!stat.isFile() || stat.size <= 0 || stat.size > 2 * 1024 * 1024) {
+        continue;
+      }
+      const document = JSON.parse(
+        await fs.readFile(cassettePath, "utf8"),
+      ) as CanonicalCassetteDocument;
+      const configHash =
+        document.evidence?.attestation?.binding.configHash ?? "";
+      const verification = verifyCassetteEvidenceAttestation(
+        document,
+        {
+          tenantId: input.tenantId,
+          tenantSlug: input.tenantSlug,
+          domainId: input.domainId,
+          toolName: input.tool.name,
+          definitionHash: receipt.definitionHash,
+          configHash,
+          allowedModes: ["live-probe"],
+        },
+        { dataRoot },
+      );
+      if (!verification.valid) continue;
+      if (
+        document.evidence?.toolRevision?.id !== input.revisionId ||
+        document.evidence.toolRevision.definitionHash !==
+          input.revisionDefinitionHash
+      ) {
+        continue;
+      }
+      if (
+        document.entries.length !== 1 ||
+        document.entries[0]!.response.status < 200 ||
+        document.entries[0]!.response.status >= 300
+      ) {
+        continue;
+      }
+      const returnsSchema =
+        input.tool.declarativeDefinition?.returnsSchema ??
+        input.tool.catalogDefinition?.returnsSchema;
+      if (
+        validateToolSchema(
+          document.entries[0]!.response.body,
+          returnsSchema as Record<string, unknown> | undefined,
+        ).length
+      ) {
+        continue;
+      }
+      const write =
+        input.tool.operation === "write" ||
+        input.tool.operation === "read_write" ||
+        input.tool.sideEffect === "write" ||
+        input.tool.sideEffect === "dual";
+      if (write) {
+        const proof = document.evidence?.writeProbe;
+        const proofIssues = completeWriteProbeProofIssues(proof);
+        for (const value of [
+          proof?.markerHash,
+          proof?.namespaceHash,
+          proof?.targetHash,
+          proof?.idempotencyKeyHash,
+        ]) {
+          if (!/^[a-f0-9]{64}$/i.test(value ?? "")) {
+            proofIssues.push(
+              "production write probe identities must use SHA-256",
+            );
+            break;
+          }
+        }
+        if (
+          proof?.idempotencyKeyHash ===
+          UNVERIFIED_WRITE_PROBE_IDEMPOTENCY_HASH
+        ) {
+          proofIssues.push(
+            "production write probe did not verify its declared idempotency key",
+          );
+        }
+        if (proofIssues.length) {
+          sawIncompleteWriteProof = true;
+          continue;
+        }
+      }
+      return {
+        ok: true,
+        receipt,
+        definitionHash: receipt.definitionHash,
+        attestationKeyId: verification.summary!.attestationKeyId,
+        attestationExpiresAt:
+          verification.summary!.attestationExpiresAt,
+      };
+    } catch {
+      // Keep trying older still-valid receipts. No unverified file detail is
+      // returned to the caller.
+    }
+  }
+  if (sawIncompleteWriteProof) {
+    return {
+      ok: false,
+      code: "production_write_probe_incomplete",
+      message:
+        "写工具的已签名 live probe 没有完整证明 create、cleanup、absence readback 和幂等性。",
+    };
+  }
+  return {
+    ok: false,
+    code: "production_cassette_invalid",
+    message:
+      "live probe 索引存在，但 exact cassette 无法通过路径、HMAC、revision、2xx 或返回契约校验。",
+  };
 }
 
 /** Commit-boundary proof: re-read the exact durable receipt and HMAC-verify its

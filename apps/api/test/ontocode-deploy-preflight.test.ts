@@ -91,7 +91,10 @@ describe("preflightOntoCodeDeploy", () => {
       projectId: project.id,
       title: `Preflight ${suffix}`,
       goal: "部署这套 agents",
-      autonomyMode: "copilot",
+      // These fixtures need an already-runnable sandbox test job. Copilot
+      // correctly requires an explicit approval for every non-read-only step;
+      // deploy/promotion gates are exercised independently by the preflight.
+      autonomyMode: "sandbox_autopilot",
     });
     return { ctx, project, session, suffix };
   }

@@ -49,7 +49,15 @@ describe("TC-G6: gateway call sink", () => {
     const recs: GatewayCallRecord[] = [];
     setGatewayCallSink((r) => recs.push(r));
     const g = mkGateway();
-    const res = await g.chat({ messages: [{ role: "user", content: "ping" }], purpose: "agent:testAgent" });
+    const res = await g.chat({
+      messages: [{ role: "user", content: "ping" }],
+      purpose: "agent:testAgent",
+      attribution: {
+        interactionId: "interaction-1",
+        correlationId: "factory-run-1",
+        invocationSource: "agent-factory",
+      },
+    });
     expect(res.text.length).toBeGreaterThan(0);
     expect(recs).toHaveLength(1);
     const r = recs[0]!;
@@ -57,6 +65,9 @@ describe("TC-G6: gateway call sink", () => {
     expect(r.provider).toBe("custom");
     expect(r.servedModel).toBeTruthy();
     expect(r.purpose).toBe("agent:testAgent");
+    expect(r.interactionId).toBe("interaction-1");
+    expect(r.correlationId).toBe("factory-run-1");
+    expect(r.invocationSource).toBe("agent-factory");
     expect(r.latencyMs).toBeGreaterThanOrEqual(0);
   });
 

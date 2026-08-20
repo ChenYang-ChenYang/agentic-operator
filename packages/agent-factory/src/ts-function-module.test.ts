@@ -48,8 +48,11 @@ describe("#P1 renderTsFunctionModule — inngest.createFunction 形态", () => {
     expect(code).toContain("#SLOT-2 errorTaxonomy");
     expect(code).toContain("function classifyError(");
     expect(code).toContain("#SLOT-3 controlFlow");
-    // 黄金范例锚点被写进注释(防过拟合:按模式引用,不整文件复制)
-    expect(code).toContain("buildPromptFromRequirement");
+    // #NO-DOMAIN-LEAK：黄金范例锚点曾把某一租户的招聘函数名
+    // (buildPromptFromRequirement) 写进每个域的生成代码头部——大脑精修时还会把
+    // 生成代码当上下文重读。现在断言反转：槽位注释里不得出现别人家的业务函数名。
+    expect(code).not.toContain("buildPromptFromRequirement");
+    expect(code).not.toContain("buildResumeTextFromParsed");
     expect(code).toContain("isInfraFailure");
   });
 

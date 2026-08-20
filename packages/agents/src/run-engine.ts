@@ -28,7 +28,12 @@ import {
 } from "@agentic/db";
 import type { DB } from "@agentic/db";
 import { makeId } from "@agentic/shared";
-import { logPathFor, publishStreamEvent, writeRunLog } from "@agentic/runtime";
+import {
+  logPathFor,
+  publishStreamEvent,
+  registerStepArtifactEvidence,
+  writeRunLog,
+} from "@agentic/runtime";
 import type { ProviderId } from "@agentic/contracts";
 import {
   LLMError,
@@ -602,6 +607,14 @@ export async function executeAgentRun<TInput, TOutput>(
           tools: tools.length > 0 ? tools : undefined,
         },
       );
+      await registerStepArtifactEvidence({
+        tenantId,
+        runId,
+        stepId,
+        role: "step_input",
+        filePath: inputArtifact,
+        metadata: { source: "code_agent", step: "llm.call", turn },
+      });
       db.update(steps)
         .set({ inputRef: inputArtifact })
         .where(eq(steps.id, stepId))
@@ -706,6 +719,14 @@ export async function executeAgentRun<TInput, TOutput>(
         telemetryError = error;
       }
       if (outputArtifact) {
+        await registerStepArtifactEvidence({
+          tenantId,
+          runId,
+          stepId,
+          role: "step_output",
+          filePath: outputArtifact,
+          metadata: { source: "code_agent", step: "llm.call", turn },
+        });
         db.update(steps)
           .set({ outputRef: outputArtifact })
           .where(eq(steps.id, stepId))
@@ -837,6 +858,14 @@ export async function executeAgentRun<TInput, TOutput>(
           `step-${ord}-input.json`,
           { tool: tc.name, input: tc.input },
         );
+        await registerStepArtifactEvidence({
+          tenantId,
+          runId,
+          stepId: toolStepId,
+          role: "step_input",
+          filePath: toolInputArtifact,
+          metadata: { source: "code_agent", step: tc.name },
+        });
         db.update(steps)
           .set({ inputRef: toolInputArtifact })
           .where(eq(steps.id, toolStepId))
@@ -897,6 +926,14 @@ export async function executeAgentRun<TInput, TOutput>(
           `step-${ord}-output.json`,
           res,
         );
+        await registerStepArtifactEvidence({
+          tenantId,
+          runId,
+          stepId: toolStepId,
+          role: "step_output",
+          filePath: toolOutputArtifact,
+          metadata: { source: "code_agent", step: tc.name },
+        });
         db.update(steps)
           .set({ outputRef: toolOutputArtifact })
           .where(eq(steps.id, toolStepId))
@@ -1026,6 +1063,14 @@ export async function executeAgentRun<TInput, TOutput>(
             jsonMode: true,
           },
         );
+        await registerStepArtifactEvidence({
+          tenantId,
+          runId,
+          stepId: repairStepId,
+          role: "step_input",
+          filePath: repairInputArtifact,
+          metadata: { source: "code_agent", step: "llm.repair" },
+        });
         db.update(steps)
           .set({ inputRef: repairInputArtifact })
           .where(eq(steps.id, repairStepId))
@@ -1113,6 +1158,14 @@ export async function executeAgentRun<TInput, TOutput>(
           repairTelemetryError = error;
         }
         if (repairOutputArtifact) {
+          await registerStepArtifactEvidence({
+            tenantId,
+            runId,
+            stepId: repairStepId,
+            role: "step_output",
+            filePath: repairOutputArtifact,
+            metadata: { source: "code_agent", step: "llm.repair" },
+          });
           db.update(steps)
             .set({ outputRef: repairOutputArtifact })
             .where(eq(steps.id, repairStepId))

@@ -485,16 +485,25 @@ async function performCreate(
 
 export async function tenantsRoutes(app: FastifyInstance): Promise<void> {
   // ── GET /v1/tenants ────────────────────────────────────────────────────
-  app.get<{ Querystring: { include_archived?: string } }>(
+  app.get<{
+    Querystring: {
+      include_archived?: string;
+      include_runtime_namespaces?: string;
+    };
+  }>(
     "/tenants",
     async (req, reply) => {
       const auth = requireAuth(req);
       const includeArchived =
         req.query?.include_archived === "1" ||
         req.query?.include_archived === "true";
+      const includeRuntimeNamespaces =
+        req.query?.include_runtime_namespaces === "1" ||
+        req.query?.include_runtime_namespaces === "true";
 
       const allItems = await listTenantsWithCounts({
         includeArchived,
+        includeRuntimeNamespaces,
         forUserId: auth.platformRole === "superadmin" ? null : auth.userId,
       });
       const items =

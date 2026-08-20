@@ -89,6 +89,36 @@ export function createEvaluateRulesWithReasoningAgent(
       operation: "compute",
       effectScope: "external",
       sandboxPolicy: "live_external",
+      argsSchema: {
+        context: {
+          type: "object",
+          description:
+            "Business object or iteration-local context to evaluate.",
+        },
+        facts: {
+          type: "object|array",
+          description:
+            "Authoritative facts already loaded by an allowlisted read tool.",
+        },
+        rules: {
+          type: "array",
+          description: "Current rules fetched from the authoritative Ontology.",
+        },
+      },
+      returnsSchema: {
+        data: {
+          type: "object",
+          required: true,
+          description:
+            "Structured rule decision, per-rule results, flags, missing evidence, and terminal event.",
+        },
+        meta: {
+          type: "object",
+          required: true,
+          description:
+            "Nested ReasoningAgent run identity and deterministic decision metadata.",
+        },
+      },
       configSchema: {
         tenant_slug: { type: "string", required: true },
         domainId: { type: "string", required: true },
@@ -107,15 +137,26 @@ export function createEvaluateRulesWithReasoningAgent(
           systems: ["Allmeta_Ontology_System"],
           kinds: ["graph_db", "ontology"],
           roles: ["read", "evaluate"],
-          operations: ["rules.select", "rules.evaluate", "read"],
+          operations: [
+            "rules.select",
+            "rules.evaluate",
+            "graph.verify",
+            "read",
+          ],
           objectTypes: ["Rule", "*"],
           probeRequired: true,
         },
         {
           systems: ["LLM Gateway", "LLM 网关", "model gateway", "模型网关"],
-          kinds: ["external_api", "llm_gateway", "model_gateway"],
+          kinds: ["external_api", "llm", "llm_gateway", "model_gateway"],
           roles: ["call", "execute", "reason"],
-          operations: ["reason", "rules.evaluate", "invoke"],
+          operations: [
+            "reason",
+            "rules.evaluate",
+            "rules.judge",
+            "field.semantic_equivalence",
+            "invoke",
+          ],
           objectTypes: ["*"],
           probeRequired: true,
         },

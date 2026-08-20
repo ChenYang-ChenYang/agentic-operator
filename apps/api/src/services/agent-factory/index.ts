@@ -10,6 +10,7 @@ import {
   type IntegrationCapabilityProvider,
   type SandboxDeployer,
   SandboxLifecycleBlockedError,
+  syntheticResumePdf,
 } from "@agentic/agent-factory";
 import { ManifestOntologySource } from "./ontology-source";
 import { AllmetaOntologySource } from "./allmeta-ontology-source";
@@ -31,8 +32,12 @@ import {
   verifyConsumedFactoryAuthorization,
 } from "./authorization-challenge-store";
 import { FsFactoryFixtureAssetStore } from "./fixture-asset-store";
-import { listTenantNativeFactoryTools } from "./tenant-native-tool-provider";
-import { getRuntimeTenantRegistrySnapshot } from "./tenant-native-tool-provider";
+import {
+  listTenantNativeFactoryTools,
+  listTenantNativeFactoryToolsFromSnapshot,
+  getRuntimeTenantRegistrySnapshot,
+  type RuntimeTenantRegistrySnapshot,
+} from "./tenant-native-tool-provider";
 import {
   loadRemoteSandboxConnectionConfig,
   RemoteSandboxDeployer,
@@ -42,8 +47,12 @@ import {
   containsFactoryFixtureAssetReference,
   materializeFactoryFixturePayload,
 } from "./fixture-materializer";
-import { tenantInngestIsolationIdentity } from "@agentic/runtime";
+import {
+  tenantInngestDiagnosticIsolationIdentity,
+  tenantInngestIsolationIdentity,
+} from "@agentic/runtime";
 import { makeBoundFactoryOntologySource } from "./bound-ontology-source";
+import { resolveRuntimeProfileExecutionContext } from "../runtime-profile-adapter-resolver";
 
 export {
   FACTORY_FIXTURE_ASSET_DEFAULT_TTL_SECONDS,
@@ -61,7 +70,18 @@ const REASON_RUNTIME_CAPABILITIES: IntegrationCapabilityProvider["capabilities"]
   systems: ["LLM Gateway", "LLM 网关", "model gateway", "模型网关"],
   kinds: ["external_api", "llm", "llm_gateway", "model_gateway"],
   roles: ["call", "calls", "invoke", "execute"],
-  operations: ["reason", "chat", "completion", "generateText", "invoke"],
+  operations: [
+    "reason",
+    "chat",
+    "completion",
+    "generateText",
+    "invoke",
+    // Exact namespaced coordinates used by the live Agents-generation
+    // Ontology. These are ordinary reason-RPC workloads; publishing them here
+    // prevents strict operation matching from inventing a separate LLM tool.
+    "rules.judge",
+    "field.semantic_equivalence",
+  ],
   objectTypes: ["*"],
   probeRequired: false,
 }];
@@ -81,6 +101,22 @@ const invokeRuntimeProvider = (): IntegrationCapabilityProvider => ({
   status: "available",
   reason: "Generated runtime supports durable invoke steps against the reviewed fleet graph",
 });
+
+/** Every system name the platform's own RUNTIME capabilities satisfy (LLM
+ * gateway reason RPC, internal agent invoke). These are provided by the
+ * Agentic Operator runtime — an FDE never builds an external connection for
+ * them, so coverage treats them as covered (not "未建档"). Exported so the
+ * system-coverage route can fold them in like it folds tool_use systems. */
+export function runtimeProvidedSystemNames(): string[] {
+  return [
+    ...new Set(
+      listRuntimeIntegrationCapabilities()
+        .flatMap((provider) => provider.capabilities)
+        .flatMap((capability) => capability.systems)
+        .filter((system) => system && system !== "*"),
+    ),
+  ];
+}
 
 /** The generated runtime already exposes `reason` as a host RPC.  Surface it
  * as a runtime capability (not a fake tool), and prove the backing gateway is
@@ -166,9 +202,29 @@ function makeSandboxDeployer(scope?: { tenantId: string; tenantSlug: string }): 
       tenantScope: scope ? { ...scope, ...(registryVersion ? { registryVersion } : {}) } : undefined,
       connection,
       ...(scope
-        ? { targetInngestIsolation: tenantInngestIsolationIdentity(scope.tenantSlug) }
+        ? {
+            targetInngestIsolation:
+              process.env.NODE_ENV === "production"
+                ? tenantInngestIsolationIdentity(scope.tenantSlug)
+                : tenantInngestDiagnosticIsolationIdentity(scope.tenantSlug),
+          }
         : {}),
       controlPlaneBuildId: buildId,
+      // A development API has no production image-attestation document, but
+      // its signed same-host Docker runner is still useful as explicitly
+      // non-promotable diagnostic evidence.  Tell the verifier to accept that
+      // receipt and downgrade it; production keeps the strict attestation path.
+      ...(process.env.NODE_ENV === "production"
+        ? {}
+        : {
+            productionImageTrust: () => ({
+              configured: false,
+              ok: true,
+              state: "disabled" as const,
+              topology: "single_host_compose" as const,
+              diagnosticOnly: true,
+            }),
+          }),
       resolveToolEvidence: createSandboxBundleToolSnapshotResolver(),
       materializeTestCases: async ({
         targetDomainId,
@@ -215,10 +271,30 @@ export function makeFactoryPorts(
   tenantSlug?: string,
   tenantId?: string,
   ontologyDomainId?: string,
-  _confirmedActor?: string,
+  confirmedActor?: string,
+  ontologyDomainRegistrationId?: string | null,
+  runtimeProfileVersionId?: string | null,
 ): FactoryPorts {
   const tenantScope = tenantSlug && tenantId ? { tenantSlug, tenantId } : undefined;
   const fileScope = tenantScope ? { ...tenantScope, ontologyDomainId } : undefined;
+  const runtimeProfileContext =
+    tenantScope && runtimeProfileVersionId
+      ? resolveRuntimeProfileExecutionContext({
+          businessTenantId: tenantScope.tenantId,
+          businessTenantSlug: tenantScope.tenantSlug,
+          runtimeProfileVersionId,
+        })
+      : undefined;
+  const runtimeAdapterSnapshot: RuntimeTenantRegistrySnapshot | undefined =
+    runtimeProfileContext
+      ? {
+          tenantSlug:
+            runtimeProfileContext.adapter.adapterRegistrySlug,
+          selectedVersion:
+            runtimeProfileContext.adapter.adapterRegistryVersion,
+          registry: runtimeProfileContext.reviewedAdapter.registry,
+        }
+      : undefined;
   const assertExpectedDomain = (domain: string) => {
     if (ontologyDomainId && domain !== ontologyDomainId) {
       throw new Error(`factory ontology domain mismatch: expected ${ontologyDomainId}, got ${domain}`);
@@ -226,6 +302,13 @@ export function makeFactoryPorts(
   };
   const draftStore = new FsAgentDraftStore(fileScope);
   const fixtureAssetStore = tenantId && ontologyDomainId ? new FsFactoryFixtureAssetStore() : null;
+  const toolStore = new DrizzleToolStore(
+    tenantId,
+    ontologyDomainId,
+    tenantSlug,
+    runtimeAdapterSnapshot,
+    confirmedActor,
+  );
   const resolveFactoryTenant = async () => {
     const { getDb, tenants, eq } = await import("@agentic/db");
     const row = tenantId
@@ -244,7 +327,12 @@ export function makeFactoryPorts(
   return {
     factoryScope: tenantScope,
     ontology: tenantSlug && tenantId
-      ? makeBoundFactoryOntologySource(tenantSlug, tenantId)
+      ? makeBoundFactoryOntologySource(
+          tenantSlug,
+          tenantId,
+          ontologyDomainRegistrationId,
+          ontologyDomainId,
+        )
       : new UploadedFirstOntologySource(
           new UploadedOntologySource(tenantSlug),
           new AllmetaOntologySource(),
@@ -276,6 +364,30 @@ export function makeFactoryPorts(
               mimeType: stored.mimeType,
               filename: stored.filename,
               expiresAt: stored.expiresAt,
+              provenance: stored.provenance,
+            };
+          },
+          createSyntheticResume: async ({ domainId, conversationId, caseId, path, persona }) => {
+            assertExpectedDomain(domainId);
+            const fixture = syntheticResumePdf(persona);
+            const metadata = await fixtureAssetStore.put({
+              tenantId,
+              domain: ontologyDomainId,
+              conversationId,
+            }, {
+              caseId,
+              path,
+              base64: fixture.base64,
+              mimeType: "application/pdf",
+              filename: `synthetic-resume-${caseId.replace(/[^A-Za-z0-9._-]+/g, "-").slice(0, 80)}.pdf`,
+              provenance: "synthetic_resume_pdf",
+            });
+            return {
+              ...metadata,
+              caseId,
+              path,
+              content: fixture.bytes,
+              provenance: "synthetic_resume_pdf",
             };
           },
         }
@@ -289,7 +401,13 @@ export function makeFactoryPorts(
       : undefined,
     reflection: new DrizzleReflectionWriter(tenantId, ontologyDomainId),
     skills: new DrizzleSkillStore(tenantId, ontologyDomainId),
-    tools: new DrizzleToolStore(tenantId, ontologyDomainId, tenantSlug),
+    tools: toolStore,
+    sandboxEvidencePlans: tenantId && ontologyDomainId && tenantSlug
+      ? {
+          prepare: (request) => toolStore.prepareSandboxEvidencePlan(request),
+          commit: (request) => toolStore.commitSandboxEvidencePlan(request),
+        }
+      : undefined,
     integrationProfiles: tenantId && ontologyDomainId
       ? {
           save: async (domain, input) => {
@@ -408,11 +526,19 @@ export function makeFactoryPorts(
             successRate: st && st.invoked > 0 ? st.succeeded / st.invoked : undefined,
           };
         });
-        const tenantNative = tenantSlug
-          ? listTenantNativeFactoryTools({
-              tenantSlug,
-              probesByTool: probeReceipts,
-            }).map((tool) => {
+        const tenantNative = runtimeAdapterSnapshot || tenantSlug
+          ? (
+              runtimeAdapterSnapshot
+                ? listTenantNativeFactoryToolsFromSnapshot({
+                    snapshot: runtimeAdapterSnapshot,
+                    expectedVersion: runtimeAdapterSnapshot.selectedVersion,
+                    probesByTool: probeReceipts,
+                  })
+                : listTenantNativeFactoryTools({
+                    tenantSlug: tenantSlug!,
+                    probesByTool: probeReceipts,
+                  })
+            ).map((tool) => {
               const st = stats[tool.name];
               return {
                 ...tool,
@@ -441,6 +567,37 @@ export function makeFactoryPorts(
     integrationCapabilities: {
       list: async () => listRuntimeIntegrationCapabilities(),
     },
+    // 外部系统档案别名组 — the human-confirmed synonym source for system
+    // matching (System Profiles). Read per call so a newly confirmed profile
+    // takes effect on the next readiness/design pass without a restart.
+    systemAliases: tenantId
+      ? {
+          list: async () => {
+            const { tenantSystemAliasGroups } = await import("../system-profile-store");
+            try {
+              return tenantSystemAliasGroups(tenantId);
+            } catch {
+              return []; // pre-migration DB — alias matching simply stays exact-label
+            }
+          },
+        }
+      : undefined,
+    // A3 — systems a person confirmed as deliberate manual boundaries in a
+    // System Profile; pre-seeds design-time human-boundary so they are not
+    // re-asked every run. Read per call so a newly confirmed profile takes
+    // effect on the next design pass without a restart.
+    systemHumanBoundaries: tenantId
+      ? {
+          list: async () => {
+            const { tenantHumanBoundarySystems } = await import("../system-profile-store");
+            try {
+              return tenantHumanBoundarySystems(tenantId);
+            } catch {
+              return []; // pre-migration DB — no pre-seed, run-time clarify still works
+            }
+          },
+        }
+      : undefined,
     // Persist a finished run's agents as durable, reviewable drafts (OLD syncDomainDrafts).
     drafts: draftStore,
     // #POLICY-LEARN — 前置路由 arm 统计（选路证据偏置 ← run 结果回喂）。

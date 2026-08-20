@@ -24,12 +24,32 @@ import { createHash } from "node:crypto";
 import { appIdForTenant, getTenantInngest } from "./client";
 import { runAction, type LlmTurnTrace, type StepOutput } from "./step-engine";
 import {
+  buildToolCallAuditRecord,
+  type ProbeVerificationResult,
+} from "./tool-dispatch-verification";
+import type { EffectVerificationReceipt } from "./effect-verification";
+import {
+  reconcileRunCompletion,
+  runCompletionEnforcementFromEnv,
+  summarizeRunCompletion,
+  toolLedgerEntryFromAuditRecord,
+  type RunCompletionReconciliation,
+  type ToolCallLedgerEntry,
+  type UncoveredStep,
+} from "./run-completion-reconciliation";
+import {
+  globalToolExecutionPolicy,
+  globalToolSideEffect,
+} from "@agentic/tools";
+import {
   codeActExecutionReceiptFromMeta,
   type CodeActExecutionReceipt,
   type CodeActIsolation,
 } from "./codeact-receipt";
 import {
+  evaluateActionPrecondition,
   foreachStepId,
+  hasAuthoritativeConditionalEmit,
   materializeForeach,
   resolveConditionPath,
   runSequentialForeach,
@@ -43,6 +63,7 @@ import { appendToLedger } from "./event-ledger";
 import { publish } from "./broadcast";
 import {
   createFilesystemArtifactSink,
+  registerStepArtifactEvidence,
   writeArtifact,
   type RuntimeArtifactSink,
   type RuntimePersistedArtifact,
@@ -66,7 +87,12 @@ import {
   privateUsageAttributionMetadata,
   usageAttributionFromDeliveryData,
 } from "./usage-attribution-envelope";
-import { logPathFor, writeRunLog } from "./log-writer";
+import { logPathFor, writeRunLog, type RunLogContext } from "./log-writer";
+import {
+  RequiredStepEvidenceError,
+  isRequiredStepEvidenceFailure,
+  requireStepEvidence,
+} from "./step-evidence";
 import { correlationFromEvent, withCorrelation } from "./correlation";
 import {
   flattenActionSpecs,
@@ -210,6 +236,28 @@ export interface RegisterContext {
   productionGeneratedAgentCapability?: ProductionCodeActCapability;
   productionGeneratedAgentManifestSha256?: string;
   productionGeneratedWorkflowManifestSha256?: string;
+  /**
+   * #RULE-GATE — server-authored ontology rule corpus + tool bindings for this
+   * tenant's domain, resolved once per boot by `resolveOntologyRuleContext`.
+   * Injected here rather than read from the manifest so an agent can neither
+   * shrink the rules that govern it nor exempt a tool from its own gate.
+   */
+  ontologyRules?: unknown[];
+  ontologyRuleBindings?: Record<string, string[]>;
+  /**
+   * #DISPATCH-VERIFY — persisted probe standing per tool name, so dispatch can
+   * verify what is actually running rather than trusting a promote-time check.
+   */
+  factoryToolProbeState?: Record<
+    string,
+    {
+      probeStatus?: string | null;
+      definitionHash?: string | null;
+      verifiedAt?: number | null;
+      classification?: string | null;
+      credentialConfigured?: boolean | null;
+    }
+  >;
   /** Optional override; defaults to the runtime DB trace sink (run_trace_events). */
   traceSink?: RuntimeTraceSink;
   /** Optional tenant-authorized artifact service for this run. */
@@ -530,6 +578,321 @@ interface RuntimeStepOutcome {
   model?: string;
   provider?: string;
   meta?: Record<string, unknown>;
+  /**
+   * #RUN-EVIDENCE (D6) — this step's projection of the per-call audit records
+   * it actually persisted. It rides on the step's RETURN VALUE deliberately:
+   * Inngest memoizes step results, so a replay that re-enters finalize with a
+   * fresh closure still sees the full ledger. Accumulating it in a closure
+   * variable would silently reconcile against an empty ledger after any
+   * replay boundary — evidence that vanishes on retry is not evidence.
+   */
+  toolLedger?: ToolCallLedgerEntry[];
+}
+
+/**
+ * #RUN-EVIDENCE (D6) — which of an agent's DECLARED tools can mutate external
+ * state.
+ *
+ * Two independent declared axes, ORed exactly the way the probe gate ORs them
+ * (`mostOutboundEffect` in step-engine.ts): a reviewed `operation: "read"` must
+ * not erase a manifest `side_effect: "write"`, and vice-versa. `call` is
+ * excluded — an outbound read-only API call claims no state.
+ *
+ * Reads only what the manifest/registry DECLARED. There is no name list and no
+ * inference from verbs in a tool's name; an agent that declares nothing
+ * write-capable simply has an empty set, and the reconciliation then makes no
+ * claim about writes rather than guessing one.
+ */
+export function declaredWriteCapableTools(
+  toolUse: unknown,
+): ReadonlySet<string> {
+  const names = new Set<string>();
+  if (!Array.isArray(toolUse)) return names;
+  const WRITE_CAPABLE = new Set(["write", "dual", "read_write"]);
+  for (const raw of toolUse) {
+    if (!raw || typeof raw !== "object") continue;
+    const entry = raw as {
+      name?: unknown;
+      side_effect?: unknown;
+      execution_policy?: { operation?: unknown };
+    };
+    const name = typeof entry.name === "string" ? entry.name.trim() : "";
+    if (!name) continue;
+    const declared = [
+      entry.side_effect,
+      entry.execution_policy?.operation,
+      // The reviewed registry entry is authoritative when the manifest omits
+      // its own metadata; a global write tool stays write-capable even in a
+      // manifest that forgot to say so.
+      globalToolExecutionPolicy(name)?.operation,
+      globalToolSideEffect(name),
+    ];
+    if (declared.some((value) => typeof value === "string" && WRITE_CAPABLE.has(value))) {
+      names.add(name);
+    }
+  }
+  return names;
+}
+
+/** Raw per-call capture the step engine leaves on `meta.toolCalls` — one shape
+ * whether the calls came from the LLM tool-use loop or a direct `type:"tool"`
+ * dispatch. This is the single read site for the evidence writer. */
+interface CapturedToolCall {
+  id?: string;
+  name: string;
+  input?: unknown;
+  output?: unknown;
+  isError?: boolean;
+  durationMs?: number;
+  ruleGate?: unknown;
+  probe?: ProbeVerificationResult;
+  sandboxDispatch?: { mode?: string };
+  sandboxDecision?: string;
+  effectVerification?: EffectVerificationReceipt;
+}
+
+function capturedToolCalls(
+  meta: Record<string, unknown> | undefined,
+): CapturedToolCall[] {
+  const calls = (meta as { toolCalls?: unknown } | undefined)?.toolCalls;
+  return Array.isArray(calls) ? (calls as CapturedToolCall[]) : [];
+}
+
+/**
+ * #RUN-EVIDENCE — deterministic, item-unique evidence name for one tool call
+ * dispatched by a foreach BODY action.
+ *
+ * Shape: `step-<ord>-foreach-<childStepId>-tool-<k>.json`, where
+ *   - `<ord>` is the foreach CONTAINER's 1-based position in the agent's
+ *     action list (matching its own `step-<ord>-{input,output}.json` sidecars),
+ *   - `<childStepId>` is the child's durable Inngest step id from
+ *     `foreachStepId(...)` — ancestry-stable and collision-hashed across items,
+ *     sibling actions and nesting depth, so two foreach items can never
+ *     collide on an evidence file and a replay regenerates the exact names,
+ *   - `<k>` is the 1-based call index within that body step.
+ * Top-level actions keep their historical `step-<ord>-tool-<k>.json` names.
+ *
+ * `attempt` > 1 inserts an `attempt-<a>-` qualifier before `tool-<k>` —
+ * mirroring the main loop's retry naming — so an Inngest redelivery that
+ * re-executes the child body records its calls BESIDE the prior attempt's
+ * evidence instead of silently rewriting it. Attempt 1 keeps the historical
+ * name (existing runs/suites pin it).
+ */
+export function foreachToolCallEvidenceName(
+  ord: number,
+  childStepId: string,
+  callIndex: number,
+  attempt = 1,
+): string {
+  return attempt > 1
+    ? `step-${ord}-foreach-${childStepId}-attempt-${attempt}-tool-${callIndex}.json`
+    : `step-${ord}-foreach-${childStepId}-tool-${callIndex}.json`;
+}
+
+/**
+ * #RUN-EVIDENCE — durable attempt counter for one foreach CHILD body step.
+ *
+ * Children own no `steps` row (their evidence catalogues under the container),
+ * so unlike the main loop there is no `attempts` column to bump when Inngest
+ * re-delivers a child step whose result never reached the server. The catalog
+ * itself is the durable record: any already-registered `manifest_tool_call`
+ * artifact for this child proves a prior execution persisted evidence, and the
+ * highest recorded `metadata.attempt` (legacy rows count as 1) names it. The
+ * next attempt is one past that — computed INSIDE the child's durable step
+ * body, so a memoized replay (which never re-enters the body) cannot bump it.
+ */
+function nextForeachChildEvidenceAttempt(input: {
+  runId: string;
+  containerStepId: string;
+  childStepId: string;
+}): number {
+  const rows = getDb()
+    .select({ metadataJson: artifacts.metadataJson })
+    .from(artifacts)
+    .where(
+      and(
+        eq(artifacts.runId, input.runId),
+        eq(artifacts.stepId, input.containerStepId),
+        eq(artifacts.role, "trace"),
+      ),
+    )
+    .all();
+  let maxAttempt = 0;
+  for (const row of rows) {
+    const metadata = row.metadataJson as {
+      source?: unknown;
+      foreachChildStepId?: unknown;
+      attempt?: unknown;
+    } | null;
+    if (metadata?.source !== "manifest_tool_call") continue;
+    if (metadata.foreachChildStepId !== input.childStepId) continue;
+    const recorded =
+      typeof metadata.attempt === "number" && Number.isFinite(metadata.attempt)
+        ? metadata.attempt
+        : 1;
+    if (recorded > maxAttempt) maxAttempt = recorded;
+  }
+  return maxAttempt + 1;
+}
+
+/** Per-run identity/sinks the evidence writer needs; built once per handler
+ * entry so every call site persists under the same authority. */
+interface ToolCallEvidenceContext {
+  runId: string;
+  tenantId: string;
+  correlationId: string;
+  tenantSlug: string;
+  agentName: string;
+  agentVersionId?: string;
+  ontologyActionName?: string;
+  workflowManifestSha256?: string;
+  declaredWriteTools: ReadonlySet<string>;
+  traceSink: RuntimeTraceSink;
+  logCtx: RunLogContext;
+}
+
+/**
+ * #RUN-EVIDENCE (D6) — THE per-call evidence writer, extracted from the main
+ * action loop so foreach body actions flow through the exact same discipline.
+ *
+ * For every captured call it: builds the audit record ONCE
+ * (`buildToolCallAuditRecord`), projects it into the run ledger
+ * (`toolLedgerEntryFromAuditRecord` — same bytes an auditor re-reads),
+ * persists it as an artifact, catalogues it (`role:"trace"`, source
+ * `manifest_tool_call`), appends the operator trace row, and writes the
+ * `tool.call` run-log line. Every persistence step is wrapped in
+ * `requireStepEvidence`, so a failed write fails the surrounding durable step
+ * — fail closed, at every nesting depth.
+ *
+ * Callers choose the artifact naming: the main loop passes the historical
+ * `step-<ord>-tool-<k>.json`, foreach children pass
+ * `foreachToolCallEvidenceName(...)`. Returns the projected ledger entries;
+ * the caller must return them from its durable step body so Inngest
+ * memoization preserves them across replays.
+ */
+async function persistToolCallEvidence(params: {
+  context: ToolCallEvidenceContext;
+  toolCalls: readonly CapturedToolCall[];
+  /** DB `steps` row the evidence artifacts are catalogued under. */
+  stepRowId: string;
+  /** Human step label recorded on the audit record, ledger entry and logs. */
+  stepName: string;
+  /** Deterministic artifact name for the 1-based call index. The caller folds
+   * `attempt` into the name (attempt > 1 gets an `attempt-<a>` qualifier) so a
+   * retry never rewrites a prior attempt's record. */
+  evidenceName: (callIndex: number) => string;
+  /** 1-based execution attempt of the surrounding durable step body. Persisted
+   * in artifact metadata — parity with the step_input/step_output sidecars —
+   * so evidence names an attempt the `steps` row can corroborate. */
+  attempt: number;
+  /** Extra metadata keys persisted beside source/toolName/callIndex/attempt. */
+  artifactMetadata?: Record<string, unknown>;
+}): Promise<ToolCallLedgerEntry[]> {
+  const { context } = params;
+  const ledger: ToolCallLedgerEntry[] = [];
+  for (const [toolIndex, tc] of params.toolCalls.entries()) {
+    const evidenceName = params.evidenceName(toolIndex + 1);
+    // #DISPATCH-VERIFY (D9) — the record names its authority: who acted, under
+    // which ontology action and version, which gates it passed, and payload
+    // digests. The six legacy keys keep their exact names.
+    //
+    // #RUN-EVIDENCE (D6) — built ONCE and used twice: persisted as the
+    // artifact, and projected into the run-level ledger. The reconciliation is
+    // therefore derived from the exact bytes an auditor can re-read, never
+    // recomputed from the live objects the caller happens to still be holding.
+    const auditRecord = buildToolCallAuditRecord({
+      call: {
+        id: tc.id,
+        name: tc.name,
+        input: tc.input,
+        output: tc.output,
+        isError: tc.isError,
+        durationMs: tc.durationMs,
+        ruleGate: tc.ruleGate,
+        sandboxDecision: tc.sandboxDecision ?? tc.sandboxDispatch?.mode,
+        ...(tc.effectVerification
+          ? { effectVerification: tc.effectVerification }
+          : {}),
+      },
+      ...(tc.probe ? { probe: tc.probe } : {}),
+      subject: {
+        agentName: context.agentName,
+        agentVersionId: context.agentVersionId,
+        ontologyActionName: context.ontologyActionName,
+        tenantSlug: context.tenantSlug,
+        tenantId: context.tenantId,
+        runId: context.runId,
+        correlationId: context.correlationId,
+        stepName: params.stepName,
+        workflowManifestSha256: context.workflowManifestSha256,
+      },
+    });
+    ledger.push(
+      toolLedgerEntryFromAuditRecord(auditRecord, {
+        evidence: evidenceName,
+        step: params.stepName,
+        writeCapable: context.declaredWriteTools.has(tc.name.trim()),
+      }),
+    );
+    const toolEvidencePath = await requireStepEvidence(
+      `tool call evidence '${tc.name}'`,
+      () => writeArtifact(context.runId, evidenceName, auditRecord),
+    );
+    const toolArtifact = await requireStepEvidence(
+      `tool call evidence catalog '${tc.name}'`,
+      () =>
+        registerStepArtifactEvidence({
+          tenantId: context.tenantId,
+          runId: context.runId,
+          stepId: params.stepRowId,
+          role: "trace",
+          filePath: toolEvidencePath,
+          metadata: {
+            source: "manifest_tool_call",
+            toolName: tc.name,
+            callIndex: toolIndex + 1,
+            attempt: params.attempt,
+            ...(params.artifactMetadata ?? {}),
+          },
+        }),
+    );
+    await requireStepEvidence(
+      `tool call trace '${tc.name}'`,
+      () =>
+        context.traceSink.append({
+          runId: context.runId,
+          stepId: params.stepRowId,
+          kind: "tool",
+          level: tc.isError ? "minimal" : "standard",
+          name: `${tc.name}.evidence`,
+          status: tc.isError ? "failed" : "ok",
+          durationMs: tc.durationMs ?? 0,
+          summary: tc.isError
+            ? `Tool '${tc.name}' failed`
+            : `Tool '${tc.name}' input/output persisted`,
+          data: {
+            callIndex: toolIndex + 1,
+            isError: tc.isError ?? false,
+          },
+          artifactId: toolArtifact.id,
+          visibility: "operator",
+        }),
+    );
+    await requireStepEvidence(`tool call log '${tc.name}'`, () =>
+      writeRunLog(
+        context.logCtx,
+        tc.isError ? "ERROR" : "INFO",
+        "tool.call",
+        {
+          step: params.stepName,
+          tool: tc.name,
+          ok: tc.isError ? false : true,
+          duration: `${tc.durationMs ?? 0}ms`,
+        },
+      ),
+    );
+  }
+  return ledger;
 }
 
 /** Persist/broadcast only fields authored by the isolated CodeAct runtime.
@@ -585,30 +948,9 @@ class ActionReturnedFailure extends Error {
   }
 }
 
-class RequiredStepEvidenceError extends Error {
-  override readonly cause: unknown;
-
-  constructor(label: string, cause: unknown) {
-    super(
-      `required step evidence '${label}' failed: ${String(
-        (cause as { message?: unknown } | null)?.message ?? cause,
-      )}`,
-    );
-    this.name = "RequiredStepEvidenceError";
-    this.cause = cause;
-  }
-}
-
-async function requireStepEvidence<T>(
-  label: string,
-  operation: () => T | Promise<T>,
-): Promise<T> {
-  try {
-    return await operation();
-  } catch (error) {
-    throw new RequiredStepEvidenceError(label, error);
-  }
-}
+// #RUN-EVIDENCE — RequiredStepEvidenceError/requireStepEvidence moved to
+// ./step-evidence so the nested foreach engine can recognize (and refuse to
+// soften) evidence failures without a register.ts↔step-engine.ts import cycle.
 
 /** Turn a failed action into either a serializable continue receipt or real
  * Inngest control flow. Terminal becomes NonRetriableError; retry/park keeps
@@ -621,9 +963,9 @@ function resolveActionFailureOutcome(
 ): RuntimeStepOutcome {
   if (isNonRetriableFailure(failure) && !options?.reclassifyControlFlow)
     throw failure;
-  const inherited = (
-    failure as ActionReturnedFailure | null
-  )?.output as { meta?: { failureResolution?: unknown } } | undefined;
+  const inherited = (failure as ActionReturnedFailure | null)?.output as
+    | { meta?: { failureResolution?: unknown } }
+    | undefined;
   const inheritedResolution = inherited?.meta?.failureResolution;
   const resolution =
     action.on_error === undefined &&
@@ -651,6 +993,10 @@ function resolveActionFailureOutcome(
     tokensIn: partial?.tokensIn ?? 0,
     tokensOut: partial?.tokensOut ?? 0,
     durationMs: partial?.durationMs ?? 0,
+    // #RUN-EVIDENCE — a soft-failed step's tool calls happened. Dropping the
+    // ledger here would let an `on_error: soft` policy erase the record of the
+    // very calls that failed.
+    ...(partial?.toolLedger ? { toolLedger: partial.toolLedger } : {}),
     meta: {
       ...(partial?.meta ?? {}),
       failureResolution: resolution,
@@ -716,9 +1062,8 @@ export function registerAgent(
 ): InngestFunction.Any | null {
   const tenantSlug = ctx.tenantSlug;
   assertFactoryExecutionScope(agent, tenantSlug);
-  let productionGeneratedAuthorizationRequest:
-    | ProductionGeneratedAgentAuthorizationRequest
-    | null = null;
+  let productionGeneratedAuthorizationRequest: ProductionGeneratedAgentAuthorizationRequest | null =
+    null;
   // A bare declarative `generated` agent (Agent Studio's derived-from-legacy
   // marker) carries no factory provenance and no executable code — it runs the
   // same declarative path as a hand-authored agent, so it needs no durable
@@ -752,9 +1097,10 @@ export function registerAgent(
         `[runtime] generated production Agent ${tenantSlug}/${agent.id} has no exact durable Factory promotion capability`,
       );
     }
-    const executionKind = agent.codeExecuted === true
-      ? "codeact" as const
-      : "declarative" as const;
+    const executionKind =
+      agent.codeExecuted === true
+        ? ("codeact" as const)
+        : ("declarative" as const);
     if (executionKind === "codeact" && !agent.typescript_code) {
       throw new Error(
         `[runtime] generated production CodeAct ${tenantSlug}/${agent.id} has no handler bytes`,
@@ -767,16 +1113,15 @@ export function registerAgent(
       domainId: agent.factory_domain_id,
       agentSlug: agent.id,
       promotionVersionId: agent.factory_promotion_version_id,
-      regressionSuiteFingerprint:
-        agent.factory_regression_suite_fingerprint,
-      codeSha256: executionKind === "codeact"
-        ? createHash("sha256")
-            .update(agent.typescript_code!, "utf8")
-            .digest("hex")
-        : agentManifestSha256,
+      regressionSuiteFingerprint: agent.factory_regression_suite_fingerprint,
+      codeSha256:
+        executionKind === "codeact"
+          ? createHash("sha256")
+              .update(agent.typescript_code!, "utf8")
+              .digest("hex")
+          : agentManifestSha256,
       agentManifestSha256,
-      workflowManifestSha256:
-        ctx.productionGeneratedWorkflowManifestSha256,
+      workflowManifestSha256: ctx.productionGeneratedWorkflowManifestSha256,
     };
   }
   const eventAdapter = resolveTenantEventAdapter(ctx);
@@ -785,8 +1130,9 @@ export function registerAgent(
   // Agent Studio v2 compatibility boundary. Normalization is deterministic and
   // side-effect free; a legacy agent that cannot normalize simply stays on the
   // v1 path (never a boot failure — the raw manifest already validated).
-  let normalizedExecution: ReturnType<typeof normalizeAgentForExecution> | null =
-    null;
+  let normalizedExecution: ReturnType<
+    typeof normalizeAgentForExecution
+  > | null = null;
   try {
     normalizedExecution = normalizeAgentForExecution(agent);
   } catch {
@@ -817,7 +1163,11 @@ export function registerAgent(
   }
 
   const triggers = triggerNames.map((t) => ({
-    event: tenantEventName(tenantSlug, t, eventAdapter) as `${string}/${string}`,
+    event: tenantEventName(
+      tenantSlug,
+      t,
+      eventAdapter,
+    ) as `${string}/${string}`,
   }));
 
   // Per review M2: prior to this change `register.ts` hardcoded `limit: 8`
@@ -950,11 +1300,10 @@ export function registerAgent(
       // we never create duplicate runs rows.
       const init = await step.run("init", async () => {
         if (productionGeneratedAuthorizationRequest) {
-          const authorized =
-            await revalidateProductionGeneratedAgentCapability(
-              ctx.productionGeneratedAgentCapability,
-              productionGeneratedAuthorizationRequest,
-            );
+          const authorized = await revalidateProductionGeneratedAgentCapability(
+            ctx.productionGeneratedAgentCapability,
+            productionGeneratedAuthorizationRequest,
+          );
           if (!authorized) {
             throw new Error(
               `[runtime] generated production Agent authorization is absent or revoked for ${tenantSlug}/${agent.id}`,
@@ -1212,9 +1561,41 @@ export function registerAgent(
       let lastOutputValid: boolean | null = null;
       let lastRawResponse: string | undefined;
       let inputValid = !usesV2Definition;
+      // ── #RUN-EVIDENCE (D6) — run-level completion evidence ─────────────
+      // The ledger is rebuilt on every entry from the MEMOIZED step outcomes,
+      // so a replay reconciles against the same calls the first pass recorded.
+      const runToolLedger: ToolCallLedgerEntry[] = [];
+      // Steps whose actions execute outside the per-call evidence writer, so
+      // the ledger structurally cannot speak for their tool activity. Named
+      // rather than ignored: silence about a step is not the same as a step
+      // that used no tools, and "unknown" must never read as "fine".
+      const uncoveredEvidenceSteps: UncoveredStep[] = [];
+      // Write-capable tools this agent DECLARED it may call. Derived from the
+      // reviewed execution policy and the declared side-effect — never from
+      // anything in a tool's name — so a run that claims a write the ledger
+      // never recorded is detectable without a hardcoded roster.
+      const declaredWriteTools = declaredWriteCapableTools(agent.tool_use);
+      // One authority for every per-call evidence write this run performs —
+      // the main action loop and every foreach body step persist under the
+      // same identity, sinks and declared-write roster.
+      const toolCallEvidenceContext: ToolCallEvidenceContext = {
+        runId,
+        tenantId: ctx.tenantId,
+        correlationId,
+        tenantSlug,
+        agentName: agent.name,
+        agentVersionId: init.agentVersionId ?? undefined,
+        ontologyActionName: agent.factory_action_name,
+        workflowManifestSha256: ctx.productionCodeActWorkflowManifestSha256,
+        declaredWriteTools,
+        traceSink,
+        logCtx,
+      };
       // Phase 1a — real branching: a condition step records its boolean here; a downstream
       // action that dependsOn a false condition (or a skipped step) is SKIPPED, not run.
       const gate: GateState = { conditionTrue: {}, skipped: new Set<string>() };
+      const ownsTopLevelConditionalEmitRouting =
+        hasAuthoritativeConditionalEmit(agent.actions);
 
       // #P0-4 — compensation: emit the agent's declared compensation_event ONCE on a hard failure
       // (idempotent step id) so a run that failed after side-effects can be undone downstream (the
@@ -1420,16 +1801,104 @@ export function registerAgent(
 
         // Phase 1a — dependsOn gating. Skip (don't fail) an action whose gating condition was
         // false or whose dependency was skipped. Backward-compatible: actions with no depends_on
-        // never skip, so existing single-path manifests are unaffected.
-        const skip = shouldSkip(
+        // never skip, so existing single-path manifests are unaffected. This
+        // dependency gate intentionally comes first: a skipped dependency may
+        // own the result referenced by this action's guard, so the guard must
+        // not be evaluated against an intentionally absent value.
+        let skip = shouldSkip(
           {
             name: actionKey,
             dependsOn: (action as { depends_on?: string[] }).depends_on,
           },
           gate,
         );
+        if (!skip.skip) {
+          // A condition authored directly on an ordinary action is that
+          // action's precondition. Evaluate it only after its dependencies
+          // passed, but still before invoke/foreach/manual or any other
+          // action-specific orchestration can create an external effect.
+          // Standalone `type:"condition"` actions are deliberately excluded;
+          // their verdict and explicit branch targets retain the established
+          // handling below.
+          const precondition = evaluateActionPrecondition(action, {
+            ...stepScope,
+            input: actionData,
+          });
+          if (precondition.outcome === "invalid") {
+            const reason = `action ${actionKey} has an invalid condition: ${precondition.error}`;
+            await failRun(runId, reason, startedAt, "invalid_condition");
+            throw new Error(reason);
+          }
+          if (precondition.outcome === "skip") {
+            skip = { skip: true, reason: precondition.reason };
+          }
+        }
         if (skip.skip) {
           gate.skipped.add(actionKey);
+          await step.run(`skip.${ord}.${actionKey}`, async () => {
+            const stepId = `stp-${runId.replace(/^run-/, "")}-skip-${ord}`;
+            const now = new Date();
+            const dbInner = getDb();
+            const existing = dbInner
+              .select({ id: steps.id })
+              .from(steps)
+              .where(and(eq(steps.runId, runId), eq(steps.ord, ord)))
+              .all()[0];
+            const persistedStepId = existing?.id ?? stepId;
+            if (!existing) {
+              dbInner
+                .insert(steps)
+                .values({
+                  id: persistedStepId,
+                  runId,
+                  ord,
+                  name: action.name,
+                  type: action.type,
+                  status: "skipped",
+                  startedAt: now,
+                  endedAt: now,
+                  durationMs: 0,
+                  error: skip.reason,
+                })
+                .run();
+            }
+            const inputRef = await writeArtifact(
+              runId,
+              `step-${ord}-input.json`,
+              {
+                action,
+                action_data: actionData,
+                prior_step_results: stepResults,
+              },
+            );
+            const outputRef = await writeArtifact(
+              runId,
+              `step-${ord}-output.json`,
+              { skipped: true, reason: skip.reason },
+            );
+            await registerStepArtifactEvidence({
+              tenantId: ctx.tenantId,
+              runId,
+              stepId: persistedStepId,
+              role: "step_input",
+              filePath: inputRef,
+              metadata: { source: "manifest_runtime", status: "skipped" },
+            });
+            await registerStepArtifactEvidence({
+              tenantId: ctx.tenantId,
+              runId,
+              stepId: persistedStepId,
+              role: "step_output",
+              filePath: outputRef,
+              metadata: { source: "manifest_runtime", status: "skipped" },
+            });
+            dbInner
+              .update(steps)
+              .set({ inputRef, outputRef })
+              .where(eq(steps.id, persistedStepId))
+              .run();
+            return true;
+          });
           await writeRunLog(logCtx, "INFO", "step.skip", {
             ord,
             name: action.name,
@@ -1467,6 +1936,125 @@ export function registerAgent(
               `invoke ${targetRef || "<missing>"}: on_error=soft requires default_result`,
             );
           }
+          const invokeStableKey = stableStepId(
+            action.name,
+            (action as { idempotency_key_from?: string }).idempotency_key_from,
+            stepScope,
+          );
+          const invokePayload = materializeInvokePayload({
+            eventData: actionData,
+            invokeInput: a.invoke_input,
+            forwardLastResult: a.forward_last_result,
+            forwardResults: a.forward_results,
+            lastResult,
+            results: stepResults,
+            subject,
+            correlationId,
+          });
+          const invokeReceipt = await step.run(
+            `invoke.persist.${invokeStableKey}`,
+            async () => {
+              const dbInner = getDb();
+              const existing = dbInner
+                .select({ id: steps.id })
+                .from(steps)
+                .where(and(eq(steps.runId, runId), eq(steps.ord, ord)))
+                .all()[0];
+              const stepId =
+                existing?.id ??
+                `stp-${runId.replace(/^run-/, "")}-invoke-${ord}`;
+              const startedAtMs = Date.now();
+              if (existing) {
+                dbInner
+                  .update(steps)
+                  .set({
+                    status: "running",
+                    startedAt: new Date(startedAtMs),
+                    endedAt: null,
+                    durationMs: null,
+                    error: null,
+                  })
+                  .where(eq(steps.id, stepId))
+                  .run();
+              } else {
+                dbInner
+                  .insert(steps)
+                  .values({
+                    id: stepId,
+                    runId,
+                    ord,
+                    name: action.name,
+                    type: "invoke",
+                    status: "running",
+                    startedAt: new Date(startedAtMs),
+                  })
+                  .run();
+              }
+              const inputRef = await writeArtifact(
+                runId,
+                `step-${ord}-input.json`,
+                { target: targetRef, input: invokePayload },
+              );
+              await registerStepArtifactEvidence({
+                tenantId: ctx.tenantId,
+                runId,
+                stepId,
+                role: "step_input",
+                filePath: inputRef,
+                metadata: {
+                  source: "manifest_runtime",
+                  actionName: action.name,
+                  actionType: "invoke",
+                },
+              });
+              dbInner
+                .update(steps)
+                .set({ inputRef })
+                .where(eq(steps.id, stepId))
+                .run();
+              return { stepId, startedAtMs };
+            },
+          );
+          const completeInvoke = async (
+            status: "ok" | "failed",
+            output: unknown,
+            error: string | null,
+          ) =>
+            step.run(
+              `invoke.complete.${invokeStableKey}.${status}`,
+              async () => {
+                const endedAtMs = Date.now();
+                const outputRef = await writeArtifact(
+                  runId,
+                  `step-${ord}-output.json`,
+                  output,
+                );
+                await registerStepArtifactEvidence({
+                  tenantId: ctx.tenantId,
+                  runId,
+                  stepId: invokeReceipt.stepId,
+                  role: "step_output",
+                  filePath: outputRef,
+                  metadata: {
+                    source: "manifest_runtime",
+                    actionName: action.name,
+                    actionType: "invoke",
+                  },
+                });
+                getDb()
+                  .update(steps)
+                  .set({
+                    status,
+                    endedAt: new Date(endedAtMs),
+                    durationMs: endedAtMs - invokeReceipt.startedAtMs,
+                    error,
+                    outputRef,
+                  })
+                  .where(eq(steps.id, invokeReceipt.stepId))
+                  .run();
+                return true;
+              },
+            );
           let invoked: Awaited<ReturnType<typeof softInvoke>>;
           try {
             invoked = await softInvoke(
@@ -1475,23 +2063,11 @@ export function registerAgent(
                   throw new Error(
                     `invoke target "${targetRef}" not resolvable`,
                   );
-                return await step.invoke(
-                  `invoke-${stableStepId(action.name, (action as { idempotency_key_from?: string }).idempotency_key_from, stepScope)}`,
-                  {
-                    function: fn,
-                    data: materializeInvokePayload({
-                      eventData: actionData,
-                      invokeInput: a.invoke_input,
-                      forwardLastResult: a.forward_last_result,
-                      forwardResults: a.forward_results,
-                      lastResult,
-                      results: stepResults,
-                      subject,
-                      correlationId,
-                    }),
-                    timeout: a.timeout_s ? `${a.timeout_s}s` : undefined,
-                  },
-                );
+                return await step.invoke(`invoke-${invokeStableKey}`, {
+                  function: fn,
+                  data: invokePayload,
+                  timeout: a.timeout_s ? `${a.timeout_s}s` : undefined,
+                });
               },
               {
                 timeoutMs: a.timeout_s ? a.timeout_s * 1000 : undefined,
@@ -1501,6 +2077,15 @@ export function registerAgent(
               },
             );
           } catch (failure) {
+            await completeInvoke(
+              "failed",
+              {
+                ok: false,
+                error:
+                  failure instanceof Error ? failure.message : String(failure),
+              },
+              failure instanceof Error ? failure.message : String(failure),
+            );
             const handled = resolveActionFailureOutcome(action, failure);
             applyFailureEmission(handled);
             stepResults[actionKey] = handled.data ?? null;
@@ -1515,6 +2100,7 @@ export function registerAgent(
             });
             continue;
           }
+          await completeInvoke("ok", invoked.data ?? null, null);
           stepResults[actionKey] = invoked.data ?? null;
           lastResult = mergeStepResults(lastResult, invoked.data ?? null);
           await writeRunLog(
@@ -1667,6 +2253,20 @@ export function registerAgent(
                     .run();
                 }
               });
+              await requireStepEvidence("subflow input artifact catalog", () =>
+                registerStepArtifactEvidence({
+                  tenantId: ctx.tenantId,
+                  runId,
+                  stepId: persistedStepId,
+                  role: "step_input",
+                  filePath: inputRef,
+                  metadata: {
+                    source: "manifest_runtime",
+                    actionName: action.name,
+                    actionType: "subflow",
+                  },
+                }),
+              );
               await writeRunLog(logCtx, "INFO", "step.subflow.persisted", {
                 ord,
                 name: action.name,
@@ -1688,7 +2288,7 @@ export function registerAgent(
                   tenantId: ctx.tenantId,
                   at: scheduledAt,
                   runId,
-                  stepId,
+                  stepId: persistedStepId,
                   ord,
                   name: action.name,
                   stepType: "subflow",
@@ -1728,6 +2328,20 @@ export function registerAgent(
             const outputRef = await requireStepEvidence(
               "subflow output artifact",
               () => writeArtifact(runId, `step-${ord}-output.json`, output),
+            );
+            await requireStepEvidence("subflow output artifact catalog", () =>
+              registerStepArtifactEvidence({
+                tenantId: ctx.tenantId,
+                runId,
+                stepId: scheduled.stepId,
+                role: "step_output",
+                filePath: outputRef,
+                metadata: {
+                  source: "manifest_runtime",
+                  actionName: action.name,
+                  actionType: "subflow",
+                },
+              }),
             );
             await requireStepEvidence("subflow completion row", () =>
               getDb()
@@ -1844,6 +2458,20 @@ export function registerAgent(
                   })
                   .run();
               }
+              await requireStepEvidence("delay input artifact catalog", () =>
+                registerStepArtifactEvidence({
+                  tenantId: ctx.tenantId,
+                  runId,
+                  stepId,
+                  role: "step_input",
+                  filePath: inputRef,
+                  metadata: {
+                    source: "manifest_runtime",
+                    actionName: action.name,
+                    actionType: "delay",
+                  },
+                }),
+              );
               await writeRunLog(logCtx, "INFO", "step.delay.scheduled", {
                 ord,
                 name: action.name,
@@ -1877,6 +2505,20 @@ export function registerAgent(
               const outputRef = await requireStepEvidence(
                 "delay output artifact",
                 () => writeArtifact(runId, `step-${ord}-output.json`, output),
+              );
+              await requireStepEvidence("delay output artifact catalog", () =>
+                registerStepArtifactEvidence({
+                  tenantId: ctx.tenantId,
+                  runId,
+                  stepId: scheduled.stepId,
+                  role: "step_output",
+                  filePath: outputRef,
+                  metadata: {
+                    source: "manifest_runtime",
+                    actionName: action.name,
+                    actionType: "delay",
+                  },
+                }),
               );
               await requireStepEvidence("delay completion row", () =>
                 getDb()
@@ -1925,317 +2567,634 @@ export function registerAgent(
         }
 
         if (action.type === "foreach") {
-          try {
-          const a = action as typeof action & {
-            items_from?: string;
-            item_as?: string;
-            item_key_from?: string;
-            foreach_actions?: typeof agent.actions;
-            timeout_s?: number;
-          };
-          // A foreach timeout is one wall-clock budget for the entire fan-out,
-          // not a fresh budget per item. Each body run receives this absolute
-          // deadline; its own timeout_s can only shorten it.
-          const foreachDeadlineAt = a.timeout_s
-            ? Date.now() + a.timeout_s * 1000
-            : undefined;
-          const collection = resolveConditionPath(
-            {
-              lastResult,
-              results: stepResults,
-              event: { name: event.name, data: boundData },
-              input: boundData,
-            },
-            a.items_from ?? "",
+          const foreachStepKey = stableStepId(
+            action.name,
+            (action as { idempotency_key_from?: string }).idempotency_key_from,
+            stepScope,
           );
-          if (!collection.valid || !Array.isArray(collection.value)) {
-            const reason = `foreach ${actionKey}: items_from "${a.items_from ?? ""}" did not resolve to an array`;
-            throw new Error(reason);
-          }
-          const materialized = materializeForeach({
-            items: collection.value,
-            itemAs: a.item_as,
-            itemKeyFrom: a.item_key_from ?? "",
-          });
-          if (!materialized.ok) {
-            const reason = `foreach ${actionKey}: ${materialized.error}`;
-            throw new Error(reason);
-          }
-
-          const foreachFailure: {
-            current: { stepId: string; data: unknown } | null;
-          } = { current: null };
-          const durableActionRuntime = {
-            run: (stepId: string, operation: () => Promise<StepOutput>) =>
-              step.run(stepId, operation),
-            invoke: async (request: {
-              stepId: string;
-              target: string;
-              input: Record<string, unknown>;
-              timeoutMs?: number;
-            }): Promise<unknown> => {
-              const fn = ctx.resolveFunction?.(request.target);
-              if (!fn) {
-                throw new Error(`invoke target "${request.target}" not resolvable`);
+          const foreachReceipt = await step.run(
+            `foreach.persist.${foreachStepKey}`,
+            async () => {
+              const dbInner = getDb();
+              const existing = dbInner
+                .select({ id: steps.id })
+                .from(steps)
+                .where(and(eq(steps.runId, runId), eq(steps.ord, ord)))
+                .all()[0];
+              const stepId =
+                existing?.id ??
+                `stp-${runId.replace(/^run-/, "")}-foreach-${ord}`;
+              const startedAtMs = Date.now();
+              if (existing) {
+                dbInner
+                  .update(steps)
+                  .set({
+                    status: "running",
+                    startedAt: new Date(startedAtMs),
+                    endedAt: null,
+                    durationMs: null,
+                    error: null,
+                  })
+                  .where(eq(steps.id, stepId))
+                  .run();
+              } else {
+                dbInner
+                  .insert(steps)
+                  .values({
+                    id: stepId,
+                    runId,
+                    ord,
+                    name: action.name,
+                    type: "foreach",
+                    status: "running",
+                    startedAt: new Date(startedAtMs),
+                  })
+                  .run();
               }
-              return step.invoke(`invoke-${request.stepId}`, {
-                function: fn,
-                data: request.input,
-                timeout: request.timeoutMs
-                  ? `${Math.max(1, Math.ceil(request.timeoutMs / 1000))}s`
-                  : undefined,
-              });
+              // #RUN-EVIDENCE — the container's own writes carry the same
+              // fail-closed discipline as every main-loop counterpart. A
+              // foreach whose initiating record cannot persist must fail as a
+              // labelled evidence failure, never proceed (or soften) silently.
+              const inputRef = await requireStepEvidence(
+                "foreach input artifact",
+                () =>
+                  writeArtifact(runId, `step-${ord}-input.json`, {
+                    action,
+                    action_data: actionData,
+                    last_result: lastResult,
+                    prior_step_results: stepResults,
+                  }),
+              );
+              await requireStepEvidence("foreach input artifact catalog", () =>
+                registerStepArtifactEvidence({
+                  tenantId: ctx.tenantId,
+                  runId,
+                  stepId,
+                  role: "step_input",
+                  filePath: inputRef,
+                  metadata: {
+                    source: "manifest_runtime",
+                    actionName: action.name,
+                    actionType: "foreach",
+                  },
+                }),
+              );
+              await requireStepEvidence("foreach input artifact reference", () =>
+                dbInner
+                  .update(steps)
+                  .set({ inputRef })
+                  .where(eq(steps.id, stepId))
+                  .run(),
+              );
+              return { stepId, startedAtMs };
             },
-          };
-          const receipts = await runSequentialForeach(
-            materialized.frames,
-            async (frame) => {
-              if (foreachFailure.current) {
+          );
+          const completeForeach = async (
+            status: "ok" | "failed",
+            output: unknown,
+            error: string | null,
+          ) =>
+            step.run(
+              `foreach.complete.${foreachStepKey}.${status}`,
+              async () => {
+                const endedAtMs = Date.now();
+                // #RUN-EVIDENCE — fail closed, like the main loop's output
+                // artifact/terminal-status writes. Especially load-bearing on
+                // the "failed" leg: a bare throw here would be caught by the
+                // container's failure classifier and could be softened by an
+                // on_error policy — a run continuing with no record of the
+                // fan-out that just ran.
+                const outputRef = await requireStepEvidence(
+                  "foreach output artifact",
+                  () => writeArtifact(runId, `step-${ord}-output.json`, output),
+                );
+                await requireStepEvidence(
+                  "foreach output artifact catalog",
+                  () =>
+                    registerStepArtifactEvidence({
+                      tenantId: ctx.tenantId,
+                      runId,
+                      stepId: foreachReceipt.stepId,
+                      role: "step_output",
+                      filePath: outputRef,
+                      metadata: {
+                        source: "manifest_runtime",
+                        actionName: action.name,
+                        actionType: "foreach",
+                      },
+                    }),
+                );
+                await requireStepEvidence("foreach completion row", () =>
+                  getDb()
+                    .update(steps)
+                    .set({
+                      status,
+                      endedAt: new Date(endedAtMs),
+                      durationMs: endedAtMs - foreachReceipt.startedAtMs,
+                      error,
+                      outputRef,
+                    })
+                    .where(eq(steps.id, foreachReceipt.stepId))
+                    .run(),
+                );
+                return true;
+              },
+            );
+          try {
+            const a = action as typeof action & {
+              items_from?: string;
+              item_as?: string;
+              item_key_from?: string;
+              foreach_actions?: typeof agent.actions;
+              timeout_s?: number;
+            };
+            const foreachActions = a.foreach_actions ?? [];
+            const ownsConditionalEmitRouting =
+              hasAuthoritativeConditionalEmit(foreachActions);
+            // A foreach timeout is one wall-clock budget for the entire fan-out,
+            // not a fresh budget per item. Each body run receives this absolute
+            // deadline; its own timeout_s can only shorten it.
+            const foreachDeadlineAt = a.timeout_s
+              ? Date.now() + a.timeout_s * 1000
+              : undefined;
+            const collection = resolveConditionPath(
+              {
+                lastResult,
+                results: stepResults,
+                event: { name: event.name, data: boundData },
+                input: boundData,
+              },
+              a.items_from ?? "",
+            );
+            if (!collection.valid || !Array.isArray(collection.value)) {
+              const reason = `foreach ${actionKey}: items_from "${a.items_from ?? ""}" did not resolve to an array`;
+              throw new Error(reason);
+            }
+            const materialized = materializeForeach({
+              items: collection.value,
+              itemAs: a.item_as,
+              itemKeyFrom: a.item_key_from ?? "",
+            });
+            if (!materialized.ok) {
+              const reason = `foreach ${actionKey}: ${materialized.error}`;
+              throw new Error(reason);
+            }
+
+            const foreachFailure: {
+              current: { stepId: string; data: unknown } | null;
+            } = { current: null };
+            // #RUN-EVIDENCE (D6) — every foreach body action that dispatches
+            // tools passes through the SAME per-call evidence writer as
+            // top-level actions, INSIDE its own durable step so Inngest
+            // memoization keeps the writes exactly-once across replays. The
+            // memoized child return value carries the projected ledger
+            // entries; the container folds them into the run ledger below.
+            // Evidence artifacts are catalogued under the container's step
+            // row (children own no `steps` row) with an item-unique name.
+            const runChildDurable = (
+              childStepId: string,
+              childName: string,
+              operation: () => Promise<StepOutput>,
+            ): Promise<StepOutput> =>
+              step.run(childStepId, async () => {
+                const output = await operation();
+                const childToolCalls = capturedToolCalls(output.meta);
+                // Children own no steps row, so the attempt is derived from
+                // the durable evidence catalog itself (any prior record for
+                // this child ⇒ this execution is a retry). Computed inside
+                // the durable body — a memoized replay never re-enters here —
+                // and only when there is evidence to write, so tool-less
+                // children (condition/logic) cost no catalog scan.
+                const attempt = childToolCalls.length
+                  ? nextForeachChildEvidenceAttempt({
+                      runId,
+                      containerStepId: foreachReceipt.stepId,
+                      childStepId,
+                    })
+                  : 1;
+                const childLedger = await persistToolCallEvidence({
+                  context: toolCallEvidenceContext,
+                  toolCalls: childToolCalls,
+                  stepRowId: foreachReceipt.stepId,
+                  stepName: childName,
+                  evidenceName: (callIndex) =>
+                    foreachToolCallEvidenceName(
+                      ord,
+                      childStepId,
+                      callIndex,
+                      attempt,
+                    ),
+                  attempt,
+                  artifactMetadata: { foreachChildStepId: childStepId },
+                });
+                return childLedger.length
+                  ? {
+                      ...output,
+                      toolLedger: [...(output.toolLedger ?? []), ...childLedger],
+                    }
+                  : output;
+              }) as Promise<StepOutput>;
+            const durableActionRuntime = {
+              run: (
+                stepId: string,
+                operation: () => Promise<StepOutput>,
+                label?: { actionName?: string },
+              ) => runChildDurable(stepId, label?.actionName ?? stepId, operation),
+              invoke: async (request: {
+                stepId: string;
+                target: string;
+                input: Record<string, unknown>;
+                timeoutMs?: number;
+              }): Promise<unknown> => {
+                const fn = ctx.resolveFunction?.(request.target);
+                if (!fn) {
+                  throw new Error(
+                    `invoke target "${request.target}" not resolvable`,
+                  );
+                }
+                return step.invoke(`invoke-${request.stepId}`, {
+                  function: fn,
+                  data: request.input,
+                  timeout: request.timeoutMs
+                    ? `${Math.max(1, Math.ceil(request.timeoutMs / 1000))}s`
+                    : undefined,
+                });
+              },
+            };
+            const receipts = await runSequentialForeach(
+              materialized.frames,
+              async (frame) => {
+                if (foreachFailure.current) {
+                  return {
+                    index: frame.index,
+                    key: frame.businessKey,
+                    stableKey: frame.stableKey,
+                    item: frame.item,
+                    stepIds: [] as string[],
+                    results: {} as Record<string, unknown>,
+                    lastResult: frame.item as unknown,
+                    skipped: true,
+                    reason: "prior foreach item failed terminally",
+                  };
+                }
+                let localLast: unknown = frame.item;
+                const localResults: Record<string, unknown> = {};
+                const localGate: GateState = {
+                  conditionTrue: {},
+                  skipped: new Set<string>(),
+                };
+                const childStepIds: string[] = [];
+                // Item-local count: an emit from a prior item cannot satisfy
+                // this item's authoritative conditional route.
+                const emitCountBefore = emitIntents.length;
+                for (const child of foreachActions) {
+                  const childKey = child.result_key ?? child.name;
+                  const childStepId = foreachStepId(actionKey, frame, childKey);
+                  childStepIds.push(childStepId);
+                  const childSkip = shouldSkip(
+                    { name: childKey, dependsOn: child.depends_on },
+                    localGate,
+                  );
+                  if (childSkip.skip) {
+                    localGate.skipped.add(childKey);
+                    localResults[childKey] = {
+                      skipped: true,
+                      reason: childSkip.reason,
+                    };
+                    continue;
+                  }
+
+                  const childEventData = {
+                    ...boundData,
+                    ...frame.locals,
+                    _foreach: {
+                      parentStepId: actionKey,
+                      index: frame.index,
+                      key: frame.businessKey,
+                      stableKey: frame.stableKey,
+                    },
+                  };
+                  const childPrecondition = evaluateActionPrecondition(child, {
+                    lastResult: localLast,
+                    results: { ...stepResults, ...localResults },
+                    event: { name: event.name, data: childEventData },
+                    input: childEventData,
+                    locals: frame.locals,
+                  });
+                  if (childPrecondition.outcome === "invalid") {
+                    throw new Error(
+                      `foreach ${actionKey} body action ${childKey} has an invalid condition: ${childPrecondition.error}`,
+                    );
+                  }
+                  if (childPrecondition.outcome === "skip") {
+                    localGate.skipped.add(childKey);
+                    localResults[childKey] = {
+                      skipped: true,
+                      reason: childPrecondition.reason,
+                      condition: childPrecondition.condition,
+                      evaluated: false,
+                    };
+                    continue;
+                  }
+
+                  // Leaf item/body pairs are their own durable Inngest steps.
+                  // A nested foreach is a container (its descendants own the
+                  // durable steps), while invoke delegates directly to
+                  // step.invoke; neither may be nested inside step.run.
+                  const runChild = async (): Promise<StepOutput> => {
+                    try {
+                      const output = await runAction({
+                        ctx: {
+                          agentName: agent.name,
+                          actionName: child.name,
+                          ontologyActionName: agent.factory_action_name,
+                          subject: subject ?? undefined,
+                          correlationId,
+                          runId,
+                          tenantSlug,
+                          tenantId: ctx.tenantId,
+                          event: {
+                            name: event.name,
+                            data: childEventData,
+                          },
+                          lastResult: localLast,
+                          results: { ...stepResults, ...localResults },
+                          locals: frame.locals,
+                          memory: runMemory,
+                        },
+                        action: child,
+                        agent: {
+                          id: agent.id,
+                          name: agent.name,
+                          description: agent.description,
+                          ontology_instructions: agent.ontology_instructions,
+                          generated: (agent as { generated?: boolean })
+                            .generated,
+                          factoryDomainId: agent.factory_domain_id,
+                          factoryExecutionScope: agent.factory_execution_scope,
+                          factoryToolProfileRefs:
+                            agent.factory_tool_profile_refs,
+                          factoryToolReplayRefs: agent.factory_tool_replay_refs,
+                          // #RULE-GATE — server-authored corpus + ontology-derived tool
+                          // bindings. Not sourced from the manifest by design.
+                          ontologyRules: ctx.ontologyRules,
+                          ontologyRuleBindings: ctx.ontologyRuleBindings,
+                          factoryToolProbeState: ctx.factoryToolProbeState,
+                          codeExecuted: (agent as { codeExecuted?: boolean })
+                            .codeExecuted,
+                          typescriptCode: agent.typescript_code,
+                          codeAttestation: agent.code_attestation,
+                          factoryPromotionVersionId:
+                            agent.factory_promotion_version_id,
+                          factoryRegressionSuiteFingerprint:
+                            agent.factory_regression_suite_fingerprint,
+                          productionCodeActCapability:
+                            ctx.productionCodeActCapability,
+                          productionCodeActManifestSha256:
+                            ctx.productionCodeActManifestSha256,
+                          productionCodeActWorkflowManifestSha256:
+                            ctx.productionCodeActWorkflowManifestSha256,
+                          ...agentAiSettings,
+                          ...v2AgentCarrier,
+                          triggeredEvents: agent.triggered_event,
+                          tool_use: Array.isArray(agent.tool_use)
+                            ? (agent.tool_use as Array<{
+                                name: string;
+                                description?: string;
+                                input_schema?: unknown;
+                              }>)
+                            : undefined,
+                        },
+                        tenantRegistry: effectiveTenantRegistry,
+                        autoResolveManual: true,
+                        memory: runMemory,
+                        trace: traceSink,
+                        usageAttribution,
+                        deadlineAt: foreachDeadlineAt,
+                        durableStepId: childStepId,
+                        durableActionRuntime,
+                      });
+                      const codeReceipt = codeActExecutionReceiptFromMeta(
+                        output.meta,
+                      );
+                      if (codeReceipt) {
+                        await requireStepEvidence(
+                          "foreach CodeAct run receipt",
+                          () =>
+                            db
+                              .update(runs)
+                              .set(codeActReceiptFields(codeReceipt))
+                              .where(eq(runs.id, runId))
+                              .run(),
+                        );
+                        await requireStepEvidence(
+                          "foreach CodeAct receipt log",
+                          () =>
+                            writeRunLog(
+                              logCtx,
+                              codeReceipt.codeRan ? "INFO" : "WARN",
+                              "codeact.receipt",
+                              {
+                                step: child.name,
+                                step_id: childStepId,
+                                ...codeActReceiptFields(codeReceipt),
+                                duration_ms: codeReceipt.durationMs,
+                              },
+                            ),
+                        );
+                      }
+                      // An enclosing foreach deadline is authoritative. A child
+                      // soft policy cannot convert expiration of the parent
+                      // budget into a success and continue later items.
+                      if (
+                        !output.ok &&
+                        (
+                          output.meta as
+                            | { deadlineSource?: unknown }
+                            | undefined
+                        )?.deadlineSource === "parent_deadline"
+                      ) {
+                        return output;
+                      }
+                      if (output.ok) return output;
+                      const handled = resolveActionFailureOutcome(
+                        child,
+                        new ActionReturnedFailure(child.name, output),
+                        {
+                          tokensIn: output.tokensIn ?? 0,
+                          tokensOut: output.tokensOut ?? 0,
+                          meta: output.meta,
+                          // A soft-failed nested container's leaves already
+                          // persisted their evidence; the policy must not
+                          // erase the record of the very calls that failed.
+                          ...(output.toolLedger
+                            ? { toolLedger: output.toolLedger }
+                            : {}),
+                        },
+                      );
+                      return { ...handled, type: child.type };
+                    } catch (failure) {
+                      // Recognizer, not instanceof: after an Inngest
+                      // retry/memoization round-trip only the error NAME
+                      // survives, and an evidence failure must still refuse
+                      // the on_error classifier below.
+                      if (isRequiredStepEvidenceFailure(failure))
+                        throw failure;
+                      return {
+                        ...resolveActionFailureOutcome(child, failure),
+                        type: child.type,
+                      };
+                    }
+                  };
+                  const bodyResult =
+                    child.type === "foreach" || child.type === "invoke"
+                      ? await runChild()
+                      : await runChildDurable(childStepId, child.name, runChild);
+
+                  tokensIn += bodyResult.tokensIn ?? 0;
+                  tokensOut += bodyResult.tokensOut ?? 0;
+                  // #RUN-EVIDENCE (D6) — fold the child's persisted per-call
+                  // records into the run ledger. `bodyResult` is (or is
+                  // derived from) memoized durable-step returns, so a replay
+                  // rebuilds the identical entries. Collected BEFORE the
+                  // ok-check: a failed child's dispatched calls happened.
+                  if (Array.isArray(bodyResult.toolLedger)) {
+                    runToolLedger.push(...bodyResult.toolLedger);
+                  }
+                  // Mirror of the main loop's uncovered-step check: a foreach
+                  // CodeAct child's bridge dispatches surface only as
+                  // meta.codeToolDispatches (no per-call audit record exists
+                  // for them), so folding toolLedger alone would let this run
+                  // read as fully evidenced. Declared, never fabricated — and
+                  // only when the bridge actually saw dispatches.
+                  const childCodeDispatches = (
+                    bodyResult.meta as
+                      | { codeToolDispatches?: unknown }
+                      | undefined
+                  )?.codeToolDispatches;
+                  if (
+                    Array.isArray(childCodeDispatches) &&
+                    childCodeDispatches.length > 0
+                  ) {
+                    uncoveredEvidenceSteps.push({
+                      ord,
+                      name: child.name,
+                      type: child.type,
+                      reason: "generated_code_dispatch_not_recorded",
+                    });
+                  }
+                  if (bodyResult.model) runModel = bodyResult.model;
+                  const emitted = (
+                    bodyResult.meta as { emitted?: EmitIntent[] } | undefined
+                  )?.emitted;
+                  if (Array.isArray(emitted)) emitIntents.push(...emitted);
+                  if (
+                    (
+                      bodyResult.meta as
+                        | { suppressImplicitEmit?: unknown }
+                        | undefined
+                    )?.suppressImplicitEmit === true
+                  ) {
+                    suppressImplicitEmit = true;
+                  }
+                  applyFailureEmission(bodyResult);
+
+                  if (!bodyResult.ok) {
+                    foreachFailure.current = {
+                      stepId: childStepId,
+                      data: bodyResult.data,
+                    };
+                    break;
+                  }
+                  localResults[childKey] = bodyResult.data;
+                  localLast = mergeStepResults(localLast, bodyResult.data);
+                  if (child.type === "condition") {
+                    localGate.conditionTrue[childKey] = Boolean(
+                      (bodyResult.data as { evaluated?: boolean } | null)
+                        ?.evaluated,
+                    );
+                  }
+                }
+                if (
+                  !foreachFailure.current &&
+                  ownsConditionalEmitRouting &&
+                  emitIntents.length === emitCountBefore
+                ) {
+                  throw Object.assign(
+                    new Error(
+                      `[park] foreach ${actionKey}: no authoritative conditional emit guard matched`,
+                    ),
+                    { code: "CONDITIONAL_EMIT_NO_MATCH" },
+                  );
+                }
                 return {
                   index: frame.index,
                   key: frame.businessKey,
                   stableKey: frame.stableKey,
                   item: frame.item,
-                  stepIds: [] as string[],
-                  results: {} as Record<string, unknown>,
-                  lastResult: frame.item as unknown,
-                  skipped: true,
-                  reason: "prior foreach item failed terminally",
+                  stepIds: childStepIds,
+                  results: localResults,
+                  lastResult: localLast,
                 };
-              }
-              let localLast: unknown = frame.item;
-              const localResults: Record<string, unknown> = {};
-              const localGate: GateState = {
-                conditionTrue: {},
-                skipped: new Set<string>(),
-              };
-              const childStepIds: string[] = [];
-              for (const child of a.foreach_actions ?? []) {
-                const childKey = child.result_key ?? child.name;
-                const childStepId = foreachStepId(actionKey, frame, childKey);
-                childStepIds.push(childStepId);
-                const childSkip = shouldSkip(
-                  { name: childKey, dependsOn: child.depends_on },
-                  localGate,
-                );
-                if (childSkip.skip) {
-                  localGate.skipped.add(childKey);
-                  localResults[childKey] = {
-                    skipped: true,
-                    reason: childSkip.reason,
-                  };
-                  continue;
-                }
+              },
+            );
 
-                // Leaf item/body pairs are their own durable Inngest steps.
-                // A nested foreach is a container (its descendants own the
-                // durable steps), while invoke delegates directly to
-                // step.invoke; neither may be nested inside step.run.
-                const runChild = async (): Promise<StepOutput> => {
-                  try {
-                    const output = await runAction({
-                      ctx: {
-                        agentName: agent.name,
-                        actionName: child.name,
-                        ontologyActionName: agent.factory_action_name,
-                        subject: subject ?? undefined,
-                        correlationId,
-                        runId,
-                        tenantSlug,
-                        tenantId: ctx.tenantId,
-                        event: {
-                          name: event.name,
-                          data: {
-                            ...boundData,
-                            ...frame.locals,
-                            _foreach: {
-                              parentStepId: actionKey,
-                              index: frame.index,
-                              key: frame.businessKey,
-                              stableKey: frame.stableKey,
-                            },
-                          },
-                        },
-                        lastResult: localLast,
-                        results: { ...stepResults, ...localResults },
-                        locals: frame.locals,
-                        memory: runMemory,
-                      },
-                      action: child,
-                      agent: {
-                        id: agent.id,
-                        name: agent.name,
-                        description: agent.description,
-                        ontology_instructions: agent.ontology_instructions,
-                        generated: (agent as { generated?: boolean }).generated,
-                        factoryDomainId: agent.factory_domain_id,
-                        factoryExecutionScope: agent.factory_execution_scope,
-                        factoryToolProfileRefs: agent.factory_tool_profile_refs,
-                        factoryToolReplayRefs: agent.factory_tool_replay_refs,
-                        codeExecuted: (agent as { codeExecuted?: boolean })
-                          .codeExecuted,
-                        typescriptCode: agent.typescript_code,
-                        codeAttestation: agent.code_attestation,
-                        factoryPromotionVersionId: agent.factory_promotion_version_id,
-                        factoryRegressionSuiteFingerprint: agent.factory_regression_suite_fingerprint,
-                        productionCodeActCapability:
-                          ctx.productionCodeActCapability,
-                        productionCodeActManifestSha256:
-                          ctx.productionCodeActManifestSha256,
-                        productionCodeActWorkflowManifestSha256:
-                          ctx.productionCodeActWorkflowManifestSha256,
-                        ...agentAiSettings,
-                        ...v2AgentCarrier,
-                        triggeredEvents: agent.triggered_event,
-                        tool_use: Array.isArray(agent.tool_use)
-                          ? (agent.tool_use as Array<{
-                              name: string;
-                              description?: string;
-                              input_schema?: unknown;
-                            }>)
-                          : undefined,
-                      },
-                      tenantRegistry: effectiveTenantRegistry,
-                      autoResolveManual: true,
-                      memory: runMemory,
-                      trace: traceSink,
-                      usageAttribution,
-                      deadlineAt: foreachDeadlineAt,
-                      durableStepId: childStepId,
-                      durableActionRuntime,
-                    });
-                    const codeReceipt = codeActExecutionReceiptFromMeta(
-                      output.meta,
-                    );
-                    if (codeReceipt) {
-                      await requireStepEvidence(
-                        "foreach CodeAct run receipt",
-                        () =>
-                          db
-                            .update(runs)
-                            .set(codeActReceiptFields(codeReceipt))
-                            .where(eq(runs.id, runId))
-                            .run(),
-                      );
-                      await requireStepEvidence(
-                        "foreach CodeAct receipt log",
-                        () =>
-                          writeRunLog(
-                            logCtx,
-                            codeReceipt.codeRan ? "INFO" : "WARN",
-                            "codeact.receipt",
-                            {
-                              step: child.name,
-                              step_id: childStepId,
-                              ...codeActReceiptFields(codeReceipt),
-                              duration_ms: codeReceipt.durationMs,
-                            },
-                          ),
-                      );
-                    }
-                    // An enclosing foreach deadline is authoritative. A child
-                    // soft policy cannot convert expiration of the parent
-                    // budget into a success and continue later items.
-                    if (
-                      !output.ok &&
-                      (output.meta as { deadlineSource?: unknown } | undefined)
-                        ?.deadlineSource === "parent_deadline"
-                    ) {
-                      return output;
-                    }
-                    if (output.ok) return output;
-                    const handled = resolveActionFailureOutcome(
-                      child,
-                      new ActionReturnedFailure(child.name, output),
-                      {
-                        tokensIn: output.tokensIn ?? 0,
-                        tokensOut: output.tokensOut ?? 0,
-                        meta: output.meta,
-                      },
-                    );
-                    return { ...handled, type: child.type };
-                  } catch (failure) {
-                    if (failure instanceof RequiredStepEvidenceError)
-                      throw failure;
-                    return {
-                      ...resolveActionFailureOutcome(child, failure),
-                      type: child.type,
-                    };
-                  }
-                };
-                const bodyResult =
-                  child.type === "foreach" || child.type === "invoke"
-                    ? await runChild()
-                    : await step.run(childStepId, runChild);
-
-                tokensIn += bodyResult.tokensIn ?? 0;
-                tokensOut += bodyResult.tokensOut ?? 0;
-                if (bodyResult.model) runModel = bodyResult.model;
-                const emitted = (
-                  bodyResult.meta as { emitted?: EmitIntent[] } | undefined
-                )?.emitted;
-                if (Array.isArray(emitted)) emitIntents.push(...emitted);
-                if (
-                  (bodyResult.meta as { suppressImplicitEmit?: unknown } | undefined)
-                    ?.suppressImplicitEmit === true
-                ) {
-                  suppressImplicitEmit = true;
-                }
-                applyFailureEmission(bodyResult);
-
-                if (!bodyResult.ok) {
-                  foreachFailure.current = {
-                    stepId: childStepId,
-                    data: bodyResult.data,
-                  };
-                  break;
-                }
-                localResults[childKey] = bodyResult.data;
-                localLast = mergeStepResults(localLast, bodyResult.data);
-                if (child.type === "condition") {
-                  localGate.conditionTrue[childKey] = Boolean(
-                    (bodyResult.data as { evaluated?: boolean } | null)
-                      ?.evaluated,
-                  );
-                }
-              }
-              return {
-                index: frame.index,
-                key: frame.businessKey,
-                stableKey: frame.stableKey,
-                item: frame.item,
-                stepIds: childStepIds,
-                results: localResults,
-                lastResult: localLast,
-              };
-            },
-          );
-
-          if (foreachFailure.current) {
-            const reason = `foreach ${actionKey} body step ${foreachFailure.current.stepId} failed`;
-            throw new Error(reason);
-          }
-          const aggregate = {
-            count: receipts.length,
-            items: receipts,
-            byKey: Object.fromEntries(
-              receipts.map((receipt) => [receipt.stableKey, receipt]),
-            ),
-          };
-          stepResults[actionKey] = aggregate;
-          lastResult = mergeStepResults(lastResult, aggregate);
-          await writeRunLog(logCtx, "INFO", "step.foreach", {
-            ord,
-            name: action.name,
-            resultKey: actionKey,
-            count: receipts.length,
-            mode: "sequential",
-          });
-          continue;
+            if (foreachFailure.current) {
+              const reason = `foreach ${actionKey} body step ${foreachFailure.current.stepId} failed`;
+              throw new Error(reason);
+            }
+            const aggregate = {
+              count: receipts.length,
+              items: receipts,
+              byKey: Object.fromEntries(
+                receipts.map((receipt) => [receipt.stableKey, receipt]),
+              ),
+            };
+            stepResults[actionKey] = aggregate;
+            lastResult = mergeStepResults(lastResult, aggregate);
+            // #RUN-EVIDENCE (D6) — foreach bodies are no longer an uncovered
+            // coverage hole: every body step ran through `runChildDurable`,
+            // whose per-call records were folded into `runToolLedger` above.
+            // N dispatched ⇒ N reported now includes foreach children.
+            await completeForeach("ok", aggregate, null);
+            await writeRunLog(logCtx, "INFO", "step.foreach", {
+              ord,
+              name: action.name,
+              resultKey: actionKey,
+              count: receipts.length,
+              mode: "sequential",
+            });
+            continue;
           } catch (failure) {
-            if (failure instanceof RequiredStepEvidenceError) throw failure;
+            // Recognizer, not instanceof — see the child carve-out above.
+            if (isRequiredStepEvidenceFailure(failure)) throw failure;
+            if (
+              (failure as { code?: unknown } | null)?.code ===
+              "CONDITIONAL_EMIT_NO_MATCH"
+            ) {
+              await failRun(
+                runId,
+                failure instanceof Error ? failure.message : String(failure),
+                startedAt,
+                "conditional_emit_no_match",
+              );
+            }
+            await completeForeach(
+              "failed",
+              {
+                ok: false,
+                error:
+                  failure instanceof Error ? failure.message : String(failure),
+              },
+              failure instanceof Error ? failure.message : String(failure),
+            );
             const handled = resolveForeachContainerFailure(action, failure);
             applyFailureEmission(handled);
+            // A foreach that failed mid-fan-out already folded every body step
+            // that RAN into `runToolLedger` (collection happens before the
+            // ok-check in the item loop); a body step that threw before
+            // returning recorded nothing — exactly like a top-level action
+            // that threw. No blanket coverage gap remains to declare.
             stepResults[actionKey] = handled.data ?? null;
             lastResult = mergeStepResults(lastResult, handled.data ?? null);
             await writeRunLog(logCtx, "WARN", "step.foreach-continue", {
@@ -2352,6 +3311,37 @@ export function registerAgent(
               /* live delivery is best-effort */
             }
             return { stepId: sid, taskId: tid, resumeMarker, sStarted };
+          });
+          await step.run(`evidence-task-${ord}`, async () => {
+            const inputRef = await writeArtifact(
+              runId,
+              `step-${ord}-input.json`,
+              {
+                action,
+                task_id: initStep.taskId,
+                subject,
+                prepared_context: lastResult,
+                input_binding: actionBinding ?? null,
+              },
+            );
+            await registerStepArtifactEvidence({
+              tenantId: ctx.tenantId,
+              runId,
+              stepId: initStep.stepId,
+              role: "step_input",
+              filePath: inputRef,
+              metadata: {
+                source: "manifest_runtime",
+                actionName: action.name,
+                actionType: "manual",
+              },
+            });
+            getDb()
+              .update(steps)
+              .set({ inputRef })
+              .where(eq(steps.id, initStep.stepId))
+              .run();
+            return inputRef;
           });
 
           await writeRunLog(logCtx, "INFO", "step.wait", {
@@ -2483,6 +3473,27 @@ export function registerAgent(
               manualDecision === "reject" && !usesV2Definition
                 ? "failed"
                 : "ok";
+            const outputRef = await writeArtifact(
+              runId,
+              `step-${ord}-output.json`,
+              {
+                ...manualResolutionEnvelope,
+                payload: resolution.payload ?? null,
+                actor_user_id: resolution.actorUserId ?? null,
+              },
+            );
+            await registerStepArtifactEvidence({
+              tenantId: ctx.tenantId,
+              runId,
+              stepId: initStep.stepId,
+              role: "step_output",
+              filePath: outputRef,
+              metadata: {
+                source: "manifest_runtime",
+                actionName: action.name,
+                actionType: "manual",
+              },
+            });
             dbInner.transaction((tx) => {
               const taskUpdate = tx
                 .update(tasksTable)
@@ -2516,6 +3527,7 @@ export function registerAgent(
                   status: stepStatus,
                   endedAt: new Date(sEnded),
                   durationMs: sEnded - initStep.sStarted,
+                  outputRef,
                 })
                 .where(eq(steps.id, initStep.stepId))
                 .run();
@@ -2691,6 +3703,9 @@ export function registerAgent(
             }
 
             let codeReceipt: CodeActExecutionReceipt | null = null;
+            // #RUN-EVIDENCE (D6) — filled by the per-call evidence writer
+            // below and returned with the step so it survives replay.
+            const stepToolLedger: ToolCallLedgerEntry[] = [];
             try {
               // Persist the exact input before invoking any provider/tool.
               // A later output/evidence failure must not leave a real side
@@ -2699,10 +3714,29 @@ export function registerAgent(
                 "input artifact",
                 () =>
                   writeArtifact(runId, `step-${ord}-input.json`, {
+                    action,
+                    action_data: actionData,
+                    named_inputs: executionInputs,
                     last_result: lastResult ?? null,
+                    prior_step_results: stepResults,
                     trigger_event: event.name,
                     subject: subject ?? null,
                   }),
+              );
+              await requireStepEvidence("input artifact catalog", () =>
+                registerStepArtifactEvidence({
+                  tenantId: ctx.tenantId,
+                  runId,
+                  stepId: sid,
+                  role: "step_input",
+                  filePath: stepInputRef,
+                  metadata: {
+                    source: "manifest_runtime",
+                    actionName: action.name,
+                    actionType: action.type,
+                    attempt,
+                  },
+                }),
               );
               await requireStepEvidence("input artifact reference", () =>
                 dbInner
@@ -2751,12 +3785,19 @@ export function registerAgent(
                       factoryExecutionScope: agent.factory_execution_scope,
                       factoryToolProfileRefs: agent.factory_tool_profile_refs,
                       factoryToolReplayRefs: agent.factory_tool_replay_refs,
+                      // #RULE-GATE — server-authored corpus + ontology-derived tool
+                      // bindings. Not sourced from the manifest by design.
+                      ontologyRules: ctx.ontologyRules,
+                      ontologyRuleBindings: ctx.ontologyRuleBindings,
+                      factoryToolProbeState: ctx.factoryToolProbeState,
                       codeExecuted: (agent as { codeExecuted?: boolean })
                         .codeExecuted,
                       typescriptCode: agent.typescript_code,
                       codeAttestation: agent.code_attestation,
-                      factoryPromotionVersionId: agent.factory_promotion_version_id,
-                      factoryRegressionSuiteFingerprint: agent.factory_regression_suite_fingerprint,
+                      factoryPromotionVersionId:
+                        agent.factory_promotion_version_id,
+                      factoryRegressionSuiteFingerprint:
+                        agent.factory_regression_suite_fingerprint,
                       productionCodeActCapability:
                         ctx.productionCodeActCapability,
                       productionCodeActManifestSha256:
@@ -2887,12 +3928,87 @@ export function registerAgent(
                         })),
                       )
                       .run();
+                    for (const turn of capturedTurns) {
+                      const evidencePath = await writeArtifact(
+                        runId,
+                        `step-${ord}-llm-${turn.ord + 1}.json`,
+                        {
+                          iteration: turn.ord + 1,
+                          request: {
+                            messages: turn.requestMessages ?? [],
+                            tools: turn.requestTools ?? [],
+                          },
+                          response: {
+                            text:
+                              turn.responseTextFull ?? turn.responseText ?? "",
+                            reasoning:
+                              turn.reasoningFull ?? turn.reasoning ?? null,
+                            tool_calls:
+                              turn.responseToolCalls ?? turn.toolCalls ?? [],
+                            finish_reason: turn.finishReason,
+                          },
+                          usage: {
+                            provider: turn.provider,
+                            model: turn.model,
+                            tokens_in: turn.tokensIn,
+                            tokens_out: turn.tokensOut,
+                            latency_ms: turn.latencyMs,
+                          },
+                        },
+                      );
+                      const artifact = await registerStepArtifactEvidence({
+                        tenantId: ctx.tenantId,
+                        runId,
+                        stepId: sid,
+                        role: "trace",
+                        filePath: evidencePath,
+                        metadata: {
+                          source: "manifest_llm_turn",
+                          iteration: turn.ord + 1,
+                        },
+                      });
+                      await traceSink.append({
+                        runId,
+                        stepId: sid,
+                        kind: "llm",
+                        level: "standard",
+                        name: `llm.turn.${turn.ord + 1}`,
+                        status: "ok",
+                        durationMs: turn.latencyMs,
+                        summary: `${turn.provider}/${turn.model} · ${turn.tokensIn} in / ${turn.tokensOut} out`,
+                        data: {
+                          iteration: turn.ord + 1,
+                          provider: turn.provider,
+                          model: turn.model,
+                          tokensIn: turn.tokensIn,
+                          tokensOut: turn.tokensOut,
+                          finishReason: turn.finishReason,
+                        },
+                        artifactId: artifact.id,
+                        visibility: "operator",
+                      });
+                    }
                   }
                 }
               } catch (error) {
                 telemetryError = error;
               }
               if (stepOutputRef) {
+                await requireStepEvidence("output artifact catalog", () =>
+                  registerStepArtifactEvidence({
+                    tenantId: ctx.tenantId,
+                    runId,
+                    stepId: sid,
+                    role: "step_output",
+                    filePath: stepOutputRef,
+                    metadata: {
+                      source: "manifest_runtime",
+                      actionName: action.name,
+                      actionType: action.type,
+                      attempt,
+                    },
+                  }),
+                );
                 await requireStepEvidence("output artifact reference", () =>
                   dbInner
                     .update(steps)
@@ -2936,34 +4052,26 @@ export function registerAgent(
                   }),
                 );
               }
-              const toolCalls = (
-                res.meta as
-                  | {
-                      toolCalls?: Array<{
-                        name: string;
-                        isError?: boolean;
-                        durationMs?: number;
-                      }>;
-                    }
-                  | undefined
-              )?.toolCalls;
-              if (Array.isArray(toolCalls)) {
-                for (const tc of toolCalls) {
-                  await requireStepEvidence(`tool call log '${tc.name}'`, () =>
-                    writeRunLog(
-                      logCtx,
-                      tc.isError ? "ERROR" : "INFO",
-                      "tool.call",
-                      {
-                        step: action.name,
-                        tool: tc.name,
-                        ok: tc.isError ? false : true,
-                        duration: `${tc.durationMs ?? 0}ms`,
-                      },
-                    ),
-                  );
-                }
-              }
+              // #RUN-EVIDENCE (D6) — THE per-call evidence writer (shared with
+              // every foreach body step). Same audit record, same attempt-1
+              // artifact names (`step-<ord>-tool-<k>.json`), same fail-closed
+              // requireStepEvidence semantics as before the extraction. An
+              // Inngest retry re-executes this whole body — the retry's calls
+              // REALLY dispatched, so their records land under an
+              // attempt-qualified name beside (never over) attempt 1's.
+              stepToolLedger.push(
+                ...(await persistToolCallEvidence({
+                  context: toolCallEvidenceContext,
+                  toolCalls: capturedToolCalls(res.meta),
+                  stepRowId: sid,
+                  stepName: action.name,
+                  evidenceName: (callIndex) =>
+                    attempt > 1
+                      ? `step-${ord}-attempt-${attempt}-tool-${callIndex}.json`
+                      : `step-${ord}-tool-${callIndex}.json`,
+                  attempt,
+                })),
+              );
               const returnedError = res.ok
                 ? null
                 : String(
@@ -3018,6 +4126,7 @@ export function registerAgent(
                 model: res.model,
                 provider: res.provider,
                 meta: res.meta,
+                toolLedger: stepToolLedger,
               };
               return res.ok
                 ? durableOutcome
@@ -3106,12 +4215,19 @@ export function registerAgent(
               if (err instanceof RequiredStepEvidenceError) throw err;
               return resolveActionFailureOutcome(action, err, {
                 durationMs: failedAt - sStarted,
+                toolLedger: stepToolLedger,
               });
             }
           });
         } catch (stepErr) {
-          if (stepErr instanceof RequiredStepEvidenceError) {
-            await emitCompensation(stepErr.message);
+          // Recognizer, not instanceof: a memoized/replayed evidence failure
+          // reaches this boundary as an SDK StepError that kept only the
+          // original `name`, and it must never fall through to the
+          // deterministic on_error policy below.
+          if (isRequiredStepEvidenceFailure(stepErr)) {
+            await emitCompensation(
+              stepErr instanceof Error ? stepErr.message : String(stepErr),
+            );
             throw stepErr;
           }
           // Defense in depth for SDK StepError wrappers. Normally the durable
@@ -3129,6 +4245,34 @@ export function registerAgent(
           }
         }
 
+        // #RUN-EVIDENCE (D6) — fold this step's persisted per-call records into
+        // the run ledger. `stepOutcome` is the memoized step result, so this
+        // reproduces identically on replay.
+        if (Array.isArray(stepOutcome.toolLedger)) {
+          runToolLedger.push(...stepOutcome.toolLedger);
+        }
+        // Generated code reaches tools over the host RPC bridge, which records
+        // a classification but no input/output — so no per-call audit record
+        // exists for those dispatches. Declared as a coverage gap rather than
+        // fabricated, and only when the bridge actually saw dispatches: a
+        // CodeAct step that called no tools stays fully evidenced.
+        if (
+          Array.isArray(
+            (stepOutcome.meta as { codeToolDispatches?: unknown } | undefined)
+              ?.codeToolDispatches,
+          )
+          && (
+            (stepOutcome.meta as { codeToolDispatches: unknown[] })
+              .codeToolDispatches.length > 0
+          )
+        ) {
+          uncoveredEvidenceSteps.push({
+            ord,
+            name: action.name,
+            type: action.type,
+            reason: "generated_code_dispatch_not_recorded",
+          });
+        }
         applyFailureEmission(stepOutcome);
         const continuedFailure = failureResolutionFromOutcome(stepOutcome);
         if (continuedFailure) {
@@ -3198,7 +4342,12 @@ export function registerAgent(
             );
             if (targetIndex <= i) {
               const reason = `condition ${action.name} selected invalid target ${branchTarget}`;
-              await failRun(runId, reason, startedAt, "condition_target_invalid");
+              await failRun(
+                runId,
+                reason,
+                startedAt,
+                "condition_target_invalid",
+              );
               throw new Error(
                 `condition target '${branchTarget}' must be a later action`,
               );
@@ -3261,6 +4410,33 @@ export function registerAgent(
         }
       }
 
+      // ── #RUN-EVIDENCE (D6) — reconcile the completion claim ──────────────
+      // Computed here, after the last step and BEFORE any downstream event is
+      // assembled or sent: under `refuse` a run that cannot evidence its own
+      // completion must not first tell the rest of the fleet that it did.
+      // Server-derived from the persisted per-call records; nothing an agent
+      // returns can assert it.
+      const runCompletion: RunCompletionReconciliation = reconcileRunCompletion({
+        ledger: runToolLedger,
+        declaredWriteTools: [...declaredWriteTools],
+        uncoveredSteps: uncoveredEvidenceSteps,
+      });
+      if (
+        runCompletion.outcome === "qualified"
+        && runCompletionEnforcementFromEnv(process.env) === "refuse"
+      ) {
+        const detail = runCompletion.qualifications
+          .map((item) => `${item.code}: ${item.detail}`)
+          .join(" | ");
+        await failRun(
+          runId,
+          `run_completion_unevidenced: ${detail}`,
+          startedAt,
+          "run_completion_unevidenced",
+        );
+        throw new Error(`run_completion_unevidenced: ${detail}`);
+      }
+
       // Agent Studio v2 — authored output bindings decide WHICH events fire
       // and their exact payload field mapping; test mode suppresses them.
       // Legacy manifests keep the explicit-emit/first-declared selection.
@@ -3314,7 +4490,23 @@ export function registerAgent(
       }
 
       // Preserve all explicit emit intents (including repeated names from foreach). If no step
-      // emitted explicitly, selectEmittedEvents retains the historical exactly-one branch routing.
+      // emitted explicitly, selectEmittedEvents retains the historical exactly-one branch routing
+      // ONLY for plans that did not delegate routing to conditional emit actions.
+      if (
+        ownsTopLevelConditionalEmitRouting &&
+        emitIntents.length === 0 &&
+        !suppressImplicitEmit
+      ) {
+        const reason =
+          "[park] no authoritative conditional emit guard matched";
+        await failRun(
+          runId,
+          reason,
+          startedAt,
+          "conditional_emit_no_match",
+        );
+        throw new Error(reason);
+      }
       const selectedEmits = selectEmittedEvents(
         agent.triggered_event,
         lastResult,
@@ -3380,7 +4572,9 @@ export function registerAgent(
         throw new Error(
           `outbound event contract rejected: ${failures
             .slice(0, 8)
-            .map((failure) => `${failure.event}.${failure.field}:${failure.kind}`)
+            .map(
+              (failure) => `${failure.event}.${failure.field}:${failure.kind}`,
+            )
             .join(", ")}`,
         );
       }
@@ -3500,7 +4694,12 @@ export function registerAgent(
           })
           .where(eq(runs.id, runId))
           .run();
-        return { emittedEventId, emittedEvents, emittedRecordRows, persistedAtMs };
+        return {
+          emittedEventId,
+          emittedEvents,
+          emittedRecordRows,
+          persistedAtMs,
+        };
       });
 
       // The actual inngest.send must be outside step.run (step results are
@@ -3591,6 +4790,27 @@ export function registerAgent(
           payload: lastResult,
         });
         const outputArtifactId = registerPersistedArtifact(persistedOutput);
+        // #RUN-EVIDENCE (D6) — the completion reconciliation is MANDATORY
+        // terminal evidence, persisted before the run may flip to `ok`, exactly
+        // like output.json and run-record.json. A failure here throws and the
+        // memoized step retries; it must never be possible for a run to read
+        // `ok` while the statement of what it did and did not evidence is
+        // missing. This is what stops `ok` meaning "nothing threw".
+        const persistedCompletion = await terminalArtifactSink.persist({
+          role: "trace",
+          logicalName: "run-completion.json",
+          contentType: "application/json",
+          payload: runCompletion,
+          metadata: {
+            source: "manifest_runtime",
+            outcome: runCompletion.outcome,
+            qualifications: runCompletion.qualifications.map(
+              (item) => item.code,
+            ),
+          },
+        });
+        const completionArtifactId =
+          registerPersistedArtifact(persistedCompletion);
         let persistedRawResponse: RuntimePersistedArtifact | null = null;
         let rawResponseArtifactId: string | null = null;
         const persistRawResponse =
@@ -3606,7 +4826,8 @@ export function registerAgent(
             contentType: "text/plain; charset=utf-8",
             payload: lastRawResponse,
           });
-          rawResponseArtifactId = registerPersistedArtifact(persistedRawResponse);
+          rawResponseArtifactId =
+            registerPersistedArtifact(persistedRawResponse);
         }
         const emittedRecordRows: RunEmittedEvent[] = (
           finalize.emittedRecordRows ?? []
@@ -3636,6 +4857,13 @@ export function registerAgent(
                 endedAt,
               )
             : null;
+        const completionMetadata = completionArtifactId
+          ? toRunArtifactMetadata(
+              completionArtifactId,
+              persistedCompletion,
+              endedAt,
+            )
+          : null;
         const runRecord: AgentRunRecord = {
           schemaVersion: 1,
           runId,
@@ -3658,9 +4886,11 @@ export function registerAgent(
             outputValid: lastOutputValid,
             issues: [],
           },
-          artifacts: [outputMetadata, rawResponseMetadata].filter(
-            (value): value is RunArtifactMetadata => value !== null,
-          ),
+          artifacts: [
+            outputMetadata,
+            rawResponseMetadata,
+            completionMetadata,
+          ].filter((value): value is RunArtifactMetadata => value !== null),
           emittedEvents: emittedRecordRows,
           model:
             runProvider || runModel
@@ -3698,6 +4928,15 @@ export function registerAgent(
             title: agent.title ?? agent.name,
             tenant: tenantSlug,
             status: "ok",
+            // #RUN-EVIDENCE — the legacy envelope carries the verdict too, so
+            // an existing consumer that only reads this file cannot come away
+            // believing `status: "ok"` is the whole story.
+            completion: {
+              outcome: runCompletion.outcome,
+              qualifications: runCompletion.qualifications.map(
+                (item) => item.code,
+              ),
+            },
             trigger: { name: event.name, subject, data },
             output: lastResult,
             emitted_events: finalize.emittedEvents.map(
@@ -3790,8 +5029,36 @@ export function registerAgent(
             name: "terminal.artifacts",
             status: "ok",
             endedAt,
-            summary: "Persisted mandatory output.json and run-record.json",
-            data: { outputArtifactId, rawResponseArtifactId },
+            summary:
+              "Persisted mandatory output.json, run-record.json and run-completion.json",
+            data: {
+              outputArtifactId,
+              rawResponseArtifactId,
+              completionArtifactId,
+            },
+            visibility: "user",
+          });
+          // #RUN-EVIDENCE — a qualified completion is surfaced as its own
+          // trace row with a non-ok status, so the run viewer shows it beside
+          // the terminal state instead of burying it in an artifact.
+          await traceSink.append({
+            runId,
+            kind: "run",
+            level: "minimal",
+            name: "run.completion-evidence",
+            // The trace vocabulary has no "qualified"; `failed` is the only
+            // value that does not assert the check passed (`ok`) or was never
+            // performed (`skipped`). It marks the EVIDENCE row, not the run —
+            // `run.end` below stays `ok`.
+            status: runCompletion.outcome === "evidenced" ? "ok" : "failed",
+            endedAt,
+            summary: summarizeRunCompletion(runCompletion),
+            data: {
+              outcome: runCompletion.outcome,
+              toolCalls: runCompletion.toolCalls,
+              writes: runCompletion.writes,
+              qualifications: runCompletion.qualifications,
+            },
             visibility: "user",
           });
           await traceSink.append({
@@ -3807,6 +5074,7 @@ export function registerAgent(
             data: {
               emittedEventCount: finalize.emittedEvents.length,
               suppressedEventCount: v2SuppressedEmissions.length,
+              completionOutcome: runCompletion.outcome,
             },
             visibility: "user",
           });
@@ -3816,8 +5084,29 @@ export function registerAgent(
         return { endedAtMs };
       });
 
+      // #RUN-EVIDENCE — the verdict lands in the run log at the level it
+      // deserves, so an operator tailing logs sees an unevidenced completion
+      // rather than an unqualified "run.end status=ok".
+      await writeRunLog(
+        logCtx,
+        runCompletion.outcome === "evidenced" ? "INFO" : "WARN",
+        "run.completion-evidence",
+        {
+          outcome: runCompletion.outcome,
+          tool_calls: runCompletion.toolCalls.dispatched,
+          real: runCompletion.toolCalls.real,
+          simulated: runCompletion.toolCalls.simulated,
+          errored: runCompletion.toolCalls.errored,
+          real_writes: runCompletion.writes.recordedReal,
+          read_back_verified: runCompletion.writes.readBackVerified,
+          qualifications:
+            runCompletion.qualifications.map((item) => item.code).join(",") ||
+            "—",
+        },
+      );
       await writeRunLog(logCtx, "INFO", "run.end", {
         status: "ok",
+        completion: runCompletion.outcome,
         duration: completion.endedAtMs - startedAtMs + "ms",
         emitted:
           finalize.emittedEvents
@@ -3946,10 +5235,15 @@ export function registerAgent(
                 contentType: "text/plain; charset=utf-8",
                 payload: lastRawResponse,
               });
-              const artifactId = registerPersistedArtifact(persistedRawResponse);
+              const artifactId =
+                registerPersistedArtifact(persistedRawResponse);
               if (artifactId) {
                 failureArtifacts.push(
-                  toRunArtifactMetadata(artifactId, persistedRawResponse, ended),
+                  toRunArtifactMetadata(
+                    artifactId,
+                    persistedRawResponse,
+                    ended,
+                  ),
                 );
               }
             } catch (error) {

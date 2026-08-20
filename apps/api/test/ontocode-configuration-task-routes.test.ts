@@ -161,6 +161,7 @@ describe("OntoCode Configuration Task receipt boundary", () => {
         projectId,
         title: `Configuration Task session ${fixtureSuffix}`,
         goal: "Generate the Ontology-bound recruiting Agents",
+        autonomyMode: "sandbox_autopilot",
         ontologySnapshotHash: ontologyHash,
       }),
     });

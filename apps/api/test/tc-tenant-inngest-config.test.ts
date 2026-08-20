@@ -14,6 +14,7 @@ import {
   isFactorySandboxTenant,
   sandboxInngestIsolationStatus,
   tenantInngestConfigStatus,
+  tenantInngestDiagnosticIsolationIdentity,
   tenantInngestIsolationIdentity,
 } from "@agentic/runtime";
 import { checkInngest } from "../src/routes/health";
@@ -455,6 +456,36 @@ describe("tenant-specific Inngest configuration", () => {
       isolated: true,
       missing: [],
     });
+  });
+
+  it("issues a fingerprint-only identity for shared development tenants but never in production", () => {
+    process.env.NODE_ENV = "development";
+    process.env.INNGEST_EVENT_KEY = "evt_shared_development_2Rs4Tu6Vw9";
+    process.env.INNGEST_SIGNING_KEY =
+      "sign_shared_development_3St5Uv7Wx1";
+    process.env.INNGEST_SERVE_ORIGIN = "http://localhost:3540";
+    process.env.INNGEST_BASE_URL = "http://localhost:8288";
+
+    const identity =
+      tenantInngestDiagnosticIsolationIdentity("agents-generation");
+    expect(identity).toMatchObject({
+      schema: "agent-factory-target-inngest-isolation/v1",
+      targetTenantSlug: "agents-generation",
+    });
+    expect(JSON.stringify(identity)).not.toContain(
+      process.env.INNGEST_EVENT_KEY,
+    );
+    expect(JSON.stringify(identity)).not.toContain(
+      process.env.INNGEST_SIGNING_KEY,
+    );
+    expect(() =>
+      tenantInngestIsolationIdentity("agents-generation"),
+    ).toThrow(TenantInngestConfigurationError);
+
+    process.env.NODE_ENV = "production";
+    expect(() =>
+      tenantInngestDiagnosticIsolationIdentity("agents-generation"),
+    ).toThrow(TenantInngestConfigurationError);
   });
 
   it("does not let an ephemeral app inherit shared production configuration", () => {

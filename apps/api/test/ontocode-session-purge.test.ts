@@ -11,11 +11,18 @@
 // 字节永久不可归属。本文件盯的就是这条顺序性质，以及「删除必须说清自己没删
 // 什么」。
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import {
+  agentMemoryLong,
   getDb,
   ontocodeArtifactBlobs,
   ontocodeChangeSets,
@@ -28,6 +35,13 @@ import {
   tenants,
 } from "@agentic/db";
 import { setFactoryDomainBinding } from "../src/services/agent-factory/domain-binding";
+import {
+  ONTOCODE_ANALYSIS_MEMORY_SCHEMA,
+  analysisMemorySubject,
+  encodeAnalysisMemoryValue,
+} from "../src/services/agent-factory/ontocode-analysis-memory";
+import { makeOntoCodeInquiryArchive } from "../src/services/agent-factory/conversation-archive-store";
+import { resolveDataRootPath } from "../src/config/data-paths";
 import { buildTestEnv, type TestEnv } from "./harness";
 import { installOntoCodeTestOntology } from "./ontocode-ontology-fixture";
 
@@ -36,7 +50,22 @@ async function success<T>(response: Response): Promise<T> {
 }
 
 function dataRoot(): string {
-  return process.env.AGENTIC_DATA_ROOT?.trim() || "./data";
+  return resolveDataRootPath();
+}
+
+/** Every regular file under `dir`, recursively; `[]` when it does not exist. */
+function allFiles(dir: string): string[] {
+  let names: string[];
+  try {
+    names = readdirSync(dir, { withFileTypes: true }).flatMap((entry) =>
+      entry.isDirectory()
+        ? allFiles(path.join(dir, entry.name))
+        : [path.join(dir, entry.name)],
+    );
+  } catch {
+    return [];
+  }
+  return names;
 }
 
 describe("OntoCode session delete — external state purge", () => {
@@ -54,6 +83,8 @@ describe("OntoCode session delete — external state purge", () => {
   let sessionId: string;
   let projectId: string;
   const jobId = `ocj-purge${suffix}`;
+  const ownMemoryKey = `ocam-own${suffix}`;
+  const foreignMemoryKey = `ocam-foreign${suffix}`;
   let transcriptFile: string;
   let archiveFile: string;
 
@@ -154,6 +185,37 @@ describe("OntoCode session delete — external state purge", () => {
       "utf8",
     );
 
+    // #ONTOCODE-MEM —— 跨会话分析记忆：本 Session 的分析作业写下的结论行，和
+    // 另一个作业写下的结论行。前者必须随 Session 一起消失（否则用户以为删掉的
+    // Session，其结论仍会预置后续分析——与归档同一类隐私缺陷），后者必须一行未动。
+    const subject = analysisMemorySubject(fixture.domain);
+    for (const [key, sourceRunId] of [
+      [ownMemoryKey, jobId],
+      [foreignMemoryKey, `ocj-other${suffix}`],
+    ] as const) {
+      getDb()
+        .insert(agentMemoryLong)
+        .values({
+          tenantId: fixture.id,
+          agentName: "factory",
+          subject,
+          key,
+          valueJson: encodeAnalysisMemoryValue({
+            schema: ONTOCODE_ANALYSIS_MEMORY_SCHEMA,
+            tenantId: fixture.id,
+            domainId: fixture.domain,
+            claim: `机密结论 ${key}`,
+            refs: ["SomeObject"],
+            at: now.getTime(),
+            sourceRunId,
+            ontologyHash: "hash-x",
+          }),
+          createdAt: now,
+          updatedAt: now,
+        } as typeof agentMemoryLong.$inferInsert)
+        .run();
+    }
+
     // 一个只被本 Session 引用的产物 blob（正文明文留库的那类）。
     getDb()
       .insert(ontocodeArtifactBlobs)
@@ -244,6 +306,35 @@ describe("OntoCode session delete — external state purge", () => {
       }),
     );
     expect(listed.items.some((item) => item.sessionId === sessionId)).toBe(true);
+  });
+
+  it("purges the cross-session conclusions THIS Session established, and leaves every other Session's alone", () => {
+    const rows = getDb()
+      .select({ key: agentMemoryLong.key })
+      .from(agentMemoryLong)
+      .where(eq(agentMemoryLong.tenantId, fixture.id))
+      .all()
+      .map((row) => row.key);
+    // 与归档同一条隐私规则：删掉的 Session 不能继续通过跨会话记忆影响后续分析。
+    expect(rows).not.toContain(ownMemoryKey);
+    // 但删除的边界必须精确——别的作业写的结论一行未动。
+    expect(rows).toContain(foreignMemoryKey);
+  });
+
+  it("says in its retention notes that the ontology-understanding layer was kept, and why", () => {
+    const record = getDb()
+      .select()
+      .from(ontocodeSessionPurges)
+      .where(eq(ontocodeSessionPurges.sessionId, sessionId))
+      .get();
+    const summary = JSON.parse(record!.summaryJson) as {
+      retained: Array<{ what: string; why: string }>;
+    };
+    // 理解层按构造不含会话内容（产出 prompt 没有问题槽），所以它被保留是正确的
+    // ——但保留必须说出口，否则用户只能靠猜自己到底删掉了什么。
+    const note = summary.retained.find((entry) => entry.what.includes("本体"));
+    expect(note).toBeTruthy();
+    expect(note!.why.length).toBeGreaterThan(0);
   });
 
   it("a Session that produced a Candidate package can still be deleted (#DELETE-RESTRICT)", async () => {
@@ -384,5 +475,138 @@ describe("OntoCode session delete — external state purge", () => {
     );
     expect(result.status).toBe("completed");
     expect(result.failures).toEqual([]);
+  });
+});
+
+// #INQUIRY-COMPACT × #SESSION-PURGE —— 铸 id 的那一侧和收文件的这一侧必须闭环。
+//
+// 上面的用例是手写路径铺的文件；这一条反过来走：用【生产口】写归档，然后删
+// Session，断言盘上一个字节都不剩。归档只要用了别的 id 形状，purge 的匹配器
+// 就收不走，一个用户以为已抹掉的 Session 之后仍能被 recall 检索出内容——这是
+// 隐私缺陷，本仓库已经记过一次。
+describe("OntoCode session delete — the analysis archive written by the PRODUCTION port", () => {
+  let env: TestEnv;
+  const suffix = randomUUID().slice(0, 8);
+  const fixture = {
+    id: `ten-oc-arch-${suffix}`,
+    slug: `ocarc${suffix}`,
+    name: "OntoCode archive purge",
+    domain: `ArchPurge-${suffix}`,
+  };
+  let removeOntology: () => Promise<void>;
+  let headers: Record<string, string>;
+  let bodylessHeaders: Record<string, string>;
+  let sessionId: string;
+  const jobId = `ocj-arch${suffix}`;
+  const attempt = 3;
+  let archiveDir: string;
+
+  beforeAll(async () => {
+    env = await buildTestEnv();
+    getDb()
+      .insert(tenants)
+      .values([{ id: fixture.id, slug: fixture.slug, name: fixture.name }])
+      .run();
+    const installed = await installOntoCodeTestOntology({
+      tenantSlug: fixture.slug,
+      domainId: fixture.domain,
+      name: fixture.domain,
+    });
+    removeOntology = installed.remove;
+    setFactoryDomainBinding(
+      fixture.id,
+      { id: fixture.domain, name: fixture.domain },
+      "upload",
+    );
+    headers = {
+      "content-type": "application/json",
+      "x-agentic-tenant": fixture.slug,
+    };
+    bodylessHeaders = { "x-agentic-tenant": fixture.slug };
+    const projectId = (
+      await success<{ project: { id: string } }>(
+        await env.fetch("/v1/ontocode/projects", {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            domain: fixture.domain,
+            name: `${fixture.name} Project`,
+          }),
+        }),
+      )
+    ).project.id;
+    sessionId = (
+      await success<{ session: { id: string } }>(
+        await env.fetch("/v1/ontocode/sessions", {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            projectId,
+            title: `${fixture.name} Session`,
+            goal: "Exercise the archive purge",
+          }),
+        }),
+      )
+    ).session.id;
+
+    const now = new Date();
+    getDb()
+      .insert(ontocodeHarnessJobs)
+      .values({
+        id: jobId,
+        tenantId: fixture.id,
+        projectId,
+        sessionId,
+        kind: "ontology_analysis",
+        status: "succeeded",
+        attempt,
+        idempotencyKey: `${jobId}-idem`,
+        createdAt: now,
+        updatedAt: now,
+      } as typeof ontocodeHarnessJobs.$inferInsert)
+      .run();
+
+    // 生产口：租户 + 域 + 作业 id + attempt，id 由服务端派生，模型碰不到。
+    const archive = makeOntoCodeInquiryArchive({
+      tenantId: fixture.id,
+      domainId: fixture.domain,
+      jobId,
+      attempt,
+    });
+    expect(archive).toBeDefined();
+    await archive!.append([
+      { at: 1, role: "user", content: "折叠掉的机密原文 SECRET_MARKER", foldSeq: 1 },
+    ]);
+    archiveDir = path.join(
+      dataRoot(),
+      "factory-conversation-archive",
+      "_tenants",
+      fixture.id,
+    );
+  });
+
+  afterAll(async () => {
+    await removeOntology();
+    getDb().delete(tenants).where(eq(tenants.id, fixture.id)).run();
+    await env.cleanup();
+  });
+
+  it("a purged session leaves NO archive behind — the whole tenant tree is empty", async () => {
+    const before = allFiles(archiveDir);
+    expect(before.length).toBe(1);
+    expect(readFileSync(before[0]!, "utf8")).toContain("SECRET_MARKER");
+
+    const raw = await env.fetch(`/v1/ontocode/sessions/${sessionId}`, {
+      method: "DELETE",
+      headers: bodylessHeaders,
+    });
+    expect(raw.status).toBe(200);
+    const receipt = await success<{
+      purge: { status: string; removed: number } | null;
+    }>(raw);
+    expect(receipt.purge!.status).toBe("completed");
+    // Not "the file we happened to name" — anything at all left under the
+    // tenant's archive tree is a survivor, and a survivor is still searchable.
+    expect(allFiles(archiveDir)).toEqual([]);
   });
 });

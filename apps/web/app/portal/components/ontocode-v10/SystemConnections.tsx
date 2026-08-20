@@ -52,32 +52,26 @@ export interface SystemConnectionsViewProps {
   onConfigure: (provider: string) => void;
   onProbe: (profileId: string) => void;
   onMarkBoundary: (system: string) => void;
+  onOpenFactoryProfiles?: () => void;
 }
 
 export function SystemConnectionsView(props: SystemConnectionsViewProps) {
   if (props.loading) {
-    return <div className={styles.iEmpty}>正在读取系统连接…</div>;
+    return <div className={styles.iEmpty}>读取中…</div>;
   }
   if (props.errorText) {
     return <div className={styles.iEmpty}>{props.errorText}</div>;
   }
   if (props.rows.length === 0) {
-    return (
-      <div className={styles.iEmpty}>
-        当前域没有引用任何外部系统，无需配置连接。
-      </div>
-    );
+    return <div className={styles.iEmpty}>无外部系统</div>;
   }
-  const ready = props.rows.filter((r) => {
-    const s = connectionStage(r);
-    return s === "runtime" || s === "verified" || s === "configured";
-  }).length;
+  const verified = props.rows.filter((row) => row.probeOk === true).length;
 
   return (
     <div>
       <div className={styles.ovSum}>
         <span className={`${styles.ovChip} ${styles.ovChipOk}`}>
-          {ready} 已连接
+          {verified} 已验证
         </span>
         {props.totals ? (
           <>
@@ -97,13 +91,24 @@ export function SystemConnectionsView(props: SystemConnectionsViewProps) {
           </>
         ) : null}
         <HelpTip>
-          这里列出当前 Ontology 域引用的全部系统。构建要产出可交付的候选包，需要每个系统有真实工具或凭证；标为人工边界的系统只能出设计稿，沙箱与上线仍会拦截。
+          每个系统需真实工具或凭证；人工边界系统只出设计稿，沙箱与上线仍会拦截。
         </HelpTip>
+        {props.onOpenFactoryProfiles ? (
+          <button
+            type="button"
+            className={styles.mini}
+            onClick={props.onOpenFactoryProfiles}
+          >
+            集成档案 →
+          </button>
+        ) : null}
       </div>
 
       {props.rows.map((row) => {
         const stage = connectionStage(row);
-        const busy = props.busySystem === row.system;
+        const busy =
+          props.busySystem === row.system || props.busySystem === row.profileId;
+        const envOnly = row.configRequirement?.posture === "env_only";
         return (
           <div key={row.system} className={styles.connRow}>
             <div className={styles.connHead}>
@@ -122,6 +127,28 @@ export function SystemConnectionsView(props: SystemConnectionsViewProps) {
                   : ""}
               </div>
             ) : null}
+            {envOnly ? (
+              <div className={styles.connMeta}>
+                {row.credentialConfigured
+                  ? "环境引用已就绪；凭证值不会进入浏览器。"
+                  : "环境引用缺失；由运维在服务端补齐。凭证值不会进入浏览器。"}
+              </div>
+            ) : null}
+            {/*
+              Naming the variables is the actionable half. "由运维补齐" without
+              a list leaves the operator to guess which ones, and presence is
+              the only fact a browser may learn about a deployment secret.
+            */}
+            {envOnly && (row.configRequirement?.fields?.length ?? 0) > 0 ? (
+              <div className={styles.connMeta}>
+                {row.configRequirement!.fields.map((field) => (
+                  <span key={field.key} style={{ marginRight: 10 }}>
+                    {field.key}
+                    {field.envPresent ? " ✓" : field.required ? " *" : ""}
+                  </span>
+                ))}
+              </div>
+            ) : null}
             <div className={styles.connBtns}>
               {row.credentialProvider ? (
                 <button
@@ -134,19 +161,31 @@ export function SystemConnectionsView(props: SystemConnectionsViewProps) {
                   onClick={() => props.onConfigure(row.credentialProvider!)}
                   disabled={busy}
                 >
-                  {row.credentialConfigured ? "查看/重配" : "配置"}{" "}
-                  {row.credentialProvider} →
+                  配置 →
                 </button>
               ) : null}
-              {row.profileId && row.credentialConfigured ? (
+              {row.profileId &&
+              row.credentialConfigured &&
+              row.probeSupported ? (
                 <button
                   type="button"
                   className={styles.mini}
                   onClick={() => props.onProbe(row.profileId!)}
                   disabled={busy}
                 >
-                  {busy ? "测试中…" : "测试连接"}
+                  {busy
+                    ? "测试中…"
+                    : row.probeKind === "allmeta_ontology_read"
+                      ? "验证本体只读"
+                      : "测试"}
                 </button>
+              ) : null}
+              {row.profileId &&
+              row.credentialConfigured &&
+              !row.probeSupported ? (
+                <span className={`${styles.agStat} ${styles.agStatOff}`}>
+                  无探针
+                </span>
               ) : null}
               {!row.runtimeProvided && !row.humanBoundary ? (
                 <button
@@ -155,12 +194,12 @@ export function SystemConnectionsView(props: SystemConnectionsViewProps) {
                   onClick={() => props.onMarkBoundary(row.system)}
                   disabled={busy}
                 >
-                  标为人工边界
+                  人工边界
                 </button>
               ) : null}
               {row.probeOk === false ? (
                 <span className={`${styles.agStat} ${styles.agStatBad}`}>
-                  上次测试失败
+                  测试失败
                 </span>
               ) : null}
             </div>

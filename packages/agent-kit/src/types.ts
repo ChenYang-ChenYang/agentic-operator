@@ -240,6 +240,20 @@ export interface ToolDescriptor<TOutput = unknown> {
   readonly kind: "tool";
   readonly name: string;
   readonly description?: string;
+  /**
+   * Declared JSON Schema (`type: "object"`) for the arguments this tool accepts.
+   * Same wire shape as a manifest `tool_use[].input_schema` and the gateway's
+   * `ToolDef.input_schema`, so a consumer can hand it to the model unchanged.
+   *
+   * Populated by providers that own a real argument contract — today
+   * `@agentic/mcp`, where the server's `tools/list` schema used to be dropped,
+   * leaving every MCP tool advertised to the model with no argument contract.
+   *
+   * Optional and additive. Absent means "this tool declares no argument
+   * contract"; a consumer must treat that as UNKNOWN, never as "any arguments
+   * are valid".
+   */
+  readonly inputSchema?: Record<string, unknown>;
   /** Optional Zod schema — runtime validates handler output if present. */
   readonly output?: z.ZodType<TOutput>;
   /** Optional Agent Factory discovery contract. It never replaces the handler. */

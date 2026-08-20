@@ -11,6 +11,10 @@ import {
   INTEGRATION_PROFILE_AUTHORIZATION_PREFIX,
   INTEGRATION_PROFILE_AUTHORIZATION_PROTOCOL_VERSION,
   PROBE_AUTHORIZATION_PREFIX,
+  SANDBOX_EVIDENCE_PLAN_AUTHORIZATION_CONTEXT_PREFIX,
+  SANDBOX_EVIDENCE_PLAN_AUTHORIZATION_DECLINE_PREFIX,
+  SANDBOX_EVIDENCE_PLAN_AUTHORIZATION_PREFIX,
+  SANDBOX_EVIDENCE_PLAN_AUTHORIZATION_PROTOCOL_VERSION,
   SANDBOX_DESIGN_REVIEW_AUTHORIZATION_CONTEXT_PREFIX,
   SANDBOX_DESIGN_REVIEW_AUTHORIZATION_DECLINE_PREFIX,
   SANDBOX_DESIGN_REVIEW_AUTHORIZATION_PREFIX,
@@ -47,24 +51,28 @@ export function factoryAuthorizationChallengeTtlMs(
 
 function tokenPrefix(kind: FactoryAuthorizationChallengeKind): string {
   if (kind === "probe") return PROBE_AUTHORIZATION_PREFIX;
+  if (kind === "sandbox_evidence_plan") return SANDBOX_EVIDENCE_PLAN_AUTHORIZATION_PREFIX;
   if (kind === "sandbox_design_review") return SANDBOX_DESIGN_REVIEW_AUTHORIZATION_PREFIX;
   return INTEGRATION_PROFILE_AUTHORIZATION_PREFIX;
 }
 
 function protocolVersion(kind: FactoryAuthorizationChallengeKind): number {
   if (kind === "probe") return FACTORY_AUTHORIZATION_PROTOCOL_VERSION;
+  if (kind === "sandbox_evidence_plan") return SANDBOX_EVIDENCE_PLAN_AUTHORIZATION_PROTOCOL_VERSION;
   if (kind === "sandbox_design_review") return SANDBOX_DESIGN_REVIEW_AUTHORIZATION_PROTOCOL_VERSION;
   return INTEGRATION_PROFILE_AUTHORIZATION_PROTOCOL_VERSION;
 }
 
 function contextPrefix(kind: FactoryAuthorizationChallengeKind): string {
   if (kind === "probe") return "probe_authorization:v2:";
+  if (kind === "sandbox_evidence_plan") return SANDBOX_EVIDENCE_PLAN_AUTHORIZATION_CONTEXT_PREFIX;
   if (kind === "sandbox_design_review") return SANDBOX_DESIGN_REVIEW_AUTHORIZATION_CONTEXT_PREFIX;
   return INTEGRATION_PROFILE_AUTHORIZATION_CONTEXT_PREFIX;
 }
 
 function declinePrefix(kind: FactoryAuthorizationChallengeKind): string {
   if (kind === "probe") return "decline_probe:v2:";
+  if (kind === "sandbox_evidence_plan") return SANDBOX_EVIDENCE_PLAN_AUTHORIZATION_DECLINE_PREFIX;
   if (kind === "sandbox_design_review") return SANDBOX_DESIGN_REVIEW_AUTHORIZATION_DECLINE_PREFIX;
   return INTEGRATION_PROFILE_AUTHORIZATION_DECLINE_PREFIX;
 }

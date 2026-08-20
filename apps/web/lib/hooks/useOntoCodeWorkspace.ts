@@ -31,6 +31,7 @@ import type {
   OntoCodeEvidenceRecord,
   OntoCodeHarnessJob,
   OntoCodeMessage,
+  OntoCodeOntologyFreshness,
   OntoCodePackageVersion,
   OntoCodeSandboxAttempt,
   OntoCodeWorkspacePatchCommitReceipt,
@@ -47,12 +48,50 @@ import type {
   PostOntoCodeTurnRequest,
   UpdateOntoCodeSessionRequest,
 } from "@agentic/contracts";
-import { fetchApiData } from "@/lib/api-response";
+import { OntoCodeOntologyFreshnessSchema } from "@agentic/contracts";
+import { ApiResponseError, fetchApiData } from "@/lib/api-response";
 
-interface Page<T> {
+export interface Page<T> {
   items: T[];
   count: number;
   nextOffset: number | null;
+}
+
+/** messages 路由的单页上限（服务端 PaginationQuerySchema 的 max=200）。 */
+const MESSAGES_PAGE_LIMIT = 200;
+/**
+ * 翻页上限（20 页 × 200 = 4000 条封顶），防御游标异常时的死循环。
+ * 命中上限时返回的 nextOffset 保持非 null，如实暴露「还没取完」。
+ */
+export const ONTOCODE_MESSAGES_MAX_PAGES = 20;
+
+/**
+ * 逐页取全一个 asc(createdAt) 排序的列表。以前 messages 只取一页
+ * limit=200 offset=0：会话一旦超过 200 行，最新的消息——包括每一条分析
+ * 完成消息——永远到不了客户端，直播气泡的交接判定等不到权威答案，
+ * 落库的回答也永远渲染不出来。服务端契约：nextOffset 非 null 即还有下一页
+ * （见 api 侧 page() helper），没有 hasMore 字段。
+ */
+export async function fetchAllOntoCodeMessagePages<T>(
+  fetchPage: (offset: number) => Promise<Page<T>>,
+  maxPages: number = ONTOCODE_MESSAGES_MAX_PAGES,
+): Promise<Page<T>> {
+  const items: T[] = [];
+  let nextOffset: number | null = 0;
+  let pages = 0;
+  while (nextOffset !== null && pages < maxPages) {
+    const page: Page<T> = await fetchPage(nextOffset);
+    items.push(...page.items);
+    pages += 1;
+    if (page.nextOffset !== null && page.nextOffset <= nextOffset) {
+      // 不前进的游标只可能是服务端缺陷；立即停下，保留非 null 的 nextOffset
+      // 如实标记「未取完」，绝不无限循环。
+      nextOffset = page.nextOffset;
+      break;
+    }
+    nextOffset = page.nextOffset;
+  }
+  return { items, count: items.length, nextOffset };
 }
 
 interface SessionCreateReceipt {
@@ -97,6 +136,15 @@ interface HarnessJobCreateReceipt {
   mode: "created" | "attached";
 }
 
+export interface OntoCodeHarnessJobRetryReceipt {
+  retried: true;
+  sessionId: string;
+  jobId: string;
+  attempt: number;
+  sessionRevision: number;
+  event: OntoCodeSessionEvent;
+}
+
 export interface BootstrapOntoCodeSessionInput {
   sessionId: string;
   goal: string;
@@ -109,11 +157,50 @@ export interface SendOntoCodeAssistantTurnInput {
   contextRefs?: string[];
 }
 
-interface BootstrapOntoCodeSessionReceipt {
+/**
+ * `command`/`job` are nullable on purpose. When bootstrap goes through the
+ * conversational planner, a question-shaped goal legitimately resolves to an
+ * `explain`/`clarify` directive with no Command and no Harness Job: the Session
+ * opens with an assistant reply and waits for the FDE. That is a successful
+ * bootstrap, not a failure, so callers must not assume a Job exists.
+ */
+export interface BootstrapOntoCodeSessionReceipt {
   message: OntoCodeMessage;
-  command: OntoCodeCommand;
-  job: OntoCodeHarnessJob;
+  command: OntoCodeCommand | null;
+  job: OntoCodeHarnessJob | null;
   sessionRevision: number;
+}
+
+export type BootstrapRoute = "explicit_scope" | "planner";
+
+/**
+ * Decides which bootstrap path a new Session takes — and deliberately decides
+ * it WITHOUT reading the goal sentence.
+ *
+ * The live defect this replaces: bootstrap hardcoded an `analyze_scope` Command
+ * and a `scope` Harness Job for every new Session, so an FDE who typed
+ * 「帮我分析所有 event」 got back a list of Actions — the wrong shape of answer.
+ * The conversational planner already owns this routing rule in its system
+ * prompt (`analyze_ontology` for "understand/analyse the domain", `analyze_scope`
+ * only for an explicit full-domain Build request), so free text must reach the
+ * planner instead of being classified here. Adding keyword matching to this
+ * function would recreate the same two-authorities bug it exists to remove.
+ *
+ * The only thing that keeps the legacy path is an explicit scope the FDE
+ * actually picked in the advanced workspace's scope picker: `full_domain`,
+ * `selected_actions`, or a non-empty action selection. A `scenario` mode with
+ * no chosen actions is free text by construction and goes to the planner.
+ */
+export function bootstrapRouteFor(
+  input: BootstrapOntoCodeSessionInput,
+): BootstrapRoute {
+  if (
+    input.scopeMode === "full_domain" ||
+    input.scopeMode === "selected_actions"
+  ) {
+    return "explicit_scope";
+  }
+  return (input.actionIds?.length ?? 0) > 0 ? "explicit_scope" : "planner";
 }
 
 export interface OntoCodeArtifactSummaryItem {
@@ -196,6 +283,8 @@ export function ontocodeConfigurationTaskSystemName(
     case "system_profile":
     case "tool":
       return safeConfigurationSegment(task.target.system);
+    case "tool_profile":
+      return safeConfigurationSegment(task.target.toolName);
     default:
       return null;
   }
@@ -223,6 +312,26 @@ export function ontocodeConfigurationTaskSettingsHref(
   return `/portal/${encodeURIComponent(
     tenant,
   )}/settings?section=integrations&configTask=${encodeURIComponent(task.id)}`;
+}
+
+/**
+ * Tool authoring is a reviewed builder flow, not a credential form. Keep this
+ * routing decision derived from the server-owned task target.
+ */
+export function ontocodeConfigurationTaskPrimaryHref(
+  tenant: string,
+  task: Pick<OntoCodeConfigurationTask, "id" | "target">,
+): string {
+  // `tool_profile` belongs here too: it has no credential provider by
+  // construction, so Settings could only resolve `provider = null` and show an
+  // error banner — while /configure/[taskId] renders the ToolProfileConfiguration
+  // form that actually owns those keys.
+  if (task.target.kind === "tool" || task.target.kind === "tool_profile") {
+    return `/portal/${encodeURIComponent(
+      tenant,
+    )}/configure/${encodeURIComponent(task.id)}`;
+  }
+  return ontocodeConfigurationTaskSettingsHref(tenant, task);
 }
 
 function jsonHeaders(
@@ -272,6 +381,36 @@ async function callV1<T>(
     ...rest,
     headers: ontocodeRequestHeaders(tenant, { body: rest.body, headers }),
   });
+}
+
+export async function saveOntoCodeToolProfile(
+  tenant: string,
+  target: Extract<
+    OntoCodeConfigurationTask["target"],
+    { kind: "tool_profile" }
+  >,
+  config: Record<string, unknown>,
+): Promise<{
+  profile: Record<string, unknown>;
+  validation: {
+    valid: boolean;
+    ready: boolean;
+    missingConfigKeys: string[];
+    invalidConfigKeys: string[];
+    missingEnvRefs: string[];
+  };
+}> {
+  return callV1(
+    tenant,
+    `/v1/tools/${encodeURIComponent(target.toolName)}/profiles/${encodeURIComponent(target.profileKey)}`,
+    {
+      method: "PUT",
+      body: JSON.stringify({
+        environment: target.environment,
+        config,
+      }),
+    },
+  );
 }
 
 function idempotencyKey(prefix: string): string {
@@ -324,6 +463,8 @@ export const ONTOCODE_KEYS = {
     ["ontocode", tenant, "session", sessionId, "evidence"] as const,
   candidateHead: (tenant: string, sessionId: string) =>
     ["ontocode", tenant, "session", sessionId, "candidate-head"] as const,
+  configurationGaps: (tenant: string, sessionId: string) =>
+    ["ontocode", tenant, "session", sessionId, "configuration-gaps"] as const,
   sandboxAttempts: (tenant: string, sessionId: string) =>
     ["ontocode", tenant, "session", sessionId, "sandbox-attempts"] as const,
   configurationTask: (tenant: string, taskId: string) =>
@@ -334,7 +475,57 @@ export const ONTOCODE_KEYS = {
     ["ontocode", tenant, "session", sessionId, "events"] as const,
   suiteOverview: (tenant: string, sessionId: string) =>
     ["ontocode", tenant, "session", sessionId, "suite-overview"] as const,
+  ontologyFreshness: (tenant: string, sessionId: string) =>
+    ["ontocode", tenant, "session", sessionId, "ontology-freshness"] as const,
 };
+
+/**
+ * 本体新鲜度的轮询周期（5 分钟）。
+ *
+ * 这个答案是服务端【当场回源测量】出来的，不缓存——所以每一次请求都真的
+ * 打一次本体源。它只是「两次作业之间的可见性」，不是热路径：挂载时取一次、
+ * 手动刷新时取一次，再加这个低频兜底就够了，秒级轮询只会把上游打疼。
+ */
+export const ONTOCODE_ONTOLOGY_FRESHNESS_REFETCH_MS = 300_000;
+
+/**
+ * 读一次「Session 锁定的本体是否还是源现在提供的那份」。
+ *
+ * 用契约 schema 严格解析：一个缺字段的载荷绝不能被当成「已核对」。
+ * 路由不存在（旧版 api，404）时安静降级成 null＝「未核对」，由 UI 保留
+ * 原来的「已锁定」；而 500 之类的真实故障照旧抛出去，不装作没事。
+ */
+export async function fetchOntoCodeOntologyFreshness(
+  tenant: string,
+  sessionId: string,
+): Promise<OntoCodeOntologyFreshness | null> {
+  try {
+    const raw = await callV1<unknown>(
+      tenant,
+      `/v1/ontocode/sessions/${encodeURIComponent(sessionId)}/ontology-freshness`,
+    );
+    return OntoCodeOntologyFreshnessSchema.parse(raw);
+  } catch (error) {
+    if (error instanceof ApiResponseError && error.status === 404) return null;
+    throw error;
+  }
+}
+
+export function useOntoCodeOntologyFreshness(
+  tenant: string,
+  sessionId: string,
+): UseQueryResult<OntoCodeOntologyFreshness | null> {
+  return useQuery({
+    queryKey: ONTOCODE_KEYS.ontologyFreshness(tenant, sessionId),
+    queryFn: () => fetchOntoCodeOntologyFreshness(tenant, sessionId),
+    enabled: Boolean(tenant && sessionId),
+    staleTime: ONTOCODE_ONTOLOGY_FRESHNESS_REFETCH_MS,
+    // 只在 Session 打开着（hook 挂载着）时低频复测；后台标签页不复测。
+    refetchInterval: ONTOCODE_ONTOLOGY_FRESHNESS_REFETCH_MS,
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: false,
+  });
+}
 
 export function useOntoCodeProjects(
   tenant: string,
@@ -386,9 +577,12 @@ export function useOntoCodeMessages(
   return useQuery({
     queryKey: ONTOCODE_KEYS.messages(tenant, sessionId),
     queryFn: () =>
-      callV1<Page<OntoCodeMessage>>(
-        tenant,
-        `/v1/ontocode/sessions/${encodeURIComponent(sessionId)}/messages?limit=200`,
+      fetchAllOntoCodeMessagePages((offset) =>
+        callV1<Page<OntoCodeMessage>>(
+          tenant,
+          `/v1/ontocode/sessions/${encodeURIComponent(sessionId)}/messages` +
+            `?limit=${MESSAGES_PAGE_LIMIT}&offset=${offset}`,
+        ),
       ),
     enabled: Boolean(tenant && sessionId),
     staleTime: 2_500,
@@ -404,6 +598,8 @@ export interface SystemConnectionRow {
   credentialProvider: string | null;
   credentialConfigured: boolean;
   probeOk: boolean | null;
+  probeSupported: boolean;
+  probeKind: "provider_health" | "allmeta_ontology_read" | null;
 }
 
 /**
@@ -444,8 +640,32 @@ export interface SystemCoverageItem {
   credentialConfigured: boolean;
   probeOk: boolean | null;
   probeAt: number | null;
+  /** True only when the server has a probe path that can actually execute for
+   * this profile (provider health or strict Allmeta Ontology read). */
+  probeSupported: boolean;
+  probeKind: "provider_health" | "allmeta_ontology_read" | null;
   availability: "live" | "planned";
   plannedFallback: "human_boundary" | "block";
+  configRequirement?: {
+    provider: string | null;
+    posture:
+      | "fields"
+      | "none"
+      | "env_only"
+      | "server_managed"
+      | "planned"
+      | "unsupported";
+    satisfied: boolean;
+    fields: Array<{
+      key: string;
+      label: string;
+      kind: string;
+      required: boolean;
+      satisfied: boolean;
+      envPresent?: boolean;
+    }>;
+    note?: string;
+  };
 }
 
 export interface SystemCoverageReceipt {
@@ -488,6 +708,9 @@ export function useProbeSystemConnection(tenant: string) {
     onSuccess: () => {
       void client.invalidateQueries({
         queryKey: ["ontocode", tenant, "system-coverage"],
+      });
+      void client.invalidateQueries({
+        queryKey: ["system-connections", tenant],
       });
     },
   });
@@ -568,6 +791,30 @@ export function useCancelOntoCodeJob(tenant: string, sessionId: string) {
     onSuccess: () => {
       for (const queryKey of [
         ONTOCODE_KEYS.jobs(tenant, sessionId),
+        ONTOCODE_KEYS.events(tenant, sessionId),
+        ONTOCODE_KEYS.session(tenant, sessionId),
+        ONTOCODE_KEYS.sessions(tenant),
+      ]) {
+        void client.invalidateQueries({ queryKey });
+      }
+    },
+  });
+}
+
+/** Re-run one recoverable failure under its original Job and Command ids. */
+export function useRetryOntoCodeJob(tenant: string, sessionId: string) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { jobId: string }) =>
+      callV1<OntoCodeHarnessJobRetryReceipt>(
+        tenant,
+        `/v1/ontocode/sessions/${encodeURIComponent(sessionId)}/retry-job`,
+        { method: "POST", body: JSON.stringify(input) },
+      ),
+    onSuccess: () => {
+      for (const queryKey of [
+        ONTOCODE_KEYS.jobs(tenant, sessionId),
+        ONTOCODE_KEYS.commands(tenant, sessionId),
         ONTOCODE_KEYS.events(tenant, sessionId),
         ONTOCODE_KEYS.session(tenant, sessionId),
         ONTOCODE_KEYS.sessions(tenant),
@@ -712,6 +959,71 @@ export function useOntoCodeAssistantRuns(
         ? 1_500
         : false,
     staleTime: 2_500,
+  });
+}
+
+/**
+ * #CONFIG-GAPS — what THIS Build still needs connected.
+ *
+ * Secret-free by construction: the server returns field NAMES, provenance and
+ * satisfaction, never values. `surface` says where each system is actually
+ * resolved, so the page can stop sending an operator to a Settings form that
+ * has nothing left to fill.
+ */
+export type OntoCodeGapSurface =
+  | "integration"
+  | "tool_profile"
+  | "env"
+  | "human_boundary"
+  | "runtime";
+
+export interface OntoCodeConfigurationGapsReceipt {
+  sessionId: string;
+  packageVersionId: string | null;
+  packageStatus: string | null;
+  candidateAbsent: boolean;
+  systems: Array<{
+    system: string;
+    surface: OntoCodeGapSurface;
+    provider: string | null;
+    posture: string;
+    satisfied: boolean;
+    note: string | null;
+    fields: Array<{
+      key: string;
+      label?: string;
+      kind?: string;
+      required?: boolean;
+      satisfied?: boolean;
+      envPresent?: boolean;
+    }>;
+    missingConfigKeys: string[];
+    blockers: Array<{
+      actionName: string | null;
+      toolName: string | null;
+      role: string | null;
+      status: string | null;
+      code: string | null;
+      requirementId: string | null;
+      missing: string[];
+      reason: string | null;
+    }>;
+  }>;
+}
+
+export function useOntoCodeConfigurationGaps(
+  tenant: string,
+  sessionId: string,
+): UseQueryResult<OntoCodeConfigurationGapsReceipt> {
+  return useQuery({
+    queryKey: ONTOCODE_KEYS.configurationGaps(tenant, sessionId),
+    queryFn: () =>
+      callV1<OntoCodeConfigurationGapsReceipt>(
+        tenant,
+        `/v1/ontocode/sessions/${encodeURIComponent(sessionId)}/configuration-gaps`,
+      ),
+    enabled: Boolean(tenant && sessionId),
+    staleTime: 5_000,
   });
 }
 
@@ -923,7 +1235,9 @@ export function useCreateOntoCodeConfigurationTask(
         {
           method: "POST",
           headers: {
-            "Idempotency-Key": idempotencyKey("configuration-create"),
+            "Idempotency-Key":
+              input.idempotencyKey?.trim() ||
+              idempotencyKey("configuration-create"),
           },
           body: JSON.stringify(input),
         },
@@ -1020,10 +1334,18 @@ export function useCreateOntoCodeSession(tenant: string) {
 }
 
 /**
- * Starts the first real Ontology-scope job for a newly-created Session.
- * Keeping the three writes in one mutation makes the UI honest: a Session is
- * not presented as "running" until its user goal, auditable Command, and
- * durable Harness Job all exist.
+ * Opens a newly-created Session with its first real turn.
+ *
+ * Two paths, chosen by `bootstrapRouteFor` — never by inspecting the goal text:
+ *
+ * - **Explicit scope** (the advanced workspace's scope picker): the FDE already
+ *   chose what to generate, so the three writes stay in one mutation and the UI
+ *   stays honest — the Session is not presented as "running" until its user
+ *   goal, auditable Command, and durable Harness Job all exist.
+ * - **Free-text goal** (the v10 create panel sends only a sentence): the goal
+ *   goes to the conversational planner, which is the single authority for
+ *   routing free text to an action. It persists the user message itself, so
+ *   the goal is deliberately NOT also posted to `/messages`.
  */
 export function useBootstrapOntoCodeSession(tenant: string) {
   const client = useQueryClient();
@@ -1031,6 +1353,34 @@ export function useBootstrapOntoCodeSession(tenant: string) {
     mutationFn: async (
       input: BootstrapOntoCodeSessionInput,
     ): Promise<BootstrapOntoCodeSessionReceipt> => {
+      if (bootstrapRouteFor(input) === "planner") {
+        // Stable, session-derived key: a retried bootstrap attaches to the same
+        // Assistant Run instead of minting a second goal turn. Kept distinct
+        // from the legacy `session-goal-` message key because the two paths
+        // persist different message envelopes under a unique
+        // (session, idempotency_key) index.
+        const turn = await callV1<OntoCodeTurnReceipt>(
+          tenant,
+          `/v1/ontocode/sessions/${encodeURIComponent(input.sessionId)}/assistant-turns`,
+          {
+            method: "POST",
+            headers: {
+              "Idempotency-Key": `session-goal-turn-${input.sessionId}`,
+            },
+            body: JSON.stringify({ text: input.goal, contextRefs: [] }),
+          },
+        );
+        // command/job are null for an explain/clarify answer. Passed through
+        // as-is: inventing a Job here would be the same lie the hardcoded
+        // scope path told.
+        return {
+          message: turn.userMessage,
+          command: turn.command,
+          job: turn.job,
+          sessionRevision: turn.sessionRevision,
+        };
+      }
+
       const messageKey = `session-goal-${input.sessionId}`;
       const commandKey = `initial-scope-command-${input.sessionId}`;
       const jobKey = `initial-scope-job-${input.sessionId}`;
@@ -1147,6 +1497,11 @@ export function useBootstrapOntoCodeSession(tenant: string) {
       });
       void client.invalidateQueries({
         queryKey: ONTOCODE_KEYS.jobs(tenant, input.sessionId),
+      });
+      // The planner path opens the Session with an Assistant Run; without this
+      // the first assistant reply would not surface until the next poll.
+      void client.invalidateQueries({
+        queryKey: ONTOCODE_KEYS.assistantRuns(tenant, input.sessionId),
       });
     },
   });
@@ -1431,13 +1786,10 @@ export function useCommitOntoCodeWorkspacePatch(
       ),
     onSuccess: (receipt) => {
       invalidateOntoCodeWorkspaceProjection(client, tenant, sessionId);
-      void client.setQueryData(
-        ONTOCODE_KEYS.candidateHead(tenant, sessionId),
-        {
-          head: receipt.head,
-          packageVersion: receipt.packageVersion,
-        } satisfies CandidateHeadGetReceipt,
-      );
+      void client.setQueryData(ONTOCODE_KEYS.candidateHead(tenant, sessionId), {
+        head: receipt.head,
+        packageVersion: receipt.packageVersion,
+      } satisfies CandidateHeadGetReceipt);
       for (const version of receipt.versions) {
         void client.invalidateQueries({
           queryKey: ONTOCODE_KEYS.artifactVersions(

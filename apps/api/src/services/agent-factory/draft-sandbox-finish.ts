@@ -40,6 +40,11 @@ import {
   type DraftStoreScope,
 } from "./agent-draft-store";
 import { authoritativeOntologyEvidence } from "./authoritative-ontology-evidence";
+import {
+  produceDeliveryReadinessLedger,
+  sandboxEvidenceView,
+  type DeliveryReadinessLedgerReceipt,
+} from "./delivery-readiness-ledger";
 
 export type SandboxChallengeRef = Pick<
   FactoryAuthorizationChallenge,
@@ -103,12 +108,11 @@ export interface DraftSandboxFinishRequest extends DraftSandboxReviewRequest {
   actor: string;
 }
 
-export interface DraftSandboxFinishReceipt {
+interface DraftSandboxFinishReceiptBase {
   schema: "agent-factory-draft-sandbox-finish/v1";
   scope: DraftSandboxReview["scope"] & { baseVersionId: string };
   baseVersionId: string;
   versionId: string;
-  regressionReady: true;
   fingerprint: string;
   sandbox: {
     appId: string;
@@ -116,13 +120,54 @@ export interface DraftSandboxFinishReceipt {
     cleanupVerified: true;
     functionsRegistered: number;
     agentsRan: number;
+    qualification: "development_only" | "promotable";
+    isolationTier: "same_host_container" | "remote_container" | "remote_vm";
   };
+  /**
+   * #READINESS-LEDGER —— 这次交付随附的「还没被证明」清单。
+   *
+   * 它【不是】一道门：两条分支都产出它，内容是给 FDE 的待办，不是通过与否的判定。
+   * 缺席（undefined）只在装配证据本身失败时发生，那时 finish 依然照常返回 ——
+   * 生成永不被账本挡住是这个产品的承诺。
+   */
+  deliveryReadinessLedger?: DeliveryReadinessLedgerReceipt;
+}
+
+export interface DraftSandboxPromotableFinishReceipt
+  extends DraftSandboxFinishReceiptBase {
+  regressionReady: true;
+  diagnosticOnly: false;
+  qualification: "promotable";
   regressionReplay: {
     pass: true;
     suiteFingerprint: string;
     results: number;
   };
 }
+
+export interface DraftSandboxDiagnosticFinishReceipt
+  extends DraftSandboxFinishReceiptBase {
+  /** A same-host run is useful evidence for FDE diagnosis, but it is not an
+   * immutable regression version and can never authorize a Candidate. */
+  regressionReady: false;
+  diagnosticOnly: true;
+  qualification: "development_only";
+  diagnosticEvidence: {
+    schema: "agent-factory-draft-sandbox-diagnostic/v1";
+    receiptId: string;
+    persisted: true;
+    promotionBlockers: string[];
+  };
+  regressionReplay: {
+    pass: false;
+    skipped: true;
+    reason: string;
+  };
+}
+
+export type DraftSandboxFinishReceipt =
+  | DraftSandboxPromotableFinishReceipt
+  | DraftSandboxDiagnosticFinishReceipt;
 
 export class DraftSandboxError extends Error {
   constructor(
@@ -338,11 +383,15 @@ function validateCurrentBindings(
       tenantSlug: scope.tenantSlug,
       domainId: domain,
     },
+    // This endpoint authorizes a disposable sandbox attempt. Production
+    // profiles and live probes belong to the independent release/promotion
+    // gate and must not prevent FDEs from exercising a sandbox-only binding.
+    environments: ["sandbox"],
   });
   if (!profileValidation.ok) {
     throw new DraftSandboxError(
       "integration_profile_drift",
-      `sandbox/production 集成配置缺失或已经变化：${profileValidation.issues.slice(0, 6).map((issue) => issue.message).join("；")}。请先补齐两套 profile 和 probe。`,
+      `sandbox 集成配置缺失或已经变化：${profileValidation.issues.slice(0, 6).map((issue) => issue.message).join("；")}。请先补齐当前 sandbox profile 和 probe；production profile 会在发布/晋升时独立校验。`,
     );
   }
   const providers = new Map(snapshot.integrationCapabilities.map((provider) => [provider.id, provider]));
@@ -558,6 +607,32 @@ function canonicalFields(ontology: DomainOntology): Map<string, IoField[]> {
   }))]));
 }
 
+type DraftSandboxExecutionQualification =
+  | "development_only"
+  | "promotable";
+
+const SAME_HOST_DIAGNOSTIC_MARKER =
+  "same_host_container_diagnostic_only";
+
+const SAME_HOST_NON_PROMOTABLE_EXECUTION_ISSUES = new Set([
+  "sandbox isolation tier is not promotable",
+  "sandbox execution-plane platform attestation is incomplete",
+]);
+
+function resultQualification(
+  result: SandboxDeployResult,
+): DraftSandboxExecutionQualification {
+  const tester = result.functionTester ?? [];
+  const sameHostDiagnostic =
+    result.executionReceipt?.isolationTier === "same_host_container"
+    && result.degradedAgents.includes(SAME_HOST_DIAGNOSTIC_MARKER)
+    && tester.length > 0
+    && tester.every(
+      (entry) => entry.qualification === "development_only",
+    );
+  return sameHostDiagnostic ? "development_only" : "promotable";
+}
+
 function validateSandboxResult(
   result: SandboxDeployResult,
   fingerprint: string,
@@ -566,17 +641,31 @@ function validateSandboxResult(
   ontology: DomainOntology,
   realTools: RealTool[],
   expectedCaseIds: string[],
-): void {
+): DraftSandboxExecutionQualification {
+  const qualification = resultQualification(result);
+  const developmentOnly = qualification === "development_only";
+  const effectiveDegradedAgents = developmentOnly
+    ? result.degradedAgents.filter(
+        (agent) => agent !== SAME_HOST_DIAGNOSTIC_MARKER,
+      )
+    : result.degradedAgents;
   const cleanupIssues = sandboxCleanupReceiptIssues(result.cleanupReceipt, {
     candidateFingerprint: fingerprint,
     targetDomainId: domain,
   });
-  const executionIssues = sandboxExecutionReceiptIssues(result.executionReceipt, {
-    candidateFingerprint: fingerprint,
-    targetDomainId: domain,
-    sandboxAttemptId: result.sandboxAttemptId,
-    modelUsageHash: result.modelUsage?.evidenceHash,
-  });
+  const executionIssues = sandboxExecutionReceiptIssues(
+    result.executionReceipt,
+    {
+      candidateFingerprint: fingerprint,
+      targetDomainId: domain,
+      sandboxAttemptId: result.sandboxAttemptId,
+      modelUsageHash: result.modelUsage?.evidenceHash,
+    },
+  ).filter(
+    (issue) =>
+      !developmentOnly
+      || !SAME_HOST_NON_PROMOTABLE_EXECUTION_ISSUES.has(issue),
+  );
   const modelRequirement = generatedFleetModelRequirement(specs);
   const modelUsageIssues = [
     ...modelRequirement.issues,
@@ -588,12 +677,14 @@ function validateSandboxResult(
   const fires = result.fires ?? [];
   const failedFires = fires.filter((fire) => !fire.ok);
   const testerFailures = (result.functionTester ?? []).filter((entry) => !entry.pass || !entry.ran);
-  const nonPromotableTester = (result.functionTester ?? []).filter(
-    (entry) => entry.qualification !== "promotable",
+  const testerQualificationFailures = (result.functionTester ?? []).filter(
+    (entry) =>
+      entry.qualification
+      !== (developmentOnly ? "development_only" : "promotable"),
   );
   const completeSuite = assessCompleteSuite({
     fullChainRan: result.fullChainRan,
-    degradedAgents: result.degradedAgents,
+    degradedAgents: effectiveDegradedAgents,
     caseVerdicts: result.caseVerdicts,
     expectedCaseIds,
   });
@@ -623,11 +714,11 @@ function validateSandboxResult(
     || failedFires.length > 0
     || (result.uncoveredExternalInputs?.length ?? 0) > 0
     || !completeSuite.complete
-    || result.degradedAgents.length > 0
+    || effectiveDegradedAgents.length > 0
     || !result.functionTester
     || result.functionTester.length < specs.length
     || testerFailures.length > 0
-    || nonPromotableTester.length > 0
+    || testerQualificationFailures.length > 0
     || result.toolMode !== "evidence_replay"
     || result.externalLiveCalls !== 0
     || result.sandboxReplayEvidenceComplete !== true
@@ -645,10 +736,16 @@ function validateSandboxResult(
       ...(failedFires.length ? [`${failedFires.length} 个入口事件投递失败`] : []),
       ...((result.uncoveredExternalInputs?.length ?? 0) ? [`外部入口没有已批准数据：${result.uncoveredExternalInputs!.join("、")}`] : []),
       ...(!completeSuite.complete ? [`完整测试套件未通过：${completeSuite.detail}`] : []),
-      ...(result.degradedAgents.length ? [`发生降级：${result.degradedAgents.join("、")}`] : []),
+      ...(effectiveDegradedAgents.length ? [`发生降级：${effectiveDegradedAgents.join("、")}`] : []),
       ...(!result.functionTester ? ["缺少交付模块隔离测试"] : []),
       ...(testerFailures.length ? [`模块测试失败：${testerFailures.map((entry) => entry.short).join("、")}`] : []),
-      ...(nonPromotableTester.length ? [`模块测试不在可晋升执行面：${nonPromotableTester.map((entry) => entry.short).join("、")}`] : []),
+      ...(testerQualificationFailures.length
+        ? [
+            developmentOnly
+              ? `同宿主诊断的模块测试没有全部明确标成 development_only：${testerQualificationFailures.map((entry) => entry.short).join("、")}`
+              : `模块测试不在可晋升执行面：${testerQualificationFailures.map((entry) => entry.short).join("、")}`,
+          ]
+        : []),
       ...(result.toolMode !== "evidence_replay" || result.externalLiveCalls !== 0 || result.sandboxReplayEvidenceComplete !== true
         ? ["不是 externalLiveCalls=0 的完整 evidence replay"]
         : []),
@@ -676,7 +773,7 @@ function validateSandboxResult(
     caseVerdicts: result.caseVerdicts,
     expectedCaseIds,
     codeRanAgents: result.codeRanAgents,
-    degradedAgents: result.degradedAgents,
+    degradedAgents: effectiveDegradedAgents,
     fidelityFailures: fidelity?.failingShorts,
     functionTester: result.functionTester,
     toolMode: result.toolMode,
@@ -690,13 +787,35 @@ function validateSandboxResult(
     executionReceipt: result.executionReceipt,
     simulated: result.simulated ?? false,
   }, { registeredTools: realTools });
-  if (!gate.pass) {
+  const allowedDiagnosticCriteria = new Set([
+    "promotable_execution_plane",
+    "function_tester",
+  ]);
+  const diagnosticGateFailures = developmentOnly
+    ? [
+        ...gate.failing.filter(
+          (criterion) => !allowedDiagnosticCriteria.has(criterion.key),
+        ),
+        ...gate.report.perAgent.flatMap((agent) =>
+          agent.items.filter(
+            (item) => !item.pass && item.key !== "function_tester",
+          )),
+      ]
+    : gate.failing;
+  if (
+    (!developmentOnly && !gate.pass)
+    || (developmentOnly && diagnosticGateFailures.length > 0)
+  ) {
+    const failures = developmentOnly
+      ? diagnosticGateFailures
+      : gate.failing;
     throw new DraftSandboxError(
       "sandbox_acceptance_failed",
-      `沙箱运行完成，但交付验收仍未通过：${gate.failing.slice(0, 8).map((criterion) => `${criterion.label}（${criterion.detail}）`).join("；")}。请先修正，不会生成可晋升版本。`,
+      `沙箱运行完成，但交付验收仍未通过：${failures.slice(0, 8).map((criterion) => `${criterion.label}（${criterion.detail}）`).join("；")}。请先修正，不会生成可晋升版本。`,
       422,
     );
   }
+  return qualification;
 }
 
 export async function prepareDraftSandboxReview(request: DraftSandboxReviewRequest): Promise<DraftSandboxReview> {
@@ -735,6 +854,62 @@ export async function prepareDraftSandboxReview(request: DraftSandboxReviewReque
     boundaryEvents: suite.boundaryEvents,
     challenge,
   };
+}
+
+/**
+ * #READINESS-LEDGER —— 在交付结果上挂一份「还没被证明」的清单。
+ *
+ * 三条纪律：
+ *  · 永不抛。装配证据失败就返回 undefined，finish 照常返回 —— 生成不被账本挡住。
+ *  · 走既有写路径（`writeReviewReceipt`），不新开第二条。
+ *  · 两条分支都产出：诊断回执那一支恰恰是最需要这份清单的时候。
+ */
+async function deliveryReadinessLedgerFor(args: {
+  store: FsAgentDraftStore;
+  scope: DraftStoreScope;
+  domain: string;
+  versionId: string;
+  specs: readonly GeneratedAgentSpec[];
+  snapshot: ExecutionSnapshot;
+  ports: FactoryPorts;
+  result: SandboxDeployResult;
+  promotion: "candidate" | "blocked";
+  promotionBlockers?: ReadonlyArray<{ code: string; detail: string }>;
+  evidenceFingerprint: string;
+  actor?: string;
+}): Promise<DeliveryReadinessLedgerReceipt | undefined> {
+  try {
+    const systemAliasGroups = (await args.ports.systemAliases?.list()) ?? [];
+    const produced = await produceDeliveryReadinessLedger({
+      store: args.store,
+      versionId: args.versionId,
+      evidenceFingerprint: args.evidenceFingerprint,
+      ...(args.actor ? { actor: args.actor } : {}),
+      evidence: {
+        scope: { ...args.scope, domain: args.domain },
+        ontology: args.snapshot.ontology,
+        registryTools: args.snapshot.registryTools,
+        declarativeTools: args.snapshot.declarativeTools,
+        realTools: args.snapshot.realTools,
+        integrationCapabilities: args.snapshot.integrationCapabilities,
+        systemAliasGroups,
+        specs: args.specs,
+        sandboxEvidence: sandboxEvidenceView({
+          ...(args.result.cassetteRefs ? { cassetteRefs: args.result.cassetteRefs } : {}),
+          ...(args.result.replayReceipts ? { replayReceipts: args.result.replayReceipts } : {}),
+          ...(args.result.sandboxDispatches ? { sandboxDispatches: args.result.sandboxDispatches } : {}),
+          ...(args.result.executionReceipt ? { executionReceipt: args.result.executionReceipt } : {}),
+          simulated: false,
+          promotion: args.promotion,
+          ...(args.promotionBlockers ? { promotionBlockers: args.promotionBlockers } : {}),
+        }),
+      },
+    });
+    return produced.receipt;
+  } catch {
+    // 装配证据失败也不能把 finish 打回去。清单缺席比拦下一次成功的交付轻得多。
+    return undefined;
+  }
 }
 
 export async function finishDraftSandbox(request: DraftSandboxFinishRequest): Promise<DraftSandboxFinishReceipt> {
@@ -796,7 +971,15 @@ export async function finishDraftSandbox(request: DraftSandboxFinishRequest): Pr
       503,
     );
   }
-  validateSandboxResult(result, fingerprint, request.domain, specs, before.ontology, before.realTools, suite.testCases.map((testCase) => testCase.id));
+  const qualification = validateSandboxResult(
+    result,
+    fingerprint,
+    request.domain,
+    specs,
+    before.ontology,
+    before.realTools,
+    suite.testCases.map((testCase) => testCase.id),
+  );
 
   // Re-read every execution-bearing surface after the disposable app has been
   // deleted. A tool/profile/Ontology change during the run invalidates this
@@ -811,6 +994,113 @@ export async function finishDraftSandbox(request: DraftSandboxFinishRequest): Pr
       "沙箱运行期间 Ontology、工具、配置或测试输入发生了变化；这次 App 已清理，但结果不会保存。请重新审查并新建一次沙箱。",
       409,
     );
+  }
+
+  if (qualification === "development_only") {
+    const diagnosticReceiptId = `review-${randomUUID()}`;
+    const promotionBlockers = [
+      "本次代码在与 Primary API 共用宿主/Docker daemon 的容器里执行，只能作为 development_only 诊断，不能证明独立执行平面。",
+      "本次没有生成 regression-ready 版本、verified candidate 或任何可晋升授权；接入独立 remote_container/remote_vm 后必须用同一不可变版本重新运行。",
+      "production profile 与 live-probe/write-proof 留到独立发布/晋升门校验，本次 sandbox 结果不替代这些生产证据。",
+    ];
+    try {
+      await store.writeReviewReceipt(request.domain, diagnosticReceiptId, {
+        schema: "agent-factory-draft-sandbox-diagnostic/v1",
+        receiptId: diagnosticReceiptId,
+        scope: {
+          tenantId: request.scope.tenantId,
+          tenantSlug: request.scope.tenantSlug,
+          domain: request.domain,
+          slug: request.slug,
+          versionId: request.versionId,
+        },
+        fingerprint,
+        qualification,
+        promotionBlockers,
+        sandbox: {
+          appId: result.appId,
+          attemptId: result.sandboxAttemptId,
+          isolationTier: result.executionReceipt?.isolationTier,
+          functionsRegistered: result.functionsRegistered,
+          agentsRan: result.ran,
+          cleanupReceiptHash:
+            result.cleanupReceipt?.absenceProbeHash,
+          executionReceiptHash:
+            result.executionReceipt?.attestationHash,
+          modelUsageEvidenceHash: result.modelUsage?.evidenceHash,
+        },
+        authorization: {
+          challengeId: challenge.id,
+          authorizationDigest: receipt.authorizationDigest,
+          actor: receipt.actor,
+          consumedAt: receipt.consumedAt,
+        },
+        createdAt: new Date().toISOString(),
+      });
+    } catch {
+      throw new DraftSandboxError(
+        "sandbox_diagnostic_persistence_failed",
+        "同宿主沙箱已完成并清理，但诊断回执没有持久化成功；不会把它当作回归或候选证据。请检查数据目录后重跑。",
+        503,
+      );
+    }
+    const diagnosticLedger = await deliveryReadinessLedgerFor({
+      store,
+      scope: request.scope,
+      domain: request.domain,
+      versionId: request.versionId,
+      specs,
+      snapshot: after,
+      ports: request.ports,
+      result,
+      // 同宿主执行只产诊断回执，晋升资格一开始就是 blocked。
+      promotion: "blocked",
+      promotionBlockers: promotionBlockers.map((detail, index) => ({
+        code: `same_host_diagnostic_${index + 1}`,
+        detail,
+      })),
+      evidenceFingerprint: fingerprint,
+      actor: receipt.actor,
+    });
+    return {
+      schema: "agent-factory-draft-sandbox-finish/v1",
+      scope: {
+        tenantId: request.scope.tenantId,
+        tenantSlug: request.scope.tenantSlug,
+        domain: request.domain,
+        slug: request.slug,
+        versionId: request.versionId,
+        baseVersionId: request.versionId,
+      },
+      baseVersionId: request.versionId,
+      versionId: request.versionId,
+      regressionReady: false,
+      diagnosticOnly: true,
+      qualification,
+      fingerprint,
+      ...(diagnosticLedger ? { deliveryReadinessLedger: diagnosticLedger } : {}),
+      sandbox: {
+        appId: result.appId,
+        attemptId: result.sandboxAttemptId!,
+        cleanupVerified: true,
+        functionsRegistered: result.functionsRegistered,
+        agentsRan: result.ran,
+        qualification,
+        isolationTier: result.executionReceipt!.isolationTier,
+      },
+      diagnosticEvidence: {
+        schema: "agent-factory-draft-sandbox-diagnostic/v1",
+        receiptId: diagnosticReceiptId,
+        persisted: true,
+        promotionBlockers,
+      },
+      regressionReplay: {
+        pass: false,
+        skipped: true,
+        reason:
+          "同宿主执行仅保留诊断回执；未创建、回放或发布可晋升 regression 版本。",
+      },
+    };
   }
 
   const evidence: AgentDraftRegressionEvidence = {
@@ -862,8 +1152,32 @@ export async function finishDraftSandbox(request: DraftSandboxFinishRequest): Pr
     persisted.versionId,
     request.versionId,
   );
+  // 回归全绿只说明这份不可变证据可以【进】独立的生产门，从来不说明生产集成已就绪。
+  // 账本把「进门之前还差什么」逐条写清楚，并且明确它们由谁去清。
+  const ledger = await deliveryReadinessLedgerFor({
+    store,
+    scope: request.scope,
+    domain: request.domain,
+    versionId: persisted.versionId,
+    specs,
+    snapshot: after,
+    ports: request.ports,
+    result,
+    promotion: replay.promotionEvidenceReady ? "candidate" : "blocked",
+    ...(replay.promotionEvidenceErrors?.length
+      ? {
+          promotionBlockers: replay.promotionEvidenceErrors.map((detail, index) => ({
+            code: `regression_evidence_${index + 1}`,
+            detail,
+          })),
+        }
+      : {}),
+    evidenceFingerprint: fingerprint,
+    actor: receipt.actor,
+  });
   return {
     schema: "agent-factory-draft-sandbox-finish/v1",
+    ...(ledger ? { deliveryReadinessLedger: ledger } : {}),
     scope: {
       tenantId: request.scope.tenantId,
       tenantSlug: request.scope.tenantSlug,
@@ -875,6 +1189,8 @@ export async function finishDraftSandbox(request: DraftSandboxFinishRequest): Pr
     baseVersionId: request.versionId,
     versionId: persisted.versionId,
     regressionReady: true,
+    diagnosticOnly: false,
+    qualification: "promotable",
     fingerprint,
     sandbox: {
       appId: result.appId,
@@ -882,6 +1198,8 @@ export async function finishDraftSandbox(request: DraftSandboxFinishRequest): Pr
       cleanupVerified: true,
       functionsRegistered: result.functionsRegistered,
       agentsRan: result.ran,
+      qualification: "promotable",
+      isolationTier: result.executionReceipt!.isolationTier,
     },
     regressionReplay: {
       pass: true,

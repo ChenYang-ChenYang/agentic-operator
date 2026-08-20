@@ -42,8 +42,14 @@ export function TopBar({ user }: TopBarProps) {
     [pathname, tenant, t],
   );
 
+  // OntoCode has its own domain/project/session context header. Rendering the
+  // generic breadcrumb/search bar above it would duplicate navigation and
+  // shrink the full-height engineering canvas.
+  if (/\/ontocode-workspace(?:\/|$)/.test(pathname)) return null;
+
   return (
     <div
+      data-portal-topbar
       style={{
         height: 44,
         borderBottom: "1px solid var(--border)",

@@ -101,6 +101,12 @@ async function runToDone(ports: FactoryPorts) {
 
   const seed: BrainTool = {
     name: "seed_sandbox_evidence",
+    effect: {
+      sideEffect: "write",
+      scope: "conversation",
+      checkpoint: "turn",
+      gate: "any",
+    },
     description: "test seam: put sandbox evidence in ctx so the deliver gate opens",
     parameters: { type: "object" },
     execute: async (_args, ctx: BrainCtx) => {
@@ -114,6 +120,13 @@ async function runToDone(ports: FactoryPorts) {
   };
   const finish: BrainTool = {
     name: "finish",
+    effect: {
+      sideEffect: "write",
+      scope: "factory_durable",
+      checkpoint: "immediate",
+      gate: "deliver",
+      advancesStage: true,
+    },
     description: "deliver",
     parameters: { type: "object" },
     execute: async () => ({ ok: true, summary: "delivered" }),

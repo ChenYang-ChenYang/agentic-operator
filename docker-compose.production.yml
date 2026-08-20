@@ -46,6 +46,33 @@ services:
       HOME: /tmp
       XDG_CACHE_HOME: /tmp/.cache
       XDG_CONFIG_HOME: /tmp/.config
+      # 让 Node 信任外部执行面的私有 CA（挂载见下方 volumes）。不写进系统信任库，
+      # 只对本进程生效。
+      NODE_EXTRA_CA_CERTS: /run/secrets/external-sandbox-ca.crt
+      # 明文 LLM 网关的显式风险接受开关。默认空 = 保持生产默认的 https 强制；
+      # 只有 .env.production 里显式写成 "true" 才放行，理由记在那里。
+      LLM_ALLOW_INSECURE_GATEWAYS: "${LLM_ALLOW_INSECURE_GATEWAYS:-}"
+      # facts.query 的沙箱只读数据源。integration profile 里存的是这两个**变量名**
+      # （connection_url_env / statement_catalog_env），凭据与目录本体只活在进程
+      # 环境里，不进库、不进 profile。指向沙箱专用库，与生产 RAAS 隔离。
+      RAAS_SANDBOX_POSTGRES_URL: "${RAAS_SANDBOX_POSTGRES_URL:-}"
+      RAAS_SANDBOX_STATEMENTS: "${RAAS_SANDBOX_STATEMENTS:-}"
+      # 私网网关主机的显式白名单（本部署未用；留声明以免运维改到基础层）。
+      LLM_GATEWAY_ALLOWED_HOSTS: "${LLM_GATEWAY_ALLOWED_HOSTS:-}"
+      # external_sandbox 拓扑的完整证明校验引用。缺任何一项，
+      # loadRemoteSandboxConnectionConfig 都会整体拒绝，/health 报
+      # sandbox_runner_unreachable_or_misconfigured（即使网络与 TLS 都正常）。
+      # 身份哈希是【否定性】判据：用来证明执行面不共享主平面的主机/Docker 身份。
+      FACTORY_SB_EXECUTION_PLANE_ID: "${FACTORY_SB_EXECUTION_PLANE_ID:?FACTORY_SB_EXECUTION_PLANE_ID is required}"
+      FACTORY_SB_EXECUTION_PLANE_TRUST_DOMAIN: "${FACTORY_SB_EXECUTION_PLANE_TRUST_DOMAIN:?FACTORY_SB_EXECUTION_PLANE_TRUST_DOMAIN is required}"
+      FACTORY_SB_PLATFORM_ATTESTOR_KEY_ID: "${FACTORY_SB_PLATFORM_ATTESTOR_KEY_ID:?FACTORY_SB_PLATFORM_ATTESTOR_KEY_ID is required}"
+      FACTORY_SB_PLATFORM_ATTESTOR_PUBLIC_KEY: ""
+      FACTORY_SB_PLATFORM_ATTESTOR_PUBLIC_KEY_FILE: "${FACTORY_SB_PLATFORM_ATTESTOR_PUBLIC_KEY_FILE:?FACTORY_SB_PLATFORM_ATTESTOR_PUBLIC_KEY_FILE is required}"
+      FACTORY_PRIMARY_HOST_IDENTITY_HASH: "${FACTORY_PRIMARY_HOST_IDENTITY_HASH:?FACTORY_PRIMARY_HOST_IDENTITY_HASH is required}"
+      FACTORY_PRIMARY_DOCKER_DAEMON_IDENTITY_HASH: "${FACTORY_PRIMARY_DOCKER_DAEMON_IDENTITY_HASH:?FACTORY_PRIMARY_DOCKER_DAEMON_IDENTITY_HASH is required}"
+      FACTORY_SB_ALLOWED_CONTROL_HOST_IDENTITY_HASHES: "${FACTORY_SB_ALLOWED_CONTROL_HOST_IDENTITY_HASHES:?FACTORY_SB_ALLOWED_CONTROL_HOST_IDENTITY_HASHES is required}"
+      FACTORY_SB_ALLOWED_WORKLOAD_HOST_IDENTITY_HASHES: "${FACTORY_SB_ALLOWED_WORKLOAD_HOST_IDENTITY_HASHES:?FACTORY_SB_ALLOWED_WORKLOAD_HOST_IDENTITY_HASHES is required}"
+      FACTORY_SB_ALLOWED_DOCKER_DAEMON_IDENTITY_HASHES: "${FACTORY_SB_ALLOWED_DOCKER_DAEMON_IDENTITY_HASHES:?FACTORY_SB_ALLOWED_DOCKER_DAEMON_IDENTITY_HASHES is required}"
       INNGEST_DEV: "0"
       INNGEST_BASE_URL: http://inngest:8288
       INNGEST_SERVE_ORIGIN: http://api:3501
@@ -114,6 +141,23 @@ services:
         read_only: true
         bind:
           create_host_path: false
+      # 外部执行面的 TLS 用私有 CA 签发；只有这个根证书（公开材料，非机密）进
+      # 容器，API 才能校验 sandbox.factory.internal 的证书链。
+      - type: bind
+        source: "${EXTERNAL_SANDBOX_CA_HOST_FILE:?EXTERNAL_SANDBOX_CA_HOST_FILE is required}"
+        target: /run/secrets/external-sandbox-ca.crt
+        read_only: true
+        bind:
+          create_host_path: false
+      # 执行面平台证明的 Ed25519 信任锚（只有公钥；私钥留在执行面 VM 内，
+      # 从不进入主平面）。缺了它 loadRemoteSandboxConnectionConfig 会拒绝配置：
+      # "External sandbox production requires execution-plane attestor …"。
+      - type: bind
+        source: "${EXTERNAL_SANDBOX_ATTESTOR_PUBLIC_HOST_FILE:?EXTERNAL_SANDBOX_ATTESTOR_PUBLIC_HOST_FILE is required}"
+        target: /run/secrets/external-sandbox-attestor-public.pem
+        read_only: true
+        bind:
+          create_host_path: false
       - type: bind
         source: "${PRODUCTION_CODEACT_EXECUTOR_TOKEN_HOST_FILE:?PRODUCTION_CODEACT_EXECUTOR_TOKEN_HOST_FILE is required}"
         target: "${PRODUCTION_CODEACT_EXECUTOR_TOKEN_FILE:?PRODUCTION_CODEACT_EXECUTOR_TOKEN_FILE is required}"
@@ -131,6 +175,15 @@ services:
       - factory-sandbox-control
       - factory-sandbox-model
       - production-codeact
+    # 外部执行面（独立 VM）的解析与信任。
+    # 名字必须是证书 SAN 里的那一个：runner 证书只签了
+    # DNS:sandbox.factory.internal（裸 IP 会 ERR_TLS_CERT_ALTNAME_INVALID），
+    # 而 setup 的 external_sandbox 校验又拒绝任何经主宿主解析的名字
+    # （localhost/127.x/host.docker.internal/compose 服务名）。两条约束的交集
+    # 就是这条 extra_hosts：主机名不变，地址指向执行面 VM 自己的网络地址。
+    extra_hosts: !override
+      - "host.docker.internal:host-gateway"
+      - "sandbox.factory.internal:${EXTERNAL_SANDBOX_VM_ADDRESS:?EXTERNAL_SANDBOX_VM_ADDRESS is required}"
 
   # Production generated-code launcher. This is a separate instance and
   # lifecycle from the Factory sandbox workload. It receives no ontology,
@@ -177,6 +230,11 @@ services:
       FACTORY_CODEACT_CANDIDATE_IMAGE: "${FACTORY_CODEACT_CANDIDATE_IMAGE:?FACTORY_CODEACT_CANDIDATE_IMAGE must be immutable}"
       FACTORY_CODEACT_ALLOWED_IMAGE_DIGESTS: "${FACTORY_CODEACT_ALLOWED_IMAGE_DIGESTS:?FACTORY_CODEACT_ALLOWED_IMAGE_DIGESTS must include the reviewed image}"
       FACTORY_CODEACT_DOCKER_SOCKET: /var/run/docker.sock
+      # 启动候选容器前的白名单。executor 是真正 docker run 候选镜像的那一侧，
+      # 少了这两个它 fail-closed 拒绝启动（"must be a JSON array"）——api 段
+      # 早就声明了同名变量，这里此前是遗漏，导致 executor 永远起不来。
+      PRODUCTION_CODEACT_ALLOWED_CANDIDATE_REFS: "${PRODUCTION_CODEACT_ALLOWED_CANDIDATE_REFS:?PRODUCTION_CODEACT_ALLOWED_CANDIDATE_REFS is required}"
+      PRODUCTION_CODEACT_ALLOWED_CANDIDATE_IMAGE_IDS: "${PRODUCTION_CODEACT_ALLOWED_CANDIDATE_IMAGE_IDS:?PRODUCTION_CODEACT_ALLOWED_CANDIDATE_IMAGE_IDS is required}"
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=128m,mode=1777
     volumes:

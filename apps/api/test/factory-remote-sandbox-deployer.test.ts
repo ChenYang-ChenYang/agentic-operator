@@ -1,15 +1,19 @@
 import {
+  SANDBOX_EXECUTION_PLANE_ATTESTATION_SCHEMA,
   SANDBOX_CLEANUP_RECEIPT_SCHEMA,
   SANDBOX_RUN_DRAIN_RECEIPT_SCHEMA,
   sandboxCleanupReceiptHash,
   sandboxExecutionReceiptHash,
   sandboxInfrastructureCleanupEvidenceHash,
+  sandboxExecutionPlaneCapabilities,
   sandboxRunDrainReceiptHash,
   type GeneratedAgentSpec,
   type SandboxCleanupReceipt,
   type SandboxDeployResult,
   type SandboxExecutionPlaneReceipt,
+  signSandboxExecutionPlaneAttestation,
 } from "@agentic/agent-factory";
+import { generateKeyPairSync } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -26,6 +30,7 @@ import {
   signRemoteSandboxMessage,
   signSandboxExecutionPlaneReceipt,
   verifySandboxExecutionPlaneReceipt,
+  verifyExactSandboxCandidateBundle,
   type RemoteSandboxAttemptCommand,
   type RemoteSandboxJobResult,
   type RemoteSandboxSubmitCommand,
@@ -41,6 +46,18 @@ const receiptKey = "test-only-receipt-signing-key-32-bytes";
 const runnerId = "sandbox-runner-test";
 const runnerBuildId = "runner-build-20260715";
 const runtimeImageDigest = `sha256:${"b".repeat(64)}`;
+const platformKeys = generateKeyPairSync("ed25519");
+const platformPrivateKey = platformKeys.privateKey.export({
+  type: "pkcs8",
+  format: "pem",
+}).toString();
+const platformPublicKey = platformKeys.publicKey.export({
+  type: "spki",
+  format: "pem",
+}).toString();
+const controlHostIdentityHash = `sha256:${"6".repeat(64)}`;
+const workloadHostIdentityHash = `sha256:${"7".repeat(64)}`;
+const dockerDaemonIdentityHash = `sha256:${"8".repeat(64)}`;
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -55,6 +72,21 @@ const connection: RemoteSandboxConnectionConfig = {
   runnerId,
   allowedBuildIds: new Set([runnerBuildId]),
   allowedImageDigests: new Set([runtimeImageDigest]),
+  platformAttestationExpected: {
+    planeId: "sandbox-plane-test",
+    trustDomain: "test.agentic.internal",
+    runnerId,
+    allowedRunnerBuildIds: new Set([runnerBuildId]),
+    allowedRuntimeImageDigests: new Set([runtimeImageDigest]),
+    allowedControlHostIdentityHashes: new Set([controlHostIdentityHash]),
+    allowedWorkloadHostIdentityHashes: new Set([workloadHostIdentityHash]),
+    allowedDockerDaemonIdentityHashes: new Set([dockerDaemonIdentityHash]),
+    primaryHostIdentityHash: `sha256:${"9".repeat(64)}`,
+    primaryDockerDaemonIdentityHash: `sha256:${"a".repeat(64)}`,
+    attestorKeyId: "platform-key-test",
+    attestorPublicKey: platformPublicKey,
+    now,
+  },
 };
 
 function spec(): GeneratedAgentSpec {
@@ -121,6 +153,26 @@ function completedResult(
   const cleanup = cleanupReceipt(bundle);
   const modelUsage = readFactorySandboxModelUsageEvidence(bundle.attemptId, bundle.bundleHash);
   if (!modelUsage) throw new Error("test model grant was not registered");
+  const platformAttestation = signSandboxExecutionPlaneAttestation(
+    {
+      schema: SANDBOX_EXECUTION_PLANE_ATTESTATION_SCHEMA,
+      planeId: "sandbox-plane-test",
+      trustDomain: "test.agentic.internal",
+      runnerId,
+      runnerBuildId,
+      runtimeImageDigest: imageDigest,
+      isolationTier: "remote_container",
+      controlHostIdentityHash,
+      workloadHostIdentityHash,
+      dockerDaemonIdentityHash,
+      capabilities: sandboxExecutionPlaneCapabilities(),
+      issuedAt: new Date(now.getTime() - 1_000).toISOString(),
+      expiresAt: new Date(now.getTime() + 60_000).toISOString(),
+      attestorKeyId: "platform-key-test",
+      signatureAlgorithm: "ed25519",
+    },
+    platformPrivateKey,
+  );
   const body: SandboxDeployResult = {
     appId: cleanup.appId,
     functionsRegistered: 1,
@@ -197,6 +249,11 @@ function completedResult(
     runnerId,
     runnerBuildId,
     runtimeImageDigest: imageDigest,
+    platformAttestation,
+    candidateBundleVerification: verifyExactSandboxCandidateBundle(
+      bundle,
+      now.toISOString(),
+    ),
     brokerOriginHash: `sha256:${"c".repeat(64)}`,
     serveOriginHash: `sha256:${"d".repeat(64)}`,
     policyHash: `sandbox-policy:v1:${canonicalSandboxSha256(bundle.policy)}`,
@@ -227,7 +284,11 @@ function completedResult(
 function sameHostDiagnosticReceipt(
   receipt: SandboxExecutionPlaneReceipt,
 ): SandboxExecutionPlaneReceipt {
-  const { signature: _signature, ...unsigned } = receipt;
+  const {
+    signature: _signature,
+    platformAttestation: _platformAttestation,
+    ...unsigned
+  } = receipt;
   const diagnostic = {
     ...unsigned,
     isolationTier: "same_host_container" as const,
@@ -433,6 +494,54 @@ describe("RemoteSandboxDeployer", () => {
     )).toBe(true);
   });
 
+  it("allows an explicit diagnostic trust result in development composition", () => {
+    vi.stubEnv("NODE_ENV", "development");
+    expect(() =>
+      new RemoteSandboxDeployer({
+        tenantScope: {
+          tenantId: "tenant-agents-generation",
+          tenantSlug: "agents-generation",
+        },
+        connection,
+        targetInngestIsolation:
+          makeTargetInngestIsolationIdentity("agents-generation"),
+        transport: transport(),
+        controlPlaneBuildId: "api-build-20260715",
+        productionImageTrust: () => ({
+          configured: false,
+          ok: true,
+          state: "disabled",
+          topology: "single_host_compose",
+          diagnosticOnly: true,
+        }),
+      }),
+    ).not.toThrow();
+  });
+
+  it("refuses an injected diagnostic trust result in production", () => {
+    vi.stubEnv("NODE_ENV", "production");
+    expect(() =>
+      new RemoteSandboxDeployer({
+        tenantScope: {
+          tenantId: "tenant-agents-generation",
+          tenantSlug: "agents-generation",
+        },
+        connection,
+        targetInngestIsolation:
+          makeTargetInngestIsolationIdentity("agents-generation"),
+        transport: transport(),
+        controlPlaneBuildId: "api-build-20260715",
+        productionImageTrust: () => ({
+          configured: true,
+          ok: true,
+          state: "ready",
+          topology: "single_host_compose",
+          diagnosticOnly: true,
+        }),
+      }),
+    ).toThrow(/cannot be injected in production/);
+  });
+
   it("blocks an otherwise valid receipt from a non-allowlisted workload image", async () => {
     const remoteTransport = transport(`sha256:${"e".repeat(64)}`);
     await expect(
@@ -577,15 +686,46 @@ describe("remote sandbox connection configuration", () => {
     const refsWithReceipt = {
       ...refs,
       receiptSigningKeyEnv: "TEST_SANDBOX_RECEIPT_HMAC",
+      executionPlaneIdEnv: "TEST_SANDBOX_EXECUTION_PLANE_ID",
+      executionPlaneTrustDomainEnv: "TEST_SANDBOX_EXECUTION_PLANE_TRUST_DOMAIN",
+      platformAttestorKeyIdEnv: "TEST_SANDBOX_PLATFORM_ATTESTOR_KEY_ID",
+      platformAttestorPublicKeyEnv:
+        "TEST_SANDBOX_PLATFORM_ATTESTOR_PUBLIC_KEY",
+      primaryHostIdentityHashEnv: "TEST_PRIMARY_HOST_IDENTITY_HASH",
+      primaryDockerDaemonIdentityHashEnv:
+        "TEST_PRIMARY_DOCKER_DAEMON_IDENTITY_HASH",
+      allowedControlHostIdentityHashesEnv:
+        "TEST_SANDBOX_ALLOWED_CONTROL_HOST_IDENTITY_HASHES",
+      allowedWorkloadHostIdentityHashesEnv:
+        "TEST_SANDBOX_ALLOWED_WORKLOAD_HOST_IDENTITY_HASHES",
+      allowedDockerDaemonIdentityHashesEnv:
+        "TEST_SANDBOX_ALLOWED_DOCKER_DAEMON_IDENTITY_HASHES",
+    };
+    const platformEnv = {
+      TEST_SANDBOX_EXECUTION_PLANE_ID: "sandbox-plane-test",
+      TEST_SANDBOX_EXECUTION_PLANE_TRUST_DOMAIN: "test.agentic.internal",
+      TEST_SANDBOX_PLATFORM_ATTESTOR_KEY_ID: "platform-key-test",
+      TEST_SANDBOX_PLATFORM_ATTESTOR_PUBLIC_KEY: platformPublicKey,
+      TEST_PRIMARY_HOST_IDENTITY_HASH: `sha256:${"9".repeat(64)}`,
+      TEST_PRIMARY_DOCKER_DAEMON_IDENTITY_HASH:
+        `sha256:${"a".repeat(64)}`,
+      TEST_SANDBOX_ALLOWED_CONTROL_HOST_IDENTITY_HASHES:
+        controlHostIdentityHash,
+      TEST_SANDBOX_ALLOWED_WORKLOAD_HOST_IDENTITY_HASHES:
+        workloadHostIdentityHash,
+      TEST_SANDBOX_ALLOWED_DOCKER_DAEMON_IDENTITY_HASHES:
+        dockerDaemonIdentityHash,
     };
     expect(() => loadRemoteSandboxConnectionConfig({
       ...base,
+      ...platformEnv,
       [FACTORY_SANDBOX_REMOTE_CONFIG_REFS_ENV]: JSON.stringify(refsWithReceipt),
       TEST_SANDBOX_RECEIPT_HMAC: resultKey,
     })).toThrow(/must be distinct/);
 
     expect(loadRemoteSandboxConnectionConfig({
       ...base,
+      ...platformEnv,
       [FACTORY_SANDBOX_REMOTE_CONFIG_REFS_ENV]: JSON.stringify(refsWithReceipt),
       TEST_SANDBOX_RECEIPT_HMAC:
         "receipt-key-that-is-independent-and-at-least-32-bytes",

@@ -19,7 +19,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import {
   Badge,
@@ -32,21 +32,45 @@ import {
 } from "@/app/portal/components";
 import {
   useTools,
+  useActivateToolRevision,
   useDeleteTool,
+  useProbeToolRevision,
+  useRejectToolRevision,
+  useToolRevisions,
+  type ManagedToolRevision,
   type ToolCatalogEntry,
   type ToolFieldSchema,
 } from "@/lib/hooks/useTools";
 import { useI18n } from "@/app/portal/lib/preferences-context";
 import { CreateToolModal } from "./create-tool-modal";
+import { FactoryIntegrationProfiles } from "./factory-integration-profiles";
+import { deriveToolRevisionReviewPolicy } from "./tool-revision-policy";
 
 function slugifyAnchor(name: string): string {
   return "tool-" + name.replace(/[^a-zA-Z0-9._-]/g, "-").toLowerCase();
 }
 
+function revisionAnchor(id: string): string {
+  return "tool-revision-" + id.replace(/[^a-zA-Z0-9._-]/g, "-").toLowerCase();
+}
+
 export default function ToolsPage() {
   const { t } = useI18n();
   const params = useParams<{ tenant: string }>();
+  const router = useRouter();
+  const searchParams = useSearchParams();
   const { data, isLoading, error } = useTools();
+  const requestedRevisionId = searchParams.get("revision")?.trim() || null;
+  const requestedRevisionDomain =
+    searchParams.get("domain_id")?.trim() || undefined;
+  // #TOOL-DEEP-LINK — "去工具档案 →" arrives with the tool it wants configured.
+  // Without this the operator landed at the top of the whole catalogue, which
+  // is indistinguishable from a button that does nothing.
+  const requestedToolName = searchParams.get("tool")?.trim() || null;
+  const revisionsQuery = useToolRevisions({
+    limit: 50,
+    domainId: requestedRevisionDomain,
+  });
   const tools = data?.tools ?? [];
   const categories = data?.categories ?? [];
 
@@ -74,6 +98,17 @@ export default function ToolsPage() {
       return hay.includes(q);
     });
   }, [tools, query, category]);
+  const filteredRevisions = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return (revisionsQuery.data?.revisions ?? []).filter(
+      (revision) =>
+        category === "all" &&
+        (!q ||
+          revision.name.toLowerCase().includes(q) ||
+          revision.status.toLowerCase().includes(q) ||
+          revision.definitionHash.toLowerCase().includes(q)),
+    );
+  }, [category, query, revisionsQuery.data?.revisions]);
 
   // Group filtered tools by category for the right-pane TOC.
   const grouped = useMemo(() => {
@@ -85,6 +120,21 @@ export default function ToolsPage() {
     }
     return Array.from(m.entries()).sort(([a], [b]) => a.localeCompare(b));
   }, [filtered]);
+  const activeRevisionByName = useMemo(() => {
+    const mapped = new Map<
+      string,
+      { id: string; domainId: string | null }
+    >();
+    for (const tool of tools) {
+      if (tool.activeRevisionId) {
+        mapped.set(tool.name, {
+          id: tool.activeRevisionId,
+          domainId: tool.activeRevisionDomainId ?? null,
+        });
+      }
+    }
+    return mapped;
+  }, [tools]);
 
   // Deep-link → scroll on initial load if URL has #tool-<name>.
   useEffect(() => {
@@ -98,6 +148,26 @@ export default function ToolsPage() {
     });
   }, [filtered.length]);
 
+  useEffect(() => {
+    if (!requestedRevisionId) return;
+    requestAnimationFrame(() => {
+      document
+        .getElementById(revisionAnchor(requestedRevisionId))
+        ?.scrollIntoView({ behavior: "auto", block: "center" });
+    });
+  }, [filteredRevisions.length, requestedRevisionId]);
+
+  function setRevisionDomain(domainId?: string) {
+    const next = new URLSearchParams(searchParams.toString());
+    if (domainId) next.set("domain_id", domainId);
+    else next.delete("domain_id");
+    next.delete("revision");
+    const suffix = next.toString() ? `?${next.toString()}` : "";
+    router.replace(
+      `/portal/${encodeURIComponent(params.tenant)}/tools${suffix}` as never,
+    );
+  }
+
   function scrollToTool(name: string) {
     const id = slugifyAnchor(name);
     const el = document.getElementById(id);
@@ -109,9 +179,7 @@ export default function ToolsPage() {
   }
 
   return (
-    <div
-      style={{ display: "flex", flexDirection: "column", height: "100%" }}
-    >
+    <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
       {showCreate && <CreateToolModal onClose={() => setShowCreate(false)} />}
       <ViewHeader
         title={t("nav.toolLibrary")}
@@ -164,7 +232,13 @@ export default function ToolsPage() {
               overflow: "auto",
             }}
           >
-            <Button tone="primary" icon="plus" onClick={() => setShowCreate(true)}>{t("tools.createTool")}</Button>
+            <Button
+              tone="primary"
+              icon="plus"
+              onClick={() => setShowCreate(true)}
+            >
+              {t("tools.createTool")}
+            </Button>
             <input
               type="search"
               value={query}
@@ -237,13 +311,17 @@ export default function ToolsPage() {
             ref={scrollPaneRef}
             style={{ overflow: "auto", padding: "24px 32px" }}
           >
-            {filtered.length === 0 ? (
+            {filtered.length === 0 &&
+            filteredRevisions.length === 0 &&
+            !revisionsQuery.isLoading ? (
               <Empty
                 title={t("tools.noMatchTitle")}
                 hint={t("tools.noMatchHint")}
               />
             ) : (
-              <div style={{ display: "flex", flexDirection: "column", gap: 28 }}>
+              <div
+                style={{ display: "flex", flexDirection: "column", gap: 28 }}
+              >
                 <div style={introStyle}>
                   <h2
                     style={{
@@ -267,26 +345,91 @@ export default function ToolsPage() {
                 </div>
 
                 {/* P3: where tools come from + the progressive doc→tool pipeline (cross-links the factory). */}
-                <Panel style={{ padding: "14px 16px", borderColor: "var(--signal)" }}>
-                  <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text)", marginBottom: 6 }}>{t("tools.origin.heading")}</div>
-                  <ol style={{ margin: 0, paddingLeft: 18, fontSize: 12.5, color: "var(--text-2)", lineHeight: 1.7 }}>
-                    <li><strong>{t("tools.origin.globalTitle")}</strong>：{t("tools.origin.globalBefore")} <code className="mono">tool_use[]</code> {t("tools.origin.globalAfter")}</li>
-                    <li><strong>{t("tools.origin.discoveryTitle")}</strong>：{t("tools.origin.discoveryBefore")} <code className="mono">search_tools</code> {t("tools.origin.discoveryAfter")}</li>
-                    <li><strong>{t("tools.origin.docsTitle")}</strong>：{t("tools.origin.docsBefore")} <code className="mono">fetch_doc</code> {t("tools.origin.docsMiddle")} <code className="mono">extract_api_schema</code> {t("tools.origin.docsAfter")} <code className="mono">create_tool</code> {t("tools.origin.docsEnd")}</li>
+                <Panel
+                  style={{ padding: "14px 16px", borderColor: "var(--signal)" }}
+                >
+                  <div
+                    style={{
+                      fontSize: 13,
+                      fontWeight: 700,
+                      color: "var(--text)",
+                      marginBottom: 6,
+                    }}
+                  >
+                    {t("tools.origin.heading")}
+                  </div>
+                  <ol
+                    style={{
+                      margin: 0,
+                      paddingLeft: 18,
+                      fontSize: 12.5,
+                      color: "var(--text-2)",
+                      lineHeight: 1.7,
+                    }}
+                  >
+                    <li>
+                      <strong>{t("tools.origin.globalTitle")}</strong>：
+                      {t("tools.origin.globalBefore")}{" "}
+                      <code className="mono">tool_use[]</code>{" "}
+                      {t("tools.origin.globalAfter")}
+                    </li>
+                    <li>
+                      <strong>{t("tools.origin.discoveryTitle")}</strong>：
+                      {t("tools.origin.discoveryBefore")}{" "}
+                      <code className="mono">search_tools</code>{" "}
+                      {t("tools.origin.discoveryAfter")}
+                    </li>
+                    <li>
+                      <strong>{t("tools.origin.docsTitle")}</strong>：
+                      {t("tools.origin.docsBefore")}{" "}
+                      <code className="mono">fetch_doc</code>{" "}
+                      {t("tools.origin.docsMiddle")}{" "}
+                      <code className="mono">extract_api_schema</code>{" "}
+                      {t("tools.origin.docsAfter")}{" "}
+                      <code className="mono">create_tool</code>{" "}
+                      {t("tools.origin.docsEnd")}
+                    </li>
                   </ol>
                   <div style={{ marginTop: 8, fontSize: 12 }}>
-                    <Link href={`/portal/${params.tenant}/factory`} style={{ color: "var(--signal)", textDecoration: "none" }}>{t("tools.origin.goFactory")}</Link>
+                    <Link
+                      href={`/portal/${params.tenant}/factory`}
+                      style={{ color: "var(--signal)", textDecoration: "none" }}
+                    >
+                      {t("tools.origin.goFactory")}
+                    </Link>
                   </div>
                 </Panel>
+
+                <ToolRevisionPanel
+                  revisions={filteredRevisions}
+                  loading={revisionsQuery.isLoading}
+                  error={
+                    revisionsQuery.error instanceof Error
+                      ? revisionsQuery.error.message
+                      : null
+                  }
+                  selectedRevisionId={requestedRevisionId}
+                  requestedDomainId={requestedRevisionDomain}
+                  onDomainChange={setRevisionDomain}
+                  activeRevisionByName={activeRevisionByName}
+                />
 
                 {grouped.map(([cat, items]) => (
                   <section
                     key={cat}
-                    style={{ display: "flex", flexDirection: "column", gap: 20 }}
+                    style={{
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 20,
+                    }}
                   >
                     <h2 style={categoryHeadingStyle}>{cat}</h2>
                     {items.map((t) => (
-                      <ToolSection key={t.name} tool={t} />
+                      <ToolSection
+                        key={t.name}
+                        tool={t}
+                        requestedToolName={requestedToolName}
+                      />
                     ))}
                   </section>
                 ))}
@@ -299,13 +442,467 @@ export default function ToolsPage() {
   );
 }
 
+function ToolRevisionPanel({
+  revisions,
+  loading,
+  error,
+  selectedRevisionId,
+  requestedDomainId,
+  onDomainChange,
+  activeRevisionByName,
+}: {
+  revisions: ManagedToolRevision[];
+  loading: boolean;
+  error: string | null;
+  selectedRevisionId: string | null;
+  requestedDomainId?: string;
+  onDomainChange: (domainId?: string) => void;
+  activeRevisionByName: Map<
+    string,
+    { id: string; domainId: string | null }
+  >;
+}) {
+  return (
+    <Panel
+      style={{
+        padding: "14px 16px",
+        borderColor: "var(--border-2)",
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          alignItems: "flex-start",
+          justifyContent: "space-between",
+          gap: 12,
+          flexWrap: "wrap",
+        }}
+      >
+        <div>
+          <div style={{ color: "var(--text)", fontSize: 13, fontWeight: 700 }}>
+            受控工具 revisions
+          </div>
+          <div
+            style={{
+              marginTop: 4,
+              color: "var(--text-3)",
+              fontSize: 11.5,
+              lineHeight: 1.5,
+            }}
+          >
+            draft 与 rejected 不在运行时工具目录中；只有带精确定义 probe
+            证据并经人工激活的 revision 才可被 Agent 调用。
+          </div>
+        </div>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            flexWrap: "wrap",
+          }}
+        >
+          <Button
+            small
+            tone={requestedDomainId === "__unbound__" ? "ghost" : "primary"}
+            onClick={() => onDomainChange(undefined)}
+          >
+            当前绑定域
+          </Button>
+          <Button
+            small
+            tone={requestedDomainId === "__unbound__" ? "primary" : "ghost"}
+            onClick={() => onDomainChange("__unbound__")}
+          >
+            绑定前草稿（__unbound__）
+          </Button>
+          <Badge tone="muted">{revisions.length} revisions</Badge>
+        </div>
+      </div>
+      {loading ? (
+        <div style={{ marginTop: 12, color: "var(--text-3)", fontSize: 12 }}>
+          正在读取 revision ledger…
+        </div>
+      ) : error ? (
+        <div
+          role="alert"
+          style={{ marginTop: 12, color: "var(--red)", fontSize: 12 }}
+        >
+          无法读取工具 revision：{error}
+        </div>
+      ) : (
+        <div style={{ display: "grid", gap: 8, marginTop: 12 }}>
+          {revisions.length === 0 ? (
+            <div style={{ color: "var(--text-3)", fontSize: 12 }}>
+              此 revision domain 暂无草稿或历史版本。
+              {selectedRevisionId
+                ? " 深链中的 revision 不在该 domain；请切换当前绑定域或 __unbound__。"
+                : ""}
+            </div>
+          ) : null}
+          {revisions.map((revision) => (
+            <ToolRevisionRow
+              key={revision.id}
+              revision={revision}
+              selected={revision.id === selectedRevisionId}
+              activeRevision={activeRevisionByName.get(revision.name)}
+            />
+          ))}
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+function parseProbeObject(text: string, label: string): Record<string, unknown> {
+  let value: unknown;
+  try {
+    value = JSON.parse(text) as unknown;
+  } catch {
+    throw new Error(`${label} 不是合法 JSON`);
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${label} 必须是 JSON 对象`);
+  }
+  return value as Record<string, unknown>;
+}
+
+function ToolRevisionRow({
+  revision,
+  selected,
+  activeRevision,
+}: {
+  revision: ManagedToolRevision;
+  selected: boolean;
+  activeRevision?: { id: string; domainId: string | null };
+}) {
+  const probe = useProbeToolRevision();
+  const activate = useActivateToolRevision();
+  const reject = useRejectToolRevision();
+  const [argsText, setArgsText] = useState("{}");
+  const [configText, setConfigText] = useState("{}");
+  const [verifiedHash, setVerifiedHash] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+  const [rowError, setRowError] = useState<string | null>(null);
+  const definition = revision.definition;
+  const sideEffect =
+    typeof definition.sideEffect === "string"
+      ? definition.sideEffect
+      : "unknown";
+  const operation =
+    typeof definition.operation === "string" ? definition.operation : "unknown";
+  const reviewPolicy = deriveToolRevisionReviewPolicy(revision);
+  const domainId = revision.domainId?.trim() || "__unbound__";
+  const activeDomain = activeRevision?.domainId?.trim() || "__unbound__";
+  const expectedActiveRevisionId =
+    activeRevision && activeDomain === domainId ? activeRevision.id : null;
+  const exactProbeVerified = verifiedHash === revision.definitionHash;
+  const busy = probe.isPending || activate.isPending || reject.isPending;
+  const statusTone =
+    revision.status === "active"
+      ? "green"
+      : revision.status === "rejected"
+        ? "red"
+        : revision.status === "draft"
+          ? "signal"
+          : "muted";
+
+  async function runProbe() {
+    setRowError(null);
+    setMessage(null);
+    setVerifiedHash(null);
+    try {
+      const args = parseProbeObject(argsText, "Probe args");
+      const config = parseProbeObject(configText, "Probe config");
+      const receipt = await probe.mutateAsync({
+        name: revision.name,
+        revisionId: revision.id,
+        revisionDomainId: domainId,
+        args,
+        config,
+      });
+      if (
+        receipt.verified !== true ||
+        receipt.definitionHash !== revision.definitionHash
+      ) {
+        throw new Error(
+          "Probe 没有返回与该 revision definition hash 一致的 verified receipt。",
+        );
+      }
+      setVerifiedHash(receipt.definitionHash);
+      setMessage(
+        `真实 probe 已核验 · ${receipt.durationMs ?? "?"}ms · #${receipt.definitionHash.slice(0, 12)}`,
+      );
+    } catch (cause) {
+      setRowError(cause instanceof Error ? cause.message : String(cause));
+    }
+  }
+
+  async function activateRevision() {
+    if (!exactProbeVerified || !reviewPolicy.canActivateAfterExactProbe) return;
+    if (
+      !window.confirm(
+        `激活 ${revision.name} v${revision.version}？这会按 CAS 切换运行时 projection，历史版本会保留。`,
+      )
+    ) {
+      return;
+    }
+    setRowError(null);
+    setMessage(null);
+    try {
+      const receipt = await activate.mutateAsync({
+        name: revision.name,
+        revisionId: revision.id,
+        revisionDomainId: domainId,
+        expectedActiveRevisionId,
+      });
+      if (receipt.activated !== true) {
+        throw new Error("服务端未确认 revision 已激活");
+      }
+      setMessage("Revision 已由当前登录用户激活，运行时目录正在刷新。");
+    } catch (cause) {
+      setRowError(cause instanceof Error ? cause.message : String(cause));
+    }
+  }
+
+  async function rejectRevision() {
+    if (
+      !window.confirm(
+        `拒绝 ${revision.name} v${revision.version}？definition 历史会保留，但不能再激活。`,
+      )
+    ) {
+      return;
+    }
+    setRowError(null);
+    setMessage(null);
+    try {
+      const receipt = await reject.mutateAsync({
+        name: revision.name,
+        revisionId: revision.id,
+        revisionDomainId: domainId,
+      });
+      if (receipt.rejected !== true) {
+        throw new Error("服务端未确认 revision 已拒绝");
+      }
+      setMessage("Revision 已拒绝；immutable history 已保留。");
+    } catch (cause) {
+      setRowError(cause instanceof Error ? cause.message : String(cause));
+    }
+  }
+
+  return (
+    <article
+      id={revisionAnchor(revision.id)}
+      style={{
+        display: "grid",
+        gap: 10,
+        padding: "11px 12px",
+        border: `1px solid ${selected ? "var(--signal)" : "var(--border)"}`,
+        borderRadius: 7,
+        background: selected
+          ? "color-mix(in srgb, var(--signal) 6%, var(--panel-2))"
+          : "var(--panel-2)",
+        scrollMarginTop: 24,
+      }}
+    >
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns:
+            "minmax(180px, 1.4fr) auto minmax(220px, 1fr)",
+          alignItems: "center",
+          gap: 12,
+        }}
+      >
+        <div style={{ minWidth: 0 }}>
+          <div
+            style={{
+              color: "var(--text)",
+              font: "12px/1.4 var(--mono)",
+              overflowWrap: "anywhere",
+            }}
+          >
+            {revision.name} · v{revision.version}
+          </div>
+          <div
+            style={{ marginTop: 3, color: "var(--text-3)", fontSize: 10.5 }}
+          >
+            {revision.source} · {sideEffect} · {operation} · domain {domainId}
+          </div>
+        </div>
+        <Badge tone={statusTone}>{revision.status}</Badge>
+        <div
+          style={{
+            color: "var(--text-3)",
+            font: "10.5px/1.45 var(--mono)",
+            textAlign: "right",
+            overflowWrap: "anywhere",
+          }}
+        >
+          #{revision.definitionHash.replace(/^sha256:/u, "").slice(0, 12)}
+          <br />
+          {revision.validation.passed
+            ? "静态校验通过"
+            : `${revision.validation.issues.length} 个静态问题`}
+          {revision.status === "active"
+            ? " · runtime active"
+            : " · runtime inactive"}
+        </div>
+      </div>
+
+      {!reviewPolicy.canProbe && reviewPolicy.lifecycleCandidate ? (
+        <div
+          role="alert"
+          style={{
+            padding: "9px 10px",
+            borderRadius: 6,
+            border:
+              "1px solid color-mix(in srgb, var(--red) 45%, var(--border))",
+            color: "var(--red)",
+            fontSize: 11.5,
+            lineHeight: 1.55,
+          }}
+        >
+          <strong>Activation blocked：</strong>
+          {reviewPolicy.blocker?.message ??
+            (revision.validation.passed
+              ? "该 revision 当前不满足受控 probe/activation 条件。"
+              : revision.validation.issues.join("；"))}{" "}
+          {reviewPolicy.writeLike
+            ? "仅一次性授权不够；FDE 必须先注册可信的 create/readback/cleanup/absence 生命周期，再创建新 revision。"
+            : "请先修复静态 contract，再保存一个新的 immutable revision。"}
+        </div>
+      ) : null}
+
+      {reviewPolicy.canProbe ? (
+        <details open={selected}>
+          <summary
+            style={{
+              cursor: "pointer",
+              color: "var(--text-2)",
+              fontSize: 11.5,
+            }}
+          >
+            精确 revision probe 与人工激活
+          </summary>
+          <div style={{ display: "grid", gap: 8, marginTop: 9 }}>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr",
+                gap: 8,
+              }}
+            >
+              <label style={{ color: "var(--text-3)", fontSize: 10.5 }}>
+                Probe args（JSON object）
+                <textarea
+                  value={argsText}
+                  onChange={(event) => {
+                    setArgsText(event.target.value);
+                    setVerifiedHash(null);
+                  }}
+                  style={revisionJsonInputStyle}
+                />
+              </label>
+              <label style={{ color: "var(--text-3)", fontSize: 10.5 }}>
+                Probe config（仅 env 引用，不得填 secret）
+                <textarea
+                  value={configText}
+                  onChange={(event) => {
+                    setConfigText(event.target.value);
+                    setVerifiedHash(null);
+                  }}
+                  style={revisionJsonInputStyle}
+                />
+              </label>
+            </div>
+            <div
+              style={{
+                display: "flex",
+                gap: 7,
+                alignItems: "center",
+                flexWrap: "wrap",
+              }}
+            >
+              <Button
+                small
+                tone="ghost"
+                disabled={busy}
+                onClick={() => void runProbe()}
+              >
+                对此 revision 执行真实 probe
+              </Button>
+              <Button
+                small
+                tone="primary"
+                disabled={busy || !exactProbeVerified}
+                onClick={() => void activateRevision()}
+              >
+                {revision.status === "retired" ? "回滚并激活" : "人工激活"}
+              </Button>
+              <span
+                style={{
+                  color: exactProbeVerified
+                    ? "var(--green)"
+                    : "var(--text-3)",
+                  font: "10.5px/1.45 var(--mono)",
+                }}
+              >
+                CAS expected active: {expectedActiveRevisionId ?? "none"}
+              </span>
+            </div>
+          </div>
+        </details>
+      ) : null}
+
+      {reviewPolicy.canReject ? (
+        <div>
+          <Button
+            small
+            tone="ghost"
+            disabled={busy}
+            onClick={() => void rejectRevision()}
+          >
+            拒绝此草稿
+          </Button>
+        </div>
+      ) : null}
+
+      {message ? (
+        <div role="status" style={{ color: "var(--green)", fontSize: 11.5 }}>
+          {message}
+        </div>
+      ) : null}
+      {rowError ? (
+        <div role="alert" style={{ color: "var(--red)", fontSize: 11.5 }}>
+          {rowError}
+        </div>
+      ) : null}
+    </article>
+  );
+}
+
 // ─── Section ────────────────────────────────────────────────────────────────
 
-function ToolSection({ tool }: { tool: ToolCatalogEntry }) {
+function ToolSection({
+  tool,
+  requestedToolName,
+}: {
+  tool: ToolCatalogEntry;
+  requestedToolName?: string | null;
+}) {
   const { t } = useI18n();
+  const isRequested = requestedToolName === tool.name;
+  const sectionRef = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    if (!isRequested) return;
+    sectionRef.current?.scrollIntoView({ block: "start", behavior: "smooth" });
+  }, [isRequested]);
   const del = useDeleteTool();
   const toast = useToast();
   const isCreated = tool.origin === "created";
+  const canDeactivateCreated =
+    isCreated && Boolean(tool.activeRevisionId?.trim());
   const manifestSnippet = useMemo(() => {
     const entry: Record<string, unknown> = {
       name: tool.name,
@@ -318,13 +915,20 @@ function ToolSection({ tool }: { tool: ToolCatalogEntry }) {
   }, [tool]);
 
   const hasArgs = tool.argsSchema && Object.keys(tool.argsSchema).length > 0;
-  const hasConfig = tool.configSchema && Object.keys(tool.configSchema).length > 0;
-  const hasReturns = tool.returnsSchema && Object.keys(tool.returnsSchema).length > 0;
+  const hasConfig =
+    tool.configSchema && Object.keys(tool.configSchema).length > 0;
+  const hasReturns =
+    tool.returnsSchema && Object.keys(tool.returnsSchema).length > 0;
 
   return (
     <article
+      ref={sectionRef}
       id={`tool-${tool.name.replace(/[^a-zA-Z0-9._-]/g, "-").toLowerCase()}`}
-      style={sectionStyle}
+      style={
+        isRequested
+          ? { ...sectionStyle, borderColor: "var(--signal)" }
+          : sectionStyle
+      }
     >
       <header style={{ display: "flex", flexDirection: "column", gap: 6 }}>
         <div
@@ -351,20 +955,34 @@ function ToolSection({ tool }: { tool: ToolCatalogEntry }) {
             <Badge tone="muted">{tool.category}</Badge>
             {/* #SCALE-TOOLS — empirical sandbox effectiveness: green ≥70%, red below (the ranking
                 actually demotes <70% w/ ≥3 runs, so a red badge = "won't be recommended"). */}
-            {typeof tool.successRate === "number" && (tool.invoked ?? 0) > 0 && (
-              <span title={t("tools.effectiveness.tooltip", { invoked: tool.invoked ?? 0, succeeded: tool.succeeded ?? 0 })}>
-                <Badge tone={tool.successRate >= 0.7 ? "green" : "red"}>
-                  {t("tools.effectiveness.badge", {
-                    rate: Math.round(tool.successRate * 100),
+            {typeof tool.successRate === "number" &&
+              (tool.invoked ?? 0) > 0 && (
+                <span
+                  title={t("tools.effectiveness.tooltip", {
                     invoked: tool.invoked ?? 0,
-                    demoted: tool.successRate < 0.7 && (tool.invoked ?? 0) >= 3
-                      ? t("tools.effectiveness.demoted")
-                      : "",
+                    succeeded: tool.succeeded ?? 0,
                   })}
-                </Badge>
-              </span>
+                >
+                  <Badge tone={tool.successRate >= 0.7 ? "green" : "red"}>
+                    {t("tools.effectiveness.badge", {
+                      rate: Math.round(tool.successRate * 100),
+                      invoked: tool.invoked ?? 0,
+                      demoted:
+                        tool.successRate < 0.7 && (tool.invoked ?? 0) >= 3
+                          ? t("tools.effectiveness.demoted")
+                          : "",
+                    })}
+                  </Badge>
+                </span>
+              )}
+            {isCreated && (
+              <Badge tone="signal">{t("tools.createdBadge")}</Badge>
             )}
-            {isCreated && <Badge tone="signal">{t("tools.createdBadge")}</Badge>}
+            {isCreated && tool.deactivationBlocker ? (
+              <span title={tool.deactivationBlocker.message}>
+                <Badge tone="red">需 lifecycle 迁移</Badge>
+              </span>
+            ) : null}
             {tool.chainsWith && tool.chainsWith.length > 0 && (
               <Badge tone="signal">
                 {t("tools.chainsWith", { tools: tool.chainsWith.join(", ") })}
@@ -375,15 +993,52 @@ function ToolSection({ tool }: { tool: ToolCatalogEntry }) {
                 small
                 tone="ghost"
                 icon="trash"
-                disabled={del.isPending}
+                disabled={del.isPending || !canDeactivateCreated}
+                title={
+                  tool.deactivationBlocker?.message ??
+                  "停用 active projection；immutable revision history 会保留"
+                }
                 onClick={() => {
-                  if (confirm(t("tools.deleteCreatedConfirm", { name: tool.name }))) {
-                    del.mutate(tool.name, {
-                      onError: (error) => toast({
-                        tone: "red",
-                        title: t("tools.deleteCreatedFailed", { message: (error as Error).message }),
-                      }),
-                    });
+                  if (!tool.activeRevisionId) return;
+                  if (
+                    confirm(
+                      t("tools.deleteCreatedConfirm", { name: tool.name }),
+                    )
+                  ) {
+                    del.mutate(
+                      {
+                        name: tool.name,
+                        expectedActiveRevisionId: tool.activeRevisionId,
+                        revisionDomainId:
+                          tool.activeRevisionDomainId?.trim() || "__unbound__",
+                      },
+                      {
+                        onSuccess: (receipt) => {
+                          if (receipt.deactivated !== true) {
+                            toast({
+                              tone: "red",
+                              title: t("tools.deleteCreatedFailed", {
+                                message: "服务端未确认 deactivated:true",
+                              }),
+                            });
+                            return;
+                          }
+                          toast({
+                            tone: "green",
+                            title: t("tools.deactivateCreatedSuccess", {
+                              name: tool.name,
+                            }),
+                          });
+                        },
+                      onError: (error) =>
+                        toast({
+                          tone: "red",
+                          title: t("tools.deleteCreatedFailed", {
+                            message: (error as Error).message,
+                          }),
+                        }),
+                      },
+                    );
                   }
                 }}
               >
@@ -436,7 +1091,10 @@ function ToolSection({ tool }: { tool: ToolCatalogEntry }) {
         </div>
       </header>
 
-      <SubBlock title={t("tools.manifestDeclaration")} copyText={manifestSnippet}>
+      <SubBlock
+        title={t("tools.manifestDeclaration")}
+        copyText={manifestSnippet}
+      >
         <pre style={preStyle}>{manifestSnippet}</pre>
       </SubBlock>
 
@@ -453,17 +1111,22 @@ function ToolSection({ tool }: { tool: ToolCatalogEntry }) {
       ) : (
         <SubBlock title={t("tools.arguments")}>
           <p style={mutedNoteStyle}>
-            {t("tools.noArgsPart1")}{" "}
-            <code className="mono">{"{}"}</code>.
+            {t("tools.noArgsPart1")} <code className="mono">{"{}"}</code>.
           </p>
         </SubBlock>
       )}
 
       {hasReturns && (
-        <SubBlock title={t("tools.returns")} subtitle={t("tools.returnsSubtitle")}>
+        <SubBlock
+          title={t("tools.returns")}
+          subtitle={t("tools.returnsSubtitle")}
+        >
           <SchemaTable schema={tool.returnsSchema!} />
           {tool.returnsExample !== undefined && (
-            <ExampleBlock value={tool.returnsExample} label={t("tools.example")} />
+            <ExampleBlock
+              value={tool.returnsExample}
+              label={t("tools.example")}
+            />
           )}
         </SubBlock>
       )}
@@ -486,6 +1149,8 @@ function ToolSection({ tool }: { tool: ToolCatalogEntry }) {
           <p style={mutedNoteStyle}>{t("tools.noConfig")}</p>
         </SubBlock>
       )}
+
+      <FactoryIntegrationProfiles tool={tool} />
     </article>
   );
 }
@@ -558,7 +1223,12 @@ function SubBlock({
           )}
         </div>
         {copyText && (
-          <Button small tone="ghost" icon={copied ? "check" : "code"} onClick={copy}>
+          <Button
+            small
+            tone="ghost"
+            icon={copied ? "check" : "code"}
+            onClick={copy}
+          >
             {copied ? t("tools.copied") : t("tools.copy")}
           </Button>
         )}
@@ -654,7 +1324,12 @@ function ExampleBlock({ value, label }: { value: unknown; label: string }) {
         >
           {label}
         </span>
-        <Button small tone="ghost" icon={copied ? "check" : "code"} onClick={copy}>
+        <Button
+          small
+          tone="ghost"
+          icon={copied ? "check" : "code"}
+          onClick={copy}
+        >
           {copied ? t("tools.copied") : t("tools.copy")}
         </Button>
       </div>
@@ -734,6 +1409,20 @@ const preStyle: React.CSSProperties = {
   lineHeight: 1.5,
   overflow: "auto",
   whiteSpace: "pre",
+};
+
+const revisionJsonInputStyle: React.CSSProperties = {
+  display: "block",
+  width: "100%",
+  minHeight: 58,
+  marginTop: 4,
+  padding: "7px 8px",
+  resize: "vertical",
+  border: "1px solid var(--border)",
+  borderRadius: 5,
+  background: "var(--bg)",
+  color: "var(--text)",
+  font: "11px/1.45 var(--mono)",
 };
 
 const tableStyle: React.CSSProperties = {

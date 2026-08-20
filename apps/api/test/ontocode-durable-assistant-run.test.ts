@@ -18,7 +18,9 @@ import {
 } from "../src/services/ontocode-assistant-run-store";
 import {
   compileOntoCodeContext,
+  normalizeOntoCodeContextCompilerError,
   OntoCodeContextCompilerError,
+  resolveOntoCodeAssistantContextRefs,
 } from "../src/services/ontocode-context-compiler";
 import {
   clearFactoryDomainBinding,
@@ -34,6 +36,7 @@ import {
   getOntoCodeProject,
   getOntoCodeSession,
   listLatestOntoCodeMessages,
+  OntoCodeStoreError,
 } from "../src/services/ontocode-session-store";
 import { buildTestEnv } from "./harness";
 import { installOntoCodeTestOntology } from "./ontocode-ontology-fixture";
@@ -52,6 +55,55 @@ describe("OntoCode durable Assistant Run and exact context", () => {
     tenantId: "",
     actorId: "usr-ontocode-assistant-test",
   };
+
+  it("falls back to exact latest stage Artifact refs when a client sends none", () => {
+    expect(
+      resolveOntoCodeAssistantContextRefs(
+        [],
+        [
+          {
+            artifact: {
+              id: "oca-scope-old",
+              logicalName: "stages/scope/receipt",
+            },
+            latestVersion: { id: "ocav-scope-old", createdAt: 10 },
+          },
+          {
+            artifact: {
+              id: "oca-scope-new",
+              logicalName: "stages/scope/receipt",
+            },
+            latestVersion: { id: "ocav-scope-new", createdAt: 20 },
+          },
+          {
+            artifact: {
+              id: "oca-analysis",
+              logicalName: "stages/ontology_analysis/receipt",
+            },
+            latestVersion: { id: "ocav-analysis", createdAt: 15 },
+          },
+          {
+            artifact: {
+              id: "oca-blueprint",
+              logicalName: "stages/blueprint/receipt",
+            },
+            latestVersion: { id: "ocav-blueprint", createdAt: 30 },
+          },
+          {
+            artifact: { id: "oca-code", logicalName: "agents/a/agent.ts" },
+            latestVersion: { id: "ocav-code", createdAt: 40 },
+          },
+        ],
+      ),
+    ).toEqual([
+      "artifact:oca-blueprint@ocav-blueprint",
+      "artifact:oca-scope-new@ocav-scope-new",
+      "artifact:oca-analysis@ocav-analysis",
+    ]);
+    expect(
+      resolveOntoCodeAssistantContextRefs(["artifact:explicit@v1"], []),
+    ).toEqual(["artifact:explicit@v1"]);
+  });
 
   beforeAll(async () => {
     await buildTestEnv();
@@ -170,7 +222,7 @@ describe("OntoCode durable Assistant Run and exact context", () => {
     // 助手手上一条领域事实都没有却看起来在引用本体，是最容易骗到人的一种状态。
     const ontologyRef = compiled.refs.find((r) => r.kind === "ontology")!;
     expect(ontologyRef.content).toContain("digestUnavailable");
-    expect(ontologyRef.content).not.toContain("digest\":");
+    expect(ontologyRef.content).not.toContain('digest":');
 
     // 拿到摘要时，真实领域事实进入上下文，问「这个域有哪些动作」不必再跑一个完整作业。
     const withDigest = compileOntoCodeContext({
@@ -202,6 +254,37 @@ describe("OntoCode durable Assistant Run and exact context", () => {
         requestedRefs: ["agents/screen-candidate/agent.ts"],
       }),
     ).toThrow("Context refs must be exact");
+  });
+
+  it("does not misreport a later Session error as an unavailable context reference", () => {
+    const project = getOntoCodeProject(ctx, projectId);
+    const session = getOntoCodeSession(ctx, sessionId);
+    let missingRefError: unknown;
+    try {
+      compileOntoCodeContext({
+        ctx,
+        project,
+        session,
+        requestedRefs: ["artifact:oca-missing@ocav-missing"],
+      });
+    } catch (error) {
+      missingRefError = error;
+    }
+
+    expect(missingRefError).toBeInstanceOf(OntoCodeContextCompilerError);
+    expect(
+      normalizeOntoCodeContextCompilerError(missingRefError),
+    ).toMatchObject({
+      code: "ontocode_context_ref_invalid",
+      statusCode: 404,
+    });
+
+    const laterPolicyError = new OntoCodeStoreError(
+      "ontocode_waiting_job_kind_mismatch",
+      "Only a Build Command may continue a waiting OntoCode Build interaction",
+      409,
+    );
+    expect(normalizeOntoCodeContextCompilerError(laterPolicyError)).toBeNull();
   });
 
   it("accepts the user turn before planning and resumes the same atomic turn", () => {
@@ -362,5 +445,58 @@ describe("OntoCode durable Assistant Run and exact context", () => {
           message.content.assistantRunId === acceptance.run.id,
       ),
     ).toBe(true);
+  });
+
+  it("persists WHY a plan was refused onto the failed step", () => {
+    /**
+     * Live shape: run ocar-e898f03078d54d75 failed as
+     * `ontocode_assistant_planner_invalid_response` with `observation_json` =
+     * `{}`. Both provider calls had returned ok, so the reason existed — it was
+     * simply thrown away between the planner and the step row. The receipt then
+     * had nothing to show and the DB had nothing to query.
+     */
+    const acceptance = acceptOntoCodeAssistantRun(ctx, sessionId, {
+      text: "Continue.",
+      contextRefs: [],
+      idempotencyKey: `assistant-run-rejection-${suffix}`,
+    });
+    const step = startOntoCodeAssistantStep(ctx, acceptance.run.id, {
+      ordinal: 1,
+      kind: "model_plan",
+      input: { provider: "tenant-gateway" },
+    });
+    failOntoCodeAssistantRun(
+      ctx,
+      acceptance.run.id,
+      Object.assign(
+        new Error("invalid plan after one bounded repair attempt"),
+        {
+          code: "ontocode_assistant_planner_invalid_response",
+          details: {
+            attempts: [
+              {
+                purpose: "ontocode.assistant.plan",
+                issues: ["action: Invalid enum value"],
+              },
+              {
+                purpose: "ontocode.assistant.plan.repair",
+                issues: ["<root>: invalid JSON"],
+              },
+            ],
+            sample: '{"behavior":"execute","action":"run_arbitrary_shell"',
+          },
+        },
+      ),
+      step.id,
+    );
+
+    const stored = getOntoCodeAssistantRun(ctx, acceptance.run.id);
+    expect(stored.steps[0]).toMatchObject({
+      status: "failed",
+      errorCode: "ontocode_assistant_planner_invalid_response",
+    });
+    const observation = JSON.stringify(stored.steps[0]!.observation ?? {});
+    expect(observation).toContain("Invalid enum value");
+    expect(observation).toContain("run_arbitrary_shell");
   });
 });

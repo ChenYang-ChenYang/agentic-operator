@@ -4,9 +4,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { DRAFT_SANDBOX_TEST_SENTINELS } from "@agentic/contracts";
 
 import {
+  INTEGRATION_PROFILE_AUTHORIZATION_PROTOCOL_VERSION,
   SANDBOX_CLEANUP_RECEIPT_SCHEMA,
   SANDBOX_BROKER_REGISTRATION_SCHEMA,
   SANDBOX_RUN_DRAIN_RECEIPT_SCHEMA,
+  integrationProfileConfigDigest,
+  integrationProfileToolDefinitionDigest,
   sandboxCleanupReceiptHash,
   sandboxRunDrainReceiptHash,
   type AgentDraft,
@@ -16,6 +19,7 @@ import {
   type FactoryAuthorizationChallengeStore,
   type FactoryPorts,
   type GeneratedAgentSpec,
+  type RealTool,
   type SandboxCleanupReceipt,
   type SandboxDeployResult,
 } from "@agentic/agent-factory";
@@ -76,6 +80,62 @@ function spec(): GeneratedAgentSpec {
     generatedCode: "export async function handler(input: { work_id: string }) { return { work_id: input.work_id }; }",
     codeSource: "ai",
     codeExecuted: false,
+  };
+}
+
+function sandboxOnlyProfileFixture(): {
+  generatedSpec: GeneratedAgentSpec;
+  tool: RealTool;
+} {
+  const toolName = "vendor.lookup";
+  const config = { endpoint_env: "VENDOR_SANDBOX_ENDPOINT" };
+  const tool: RealTool = {
+    name: toolName,
+    sideEffect: "read",
+    operation: "read",
+    effectScope: "external",
+    sandboxPolicy: "live_external",
+    catalogDefinition: {
+      name: toolName,
+      configSchema: {
+        endpoint_env: { type: "string", required: true },
+      },
+    },
+  };
+  const profile = {
+    id: "profile-sandbox-only",
+    tenantId: scope.tenantId,
+    profileKey: "sandbox-only",
+    toolName,
+    domainId: domain,
+    environment: "sandbox" as const,
+    config,
+    confirmedBy: "usr-human-reviewer",
+    toolDefinitionDigest: integrationProfileToolDefinitionDigest(tool),
+    configDigest: integrationProfileConfigDigest(config),
+    authorizationProtocolVersion:
+      INTEGRATION_PROFILE_AUTHORIZATION_PROTOCOL_VERSION,
+    confirmedAt: "2026-07-15T00:00:00.000Z",
+  };
+  tool.integrationProfiles = [profile];
+  return {
+    tool,
+    generatedSpec: {
+      ...spec(),
+      tools: [toolName],
+      toolSideEffects: { [toolName]: "read" },
+      toolPolicies: {
+        [toolName]: {
+          operation: "read",
+          effectScope: "external",
+          sandboxPolicy: "live_external",
+        },
+      },
+      toolConfigs: {},
+      toolProfileRefs: {},
+      sandboxToolConfigs: { [toolName]: config },
+      sandboxToolProfileRefs: { [toolName]: profile.id },
+    },
   };
 }
 
@@ -216,11 +276,15 @@ interface Harness {
   createSandboxedVersion: ReturnType<typeof vi.fn>;
   replayRegression: ReturnType<typeof vi.fn>;
   publishValidatedVersion: ReturnType<typeof vi.fn>;
+  writeReviewReceipt: ReturnType<typeof vi.fn>;
   ontologyState: { current: DomainOntology };
 }
 
-function harness(): Harness {
-  const generatedSpec = spec();
+function harness(options: {
+  generatedSpec?: GeneratedAgentSpec;
+  registryTools?: RealTool[];
+} = {}): Harness {
+  const generatedSpec = options.generatedSpec ?? spec();
   const baseDraft: AgentDraft = {
     domain,
     slug: generatedSpec.slug,
@@ -267,12 +331,14 @@ function harness(): Harness {
     suiteFingerprint: "suite-fresh",
   }));
   const publishValidatedVersion = vi.fn(async () => undefined);
+  const writeReviewReceipt = vi.fn(async () => undefined);
   const store = {
     getVersion: vi.fn(async (_requestedDomain: string, requestedVersion: string) =>
       requestedVersion === baseVersionId ? [baseDraft] : []),
     createSandboxedVersion,
     validateSandboxedRegression: replayRegression,
     publishValidatedVersion,
+    writeReviewReceipt,
   } as unknown as FsAgentDraftStore;
 
   const deploy = vi.fn(async (
@@ -363,13 +429,22 @@ function harness(): Harness {
 
   const ports = {
     ontology: { fetchOntology: vi.fn(async () => ontologyState.current) },
-    toolRegistry: { list: vi.fn(async () => []) },
+    toolRegistry: { list: vi.fn(async () => options.registryTools ?? []) },
     tools: { list: vi.fn(async () => []) },
     integrationCapabilities: { list: vi.fn(async () => []) },
     authorizationChallenges: challengeStore(),
     sandbox: { deployAndObserve: deploy, teardown: vi.fn(async () => undefined) },
   } as unknown as FactoryPorts;
-  return { store, ports, deploy, createSandboxedVersion, replayRegression, publishValidatedVersion, ontologyState };
+  return {
+    store,
+    ports,
+    deploy,
+    createSandboxedVersion,
+    replayRegression,
+    publishValidatedVersion,
+    writeReviewReceipt,
+    ontologyState,
+  };
 }
 
 function reviewRequest(h: Harness) {
@@ -383,6 +458,34 @@ function reviewRequest(h: Harness) {
     ports: h.ports,
     store: h.store,
   };
+}
+
+function useSameHostDiagnosticResult(h: Harness): void {
+  const originalDeploy = h.ports.sandbox.deployAndObserve;
+  h.ports.sandbox.deployAndObserve = vi.fn(async (...args) => {
+    const result = await originalDeploy(...args);
+    return {
+      ...result,
+      degradedAgents: ["same_host_container_diagnostic_only"],
+      functionTester: result.functionTester?.map((entry) => ({
+        ...entry,
+        qualification: "development_only" as const,
+        reasons: [
+          ...entry.reasons,
+          "同宿主容器只用于诊断；需要 external_sandbox 才能形成可晋升证据。",
+        ],
+      })),
+      ...makePromotableSandboxExecutionEvidence({
+        candidateFingerprint: result.candidateFingerprint!,
+        targetDomainId: domain,
+        targetTenantId: scope.tenantId,
+        targetTenantSlug: scope.tenantSlug,
+        sandboxAttemptId: result.sandboxAttemptId!,
+        agentRefs: [spec().slug],
+        isolationTier: "same_host_container",
+      }),
+    };
+  });
 }
 
 describe("field-edited draft exact-version sandbox finish", () => {
@@ -400,6 +503,129 @@ describe("field-edited draft exact-version sandbox finish", () => {
         publicMessage: expect.stringContaining("模板占位"),
       } satisfies Partial<DraftSandboxError>);
       expect(h.deploy).not.toHaveBeenCalled();
+      expect(h.createSandboxedVersion).not.toHaveBeenCalled();
+    }
+  });
+
+  it("requires only the sandbox profile at the sandbox lifecycle stage", async () => {
+    const fixture = sandboxOnlyProfileFixture();
+    const sandboxOnly = harness({
+      generatedSpec: fixture.generatedSpec,
+      registryTools: [fixture.tool],
+    });
+    await expect(
+      prepareDraftSandboxReview(reviewRequest(sandboxOnly)),
+    ).resolves.toMatchObject({
+      schema: "agent-factory-draft-sandbox-review/v1",
+    });
+
+    const missingSandbox = harness({
+      generatedSpec: {
+        ...fixture.generatedSpec,
+        sandboxToolConfigs: {},
+        sandboxToolProfileRefs: {},
+      },
+      registryTools: [fixture.tool],
+    });
+    await expect(
+      prepareDraftSandboxReview(reviewRequest(missingSandbox)),
+    ).rejects.toMatchObject({
+      code: "integration_profile_drift",
+      publicMessage: expect.stringContaining("sandbox integration profile"),
+    } satisfies Partial<DraftSandboxError>);
+  });
+
+  it("persists a same-host green run only as an explicit development diagnostic", async () => {
+    const h = harness();
+    useSameHostDiagnosticResult(h);
+    const review = await prepareDraftSandboxReview(reviewRequest(h));
+
+    const receipt = await finishDraftSandbox({
+      ...reviewRequest(h),
+      challengeRef: review.challenge,
+      answer: review.challenge.token,
+      actor: "usr-human-reviewer",
+    });
+
+    expect(receipt).toMatchObject({
+      schema: "agent-factory-draft-sandbox-finish/v1",
+      baseVersionId,
+      versionId: baseVersionId,
+      regressionReady: false,
+      diagnosticOnly: true,
+      qualification: "development_only",
+      sandbox: {
+        cleanupVerified: true,
+        qualification: "development_only",
+        isolationTier: "same_host_container",
+      },
+      diagnosticEvidence: {
+        schema: "agent-factory-draft-sandbox-diagnostic/v1",
+        persisted: true,
+        promotionBlockers: expect.arrayContaining([
+          expect.stringContaining("不能证明独立执行平面"),
+        ]),
+      },
+      regressionReplay: { pass: false, skipped: true },
+    });
+    expect(h.writeReviewReceipt).toHaveBeenCalledWith(
+      domain,
+      expect.stringMatching(/^review-[a-f0-9-]+$/),
+      expect.objectContaining({
+        schema: "agent-factory-draft-sandbox-diagnostic/v1",
+        qualification: "development_only",
+        sandbox: expect.objectContaining({
+          isolationTier: "same_host_container",
+        }),
+      }),
+    );
+    expect(h.createSandboxedVersion).not.toHaveBeenCalled();
+    expect(h.replayRegression).not.toHaveBeenCalled();
+    expect(h.publishValidatedVersion).not.toHaveBeenCalled();
+  });
+
+  it("does not relax cleanup, tester, replay, model-ledger, or zero-live-call gates for same-host diagnostics", async () => {
+    const corruptions: Array<
+      [string, (result: SandboxDeployResult) => SandboxDeployResult]
+    > = [
+      ["cleanup", (result) => ({ ...result, cleanupVerified: false })],
+      [
+        "tester",
+        (result) => ({
+          ...result,
+          functionTester: result.functionTester?.map((entry) => ({
+            ...entry,
+            ran: false,
+          })),
+        }),
+      ],
+      [
+        "replay",
+        (result) => ({
+          ...result,
+          sandboxReplayEvidenceComplete: false,
+        }),
+      ],
+      ["model", (result) => ({ ...result, modelUsage: undefined })],
+      ["live call", (result) => ({ ...result, externalLiveCalls: 1 })],
+    ];
+
+    for (const [_label, corrupt] of corruptions) {
+      const h = harness();
+      useSameHostDiagnosticResult(h);
+      const diagnosticDeploy = h.ports.sandbox.deployAndObserve;
+      h.ports.sandbox.deployAndObserve = vi.fn(async (...args) =>
+        corrupt(await diagnosticDeploy(...args)));
+      const review = await prepareDraftSandboxReview(reviewRequest(h));
+      await expect(finishDraftSandbox({
+        ...reviewRequest(h),
+        challengeRef: review.challenge,
+        answer: review.challenge.token,
+        actor: "usr-human-reviewer",
+      })).rejects.toMatchObject({
+        code: "sandbox_not_green",
+      } satisfies Partial<DraftSandboxError>);
+      expect(h.writeReviewReceipt).not.toHaveBeenCalled();
       expect(h.createSandboxedVersion).not.toHaveBeenCalled();
     }
   });

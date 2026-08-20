@@ -47,6 +47,7 @@ import { isVisibleRuntimeDomain } from "@/lib/domain-display";
 import { useTenant } from "@/app/portal/lib/use-tenant";
 import { readApiData } from "@/lib/api-response";
 import { DomainSyncPanel } from "./domain-sync";
+import { RuntimeProfilesPanel } from "./runtime-profiles";
 
 const DEFAULT_COLORS = [
   "#d0ff00",
@@ -229,6 +230,10 @@ export default function TenantsPage() {
 
       <div style={{ marginBottom: 14 }}>
         <DomainSyncPanel activeTenant={activeTenant} />
+      </div>
+
+      <div style={{ marginBottom: 14 }}>
+        <RuntimeProfilesPanel activeTenant={activeTenant} />
       </div>
 
       <Panel

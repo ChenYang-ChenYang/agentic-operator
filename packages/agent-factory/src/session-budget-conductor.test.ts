@@ -39,6 +39,14 @@ describe("Factory session budget execution fuse", () => {
     const execute = vi.fn(async () => ({ ok: true, summary: "should not execute" }));
     const tool: BrainTool = {
       name: "dangerous_write",
+      effect: {
+        sideEffect: "write",
+        scope: "external",
+        checkpoint: "immediate",
+        gate: "any",
+        stageFreeReason:
+          "Test-only synthetic write used to verify the session budget refuses execution before dispatch.",
+      },
       description: "test write",
       parameters: { type: "object" },
       execute,

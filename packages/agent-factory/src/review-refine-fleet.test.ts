@@ -63,7 +63,7 @@ function context(ont: DomainOntology): BrainCtx & { __events: BrainEvent[] } {
     budgetLedger: { tokens: 0, spawns: 0, maxTokens: null, maxSpawns: 50 },
     ports: {
       ontology: { fetchOntology: async () => ont, listDomains: async () => [], fetchActionRules: async () => [] },
-      tools: { list: async () => [], save: async () => {} },
+      tools: { list: async () => [], saveDraft: async () => ({ revisionId: "tvr-review-test", version: 1, definitionHash: "a".repeat(64), status: "draft" as const }) },
       toolRegistry: { list: async () => [] },
       skills: { list: async () => [], save: async () => {}, bumpUse: async () => {}, recordEval: async () => {} },
       reflection: { list: async () => [], record: async () => undefined },
@@ -157,6 +157,9 @@ describe("refine_fleet — parallel patches, serial landing through the real ref
     expect(alpha.systemPrompt).toContain("修订版系统提示 alpha");
     expect(ctx.attemptHistory["alphaWork"]?.length).toBeGreaterThanOrEqual(1);
     expect(res.summary).toContain("重新 sandbox_run");
+    const memberPrompt = seenTurns.flat().map((m) => String(m.content ?? "")).join("\n");
+    expect(memberPrompt).toContain("源 kind=logic 的路由选择步必须继续是 logic");
+    expect(memberPrompt).not.toContain("写成 dependsOn 一个 kind=condition 步");
   });
 
   it("parks the fleet with one aggregated ask_user question when a refinement needs a real tool", async () => {

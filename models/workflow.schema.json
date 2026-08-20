@@ -145,6 +145,144 @@
                         "type": "string"
                       },
                       "additionalProperties": {}
+                    },
+                    "rule_gate": {
+                      "type": "object",
+                      "properties": {
+                        "rules": {
+                          "type": "object",
+                          "properties": {
+                            "ids": {
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "minLength": 1
+                              }
+                            },
+                            "stages": {
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "minLength": 1
+                              }
+                            },
+                            "entities": {
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "minLength": 1
+                              }
+                            }
+                          },
+                          "additionalProperties": false
+                        },
+                        "verdict_from": {
+                          "minItems": 1,
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "human_boundary_from": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "scope": {
+                          "type": "object",
+                          "properties": {
+                            "client_from": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "department_from": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "universal_values": {
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "minLength": 1
+                              }
+                            }
+                          },
+                          "additionalProperties": false
+                        },
+                        "mode": {
+                          "default": "report",
+                          "type": "string",
+                          "enum": [
+                            "enforce",
+                            "report"
+                          ]
+                        },
+                        "undeclared_enforcement": {
+                          "default": "report",
+                          "type": "string",
+                          "enum": [
+                            "report",
+                            "refuse"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "rules",
+                        "verdict_from",
+                        "mode",
+                        "undeclared_enforcement"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "effect_verification": {
+                      "type": "object",
+                      "properties": {
+                        "readTool": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "readArgs": {
+                          "type": "object",
+                          "propertyNames": {
+                            "type": "string",
+                            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+                          },
+                          "additionalProperties": {
+                            "type": "string",
+                            "pattern": "^(input|output)\\.[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*$"
+                          }
+                        },
+                        "match": {
+                          "minItems": 1,
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "claim": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "observed": {
+                                "type": "string",
+                                "minLength": 1
+                              }
+                            },
+                            "required": [
+                              "claim",
+                              "observed"
+                            ],
+                            "additionalProperties": false
+                          }
+                        }
+                      },
+                      "required": [
+                        "readTool",
+                        "match"
+                      ],
+                      "additionalProperties": false
                     }
                   },
                   "required": [

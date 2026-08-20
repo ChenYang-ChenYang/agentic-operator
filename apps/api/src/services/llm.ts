@@ -44,6 +44,7 @@ import {
 } from "@agentic/llm-gateway";
 import {
   getGatewayCredential,
+  getProviderEnvironmentCredential,
   getProviderCredential,
   getProviderKeyEnvOverlay,
   gatewayCredentialSlot,
@@ -80,7 +81,8 @@ setGatewayCallSink((rec) => {
     Number.isSafeInteger(rec.tokensOut) &&
     (rec.tokensOut ?? -1) >= 0;
   writeLlmCall({
-    conversationId: "runtime",
+    conversationId:
+      rec.interactionId ?? rec.correlationId ?? "runtime",
     tenantId: rec.tenantId,
     runId: rec.runId,
     purpose: rec.purpose ?? "runtime",
@@ -101,6 +103,13 @@ setGatewayCallSink((rec) => {
     latencyMs: rec.latencyMs,
     ok: rec.ok,
     failureReason: rec.failureReason,
+    // Difficulty routing is only auditable if the ASK is recorded next to the
+    // hit: which preference was requested, under which tier label, and whether
+    // the allowed candidate set could satisfy it.
+    modelPreference: rec.modelPreference,
+    requestedTier: rec.modelPreferenceTier,
+    preferenceSatisfied: rec.modelPreferenceSatisfied,
+    preferenceReason: rec.modelPreferenceReason,
   } as Parameters<typeof writeLlmCall>[0]);
 });
 
@@ -211,6 +220,57 @@ export function effectiveTransportForRoute(
   return "chat";
 }
 
+function normalizedGatewayBaseUrl(value: string | undefined): string | null {
+  if (!value?.trim()) return null;
+  try {
+    const url = new URL(value.trim());
+    if (
+      (url.protocol !== "https:" && url.protocol !== "http:") ||
+      url.username ||
+      url.password ||
+      url.search ||
+      url.hash
+    ) {
+      return null;
+    }
+    const pathname = url.pathname.replace(/\/+$/, "");
+    return `${url.origin}${pathname}`;
+  } catch {
+    return null;
+  }
+}
+
+function dynamicGatewayCredential(
+  instance: GatewayInstance,
+  tenantId: string | undefined,
+) {
+  const stored = getGatewayCredential(
+    gatewayCredentialSlot(instance, tenantId ?? WORKSPACE_SCOPE),
+    tenantId,
+    instance.credentialScope,
+  );
+  if (stored) return stored;
+
+  // The process-wide custom credential belongs only to its configured
+  // endpoint. Permit the auto-generated canonical instance to reuse it, but
+  // never forward it to a renamed/ref-bound gateway, a tenant-only slot, or a
+  // base URL that differs after URL normalization.
+  const configuredBaseUrl = normalizedGatewayBaseUrl(
+    process.env.CUSTOM_LLM_BASE_URL,
+  );
+  const instanceBaseUrl = normalizedGatewayBaseUrl(instance.baseUrl);
+  const mayUseEnvironmentCustomCredential =
+    instance.id === "custom" &&
+    instance.kind === "openai-compatible" &&
+    instance.credentialRef === "custom" &&
+    instance.credentialScope !== "tenant" &&
+    configuredBaseUrl !== null &&
+    instanceBaseUrl === configuredBaseUrl;
+  return mayUseEnvironmentCustomCredential
+    ? getProviderEnvironmentCredential("custom")
+    : null;
+}
+
 function dynamicGateway(
   instance: GatewayInstance,
   candidate: TaskRouteCandidate,
@@ -225,19 +285,17 @@ function dynamicGateway(
     );
   }
   const dialect = compatibleDialect(instance, candidate);
+  const credential = dynamicGatewayCredential(instance, tenantId);
   const key = [
     tenantId ?? WORKSPACE_SCOPE,
     settingsRevision,
     instance.id,
     dialect,
+    normalizedGatewayBaseUrl(instance.baseUrl) ?? instance.baseUrl,
+    credential?.credentialId ?? "no-credential",
   ].join(":");
   const cached = dynamicGateways.get(key);
   if (cached) return cached;
-  const credential = getGatewayCredential(
-    gatewayCredentialSlot(instance, tenantId ?? WORKSPACE_SCOPE),
-    tenantId,
-    instance.credentialScope,
-  );
   const gateway = new LLMGateway({
     defaultProvider: "custom",
     defaultModel: null,
@@ -564,10 +622,18 @@ async function routeChat(
 ): Promise<ChatResponse> {
   const settings = LlmSettingsSchema.parse(settingsInput);
   const requestedTask = taskClass(req);
+  // A caller's ordered model preference (e.g. the Agent Factory's task
+  // difficulty tier) ranks the candidates this tenant's policy already allows.
+  // The policy remains the boundary — resolution never selects a route the
+  // profile did not list — and an unmet preference is reported below rather
+  // than silently served by whatever the default happened to be.
   const resolution = resolveLlmRouting(settings, {
     taskClass: requestedTask,
     ...(req.routing?.requestedRoute
       ? { explicitRoute: req.routing.requestedRoute }
+      : {}),
+    ...(req.routing?.modelPreference?.length
+      ? { modelPreference: req.routing.modelPreference }
       : {}),
   });
   const logicalCallId = req.routing?.logicalCallId ?? makeId("llc");
@@ -662,6 +728,13 @@ async function routeChat(
         overallDeadlineMs,
         logicalCallId,
         attemptBase: fallbackIndex * 100,
+        ...(resolution.modelPreference
+          ? {
+              modelPreference: resolution.modelPreference.requested,
+              modelPreferenceSatisfied: resolution.modelPreference.satisfied,
+              modelPreferenceReason: resolution.modelPreference.reason,
+            }
+          : {}),
         ...(fallbackIndex > 0
           ? {
               retryReason: `route_fallback_after_${lastError?.code ?? "unknown"}`,
@@ -900,6 +973,19 @@ export async function assertDefaultLLMProviderReachable(
     );
   }
   return readiness;
+}
+
+/**
+ * A real provider must always be configured, but a transient upstream outage
+ * should not take the whole control plane (Settings, audit, Sessions, profile
+ * repair) offline. Deployments that intentionally want a cold-start hard gate
+ * can opt into it explicitly; `/health` continues to expose the live probe
+ * result in either mode.
+ */
+export function strictLlmStartupProbeEnabled(
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  return env.AGENTIC_LLM_STARTUP_PROBE_STRICT?.trim().toLowerCase() === "true";
 }
 
 export function getLLMGateway(): LLMGateway {

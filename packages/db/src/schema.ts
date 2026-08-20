@@ -2061,9 +2061,7 @@ export const businessOntologyDomains = sqliteTable(
       .notNull()
       .default(false),
     ontologySnapshotHash: text("ontology_snapshot_hash"),
-    catalogMetadataJson: text("catalog_metadata_json")
-      .notNull()
-      .default("{}"),
+    catalogMetadataJson: text("catalog_metadata_json").notNull().default("{}"),
     lastVerifiedAt: integer("last_verified_at", { mode: "timestamp_ms" }),
     lastError: text("last_error"),
     createdBy: text("created_by"),
@@ -2084,9 +2082,11 @@ export const businessOntologyDomains = sqliteTable(
     )
       .on(t.tenantId)
       .where(sql`${t.isDefault} = 1 AND ${t.archivedAt} IS NULL`),
-    tenantStatusIdx: index(
-      "business_ontology_domains_tenant_status_idx",
-    ).on(t.tenantId, t.status, t.updatedAt),
+    tenantStatusIdx: index("business_ontology_domains_tenant_status_idx").on(
+      t.tenantId,
+      t.status,
+      t.updatedAt,
+    ),
     domainIdx: index("business_ontology_domains_domain_idx").on(
       t.ontologyDomainId,
     ),
@@ -2219,6 +2219,25 @@ export const llmCallTelemetry = sqliteTable(
     provider: text("provider"),
     /** true when the served model differs from the requested (a fallback occurred). */
     fallback: integer("fallback", { mode: "boolean" }),
+    /**
+     * Task-difficulty routing, recorded so "which model ran the hardest task"
+     * is answerable from this table alone. `requestedTier` is the caller's
+     * difficulty label (fast/default/hard/review for the Agent Factory);
+     * `modelPreference` is the ordered preference it asked for. Both are null
+     * for callers that express no preference.
+     */
+    requestedTier: text("requested_tier"),
+    modelPreference: text("model_preference", { mode: "json" }).$type<
+      string[]
+    >(),
+    /**
+     * Whether the tenant/workspace-allowed candidate set could satisfy that
+     * preference. False is a real, explained outcome — the run used an allowed
+     * model that was NOT the requested difficulty, and `preferenceReason` says
+     * so. Null means no preference was expressed.
+     */
+    preferenceSatisfied: integer("preference_satisfied", { mode: "boolean" }),
+    preferenceReason: text("preference_reason"),
     promptChars: integer("prompt_chars"),
     completionChars: integer("completion_chars"),
     /** approx token counts (chars/4) when exact usage isn't returned by the streaming path. */
@@ -2242,6 +2261,10 @@ export const llmCallTelemetry = sqliteTable(
     domainIdx: index("llm_call_telemetry_domain_idx").on(t.domain),
     convIdx: index("llm_call_telemetry_conversation_idx").on(t.conversationId),
     modelIdx: index("llm_call_telemetry_served_model_idx").on(t.servedModel),
+    preferenceIdx: index("llm_call_telemetry_preference_idx").on(
+      t.requestedTier,
+      t.preferenceSatisfied,
+    ),
   }),
 );
 
@@ -2348,10 +2371,9 @@ export const factoryRuns = sqliteTable(
      * Legacy Agent Factory runs may remain null and continue to use the
      * singleton factory_domain_bindings compatibility path.
      */
-    ontologyDomainRegistrationId: text("ontology_domain_registration_id").references(
-      () => businessOntologyDomains.id,
-      { onDelete: "cascade" },
-    ),
+    ontologyDomainRegistrationId: text(
+      "ontology_domain_registration_id",
+    ).references(() => businessOntologyDomains.id, { onDelete: "cascade" }),
     runtimeProfileVersionId: text("runtime_profile_version_id").references(
       () => runtimeProfileVersions.id,
       { onDelete: "restrict" },
@@ -2476,6 +2498,58 @@ export const factoryDomainInsights = sqliteTable(
   }),
 );
 
+/**
+ * #ONTOCODE-COMPREHEND — the OntoCode analysis lane's UNDERSTANDING layer.
+ *
+ * Deliberately NOT `factory_domain_insights`, whose design this borrows: that
+ * table is addressed by `(tenant_id, domain, ontology_sig)` and misses naturally
+ * when the ontology moves, which is exactly right — but its `digest` column holds
+ * one prose blob and its `mode` is a `shallow|deep` enum. Per-anchor annotations
+ * stuffed into those columns would make both names lie, and namespacing `domain`
+ * to dodge a collision would pollute the Build lane's query surface.
+ *
+ * A row is one ontology VERSION's understanding. It is inherited forward one
+ * anchor at a time, so a new version is usually a cheap delta rather than a
+ * re-read of the whole graph.
+ */
+export const ontocodeOntologyComprehension = sqliteTable(
+  "ontocode_ontology_comprehension",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    domain: text("domain").notNull(),
+    /** ontologyContentHash of the snapshot this understanding describes. */
+    ontologyHash: text("ontology_hash").notNull(),
+    /** The analysis job whose pass produced the NEW annotations in this row.
+     *  Individual carried-forward annotations keep their own older provenance. */
+    sourceJobId: text("source_job_id"),
+    producedAt: integer("produced_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+    schemaVersion: text("schema_version").notNull(),
+    /** AnchoredAnnotation[] verbatim. */
+    annotationsJson: text("annotations_json").notNull(),
+    /** Coverage + named refusals with their real counts. */
+    coverageJson: text("coverage_json").notNull(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+  },
+  (t) => ({
+    tenantDomainHashUq: uniqueIndex(
+      "ontocode_ontology_comprehension_tenant_domain_hash_uq",
+    ).on(t.tenantId, t.domain, t.ontologyHash),
+    tenantDomainIdx: index(
+      "ontocode_ontology_comprehension_tenant_domain_idx",
+    ).on(t.tenantId, t.domain),
+  }),
+);
+
 export const factoryTools = sqliteTable(
   "factory_tools",
   {
@@ -2537,6 +2611,84 @@ export const factoryTools = sqliteTable(
       t.tenantId,
       t.domain,
     ),
+  }),
+);
+
+/**
+ * Immutable, tenant/domain-scoped revision ledger for AI-authored declarative
+ * tools. `factory_tools` remains the backwards-compatible ACTIVE projection
+ * consumed by the runtime; drafts in this table are never runtime-discoverable.
+ *
+ * Activation is a separate, human-attributed transaction which requires a
+ * current exact-definition probe receipt. Retired revisions remain available
+ * for an evidence-checked rollback instead of being overwritten in place.
+ */
+export const factoryToolRevisions = sqliteTable(
+  "factory_tool_revisions",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    domainKey: text("domain_key").notNull().default("__unbound__"),
+    name: text("name").notNull(),
+    version: integer("version").notNull(),
+    status: text("status", {
+      enum: ["draft", "active", "retired", "rejected"],
+    })
+      .notNull()
+      .default("draft"),
+    /** Full secret-free executable contract. */
+    definitionJson: text("definition_json", { mode: "json" }).notNull(),
+    /** Hash of the revision definition without runtime config. */
+    definitionHash: text("definition_hash").notNull(),
+    /** Deterministic static-validation receipt, not an execution receipt. */
+    validationJson: text("validation_json", { mode: "json" }).notNull(),
+    source: text("source", {
+      enum: ["ontocode", "manual", "api_import"],
+    })
+      .notNull()
+      .default("ontocode"),
+    createdBy: text("created_by").notNull(),
+    reviewedBy: text("reviewed_by"),
+    reviewedAt: integer("reviewed_at", { mode: "timestamp_ms" }),
+    activatedAt: integer("activated_at", { mode: "timestamp_ms" }),
+    retiredAt: integer("retired_at", { mode: "timestamp_ms" }),
+    /** Exact factory_tool_probes definition hash admitted at activation. */
+    activationProbeHash: text("activation_probe_hash"),
+    /** Secret-free receipt identity copied for audit/debugging. */
+    activationEvidenceJson: text("activation_evidence_json", { mode: "json" }),
+    supersedesRevisionId: text("supersedes_revision_id"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+  },
+  (t) => ({
+    scopeVersionUq: uniqueIndex("factory_tool_revisions_scope_version_uq").on(
+      t.tenantId,
+      t.domainKey,
+      t.name,
+      t.version,
+    ),
+    scopeHashUq: uniqueIndex("factory_tool_revisions_scope_hash_uq").on(
+      t.tenantId,
+      t.domainKey,
+      t.name,
+      t.definitionHash,
+    ),
+    scopeStatusIdx: index("factory_tool_revisions_scope_status_idx").on(
+      t.tenantId,
+      t.domainKey,
+      t.status,
+    ),
+    oneActivePerScopeUq: uniqueIndex(
+      "factory_tool_revisions_one_active_scope_uq",
+    )
+      .on(t.tenantId, t.domainKey, t.name)
+      .where(sql`${t.status} = 'active'`),
   }),
 );
 
@@ -2980,8 +3132,9 @@ export const ontocodeProjects = sqliteTable(
     tenantId: text("tenant_id")
       .notNull()
       .references(() => tenants.id, { onDelete: "cascade" }),
-    ontologyDomainRegistrationId: text("ontology_domain_registration_id")
-      .references(() => businessOntologyDomains.id, { onDelete: "cascade" }),
+    ontologyDomainRegistrationId: text(
+      "ontology_domain_registration_id",
+    ).references(() => businessOntologyDomains.id, { onDelete: "cascade" }),
     runtimeProfileVersionId: text("runtime_profile_version_id").references(
       () => runtimeProfileVersions.id,
       { onDelete: "restrict" },
@@ -3011,11 +3164,7 @@ export const ontocodeProjects = sqliteTable(
     tenantRegistrationRuntimeUq: uniqueIndex(
       "ontocode_projects_tenant_registration_runtime_uq",
     )
-      .on(
-        t.tenantId,
-        t.ontologyDomainRegistrationId,
-        t.runtimeProfileVersionId,
-      )
+      .on(t.tenantId, t.ontologyDomainRegistrationId, t.runtimeProfileVersionId)
       .where(sql`${t.runtimeProfileVersionId} IS NOT NULL`),
     tenantUpdatedIdx: index("ontocode_projects_tenant_updated_idx").on(
       t.tenantId,
@@ -3100,6 +3249,106 @@ export const ontocodeSessions = sqliteTable(
     runtimeProfileVersionIdx: index(
       "ontocode_sessions_runtime_profile_version_idx",
     ).on(t.tenantId, t.runtimeProfileVersionId, t.updatedAt),
+  }),
+);
+
+/**
+ * OntoCode-owned lifecycle for one code-generation execution.
+ *
+ * Harness Jobs are replaceable delivery attempts: an FDE answer may create a
+ * follow-up Job and an operator retry may re-lease the same Job.  This row is
+ * the stable identity across those attempts.  `engineRunId` is deliberately a
+ * private binding to the current implementation engine; Session APIs should
+ * expose this row's `id`, never the engine identifier.
+ *
+ * The large engine checkpoint remains in its native store.  OntoCode keeps
+ * only a digest/revision and the exact one-shot interaction/answer envelope so
+ * recovery can validate state without reconstructing it from Session events.
+ */
+export const ontocodeBuildExecutions = sqliteTable(
+  "ontocode_build_executions",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => ontocodeProjects.id, { onDelete: "cascade" }),
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => ontocodeSessions.id, { onDelete: "cascade" }),
+    state: text("state", {
+      enum: [
+        "new",
+        "running",
+        "resuming",
+        "waiting_user",
+        "generated_unverified",
+        "candidate_ready",
+        "failed_recoverable",
+        "failed_terminal",
+        "cancelled",
+      ],
+    })
+      .notNull()
+      .default("new"),
+    ontologyHash: text("ontology_hash").notNull(),
+    directiveJson: text("directive_json").notNull(),
+    directiveHash: text("directive_hash").notNull(),
+    runtimeProfileVersionId: text("runtime_profile_version_id").references(
+      () => runtimeProfileVersions.id,
+      { onDelete: "restrict" },
+    ),
+    engineKind: text("engine_kind").notNull().default("agent_factory"),
+    /** Private implementation handle; never a product-facing execution id. */
+    engineRunId: text("engine_run_id"),
+    checkpointDigest: text("checkpoint_digest"),
+    checkpointRevision: integer("checkpoint_revision").notNull().default(0),
+    pendingInteractionId: text("pending_interaction_id"),
+    pendingInteractionKind: text("pending_interaction_kind", {
+      enum: [
+        "clarify",
+        "test_approval",
+        "boundary",
+        "execution_readiness",
+        "legacy_answer",
+      ],
+    }),
+    pendingInteractionSubjectDigest: text("pending_interaction_subject_digest"),
+    pendingAnswerId: text("pending_answer_id"),
+    pendingAnswerDigest: text("pending_answer_digest"),
+    pendingAnswerStatus: text("pending_answer_status", {
+      enum: ["pending", "delivered", "consumed"],
+    }),
+    revision: integer("revision").notNull().default(1),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+  },
+  (t) => ({
+    tenantSessionStateIdx: index(
+      "ontocode_build_executions_tenant_session_state_idx",
+    ).on(t.tenantId, t.sessionId, t.state, t.updatedAt),
+    tenantProjectCreatedIdx: index(
+      "ontocode_build_executions_tenant_project_created_idx",
+    ).on(t.tenantId, t.projectId, t.createdAt),
+    runtimeProfileVersionIdx: index(
+      "ontocode_build_executions_runtime_profile_version_idx",
+    ).on(t.tenantId, t.runtimeProfileVersionId, t.updatedAt),
+    pendingInteractionIdx: index(
+      "ontocode_build_executions_pending_interaction_idx",
+    ).on(t.tenantId, t.sessionId, t.pendingInteractionId),
+    // A normal UNIQUE index is portable across the repository's SQLite
+    // environments and still permits multiple unbound NULL engine handles.
+    engineRunUq: uniqueIndex("ontocode_build_executions_engine_run_uq").on(
+      t.tenantId,
+      t.engineKind,
+      t.engineRunId,
+    ),
   }),
 );
 
@@ -3194,6 +3443,12 @@ export const ontocodeHarnessJobs = sqliteTable(
       () => runtimeProfileVersions.id,
       { onDelete: "restrict" },
     ),
+    buildExecutionId: text("build_execution_id").references(
+      () => ontocodeBuildExecutions.id,
+      { onDelete: "set null" },
+    ),
+    /** Durable logical attempt; Session events are audit, not the counter. */
+    attemptNo: integer("attempt_no").notNull().default(0),
     kind: text("kind").notNull(),
     status: text("status", {
       enum: [
@@ -3248,6 +3503,14 @@ export const ontocodeHarnessJobs = sqliteTable(
     runtimeProfileVersionIdx: index(
       "ontocode_harness_jobs_runtime_profile_version_idx",
     ).on(t.tenantId, t.runtimeProfileVersionId, t.createdAt),
+    buildExecutionIdx: index("ontocode_harness_jobs_build_execution_idx").on(
+      t.tenantId,
+      t.buildExecutionId,
+      t.createdAt,
+    ),
+    buildExecutionAttemptIdx: index(
+      "ontocode_harness_jobs_build_execution_attempt_idx",
+    ).on(t.buildExecutionId, t.attemptNo),
     sessionIdempotencyUq: uniqueIndex(
       "ontocode_harness_jobs_session_idempotency_uq",
     ).on(t.tenantId, t.sessionId, t.idempotencyKey),
@@ -3667,9 +3930,7 @@ export const ontocodeEvidenceRecords = sqliteTable(
       .notNull()
       .default("valid"),
     staleReason: text("stale_reason"),
-    invalidatedByPackageVersionId: text(
-      "invalidated_by_package_version_id",
-    ),
+    invalidatedByPackageVersionId: text("invalidated_by_package_version_id"),
     invalidatedAt: integer("invalidated_at", { mode: "timestamp_ms" }),
     subjectType: text("subject_type").notNull(),
     subjectId: text("subject_id").notNull(),
@@ -3832,9 +4093,10 @@ export const ontocodeEvidenceInvalidations = sqliteTable(
     evidencePackageUq: uniqueIndex(
       "ontocode_evidence_invalidations_evidence_package_uq",
     ).on(t.tenantId, t.evidenceId, t.causedByPackageVersionId),
-    changeSetIdx: index(
-      "ontocode_evidence_invalidations_changeset_idx",
-    ).on(t.tenantId, t.causedByChangeSetId),
+    changeSetIdx: index("ontocode_evidence_invalidations_changeset_idx").on(
+      t.tenantId,
+      t.causedByChangeSetId,
+    ),
   }),
 );
 
@@ -4215,6 +4477,7 @@ export const schema = {
   factoryRuns,
   factorySkills,
   factoryTools,
+  factoryToolRevisions,
   factorySandboxAttempts,
   factorySandboxToolSnapshots,
   factorySandboxModelGrants,
@@ -4245,6 +4508,7 @@ export const schema = {
   systemProfiles,
   ontocodeProjects,
   ontocodeSessions,
+  ontocodeBuildExecutions,
   ontocodeCommands,
   ontocodeHarnessJobs,
   ontocodeConfigurationTasks,
@@ -4262,4 +4526,5 @@ export const schema = {
   ontocodeAssistantSteps,
   ontocodePinnedContextRefs,
   ontocodeSessionPurges,
+  ontocodeOntologyComprehension,
 };

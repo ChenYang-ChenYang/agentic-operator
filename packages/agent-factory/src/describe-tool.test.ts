@@ -12,6 +12,7 @@
 import { describe, expect, it } from "vitest";
 import { FACTORY_TOOLS, SUBAGENT_TOOLS } from "./tools";
 import type { BrainCtx } from "./brain-types";
+import type { DomainOntology } from "./ontology-types";
 import type { RealTool } from "./tool-catalog";
 
 const INBOX_TOOL: RealTool = {
@@ -55,6 +56,9 @@ function ctxWith(tools: RealTool[]): BrainCtx {
 }
 
 const describeTool = FACTORY_TOOLS.find((t) => t.name === "describe_tool")!;
+const describeDesignConstraints = FACTORY_TOOLS.find(
+  (t) => t.name === "describe_design_constraints",
+)!;
 
 describe("describe_tool", () => {
   it("is available to the brain and to sub-agents", () => {
@@ -116,5 +120,102 @@ describe("describe_tool", () => {
     );
     const serialized = JSON.stringify(result.output);
     expect(serialized).not.toMatch(/password|secret|api[_-]?key["']?\s*:\s*["'][^"']{8,}/i);
+  });
+
+  it("keeps processResume source symbols out of available_tools and makes every available canonical name describable", async () => {
+    const ontology = {
+      domainId: "dom",
+      source: "allmeta",
+      objects: [],
+      rules: [],
+      events: [
+        {
+          name: "RESUME_READY",
+          payload: { source_action: null, event_data: [], state_mutations: [] },
+        },
+        {
+          name: "RESUME_PROCESSED",
+          payload: {
+            source_action: "processResume",
+            event_data: [],
+            state_mutations: [],
+          },
+        },
+      ],
+      actions: [
+        {
+          id: "processResume",
+          name: "processResume",
+          actor: ["Agent"],
+          trigger: ["RESUME_READY"],
+          triggered_event: ["RESUME_PROCESSED"],
+          target_objects: [],
+          tool_use: ["readResumeFromDisk", "source.only"],
+          system_prompt: "",
+          user_prompt: "",
+          inputs: [],
+          outputs: [],
+          action_steps: [
+            {
+              step_id: "read",
+              object_type: "tool",
+              tool: "readResumeFromDisk",
+            },
+          ],
+          integration: { systems: [] },
+        },
+      ],
+      workflow: [],
+    } as unknown as DomainOntology;
+    const ctx = {
+      ...ctxWith([]),
+      ontology,
+      specs: [],
+      createdSkills: [],
+      ports: {
+        toolRegistry: { list: async () => [INBOX_TOOL] },
+      },
+    } as unknown as BrainCtx;
+
+    const result = await describeDesignConstraints.execute({}, ctx);
+    expect(result.ok).toBe(true);
+    const output = result.output as {
+      available_tools: string[];
+      ontology_tool_symbols: Array<{
+        symbol: string;
+        status: string;
+        canonical_tool: string | null;
+        available: boolean;
+      }>;
+      source_declarations: { status: string; unresolved: number };
+    };
+    expect(output.available_tools).toEqual(["fs.readFromInbox"]);
+    expect(output.available_tools).not.toContain("readResumeFromDisk");
+    expect(output.available_tools).not.toContain("source.only");
+    expect(output.ontology_tool_symbols).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          symbol: "readResumeFromDisk",
+          status: "registry_alias",
+          canonical_tool: "fs.readFromInbox",
+          available: true,
+        }),
+        expect.objectContaining({
+          symbol: "source.only",
+          status: "source_only_unresolved",
+          canonical_tool: null,
+          available: false,
+        }),
+      ]),
+    );
+    expect(output.source_declarations).toMatchObject({
+      status: "has_unresolved_source_symbols",
+      unresolved: 1,
+    });
+    for (const name of output.available_tools) {
+      const described = await describeTool.execute({ name }, ctx);
+      expect(described.ok, name).toBe(true);
+      expect(described.output).toMatchObject({ name });
+    }
   });
 });

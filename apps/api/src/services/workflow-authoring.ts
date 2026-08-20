@@ -885,6 +885,45 @@ const PROMPT_RUBRIC = [
   ["human escalation", /human escalation|operator review|escalat/i],
 ] as const;
 
+/**
+ * The rubric above matches section headings, and `buildCompleteWorkflowPrompt`
+ * emits every one of those headings unconditionally — so a generated prompt
+ * scores full marks even when the author supplied nothing. Substance scoring
+ * reads the section bodies, which is the only part an author actually writes.
+ */
+const SUBSTANCE_SECTIONS = [
+  ["role", /^role$/i],
+  ["mission", /^mission$/i],
+  ["procedure", /^procedure$/i],
+] as const;
+
+/** Enough characters to carry meaning in both alphabetic and CJK scripts. */
+const MIN_INFORMATIVE_CHARS = 12;
+
+function informative(text: string): boolean {
+  return text.replace(/\s+/g, "").length >= MIN_INFORMATIVE_CHARS;
+}
+
+/** The body of a `Heading\nbody…` block, or null when the block is absent. */
+function sectionBody(prompt: string, heading: RegExp): string | null {
+  for (const block of prompt.split(/\n{2,}/)) {
+    const newline = block.indexOf("\n");
+    if (newline < 0) continue;
+    if (heading.test(block.slice(0, newline).trim())) {
+      return block.slice(newline + 1).trim();
+    }
+  }
+  return null;
+}
+
+function procedureSteps(body: string): string[] {
+  const numbered = body
+    .split("\n")
+    .map((line) => line.match(/^\s*\d+[.)]\s*(.*)$/)?.[1]?.trim())
+    .filter((step): step is string => Boolean(step));
+  return numbered.length > 0 ? numbered : [body];
+}
+
 export function scoreWorkflowPrompt(
   agentId: string,
   prompt: string,
@@ -892,11 +931,26 @@ export function scoreWorkflowPrompt(
   const missing = PROMPT_RUBRIC.filter(
     ([, pattern]) => !pattern.test(prompt),
   ).map(([label]) => label);
+  const weak: string[] = [];
+  for (const [label, heading] of SUBSTANCE_SECTIONS) {
+    // A section the structural rubric already reported as missing is not also
+    // reported as empty, and a free-form prompt with no template headings is
+    // scored on structure alone rather than penalised twice.
+    if (missing.includes(label)) continue;
+    const body = sectionBody(prompt, heading);
+    if (body === null) continue;
+    const filled =
+      label === "procedure"
+        ? procedureSteps(body).every(informative)
+        : informative(body);
+    if (!filled) weak.push(label);
+  }
   return {
     agentId,
     score: PROMPT_RUBRIC.length - missing.length,
     required: PROMPT_RUBRIC.length,
     missing,
+    weak,
   };
 }
 
@@ -1066,6 +1120,17 @@ export function validateWorkflowManifest(
           code: "prompt_rubric_incomplete",
           severity: "warning",
           message: `prompt is missing rubric sections: ${score.missing.join(", ")}`,
+        });
+      }
+      if (score.weak.length > 0) {
+        // A machine-authored agent whose prompt sections are empty is a failed
+        // generation wearing a complete-looking template, so it blocks. An
+        // operator writing their own prompt gets advice, not a gate.
+        issues.push({
+          path: `agents[${agentIndex}].ontology_instructions`,
+          code: "prompt_substance_missing",
+          severity: agent.generated ? "error" : "warning",
+          message: `prompt sections are present but empty: ${score.weak.join(", ")}`,
         });
       }
     }

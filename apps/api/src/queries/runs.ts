@@ -1,15 +1,19 @@
 import { readFile, rm, unlink } from "node:fs/promises";
 import path from "node:path";
+import { gunzip } from "node:zlib";
+import { promisify } from "node:util";
 import { alias } from "drizzle-orm/sqlite-core";
 import {
   and,
   asc,
   desc,
   eq,
+  gte,
   inArray,
   isNotNull,
   isNull,
   like,
+  lte,
   notInArray,
   or,
   sql,
@@ -23,7 +27,14 @@ import {
   steps,
   tenants,
 } from "@agentic/db";
-import type { RunRow, StepRow, EventRow } from "@agentic/contracts";
+import type {
+  EventRow,
+  RunBusinessResult,
+  RunRow,
+  StepRow,
+} from "@agentic/contracts";
+
+const gunzipAsync = promisify(gunzip);
 
 /**
  * Resolve a stored payload reference to its real JSON, for the run-detail
@@ -64,7 +75,7 @@ export async function resolvePayloadRef(
     // reasoning-agent / run-summary / events read that shares this resolver.
     try {
       return capPayload(
-        JSON.parse(await readFile(ref, "utf8")),
+        JSON.parse(await readTextFileOrGzip(ref)),
         maxPayloadBytes,
       );
     } catch (err) {
@@ -78,13 +89,26 @@ export async function resolvePayloadRef(
   if (!Number.isFinite(offset) || offset < 0) {
     throw new Error(`invalid payload ledger offset in ref ${ref}`);
   }
-  const buf = await readFile(filePath);
+  const buf = await readBufferFileOrGzip(filePath);
   if (offset >= buf.length)
     throw new Error(`payload ledger offset is beyond EOF in ref ${ref}`);
   const nl = buf.indexOf(0x0a, offset);
   const line = buf.toString("utf8", offset, nl === -1 ? undefined : nl);
   const parsed = JSON.parse(line) as { data?: unknown };
   return capPayload(parsed.data ?? parsed, maxPayloadBytes);
+}
+
+async function readBufferFileOrGzip(filePath: string): Promise<Buffer> {
+  try {
+    return await readFile(filePath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    return gunzipAsync(await readFile(`${filePath}.gz`));
+  }
+}
+
+async function readTextFileOrGzip(filePath: string): Promise<string> {
+  return (await readBufferFileOrGzip(filePath)).toString("utf8");
 }
 
 // UC-V11-21 / AR-GAP-06 — two `events` joins on the same query (the
@@ -187,13 +211,62 @@ const VALID_STATUSES = [
  */
 const ACTIVE_STATUSES = ["queued", "running", "waiting"] as const;
 
-interface RunFilterOpts {
+export interface RunFilterOpts {
   status?: string;
   agentName?: string;
   query?: string;
   parentRunId?: string;
+  triggerEvent?: string;
+  invocationSource?: "studio" | "event" | "api" | "replay" | "demo";
+  businessResult?: RunBusinessResult;
+  testRun?: boolean;
+  from?: number;
+  to?: number;
   /** true → only tombstoned rows (recycle bin); default/false → only live rows. */
   deleted?: boolean;
+}
+
+const businessResultSql = sql<RunBusinessResult>`
+  CASE
+    WHEN ${runs.status} IN ('queued', 'running', 'waiting') THEN 'pending'
+    WHEN ${runs.status} IN ('failed', 'cancelled') THEN 'failed'
+    WHEN ${runs.outputValid} = 0 THEN 'invalid'
+    WHEN ${runs.emittedEventId} IS NOT NULL THEN 'produced'
+    WHEN ${runs.outputValid} = 1 THEN 'completed'
+    WHEN ${runs.status} = 'ok' THEN 'no_output'
+    ELSE 'completed'
+  END
+`;
+
+function businessResultWhere(result: RunBusinessResult) {
+  switch (result) {
+    case "pending":
+      return inArray(runs.status, [...ACTIVE_STATUSES]);
+    case "failed":
+      return inArray(runs.status, ["failed", "cancelled"]);
+    case "invalid":
+      return and(
+        notInArray(runs.status, ["failed", "cancelled"]),
+        eq(runs.outputValid, false),
+      )!;
+    case "produced":
+      return and(
+        notInArray(runs.status, [...ACTIVE_STATUSES, "failed", "cancelled"]),
+        isNotNull(runs.emittedEventId),
+      )!;
+    case "completed":
+      return and(
+        notInArray(runs.status, [...ACTIVE_STATUSES, "failed", "cancelled"]),
+        isNull(runs.emittedEventId),
+        eq(runs.outputValid, true),
+      )!;
+    case "no_output":
+      return and(
+        eq(runs.status, "ok"),
+        isNull(runs.emittedEventId),
+        isNull(runs.outputValid),
+      )!;
+  }
 }
 
 /**
@@ -223,10 +296,35 @@ function buildRunWhere(tenantId: string, opts: RunFilterOpts) {
   if (opts.agentName) {
     whereParts.push(eq(agents.name, opts.agentName));
   }
+  if (opts.triggerEvent) {
+    whereParts.push(eq(events.name, opts.triggerEvent));
+  }
+  if (opts.invocationSource) {
+    whereParts.push(eq(runs.invocationSource, opts.invocationSource));
+  }
+  if (opts.businessResult) {
+    whereParts.push(businessResultWhere(opts.businessResult));
+  }
+  if (opts.testRun !== undefined) {
+    whereParts.push(eq(runs.isTest, opts.testRun));
+  }
+  if (opts.from !== undefined) {
+    whereParts.push(gte(runs.queuedAt, new Date(opts.from)));
+  }
+  if (opts.to !== undefined) {
+    whereParts.push(lte(runs.queuedAt, new Date(opts.to)));
+  }
   if (opts.query) {
     const q = `%${opts.query}%`;
     whereParts.push(
-      or(like(runs.id, q), like(runs.subject, q), like(agents.name, q))!,
+      or(
+        like(runs.id, q),
+        like(runs.subject, q),
+        like(runs.correlationId, q),
+        like(agents.name, q),
+        like(agents.title, q),
+        like(events.name, q),
+      )!,
     );
   }
   return whereParts;
@@ -240,6 +338,12 @@ export async function listRecentRuns(
     agentName?: string;
     query?: string;
     parentRunId?: string;
+    triggerEvent?: string;
+    invocationSource?: "studio" | "event" | "api" | "replay" | "demo";
+    businessResult?: RunBusinessResult;
+    testRun?: boolean;
+    from?: number;
+    to?: number;
     deleted?: boolean;
   } = {},
 ): Promise<RunRow[]> {
@@ -257,6 +361,7 @@ export async function listRecentRuns(
       agentVersionId: runs.agentVersionId,
       draftRevisionId: runs.draftRevisionId,
       invocationSource: runs.invocationSource,
+      businessResult: businessResultSql,
       definitionHash: runs.definitionHash,
       outputValid: runs.outputValid,
       sideEffectMode: runs.sideEffectMode,
@@ -332,6 +437,12 @@ export async function listRunsPaged(
     agentName?: string;
     query?: string;
     parentRunId?: string;
+    triggerEvent?: string;
+    invocationSource?: "studio" | "event" | "api" | "replay" | "demo";
+    businessResult?: RunBusinessResult;
+    testRun?: boolean;
+    from?: number;
+    to?: number;
     deleted?: boolean;
   } = {},
 ): Promise<{ rows: RunRow[]; total: number; page: number; pageSize: number }> {
@@ -349,6 +460,7 @@ export async function listRunsPaged(
     .select({ c: sql<number>`count(*)` })
     .from(runs)
     .innerJoin(agents, eq(agents.id, runs.agentId))
+    .leftJoin(events, eq(events.id, runs.triggerEventId))
     .where(and(...whereParts))
     .all()[0];
   const total = Number(totalRow?.c ?? 0);
@@ -357,6 +469,9 @@ export async function listRunsPaged(
     .select({
       id: runs.id,
       status: runs.status,
+      invocationSource: runs.invocationSource,
+      businessResult: businessResultSql,
+      outputValid: runs.outputValid,
       agentName: agents.name,
       agentTitle: agents.title,
       subject: runs.subject,
@@ -513,40 +628,105 @@ export function bulkSoftDeleteRuns(
 }
 
 /**
- * HARD-delete every already-tombstoned run for a tenant (empty the recycle
- * bin). Irreversible: drops the run rows (FK cascade takes steps / tasks /
- * artifacts / short-term memory / llm_turns / run_summaries with them) and
- * unlinks each run's `.log` file, which no cascade covers. Never
- * touches a live (non-deleted) run. Returns the number of run rows removed.
+ * Resolve a stable, tenant-scoped selection for bulk operations. The caller
+ * supplies either explicit ids or a filter snapshot; this helper powers the
+ * portal's "select all matching" mode without sending every id through the
+ * browser.
  */
-export async function purgeDeletedRuns(tenantId: string): Promise<number> {
+export function selectRunIds(
+  tenantId: string,
+  opts: RunFilterOpts,
+  excludeIds: string[] = [],
+  limit = 10_001,
+): string[] {
+  const db = getDb();
+  const whereParts = buildRunWhere(tenantId, opts);
+  if (excludeIds.length > 0) {
+    whereParts.push(notInArray(runs.id, excludeIds));
+  }
+  return db
+    .select({ id: runs.id })
+    .from(runs)
+    .innerJoin(agents, eq(agents.id, runs.agentId))
+    .leftJoin(events, eq(events.id, runs.triggerEventId))
+    .where(and(...whereParts))
+    .orderBy(desc(runs.queuedAt), desc(runs.id))
+    .limit(limit)
+    .all()
+    .map((row) => row.id);
+}
+
+export function bulkSoftDeleteRunIds(
+  tenantId: string,
+  runIds: string[],
+): number {
+  if (runIds.length === 0) return 0;
+  const result = getDb()
+    .update(runs)
+    .set({ deletedAt: new Date() })
+    .where(
+      and(
+        eq(runs.tenantId, tenantId),
+        inArray(runs.id, runIds),
+        isNull(runs.deletedAt),
+        notInArray(runs.status, [...ACTIVE_STATUSES]),
+      ),
+    )
+    .run() as { changes?: number };
+  return result.changes ?? 0;
+}
+
+export function bulkRestoreRunIds(tenantId: string, runIds: string[]): number {
+  if (runIds.length === 0) return 0;
+  const result = getDb()
+    .update(runs)
+    .set({ deletedAt: null })
+    .where(
+      and(
+        eq(runs.tenantId, tenantId),
+        inArray(runs.id, runIds),
+        isNotNull(runs.deletedAt),
+      ),
+    )
+    .run() as { changes?: number };
+  return result.changes ?? 0;
+}
+
+async function unlinkRunLog(logPath: string): Promise<void> {
+  for (const candidate of [logPath, `${logPath}.gz`]) {
+    try {
+      await unlink(candidate);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  }
+}
+
+export async function purgeRunIds(
+  tenantId: string,
+  runIds: string[],
+): Promise<number> {
+  if (runIds.length === 0) return 0;
   const db = getDb();
   const doomed = db
     .select({ id: runs.id, logPath: runs.logPath })
     .from(runs)
-    .where(and(eq(runs.tenantId, tenantId), isNotNull(runs.deletedAt)))
+    .where(
+      and(
+        eq(runs.tenantId, tenantId),
+        inArray(runs.id, runIds),
+        isNotNull(runs.deletedAt),
+      ),
+    )
     .all();
   if (doomed.length === 0) return 0;
 
-  // Log cleanup happens before deleting the recovery metadata. A genuinely
-  // absent file is already clean; permissions/I/O failures abort the purge so
-  // its path remains discoverable for a later retry.
   await Promise.all(
     doomed
-      .filter((r) => r.logPath)
-      .map(async (r) => {
-        try {
-          await unlink(r.logPath as string);
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-        }
-      }),
+      .filter((row) => row.logPath)
+      .map((row) => unlinkRunLog(row.logPath as string)),
   );
 
-  // Step artifacts and the standalone Reasoning audit contain raw business
-  // inputs (including résumés). A permanent purge must remove the entire run
-  // artifact directory as well as the append-only log, otherwise deleted PII
-  // remains readable on disk after the DB cascade has erased its references.
   const artifactRoot = path.resolve(
     process.env.AGENTIC_ARTIFACTS_DIR ?? "./artifacts",
   );
@@ -565,11 +745,40 @@ export async function purgeDeletedRuns(tenantId: string): Promise<number> {
     }),
   );
 
-  const res = db
+  const result = db
     .delete(runs)
-    .where(and(eq(runs.tenantId, tenantId), isNotNull(runs.deletedAt)))
+    .where(
+      and(
+        eq(runs.tenantId, tenantId),
+        inArray(
+          runs.id,
+          doomed.map((row) => row.id),
+        ),
+        isNotNull(runs.deletedAt),
+      ),
+    )
     .run() as { changes?: number };
-  return res?.changes ?? 0;
+  return result.changes ?? 0;
+}
+
+/**
+ * HARD-delete every already-tombstoned run for a tenant (empty the recycle
+ * bin). Irreversible: drops the run rows (FK cascade takes steps / tasks /
+ * artifacts / short-term memory / llm_turns / run_summaries with them) and
+ * unlinks each run's `.log` file, which no cascade covers. Never
+ * touches a live (non-deleted) run. Returns the number of run rows removed.
+ */
+export async function purgeDeletedRuns(tenantId: string): Promise<number> {
+  const db = getDb();
+  const doomed = db
+    .select({ id: runs.id })
+    .from(runs)
+    .where(and(eq(runs.tenantId, tenantId), isNotNull(runs.deletedAt)))
+    .all();
+  return purgeRunIds(
+    tenantId,
+    doomed.map((row) => row.id),
+  );
 }
 
 export async function getRun(

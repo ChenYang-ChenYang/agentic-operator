@@ -93,6 +93,10 @@ describe("AI settings persistence, routing API, and NewAPI aliases", () => {
     durableSettingsDirectory,
     "llm-settings.json",
   );
+  const durableEnvMirrorPath = join(
+    durableSettingsDirectory,
+    "llm-settings.env.local",
+  );
   const envMirrorPath = join(temporaryDirectory, ".env.local");
   const vaultPath = join(temporaryDirectory, "provider-keys.json");
   const databasePath = join(temporaryDirectory, "agentic.db");
@@ -202,12 +206,15 @@ describe("AI settings persistence, routing API, and NewAPI aliases", () => {
   const enterProductionPosture = (): void => {
     process.env.NODE_ENV = "production";
     process.env.AGENTIC_LLM_SETTINGS_PATH = durableSettingsPath;
+    process.env.AGENTIC_LLM_ENV_MIRROR_PATH = durableEnvMirrorPath;
   };
 
   beforeEach(() => {
     process.env.NODE_ENV = "test";
     process.env.AGENTIC_LLM_SETTINGS_PATH = settingsPath;
+    process.env.AGENTIC_LLM_ENV_MIRROR_PATH = envMirrorPath;
     rmSync(durableSettingsPath, { force: true });
+    rmSync(durableEnvMirrorPath, { force: true });
     process.env.LLM_DEFAULT_PROVIDER = "mock";
     process.env.LLM_DEFAULT_MODEL = "mock-model-v1";
     delete process.env.CUSTOM_LLM_BASE_URL;
@@ -1192,6 +1199,155 @@ describe("AI settings persistence, routing API, and NewAPI aliases", () => {
           "Provider authentication failed. Check the configured credential.",
       },
     });
+  });
+
+  // ── Caller difficulty preference vs. workspace policy ───────────────────
+  // The Agent Factory routes by task difficulty. Workspace policy stays the
+  // boundary (only its candidates may serve); the preference orders WITHIN it.
+  function configurePreferenceProfile(): void {
+    settingsStore.getLlmSettings("__system");
+    const saved = settingsStore.saveLlmSettings(
+      "__system",
+      {
+        schemaVersion: 1,
+        revision: 0,
+        gatewayInstances: [
+          {
+            id: "pref-gateway",
+            displayName: "Preference gateway",
+            kind: "newapi",
+            baseUrl: "https://localhost:4130",
+            credentialRef: "pref-gateway",
+            credentialScope: "workspace",
+            dialect: "openai-chat",
+          },
+        ],
+        defaultProfile: {
+          candidates: [{ route: "pref-gateway/vendor/cheap-flash" }],
+        },
+        taskProfiles: [
+          {
+            taskClass: "agent.author",
+            candidates: [
+              { route: "pref-gateway/vendor/cheap-flash" },
+              { route: "pref-gateway/vendor/strong-reasoner" },
+            ],
+          },
+        ],
+      },
+      0,
+    );
+    const instance = saved.settings.gatewayInstances[0];
+    if (!instance) throw new Error("missing preference gateway");
+    providerKeys.setGatewayCredential(
+      providerKeys.gatewayCredentialSlot(instance, systemTenantId),
+      {
+        apiKey: "sk-preference-gateway-9090909090909090",
+        scope: "workspace",
+        setBy: "test",
+      },
+    );
+    llmService.resetLLMGateway();
+  }
+
+  it("serves the difficulty-preferred model when workspace policy allows it", async () => {
+    configurePreferenceProfile();
+    installGatewayFetchMock();
+
+    const purpose = `test.preference-satisfied.${randomUUID()}`;
+    const response = await llmService.getLLMGateway().chat({
+      tenantId: systemTenantId,
+      purpose,
+      messages: [{ role: "user", content: "design the agent" }],
+      routing: {
+        taskType: "agent.author",
+        modelPreference: ["strong-reasoner", "mid-pro"],
+        modelPreferenceTier: "hard",
+      },
+    });
+
+    // The policy's own first candidate is the flash model; the difficulty
+    // preference moved the allowed strong model to the front.
+    expect(capturedRequests.at(-1)?.model).toBe("vendor/strong-reasoner");
+    expect(response.routing).toMatchObject({
+      effectiveRoute: "pref-gateway/vendor/strong-reasoner",
+      modelPreferenceSatisfied: true,
+      modelPreferenceTier: "hard",
+    });
+
+    const telemetry = dbPackage
+      .getDb()
+      .select()
+      .from(dbPackage.llmCallTelemetry)
+      .all()
+      .filter((row) => row.purpose === purpose);
+    expect(telemetry).toHaveLength(1);
+    expect(telemetry[0]).toMatchObject({
+      requestedTier: "hard",
+      modelPreference: ["strong-reasoner", "mid-pro"],
+      preferenceSatisfied: true,
+      servedModel: "vendor/strong-reasoner",
+    });
+  });
+
+  it("says so instead of pretending when no allowed model matches the difficulty preference", async () => {
+    configurePreferenceProfile();
+    installGatewayFetchMock();
+
+    const purpose = `test.preference-unmet.${randomUUID()}`;
+    const response = await llmService.getLLMGateway().chat({
+      tenantId: systemTenantId,
+      purpose,
+      messages: [{ role: "user", content: "design the agent" }],
+      routing: {
+        taskType: "agent.author",
+        modelPreference: ["frontier-model-not-enabled-here"],
+        modelPreferenceTier: "hard",
+      },
+    });
+
+    // Fails honest, not silent: policy order stands, and the receipt records
+    // that the requested difficulty was not available.
+    expect(capturedRequests.at(-1)?.model).toBe("vendor/cheap-flash");
+    expect(response.routing).toMatchObject({
+      effectiveRoute: "pref-gateway/vendor/cheap-flash",
+      modelPreferenceSatisfied: false,
+    });
+    expect(response.routing?.modelPreferenceReason).toMatch(/cheap-flash/);
+
+    const telemetry = dbPackage
+      .getDb()
+      .select()
+      .from(dbPackage.llmCallTelemetry)
+      .all()
+      .filter((row) => row.purpose === purpose);
+    expect(telemetry).toHaveLength(1);
+    expect(telemetry[0]).toMatchObject({
+      requestedTier: "hard",
+      preferenceSatisfied: false,
+      servedModel: "vendor/cheap-flash",
+    });
+    expect(telemetry[0]?.preferenceReason).toBeTruthy();
+  });
+
+  it("cannot widen the workspace policy: an unlisted model stays unreachable", async () => {
+    configurePreferenceProfile();
+    installGatewayFetchMock();
+
+    await llmService.getLLMGateway().chat({
+      tenantId: systemTenantId,
+      purpose: `test.preference-boundary.${randomUUID()}`,
+      messages: [{ role: "user", content: "design the agent" }],
+      routing: {
+        taskType: "agent.author",
+        modelPreference: ["vendor/some-other-frontier-model"],
+        modelPreferenceTier: "review",
+      },
+    });
+
+    const served = capturedRequests.map((request) => request.model);
+    expect(served).not.toContain("vendor/some-other-frontier-model");
+    expect(served.at(-1)).toBe("vendor/cheap-flash");
   });
 
   function settingsDocument(args: {

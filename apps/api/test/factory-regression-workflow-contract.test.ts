@@ -58,7 +58,17 @@ describe("Factory regression GitHub workflow contracts", () => {
       "needs.factory-regression.result != 'success' && needs.factory-regression.result != 'skipped'",
     );
     expect(ci).toContain('--expected-sha "${{ github.sha }}"');
-    expect(ci).toContain('- cron: "17 * * * *"');
+    // NO hourly `schedule:` trigger. It used to be `- cron: "17 * * * *"`,
+    // added so this freshness gate would re-run hourly. It was removed because
+    // it delivered none of that: with `ENABLE_FACTORY_REGRESSION` unset, the
+    // factory-regression job asserted above is skipped in EVERY scheduled run,
+    // so the only thing the cron ever produced was a failed run — and a failure
+    // notification e-mail to whoever last edited the cron line — 24x a day, per
+    // repo, for as long as `main` stays red. Re-arm it only TOGETHER WITH the
+    // gate; these assertions are what force that pairing.
+    expect(ci).not.toContain('- cron: "17 * * * *"');
+    expect(ci).not.toMatch(/^\s+schedule:\s*$/m);
+    expect(ci).toContain("ENABLE_FACTORY_REGRESSION=true");
     expect(ci).toContain("createWorkflowDispatch");
     expect(ci).toContain("request_nonce: nonce");
     expect(ci).toContain("run.display_title === requestedRunName");

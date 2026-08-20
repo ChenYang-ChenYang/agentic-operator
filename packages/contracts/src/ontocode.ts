@@ -135,6 +135,42 @@ export const OntoCodeHarnessJobStatusSchema = z.enum([
   "succeeded",
 ]);
 
+/** Stable OntoCode lifecycle across replaceable Harness Jobs and retries. */
+export const OntoCodeBuildExecutionStateSchema = z.enum([
+  "new",
+  "running",
+  "resuming",
+  "waiting_user",
+  "generated_unverified",
+  "candidate_ready",
+  "failed_recoverable",
+  "failed_terminal",
+  "cancelled",
+]);
+export type OntoCodeBuildExecutionState = z.infer<
+  typeof OntoCodeBuildExecutionStateSchema
+>;
+
+export const OntoCodeBuildInteractionKindSchema = z.enum([
+  "clarify",
+  "test_approval",
+  "boundary",
+  "execution_readiness",
+  "legacy_answer",
+]);
+export type OntoCodeBuildInteractionKind = z.infer<
+  typeof OntoCodeBuildInteractionKindSchema
+>;
+
+export const OntoCodeBuildPendingAnswerStatusSchema = z.enum([
+  "pending",
+  "delivered",
+  "consumed",
+]);
+export type OntoCodeBuildPendingAnswerStatus = z.infer<
+  typeof OntoCodeBuildPendingAnswerStatusSchema
+>;
+
 export const OntoCodeEventVisibilitySchema = z.enum(["user", "debug", "audit"]);
 
 export const OntoCodeProjectSchema = z
@@ -176,6 +212,83 @@ export const OntoCodeBuildSessionSchema = z
   .strict();
 export type OntoCodeBuildSession = z.infer<typeof OntoCodeBuildSessionSchema>;
 
+/**
+ * Server-side persistence projection for an OntoCode Build execution.
+ *
+ * `engineRunId` is an internal adapter binding, not a navigation or public API
+ * identity.  Product surfaces identify this execution only by `id`.  The
+ * directive is parsed JSON here even though SQLite stores its canonical text.
+ */
+export const OntoCodeBuildExecutionPersistenceSchema = z
+  .object({
+    id: IdentifierSchema,
+    tenantId: IdentifierSchema,
+    projectId: IdentifierSchema,
+    sessionId: IdentifierSchema,
+    state: OntoCodeBuildExecutionStateSchema,
+    ontologyHash: Sha256Schema,
+    directive: JsonObjectSchema,
+    directiveHash: Sha256Schema,
+    runtimeProfileVersionId: OptionalIdentifierSchema,
+    engineKind: z.string().trim().min(1).max(80),
+    engineRunId: OptionalIdentifierSchema,
+    checkpointDigest: Sha256Schema.nullable(),
+    checkpointRevision: z.number().int().nonnegative(),
+    pendingInteractionId: OptionalIdentifierSchema,
+    pendingInteractionKind: OntoCodeBuildInteractionKindSchema.nullable(),
+    pendingInteractionSubjectDigest: Sha256Schema.nullable(),
+    pendingAnswerId: OptionalIdentifierSchema,
+    pendingAnswerDigest: Sha256Schema.nullable(),
+    pendingAnswerStatus: OntoCodeBuildPendingAnswerStatusSchema.nullable(),
+    revision: RevisionSchema,
+    createdAt: TimestampSchema,
+    updatedAt: TimestampSchema,
+  })
+  .strict()
+  .superRefine((execution, ctx) => {
+    const interactionFields = [
+      execution.pendingInteractionId,
+      execution.pendingInteractionKind,
+      execution.pendingInteractionSubjectDigest,
+    ];
+    const interactionPresent = interactionFields.filter(
+      (value) => value !== null,
+    ).length;
+    if (interactionPresent !== 0 && interactionPresent !== 3) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["pendingInteractionId"],
+        message:
+          "pending interaction id, kind, and subject digest must be stored atomically",
+      });
+    }
+
+    const answerFields = [
+      execution.pendingAnswerId,
+      execution.pendingAnswerDigest,
+      execution.pendingAnswerStatus,
+    ];
+    const answerPresent = answerFields.filter((value) => value !== null).length;
+    if (answerPresent !== 0 && answerPresent !== 3) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["pendingAnswerId"],
+        message:
+          "pending answer id, digest, and delivery status must be stored atomically",
+      });
+    }
+    if (answerPresent > 0 && interactionPresent !== 3) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["pendingAnswerId"],
+        message: "a pending answer must address one exact interaction",
+      });
+    }
+  });
+export type OntoCodeBuildExecutionPersistence = z.infer<
+  typeof OntoCodeBuildExecutionPersistenceSchema
+>;
+
 export const OntoCodeMessageSchema = z
   .object({
     id: IdentifierSchema,
@@ -191,6 +304,208 @@ export const OntoCodeMessageSchema = z
   })
   .strict();
 export type OntoCodeMessage = z.infer<typeof OntoCodeMessageSchema>;
+
+/**
+ * A chart the workspace may render inside a chat answer.
+ *
+ * The honesty rule is structural: `rows` are ALWAYS computed by the server from
+ * the authoritative Ontology (a deterministic aggregate named in `source`), and
+ * `computedBy` is a literal so a model-authored payload cannot claim otherwise.
+ * The model chooses WHICH aggregate to show and HOW to present it — never the
+ * numbers. `truncated` travels with the rows so a cut list is never read as a
+ * complete one.
+ */
+/**
+ * Whether the Ontology a Session is locked to is still what the authoritative
+ * source serves right now.
+ *
+ * Every field is measured, never assumed. `unavailable` is a first-class answer
+ * carrying the real reason — a source we could not read must never be reported
+ * as `current`, because "still fresh" and "we could not check" look identical
+ * to an FDE and only one of them is safe to act on.
+ *
+ * `servedBy` names the source object that actually produced the ontology, and
+ * `shadowed` marks the case an FDE cannot otherwise see: an uploaded bundle
+ * answering for a domain that a live source could also have served, without an
+ * explicit binding having chosen it.
+ */
+export const OntoCodeOntologyFreshnessSchema = z
+  .object({
+    schema: z.literal("ontocode-ontology-freshness/v1"),
+    /** The immutable hash this Session is pinned to. */
+    sessionSnapshotHash: z.string().trim().min(1).max(80).nullable(),
+    status: z.enum(["current", "changed", "unavailable"]),
+    /** What the source serves now. Null only when `status` is `unavailable`. */
+    currentHash: z.string().trim().min(1).max(80).nullable(),
+    servedBy: z.enum(["allmeta", "upload", "manifest"]).nullable(),
+    shadowed: z.boolean(),
+    checkedAt: TimestampSchema,
+    /** Verbatim failure reason. Present only when `status` is `unavailable`. */
+    reason: z.string().max(500).nullable(),
+  })
+  .strict();
+export type OntoCodeOntologyFreshness = z.infer<
+  typeof OntoCodeOntologyFreshnessSchema
+>;
+
+export const OntoCodeChartSpecSchema = z
+  .object({
+    schema: z.literal("ontocode-chart/v1"),
+    kind: z.enum(["bar", "donut"]),
+    title: z.string().trim().min(1).max(120),
+    note: z.string().trim().min(1).max(500).optional(),
+    // The renderer prints `${row.value} ${unit}`, so a unit carrying digits
+    // (or ％-family signs) fuses model-invented numbers onto server-computed
+    // rows — e.g. unit="92.7% 通过". Title/note are model prose like the
+    // answer body; the unit is the one field typography welds to real data.
+    unit: z
+      .string()
+      .trim()
+      .min(1)
+      .max(40)
+      .regex(/^[^0-9０-９%‰]+$/u, "unit 不能包含数字")
+      .optional(),
+    rows: z
+      .array(
+        z
+          .object({
+            label: z.string().trim().min(1).max(120),
+            value: z.number().finite().nonnegative(),
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(40),
+    total: z.number().finite().nonnegative().optional(),
+    truncated: z.boolean(),
+    source: z
+      .object({
+        aggregate: z.string().trim().min(1).max(120),
+        computedBy: z.literal("server"),
+      })
+      .strict(),
+  })
+  .strict();
+export type OntoCodeChartSpec = z.infer<typeof OntoCodeChartSpecSchema>;
+
+// ── ontocode-table/v1 ────────────────────────────────────────────────────────
+// Contract bounds. Exported so the producing server and the rendering client
+// read ONE number each instead of two literals that can drift apart.
+/** Widest table an answer may carry. */
+export const ONTOCODE_TABLE_MAX_COLUMNS = 8;
+/** Tallest table an answer may carry (per-derivation caps must be ≤ this). */
+export const ONTOCODE_TABLE_MAX_ROWS = 60;
+export const ONTOCODE_TABLE_TITLE_CHARS = 120;
+export const ONTOCODE_TABLE_NOTE_CHARS = 500;
+export const ONTOCODE_TABLE_COLUMN_KEY_CHARS = 60;
+export const ONTOCODE_TABLE_COLUMN_LABEL_CHARS = 60;
+export const ONTOCODE_TABLE_CELL_CHARS = 240;
+export const ONTOCODE_TABLE_DERIVATION_CHARS = 120;
+
+/**
+ * ONE cell. A plain string or a finite number — nothing else.
+ *
+ * The union is the honesty boundary at the smallest scale: a structured cell
+ * (`{ text, tooltip, verdict }`) is exactly where a model smuggles authored
+ * content into a table of server-derived facts, so a cell that is not a bare
+ * value the server produced does not parse at all. Booleans and null are
+ * excluded too — the server renders its own words for "declared/undeclared"
+ * rather than handing the renderer a flag to interpret.
+ */
+export const OntoCodeTableCellSchema = z.union([
+  z.string().max(ONTOCODE_TABLE_CELL_CHARS),
+  z.number().finite(),
+]);
+export type OntoCodeTableCell = z.infer<typeof OntoCodeTableCellSchema>;
+
+export const OntoCodeTableColumnSchema = z
+  .object({
+    /** Stable identifier of the derivation's column. Never shown. */
+    key: z.string().trim().min(1).max(ONTOCODE_TABLE_COLUMN_KEY_CHARS),
+    /** What the reader sees. */
+    label: z.string().trim().min(1).max(ONTOCODE_TABLE_COLUMN_LABEL_CHARS),
+    /** Numeric columns read right-aligned; text reads left. Presentation only. */
+    align: z.enum(["left", "right"]).optional(),
+  })
+  .strict();
+export type OntoCodeTableColumn = z.infer<typeof OntoCodeTableColumnSchema>;
+
+/**
+ * A table the workspace may render inside a chat answer — the table analogue of
+ * OntoCodeChartSpecSchema, under the same discipline.
+ *
+ * `rows` are ALWAYS computed by the server from the authoritative Ontology (a
+ * deterministic derivation named in `source`), and `computedBy` is a literal so
+ * a model-authored payload cannot claim otherwise. The model chooses WHICH
+ * derivation to show and HOW to title it — never the contents.
+ *
+ * Rows are POSITIONAL: each row is an array of cells that must line up exactly
+ * with `columns`. A keyed-object row would let a payload introduce a column the
+ * derivation never declared; here a row that does not match the declared arity
+ * is rejected outright.
+ *
+ * Truncation is stated, never implied: `total` is the full pre-cap row count,
+ * `truncated` says whether rows were cut, and `cellsTruncated` counts cells
+ * whose own text had to be clipped. A cut table is never readable as a whole one.
+ */
+export const OntoCodeTableSpecSchema = z
+  .object({
+    schema: z.literal("ontocode-table/v1"),
+    title: z.string().trim().min(1).max(ONTOCODE_TABLE_TITLE_CHARS),
+    note: z.string().trim().min(1).max(ONTOCODE_TABLE_NOTE_CHARS).optional(),
+    columns: z
+      .array(OntoCodeTableColumnSchema)
+      .min(1)
+      .max(ONTOCODE_TABLE_MAX_COLUMNS),
+    rows: z
+      .array(
+        z.array(OntoCodeTableCellSchema).min(1).max(ONTOCODE_TABLE_MAX_COLUMNS),
+      )
+      .min(1)
+      .max(ONTOCODE_TABLE_MAX_ROWS),
+    /** Full pre-cap row count; rows.length < total ⇔ truncated. */
+    total: z.number().int().nonnegative(),
+    truncated: z.boolean(),
+    /** Cells whose own text exceeded the cell bound and was clipped. */
+    cellsTruncated: z.number().int().nonnegative(),
+    source: z
+      .object({
+        derivation: z
+          .string()
+          .trim()
+          .min(1)
+          .max(ONTOCODE_TABLE_DERIVATION_CHARS),
+        computedBy: z.literal("server"),
+      })
+      .strict(),
+  })
+  .strict()
+  .superRefine((spec, ctx) => {
+    for (const [index, row] of spec.rows.entries()) {
+      if (row.length !== spec.columns.length) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["rows", index],
+          message: `第 ${index + 1} 行有 ${row.length} 个单元格，与 ${spec.columns.length} 个列不匹配`,
+        });
+      }
+    }
+    if (spec.rows.length > spec.total) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["total"],
+        message: `total ${spec.total} 小于实际行数 ${spec.rows.length}`,
+      });
+    }
+    if (spec.truncated !== spec.rows.length < spec.total) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["truncated"],
+        message: `truncated=${spec.truncated} 与 ${spec.rows.length}/${spec.total} 行不一致`,
+      });
+    }
+  });
+export type OntoCodeTableSpec = z.infer<typeof OntoCodeTableSpecSchema>;
 
 export const OntoCodeCommandSchema = z
   .object({
@@ -226,6 +541,11 @@ export const OntoCodeHarnessBudgetSchema = z
   })
   .strict();
 export type OntoCodeHarnessBudget = z.infer<typeof OntoCodeHarnessBudgetSchema>;
+export type OntoCodeResolvedCommandBudget = OntoCodeHarnessBudget & {
+  maxWallClockMs: number;
+  maxModelCalls: number;
+  maxToolCalls: number;
+};
 
 /**
  * A Candidate Test Case is durable job input. The Harness may enrich it with
@@ -265,14 +585,22 @@ export const ONTOCODE_COMMAND_POLICY = {
     jobKind: "scope",
     riskClass: "read_only",
     requiresHuman: false,
-    budget: { maxWallClockMs: 60_000, maxModelCalls: 4, maxToolCalls: 8 },
+    // Scope now reasons with ontology tool access (the same read-only inquiry
+    // loop analyze_ontology runs), so it carries the same budget. Reasoning is
+    // MANDATORY on this stage by product decision — a budget too small to fund
+    // it would force the dishonest choice between failing and faking, so the
+    // budget is sized for the loop, not for the old single flattened call.
+    budget: { maxWallClockMs: 300_000, maxModelCalls: 12, maxToolCalls: 40 },
   },
   propose_blueprint: {
     commandType: "propose_blueprint",
     jobKind: "blueprint",
     riskClass: "draft_change",
     requiresHuman: false,
-    budget: { maxWallClockMs: 120_000, maxModelCalls: 8, maxToolCalls: 16 },
+    // Blueprint runs a per-phase reasoning pass (one call per selected Action,
+    // plus grounding retries). Sized so a full-domain selection reasons every
+    // phase instead of stopping partway; same rationale as analyze_scope.
+    budget: { maxWallClockMs: 300_000, maxModelCalls: 16, maxToolCalls: 24 },
   },
   create_configuration_task: {
     commandType: "create_configuration_task",
@@ -293,7 +621,15 @@ export const ONTOCODE_COMMAND_POLICY = {
     jobKind: "build",
     riskClass: "draft_change",
     requiresHuman: false,
+    // `budget` is the bounded one-Action default. Multi-Action generation is
+    // expanded by `resolveOntoCodeCommandBudget` up to this server-owned
+    // ceiling; callers can tighten that resolved allowance, never widen it.
     budget: { maxWallClockMs: 600_000, maxModelCalls: 10, maxToolCalls: 24 },
+    budgetCeiling: {
+      maxWallClockMs: 900_000,
+      maxModelCalls: 40,
+      maxToolCalls: 96,
+    },
   },
   patch_artifact: {
     commandType: "patch_artifact",
@@ -326,7 +662,9 @@ export const ONTOCODE_COMMAND_POLICY = {
   compare_candidate: {
     commandType: "compare_candidate",
     jobKind: "regression",
-    riskClass: "read_only",
+    // The current implementation executes the exact Candidate in a Sandbox.
+    // Treating this as read-only let guide mode start real runtime work.
+    riskClass: "sandbox_effect",
     requiresHuman: false,
     budget: { maxWallClockMs: 120_000, maxModelCalls: 8, maxToolCalls: 20 },
   },
@@ -352,8 +690,142 @@ export const ONTOCODE_COMMAND_POLICY = {
     riskClass: OntoCodeRiskClass;
     requiresHuman: boolean;
     budget: OntoCodeHarnessBudget;
+    budgetCeiling?: OntoCodeHarnessBudget;
   }
 >;
+
+/**
+ * Resolve the server-owned default budget for a concrete command.
+ *
+ * A generated package has real per-Action work (contract grounding, design,
+ * validation and evidence), so a fixed ten-call allowance made a six-Action
+ * Build terminate immediately after planning. The allowance now grows with
+ * the immutable selected scope while remaining capped by the command policy.
+ * A single-Action Build keeps the original tight limits.
+ *
+ * #BUDGET-FOLLOWS-WORK — the allowance belongs to the work stream, not to the
+ * label of the command that nudges it. Every `build`-kind command drives the
+ * same per-Action generation harness, so once the server knows the Session's
+ * immutable Action scope it sizes them all alike. A live six-Action Build lost
+ * its generated agents to this: an FDE's "save the draft" turn was routed to
+ * `patch_artifact`, whose flat allowance overwrote the running conversation's
+ * budget (30/74/900s → 8/20/120s) and the terminal `save_draft` never got a
+ * turn. Scope sizing only ever WIDENS a command's own policy budget, and stays
+ * capped by the generation ceiling.
+ */
+export function resolveOntoCodeCommandBudget(
+  action: OntoCodeCommandType,
+  args: Record<string, unknown> = {},
+  serverScope?: { authoritativeActionCount?: number | null },
+): OntoCodeResolvedCommandBudget {
+  const policy = ONTOCODE_COMMAND_POLICY[action];
+  if (action !== "generate_package") {
+    const scopeCount = serverScope?.authoritativeActionCount;
+    // Only a server-recovered scope widens a non-generation command; client
+    // arguments can still tighten the result downstream but never widen it.
+    if (
+      policy.jobKind !== "build" ||
+      !Number.isSafeInteger(scopeCount) ||
+      (scopeCount ?? 0) <= 0
+    ) {
+      return { ...policy.budget };
+    }
+    const scoped = resolveOntoCodeCommandBudget("generate_package", {}, {
+      authoritativeActionCount: scopeCount,
+    });
+    // A Build-kind command never drops below its own policy allowance.
+    return {
+      maxWallClockMs: Math.max(
+        policy.budget.maxWallClockMs,
+        scoped.maxWallClockMs,
+      ),
+      maxModelCalls: Math.max(policy.budget.maxModelCalls, scoped.maxModelCalls),
+      maxToolCalls: Math.max(policy.budget.maxToolCalls, scoped.maxToolCalls),
+    };
+  }
+  const generationPolicy = ONTOCODE_COMMAND_POLICY.generate_package;
+
+  const selectedActionCount = Array.isArray(args.actionIds)
+    ? new Set(
+        args.actionIds
+          .filter((value): value is string => typeof value === "string")
+          .map((value) => value.trim())
+          .filter(Boolean),
+      ).size
+    : 0;
+  const fullDomain = args.scopeMode === "full_domain";
+  const authoritativeActionCount =
+    Number.isSafeInteger(serverScope?.authoritativeActionCount) &&
+    (serverScope?.authoritativeActionCount ?? 0) > 0
+      ? serverScope!.authoritativeActionCount!
+      : null;
+  const actionCount =
+    authoritativeActionCount ??
+    (fullDomain ? 8 : Math.max(1, selectedActionCount));
+  const additionalActions = actionCount - 1;
+  const ceiling = generationPolicy.budgetCeiling;
+
+  return {
+    maxWallClockMs: Math.min(
+      ceiling.maxWallClockMs!,
+      generationPolicy.budget.maxWallClockMs + additionalActions * 60_000,
+    ),
+    maxModelCalls: Math.min(
+      ceiling.maxModelCalls!,
+      generationPolicy.budget.maxModelCalls + additionalActions * 4,
+    ),
+    maxToolCalls: Math.min(
+      ceiling.maxToolCalls!,
+      generationPolicy.budget.maxToolCalls + additionalActions * 10,
+    ),
+  };
+}
+
+export interface OntoCodeAutonomyActionPolicy {
+  allowed: boolean;
+  requiresHuman: boolean;
+  reason:
+    | "analysis_only"
+    | "confirm_each_change"
+    | "sandbox_autonomous"
+    | "base_human_gate";
+}
+
+/**
+ * Product-facing autonomy semantics, kept separate from the immutable command
+ * risk table:
+ *
+ * - guide              = analysis only
+ * - copilot            = confirm every non-read-only engineering step
+ * - sandbox_autopilot  = autonomous through draft/sandbox work
+ *
+ * No mode can remove a base production/external approval gate.
+ */
+export function resolveOntoCodeAutonomyActionPolicy(
+  mode: OntoCodeAutonomyMode,
+  action: OntoCodeCommandType,
+): OntoCodeAutonomyActionPolicy {
+  const base = ONTOCODE_COMMAND_POLICY[action];
+  if (mode === "guide") {
+    return {
+      allowed: base.riskClass === "read_only",
+      requiresHuman: false,
+      reason: "analysis_only",
+    };
+  }
+  if (mode === "copilot" && base.riskClass !== "read_only") {
+    return {
+      allowed: true,
+      requiresHuman: true,
+      reason: "confirm_each_change",
+    };
+  }
+  return {
+    allowed: true,
+    requiresHuman: base.requiresHuman,
+    reason: base.requiresHuman ? "base_human_gate" : "sandbox_autonomous",
+  };
+}
 
 export const OntoCodeTurnBehaviorSchema = z.enum([
   "navigate",
@@ -375,6 +847,10 @@ export const OntoCodeHarnessJobSchema = z
     sessionId: IdentifierSchema,
     commandId: OptionalIdentifierSchema,
     runtimeProfileVersionId: OptionalIdentifierSchema,
+    // Optional during the additive migration window. New Build Jobs bind the
+    // stable execution; legacy/non-Build Jobs legitimately remain unbound.
+    buildExecutionId: OptionalIdentifierSchema.optional(),
+    attemptNo: z.number().int().nonnegative().optional(),
     kind: OntoCodeHarnessJobKindSchema,
     status: OntoCodeHarnessJobStatusSchema,
     inputHash: Sha256Schema.nullable(),
@@ -1723,9 +2199,7 @@ export const OntoCodeEvidenceOutcomeSchema = z.enum([
 ]);
 
 export const OntoCodeEvidenceStateSchema = z.enum(["valid", "stale"]);
-export type OntoCodeEvidenceState = z.infer<
-  typeof OntoCodeEvidenceStateSchema
->;
+export type OntoCodeEvidenceState = z.infer<typeof OntoCodeEvidenceStateSchema>;
 
 export const OntoCodeEvidenceKindSchema = z
   .string()
@@ -1826,6 +2300,73 @@ export const OntoCodeExecutionOwnerSchema = z.enum([
 ]);
 export type OntoCodeExecutionOwner = z.infer<
   typeof OntoCodeExecutionOwnerSchema
+>;
+
+export const OntoCodeCandidateBlockerStageSchema = z.enum([
+  "runtime",
+  "verification",
+]);
+export type OntoCodeCandidateBlockerStage = z.infer<
+  typeof OntoCodeCandidateBlockerStageSchema
+>;
+
+export const OntoCodeCandidateBlockerCodeSchema = z.enum([
+  "integration_profile_missing",
+  "integration_probe_missing",
+  "credential_reference_unavailable",
+  "external_api_runtime_not_ready",
+  "write_probe_contract_missing",
+  "human_boundary_pending",
+]);
+export type OntoCodeCandidateBlockerCode = z.infer<
+  typeof OntoCodeCandidateBlockerCodeSchema
+>;
+
+/**
+ * A Candidate may be structurally complete while an external execution
+ * dependency is not ready. These blockers are intentionally narrower than a
+ * free-form warning: every row names the immutable Agent/requirement/tool it
+ * applies to and the exact later-stage gate it closes.
+ */
+export const OntoCodeCandidateBlockerSchema = z
+  .object({
+    code: OntoCodeCandidateBlockerCodeSchema,
+    stage: OntoCodeCandidateBlockerStageSchema,
+    agentSlug: z.string().trim().min(1).max(200),
+    actionName: z.string().trim().min(1).max(200).nullable(),
+    requirementId: z.string().trim().min(1).max(240).nullable(),
+    system: z.string().trim().min(1).max(240).nullable(),
+    toolName: z.string().trim().min(1).max(200).nullable(),
+    bindingStatus: z.string().trim().min(1).max(100).nullable(),
+    reason: z.string().trim().min(1).max(2_000),
+    missing: z.array(z.string().trim().min(1).max(240)).max(100).default([]),
+  })
+  .strict();
+export type OntoCodeCandidateBlocker = z.infer<
+  typeof OntoCodeCandidateBlockerSchema
+>;
+
+export const OntoCodeCandidateValidationV2Schema = z
+  .object({
+    schema: z.literal("ontocode-candidate-validation/v2"),
+    passed: z.literal(true),
+    packageIntegrityPassed: z.literal(true),
+    requiredArtifactKinds: z.array(OntoCodeArtifactKindSchema).min(1).max(100),
+    agentCount: z.number().int().positive(),
+    executionOwnerCount: z.number().int().positive(),
+    runtimeReady: z.boolean(),
+    verificationPrerequisitesReady: z.boolean(),
+    runtimeBlockers: z.array(OntoCodeCandidateBlockerSchema).max(2_000),
+    verificationBlockers: z.array(OntoCodeCandidateBlockerSchema).max(2_000),
+    sandboxEvidenceIncluded: z.boolean(),
+    releaseEligible: z.boolean(),
+  })
+  // Promotion and deployment append signed evidence coordinates to this
+  // object. Keep those additive fields while the core readiness contract stays
+  // parsed and typed.
+  .catchall(z.unknown());
+export type OntoCodeCandidateValidationV2 = z.infer<
+  typeof OntoCodeCandidateValidationV2Schema
 >;
 
 export const OntoCodePackageVersionSchema = z
@@ -1977,10 +2518,7 @@ export const OntoCodeSandboxQualificationSchema = z.enum([
   "development_only",
   "promotable",
 ]);
-export const OntoCodeSandboxExecutionOriginSchema = z.enum([
-  "local",
-  "remote",
-]);
+export const OntoCodeSandboxExecutionOriginSchema = z.enum(["local", "remote"]);
 export const OntoCodeSandboxBundleHashSchema = z
   .string()
   .regex(
@@ -2129,6 +2667,25 @@ export type OntoCodeSuiteOverviewReceipt = z.infer<
 
 // ─── Structured waiting question (Harness → conversational action card) ───
 
+const OntoCodeStructuredQuestionOptionSchema = z
+  .object({
+    label: z.string().trim().min(1).max(200),
+    value: z.string().trim().min(1).max(500),
+    recommended: z.boolean().optional(),
+  })
+  .strict();
+
+const OntoCodeStructuredQuestionItemSchema = z
+  .object({
+    id: z.string().trim().min(1).max(200).optional(),
+    question: z.string().trim().min(1).max(1_000),
+    context: z.string().max(2_000).optional(),
+    options: z.array(OntoCodeStructuredQuestionOptionSchema).max(4).default([]),
+    allowOther: z.boolean().default(true),
+    systems: z.array(z.string().trim().min(1).max(200)).max(4).default([]),
+  })
+  .strict();
+
 export const OntoCodeStructuredQuestionSchema = z
   .object({
     id: z.string().trim().min(1).max(200),
@@ -2136,20 +2693,28 @@ export const OntoCodeStructuredQuestionSchema = z
     question: z.string().trim().min(1).max(4_000),
     why: z.string().max(2_000).optional(),
     options: z
-      .array(
-        z
-          .object({
-            label: z.string().trim().min(1).max(200),
-            value: z.string().trim().min(1).max(500),
-            recommended: z.boolean().optional(),
-          })
-          .strict(),
-      )
+      .array(OntoCodeStructuredQuestionOptionSchema)
       .max(12)
       .default([]),
+    /** ask_user_batch remains machine-readable all the way to the UI. */
+    items: z.array(OntoCodeStructuredQuestionItemSchema).max(8).optional(),
     allowOther: z.boolean().default(true),
     impact: z.string().max(1_000).optional(),
     systems: z.array(z.string().trim().min(1).max(200)).max(20).default([]),
+    /**
+     * How much of the readiness receipt this question was derived from. Present
+     * only when the scan hit its bound: a truncated scan cannot be read as "these
+     * are all the gaps", and staying silent about it turns a partial check into
+     * an apparently complete one.
+     */
+    coverage: z
+      .object({
+        scanned: z.number().int().nonnegative(),
+        total: z.number().int().nonnegative(),
+        truncated: z.literal(true),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 export type OntoCodeStructuredQuestion = z.infer<

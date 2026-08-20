@@ -1,5 +1,4 @@
 import type { FastifyInstance } from "fastify";
-import { readFile } from "node:fs/promises";
 import { and, eq } from "drizzle-orm";
 import {
   appendToLedger,
@@ -17,7 +16,7 @@ import { agents, auditLog, events, eventTypes, getDb } from "@agentic/db";
 import { makeId } from "@agentic/shared";
 import { IngestEventBody, ListEventsQuery } from "@agentic/contracts";
 import { requirePermission } from "../../plugins/rbac";
-import { listRecentEvents } from "../../queries/runs";
+import { listRecentEvents, resolvePayloadRef } from "../../queries/runs";
 import {
   fetchCausality,
   fetchEventsSince,
@@ -559,24 +558,11 @@ export async function eventsRoutes(app: FastifyInstance) {
 
       let payload: unknown = null;
       if (row.payloadRef) {
-        const [filePath, offsetStr] = row.payloadRef.split("#");
-        if (
-          !filePath ||
-          offsetStr == null ||
-          !Number.isSafeInteger(Number(offsetStr))
-        ) {
-          return reply.fail(
-            "payload_unreadable",
-            "event payload reference is malformed",
-            409,
-          );
-        }
         try {
-          const buf = await readFile(filePath);
-          const offset = Number(offsetStr);
-          const nl = buf.indexOf(0x0a, offset);
-          const line = buf.toString("utf8", offset, nl === -1 ? undefined : nl);
-          payload = JSON.parse(line).data;
+          payload = await resolvePayloadRef(
+            row.payloadRef,
+            Number.POSITIVE_INFINITY,
+          );
         } catch (err) {
           req.log.error(
             { err, eventId: id, payloadRef: row.payloadRef },

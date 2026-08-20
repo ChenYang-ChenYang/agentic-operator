@@ -3,6 +3,7 @@ import type { ChatMsg, TurnEvent } from "./stream-gateway";
 
 const seenTurns: ChatMsg[][] = [];
 const scriptedTurns: TurnEvent[][] = [];
+const savedConversationIds: string[] = [];
 
 vi.mock("./stream-gateway", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./stream-gateway")>();
@@ -26,7 +27,14 @@ const ports = (): FactoryPorts => ({
   ontology: { listDomains: async () => [], fetchOntology: async () => ({ domainId: "dom", actions: [], events: [], objects: [], rules: [], workflow: [], source: "snapshot" }), fetchActionRules: async () => [] },
   sandbox: { deployAndObserve: async () => { throw new Error("not used"); }, teardown: async () => undefined },
   reflection: { list: async () => [], record: async () => undefined },
-  conversation: { has: async () => false, load: async () => null, save: async () => undefined, drainHumanMessages: async () => [] },
+  conversation: {
+    has: async () => false,
+    load: async () => null,
+    save: async (conversationId) => {
+      savedConversationIds.push(conversationId);
+    },
+    drainHumanMessages: async () => [],
+  },
 });
 
 const groupCall = (members: Array<{ role: string; task: string }>): TurnEvent[] => [
@@ -39,6 +47,7 @@ describe("spawn_subagent_group — reasoning-driven parallel sub-brain group", (
     vi.stubEnv("FACTORY_GROUP_CONCURRENCY", "1"); // deterministic member order for scripting
     seenTurns.splice(0);
     scriptedTurns.splice(0);
+    savedConversationIds.splice(0);
   });
   afterEach(() => vi.unstubAllEnvs());
 
@@ -67,6 +76,34 @@ describe("spawn_subagent_group — reasoning-driven parallel sub-brain group", (
     const done = events.find((e): e is Extract<Ev, { t: "group.done" }> => e.t === "group.done");
     expect(done).toMatchObject({ ok: 3, total: 3, groupId: start!.groupId });
     expect(done!.summary).toContain("结论"); // the deterministic reduce stitched the members' conclusions
+  });
+
+  it("keeps child checkpoints isolated when display roles collide", async () => {
+    scriptedTurns.push(
+      groupCall([
+        { role: "ruleCheckF设计", task: "设计 CandidateIdentity" },
+        { role: "ruleCheckF设计", task: "设计 MatchResume" },
+      ]),
+      [{ t: "done", content: "Identity 结论" }],
+      [{ t: "done", content: "Match 结论" }],
+      [{ t: "done", content: "父脑收尾" }],
+    );
+
+    for await (const _event of runBrain({
+      domain: "dom",
+      goal: "验证同名子脑隔离",
+      ports: ports(),
+      conversationId: "collision-conv",
+    })) {
+      // Drain the stream so every child reaches its durable checkpoint.
+    }
+
+    const childIds = new Set(
+      savedConversationIds.filter((id) =>
+        id.startsWith("collision-conv:sub:"),
+      ),
+    );
+    expect([...childIds]).toHaveLength(2);
   });
 
   it("enforces the tree-wide spawn cap: a group exceeding FACTORY_MAX_TREE_SPAWNS is refused before any member runs", async () => {

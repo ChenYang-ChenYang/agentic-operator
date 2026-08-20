@@ -283,16 +283,13 @@ export function Sidebar({
             />
           </NavGroup>
           <NavGroup label={t("nav.group.manage")}>
+            {/* The conversational workspace is OntoCode's canonical product
+                surface. Its prefix match also keeps this item active while a
+                user is inside an individual Build Session. */}
             <NavItem
-              href={`${base}/ontocode`}
+              href={`${base}/ontocode-workspace`}
               icon="spark"
               label={t("nav.ontocode")}
-              matchPrefix
-            />
-            <NavItem
-              href={`${base}/factory`}
-              icon="spark"
-              label={t("nav.factory")}
               matchPrefix
             />
             <NavItem

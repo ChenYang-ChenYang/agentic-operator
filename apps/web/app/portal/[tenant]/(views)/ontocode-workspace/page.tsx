@@ -59,7 +59,7 @@ export default function OntoCodeWorkspaceEntryPage() {
   }
   return (
     <div style={{ padding: 48, textAlign: "center", color: "#93a0ac", fontSize: 13 }}>
-      正在打开最近的 Session…
+      打开中…
     </div>
   );
 }

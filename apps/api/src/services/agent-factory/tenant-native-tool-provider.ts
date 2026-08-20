@@ -294,9 +294,30 @@ export function resolveTenantNativeFactoryTools(input: {
 }): ResolvedTenantNativeFactoryTool[] {
   const snapshot = snapshots.get(input.tenantSlug);
   if (!snapshot) return [];
+  return resolveTenantNativeFactoryToolsFromSnapshot({
+    snapshot,
+    expectedVersion: input.expectedVersion,
+    probesByTool: input.probesByTool,
+  });
+}
+
+/**
+ * Resolve from a caller-provided, already-reviewed registry projection.
+ *
+ * Runtime Profile compatibility execution uses this path so an exact adapter
+ * release can be selected independently of the Business Domain tenant slug.
+ * The snapshot's slug is code provenance only; callers must continue passing
+ * the Business Domain slug into ToolContext when invoking the descriptor.
+ */
+export function resolveTenantNativeFactoryToolsFromSnapshot(input: {
+  snapshot: RuntimeTenantRegistrySnapshot;
+  expectedVersion?: string;
+  probesByTool?: ReadonlyMap<string, TenantNativeProbeSummary>;
+}): ResolvedTenantNativeFactoryTool[] {
+  const { snapshot } = input;
   if (input.expectedVersion && input.expectedVersion !== snapshot.selectedVersion) {
     throw new Error(
-      `tenant registry version mismatch for ${input.tenantSlug}: expected ${input.expectedVersion}, runtime selected ${snapshot.selectedVersion}`,
+      `tenant registry version mismatch for ${snapshot.tenantSlug}: expected ${input.expectedVersion}, runtime selected ${snapshot.selectedVersion}`,
     );
   }
   return Object.entries(snapshot.registry.tools ?? {}).flatMap(([key, descriptor]) => {
@@ -313,12 +334,32 @@ export function listTenantNativeFactoryTools(input: {
   return resolveTenantNativeFactoryTools(input).map((tool) => tool.realTool);
 }
 
+export function listTenantNativeFactoryToolsFromSnapshot(input: {
+  snapshot: RuntimeTenantRegistrySnapshot;
+  expectedVersion?: string;
+  probesByTool?: ReadonlyMap<string, TenantNativeProbeSummary>;
+}): RealTool[] {
+  return resolveTenantNativeFactoryToolsFromSnapshot(input).map(
+    (tool) => tool.realTool,
+  );
+}
+
 export function resolveTenantNativeFactoryTool(input: {
   tenantSlug: string;
   name: string;
   expectedVersion?: string;
 }): ResolvedTenantNativeFactoryTool | undefined {
   return resolveTenantNativeFactoryTools(input).find(
+    (tool) => tool.registryKey === input.name || tool.realTool.aliases?.includes(input.name),
+  );
+}
+
+export function resolveTenantNativeFactoryToolFromSnapshot(input: {
+  snapshot: RuntimeTenantRegistrySnapshot;
+  name: string;
+  expectedVersion?: string;
+}): ResolvedTenantNativeFactoryTool | undefined {
+  return resolveTenantNativeFactoryToolsFromSnapshot(input).find(
     (tool) => tool.registryKey === input.name || tool.realTool.aliases?.includes(input.name),
   );
 }

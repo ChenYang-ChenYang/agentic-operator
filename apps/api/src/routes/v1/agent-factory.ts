@@ -22,11 +22,24 @@ import {
   humanMemoryQuestionKey,
   isStopIntent,
   parseTestCaseDecision,
+  assertFactoryScopeRecommendationCurrent,
+  createFactoryGenerationDirective,
+  factoryGenerationGoal,
+  recommendFactoryActionScope,
+  FactoryGenerationDirectiveError,
+  FactoryScopeRecommendationError,
   type BrainContinuationMode,
   type BrainEvent,
+  type FactoryGenerationDirective,
   type FactoryHumanInteractionKind,
   type FactoryHumanMemoryKind,
+  type FactoryInteractionPolicy,
+  type OntologySource,
 } from "@agentic/agent-factory";
+import {
+  FactoryRunStartRequestSchema,
+  FactoryScopeRecommendationRequestSchema,
+} from "@agentic/contracts";
 import { requirePermission, writeAudit } from "../../plugins/rbac";
 import {
   makeFactoryPorts,
@@ -74,6 +87,10 @@ import {
   FactoryMessageDeliveryError,
 } from "../../services/agent-factory/run-registry";
 import {
+  getIssuedFactoryScopeRecommendation,
+  issueFactoryScopeRecommendation,
+} from "../../services/agent-factory/scope-recommendation-store";
+import {
   listReportJobs,
   getReportJob,
   startOntologyReportJob,
@@ -82,11 +99,16 @@ import {
 } from "../../services/agent-factory/report-jobs";
 import {
   listDeclarativeTools,
-  deleteDeclarativeTool,
 } from "../../services/agent-factory/declarative-tool";
+import {
+  deactivateToolRevision,
+  listToolRevisions,
+  ToolRevisionError,
+} from "../../services/agent-factory/tool-revision-store";
 import {
   bindingMatchesDomain,
   clearFactoryDomainBinding,
+  FactoryDomainBindingBlockedError,
   getFactoryDomainBinding,
   setFactoryDomainBinding,
 } from "../../services/agent-factory/domain-binding";
@@ -111,6 +133,7 @@ import {
 } from "../../services/agent-factory/draft-sandbox-finish";
 import { registerFactoryFixtureAssetRoutes } from "./agent-factory-fixture-assets";
 import { AuthoritativeOntologyPromotionError } from "../../services/agent-factory/authoritative-ontology-evidence";
+import { createSseDrainRegistry } from "../../plugins/sse-drain";
 
 const frame = (data: unknown): string => `data: ${JSON.stringify(data)}\n\n`;
 
@@ -205,7 +228,24 @@ class FactoryDomainBindingError extends Error {
 
 async function bindingSnapshot(auth: AuthedContext) {
   const ports = makeFactoryPorts(auth.tenantSlug, auth.tenantId);
-  const domains = await ports.ontology.listDomains();
+  // The binding picker is a control-plane catalog and must stay independent
+  // from the currently bound runtime transport.  In particular, an existing
+  // upload binding intentionally makes `ports.ontology.listDomains()` return
+  // only tenant-owned uploads; using that list here made it impossible to
+  // switch the tenant back to an authoritative Allmeta Domain.
+  const discoverySources = makeFactoryDomainDiscoverySources(auth.tenantSlug);
+  let domains: Awaited<ReturnType<OntologySource["listDomains"]>> = [];
+  let catalogError: string | null = null;
+  if (discoverySources.allmeta) {
+    try {
+      domains = await discoverySources.allmeta.listDomains();
+    } catch (error) {
+      catalogError =
+        String((error as { message?: unknown })?.message ?? error)
+          .trim()
+          .slice(0, 500) || "Allmeta catalog unavailable";
+    }
+  }
   // Runtime reads never infer identity from similar names. Existing installations are
   // backfilled once by migration 0031; after that only an explicit PUT/upload may bind.
   const binding = getFactoryDomainBinding(auth.tenantId);
@@ -213,17 +253,24 @@ async function bindingSnapshot(auth: AuthedContext) {
   // not case-fold or silently rewrite it at runtime; migration 0031 performed
   // the one-time legacy reconciliation.  PUT may accept an unambiguous
   // case-insensitive user input, but the stored id must resolve exactly here.
-  let boundDomain = binding
-    ? (domains.find((d) => d.id === binding!.ontologyDomainId) ?? null)
-    : null;
-  if (binding?.source === "upload") {
-    const uploaded = await new FsUploadedOntologyStore().get(
-      auth.tenantSlug,
-      binding.ontologyDomainId,
-    );
-    if (!uploaded) boundDomain = null;
+  let boundDomain:
+    | Awaited<ReturnType<OntologySource["listDomains"]>>[number]
+    | null = null;
+  if (binding?.source === "explicit") {
+    boundDomain =
+      domains.find((domain) => domain.id === binding.ontologyDomainId) ?? null;
+  } else if (binding?.source === "upload") {
+    boundDomain =
+      (await discoverySources.upload.listDomains()).find(
+        (domain) => domain.id === binding.ontologyDomainId,
+      ) ?? null;
+  } else if (binding) {
+    boundDomain =
+      (await ports.ontology.listDomains()).find(
+        (domain) => domain.id === binding.ontologyDomainId,
+      ) ?? null;
   }
-  return { ports, domains, binding, boundDomain };
+  return { ports, domains, binding, boundDomain, catalogError };
 }
 
 async function requireBoundFactoryDomain(
@@ -318,10 +365,17 @@ async function startFactoryRun(
   goal: string,
   conversationId?: string,
   continuationMode?: BrainContinuationMode,
+  control?: {
+    interactionPolicy?: FactoryInteractionPolicy;
+    generationDirective?: FactoryGenerationDirective;
+    persistGoal?: string;
+  },
 ): Promise<{ runId: string; mode: "started" | "attached" }> {
   return withFactoryTenantLock(auth.tenantId, async () => {
     await requireBoundFactoryDomain(auth, domain);
     let mode: "started" | "attached" = "started";
+    let ontologyDomainRegistrationId: string | null | undefined;
+    let runtimeProfileVersionId: string | null | undefined;
     if (conversationId) {
       // A continuation must name a real, tenant-owned conversation.  Treat a
       // foreign id exactly like a missing id and never manufacture a new run
@@ -347,6 +401,13 @@ async function startFactoryRun(
           `该会话属于本体「${conversation.domain}」，不能在「${domain}」中继续。`,
         );
       }
+      // A parked OntoCode/Factory conversation is pinned to immutable
+      // execution bindings. Human-gate recovery must carry those pins back
+      // into startRun; omitting them made an otherwise valid answer fail with
+      // "another ontology domain registration" before it reached the mailbox.
+      ontologyDomainRegistrationId =
+        conversation.ontologyDomainRegistrationId;
+      runtimeProfileVersionId = conversation.runtimeProfileVersionId;
       // There is no await between this liveness check and startRun: a live
       // conversation receives the goal through its mailbox and returns the
       // same run id; a terminal/orphaned one starts a new turn.
@@ -357,11 +418,16 @@ async function startFactoryRun(
       goal,
       tenantId: auth.tenantId,
       tenantSlug: auth.tenantSlug,
+      ontologyDomainRegistrationId,
+      runtimeProfileVersionId,
       // A userless tenant token may start/steer a run, but it is not a human
       // responder and can never be promoted into authorization evidence.
       confirmedActor: auth.userId ?? auth.email ?? undefined,
       conversationId,
       continuationMode,
+      interactionPolicy: control?.interactionPolicy,
+      generationDirective: control?.generationDirective,
+      persistGoal: control?.persistGoal,
     });
     return { runId: run.runId, mode };
   });
@@ -426,6 +492,7 @@ function gateSubmissionMatches(
 }
 
 export async function agentFactoryRoutes(app: FastifyInstance) {
+  const registerStreamDrain = createSseDrainRegistry(app);
   await registerFactoryFixtureAssetRoutes(app, {
     requireBoundDomain: requireFixtureBoundFactoryDomain,
   });
@@ -433,9 +500,8 @@ export async function agentFactoryRoutes(app: FastifyInstance) {
   app.get("/agent-factory/domains", async (req, reply) => {
     requirePermission(req, "agents.read");
     if (!req.auth) return reply.fail("unauthorized", "需要租户上下文", 401);
-    const { ports, domains, binding, boundDomain } = await bindingSnapshot(
-      req.auth,
-    );
+    const { ports, domains, binding, boundDomain, catalogError } =
+      await bindingSnapshot(req.auth);
     // Return action identities from the real bound ontology so consumers do
     // not depend on a static list or accept arbitrary free text.
     const boundActions = boundDomain
@@ -456,6 +522,7 @@ export async function agentFactoryRoutes(app: FastifyInstance) {
       boundDomain,
       boundActions,
       gatewayConfigured: isGatewayConfigured(),
+      catalogError,
     });
   });
 
@@ -567,22 +634,26 @@ export async function agentFactoryRoutes(app: FastifyInstance) {
         );
       }
       const selected = candidate.domain;
-      if (
-        current &&
-        current.ontologyDomainId !== selected.id &&
-        req.body?.confirmRebind !== true
-      ) {
+      const changesBindingIdentity =
+        !!current &&
+        (current.ontologyDomainId !== selected.id ||
+          current.source !== candidate.bindingSource);
+      if (changesBindingIdentity && req.body?.confirmRebind !== true) {
         auditFactoryMutation(auth, {
           action: "agent_factory.domain.bind",
           targetType: "ontology_domain",
           targetId: selected.id,
           outcome: "failed",
           errorCode: "confirm_rebind",
-          meta: { previousDomainId: current.ontologyDomainId },
+          meta: {
+            previousDomainId: current!.ontologyDomainId,
+            previousSource: current!.source,
+            requestedSource: candidate.bindingSource,
+          },
         });
         return reply.fail(
           "confirm_rebind",
-          `更换连接会让旧本体「${current.ontologyDomainId}」的历史草稿退出当前视图；请确认后重试。`,
+          `更换连接会让旧本体「${current!.ontologyDomainId}」或旧来源「${current!.source}」的历史草稿退出当前视图；请确认后重试。`,
           409,
         );
       }
@@ -601,17 +672,18 @@ export async function agentFactoryRoutes(app: FastifyInstance) {
           meta: {
             source: binding.source,
             previousDomainId: current?.ontologyDomainId ?? null,
-            rebound:
-              !!current &&
-              current.ontologyDomainId !== binding.ontologyDomainId,
+            previousSource: current?.source ?? null,
+            rebound: changesBindingIdentity,
           },
         });
         return reply.ok({ binding, boundDomain: selected });
       } catch (e) {
         const message = (e as Error).message;
-        const errorCode = message.startsWith("factory_running:")
-          ? "factory_running"
-          : "domain_unavailable";
+        const errorCode =
+          e instanceof FactoryDomainBindingBlockedError ||
+          message.startsWith("factory_running:")
+            ? "factory_running"
+            : "domain_unavailable";
         auditFactoryMutation(auth, {
           action: "agent_factory.domain.bind",
           targetType: "ontology_domain",
@@ -620,7 +692,13 @@ export async function agentFactoryRoutes(app: FastifyInstance) {
           errorCode,
           error: e,
         });
-        return reply.fail(errorCode, message, 409);
+        return reply.fail(
+          errorCode,
+          message,
+          409,
+          undefined,
+          e instanceof FactoryDomainBindingBlockedError ? e.details : undefined,
+        );
       }
     });
   });
@@ -1453,16 +1531,33 @@ export async function agentFactoryRoutes(app: FastifyInstance) {
           (version) => [version.versionId, version] as const,
         ),
       );
-      const readinessByVersion = new Map<string, Awaited<ReturnType<typeof assessDraftPromotionReadiness>>>();
-      for (const versionId of [...new Set(drafts.map((draft) => draft.versionId).filter((value): value is string => Boolean(value)))]) {
+      const readinessByVersion = new Map<
+        string,
+        Awaited<ReturnType<typeof assessDraftPromotionReadiness>>
+      >();
+      for (const versionId of [
+        ...new Set(
+          drafts
+            .map((draft) => draft.versionId)
+            .filter((value): value is string => Boolean(value)),
+        ),
+      ]) {
         const status = versionStatus.get(versionId);
-        const versionDrafts = drafts.filter((draft) => draft.versionId === versionId);
-        readinessByVersion.set(versionId, await assessDraftPromotionReadiness({
-          domain,
-          drafts: versionDrafts,
-          ctx: { tenantId: req.auth.tenantId, tenantSlug: req.auth.tenantSlug },
-          promotionGateAdmission: status?.promotionGateAdmission === true,
-        }));
+        const versionDrafts = drafts.filter(
+          (draft) => draft.versionId === versionId,
+        );
+        readinessByVersion.set(
+          versionId,
+          await assessDraftPromotionReadiness({
+            domain,
+            drafts: versionDrafts,
+            ctx: {
+              tenantId: req.auth.tenantId,
+              tenantSlug: req.auth.tenantSlug,
+            },
+            promotionGateAdmission: status?.promotionGateAdmission === true,
+          }),
+        );
       }
       // The rail needs identity/status only. Never send an entire generated
       // spec (which can contain historic tool config or fixture references) to
@@ -1489,15 +1584,23 @@ export async function agentFactoryRoutes(app: FastifyInstance) {
             regressionReady: status?.regressionReady === true,
             regressionStatus: status?.regressionStatus ?? "missing",
             promotionGateAdmission: status?.promotionGateAdmission === true,
-            promotionEligible: status?.promotionGateAdmission === true
-              && readiness?.promotionEligible === true,
+            promotionEligible:
+              status?.promotionGateAdmission === true &&
+              readiness?.promotionEligible === true,
             promotionEvidenceReady: status?.promotionEvidenceReady === true,
-            promotionBlockers: readiness?.blockers ?? ["不可变回归套件尚未取得 production commit gate 资格。"],
+            promotionBlockers: readiness?.blockers ?? [
+              "不可变回归套件尚未取得 production commit gate 资格。",
+            ],
             evidenceQualification: status?.evidenceQualification ?? {
               schema: "agent-factory-regression-evidence-qualification/v1",
               replay: "blocked",
               promotion: "blocked",
-              blockers: [{ code: "replay_not_ready", detail: "不可变回归套件尚未完整重放通过。" }],
+              blockers: [
+                {
+                  code: "replay_not_ready",
+                  detail: "不可变回归套件尚未完整重放通过。",
+                },
+              ],
             },
             ...(draft.regression
               ? {
@@ -1553,7 +1656,8 @@ export async function agentFactoryRoutes(app: FastifyInstance) {
         });
         qualified.push({
           ...version,
-          promotionEligible: version.promotionGateAdmission && readiness.promotionEligible,
+          promotionEligible:
+            version.promotionGateAdmission && readiness.promotionEligible,
           promotionBlockers: readiness.blockers,
         });
       }
@@ -1950,7 +2054,9 @@ export async function agentFactoryRoutes(app: FastifyInstance) {
             fingerprint: result.fingerprint,
             cleanupVerified: true,
             functionsRegistered: result.sandbox.functionsRegistered,
-            regressionReady: true,
+            regressionReady: result.regressionReady,
+            diagnosticOnly: result.diagnosticOnly,
+            qualification: result.qualification,
           },
         });
         return reply.ok(result, 201);
@@ -2834,70 +2940,162 @@ export async function agentFactoryRoutes(app: FastifyInstance) {
     },
   );
 
-  // 生成的工具 — the brain's create_tool output is already persisted to factory_tools; these two
-  // endpoints close the "存入工具库？" ask-user loop: list what exists (the sidebar cross-references
-  // tool.created events from the live run) and delete what the user declines to keep.
+  // Runtime-active generated tools. Drafts live only in the revision ledger
+  // exposed by /v1/tools/revisions; this compatibility surface may deactivate
+  // an active revision but never destroys its audit history.
   app.get("/agent-factory/generated-tools", async (req, reply) => {
     requirePermission(req, "agents.read");
     if (!req.auth) return reply.fail("unauthorized", "需要租户上下文", 401);
     const binding = getFactoryDomainBinding(req.auth.tenantId);
+    const revisionScopes = [
+      binding?.ontologyDomainId ?? "__unbound__",
+      ...(binding ? ["__unbound__"] : []),
+    ];
+    const activeRevisionByName = new Map<
+      string,
+      { id: string; domainId: string | null }
+    >();
+    for (const domainId of revisionScopes) {
+      for (const revision of listToolRevisions({
+        tenantId: req.auth.tenantId,
+        domainId,
+      })) {
+        if (
+          revision.status === "active" &&
+          !activeRevisionByName.has(revision.name)
+        ) {
+          activeRevisionByName.set(revision.name, {
+            id: revision.id,
+            domainId: revision.domainId,
+          });
+        }
+      }
+    }
     return reply.ok({
       tools: listDeclarativeTools(
         req.auth.tenantId,
         binding?.ontologyDomainId ?? null,
-      ),
+      ).map((tool) => {
+        const activeRevision = activeRevisionByName.get(tool.name);
+        return {
+          ...tool,
+          activeRevisionId: activeRevision?.id,
+          activeRevisionDomainId: activeRevision?.domainId,
+          managedLifecycle: Boolean(activeRevision),
+          deactivationBlocker: activeRevision
+            ? undefined
+            : {
+                code: "legacy_tool_revision_migration_required",
+                message:
+                  "这个 active projection 没有对应的 managed revision；请先完成显式 lifecycle migration。",
+                next: "migrate_legacy_tool_revision",
+              },
+        };
+      }),
     });
   });
 
-  app.delete<{ Params: { name: string } }>(
+  app.delete<{
+    Params: { name: string };
+    Querystring: {
+      expectedActiveRevisionId?: string;
+      revisionDomainId?: string;
+    };
+  }>(
     "/agent-factory/generated-tools/:name",
     async (req, reply) => {
-      // agents.invoke (not agents.write) — consistent with the rest of the factory mutation
-      // surface (runs DELETE / drafts promote / stop / inject); an operator who can drive the
-      // factory can also decline the tools it just created.
-      const auth = requirePermission(req, "agents.invoke");
+      // Permanent capability deactivation changes tenant configuration. An
+      // operator may invoke agents but only an administrator may retire tools.
+      const auth = requirePermission(req, "agents.write");
       const name = decodeURIComponent(req.params.name);
+      const expectedActiveRevisionId = String(
+        req.query.expectedActiveRevisionId ?? "",
+      ).trim();
+      if (!expectedActiveRevisionId) {
+        return reply.fail(
+          "expected_active_revision_required",
+          "停用工具必须带 expectedActiveRevisionId",
+          400,
+        );
+      }
+      let revisionDomainId: string | undefined;
       try {
         const binding = getFactoryDomainBinding(auth.tenantId);
-        const deleted = deleteDeclarativeTool(
-          name,
-          auth.tenantId,
-          auth.platformRole === "superadmin",
-          binding?.ontologyDomainId ?? null,
-        );
-        if (!deleted) {
-          auditFactoryMutation(auth, {
-            action: "agent_factory.tool.delete",
-            targetType: "tool",
-            targetId: name,
-            outcome: "failed",
-            errorCode: "not_found",
-            meta: { domain: binding?.ontologyDomainId ?? null },
-          });
+        const currentDomainId =
+          binding?.ontologyDomainId ?? "__unbound__";
+        revisionDomainId = String(
+          req.query.revisionDomainId ?? currentDomainId,
+        ).trim();
+        if (
+          revisionDomainId !== currentDomainId &&
+          revisionDomainId !== "__unbound__"
+        ) {
           return reply.fail(
             "not_found",
-            "没有这个工具（或它属于其它租户）。",
+            "revision domain 不属于当前 ontology 绑定",
             404,
           );
         }
-        auditFactoryMutation(auth, {
-          action: "agent_factory.tool.delete",
-          targetType: "tool",
-          targetId: name,
-          outcome: "succeeded",
-          meta: { domain: binding?.ontologyDomainId ?? null },
+        const actor = auth.userId ?? auth.email;
+        if (!actor) {
+          return reply.fail(
+            "auth_actor_required",
+            "停用工具需要可审计的登录用户身份",
+            403,
+          );
+        }
+        const revision = deactivateToolRevision({
+          tenantId: auth.tenantId,
+          domainId: revisionDomainId,
+          name,
+          actor,
+          expectedActiveRevisionId,
         });
-        return reply.ok({ deleted: true, name });
-      } catch (error) {
         auditFactoryMutation(auth, {
-          action: "agent_factory.tool.delete",
+          action: "agent_factory.tool.deactivate",
+          targetType: "tool_revision",
+          targetId: revision.id,
+          outcome: "succeeded",
+          meta: {
+            name,
+            version: revision.version,
+            definitionHash: revision.definitionHash,
+            revisionDomainId,
+          },
+        });
+        return reply.ok({
+          deactivated: true,
+          deleted: false,
+          retainedHistory: true,
+          name,
+          revision,
+        });
+      } catch (error) {
+        if (error instanceof ToolRevisionError) {
+          auditFactoryMutation(auth, {
+            action: "agent_factory.tool.deactivate",
+            targetType: "tool",
+            targetId: name,
+            outcome: "failed",
+            errorCode: error.code,
+            meta: { revisionDomainId: revisionDomainId ?? null },
+          });
+          return reply.fail(error.code, error.message, error.statusCode);
+        }
+        auditFactoryMutation(auth, {
+          action: "agent_factory.tool.deactivate",
           targetType: "tool",
           targetId: name,
           outcome: "failed",
-          errorCode: "tool_delete_failed",
+          errorCode: "tool_deactivate_failed",
           error,
+          meta: { revisionDomainId: revisionDomainId ?? null },
         });
-        return reply.fail("tool_delete_failed", (error as Error).message, 503);
+        return reply.fail(
+          "tool_deactivate_failed",
+          (error as Error).message,
+          503,
+        );
       }
     },
   );
@@ -3041,9 +3239,7 @@ export async function agentFactoryRoutes(app: FastifyInstance) {
         ? String((clarifyPrompt as Record<string, unknown>).context ?? "")
         : "";
     const isAuthorizationChallenge =
-      /^(?:probe|integration_profile|sandbox_design_review)_authorization:v\d+:/i.test(
-        clarifyContext,
-      );
+      isFactoryAuthorizationChallengeContext(clarifyContext);
     if (isAuthorizationChallenge) {
       // A one-shot authorization can mutate an integration profile or issue
       // real I/O. Ordinary steering remains agents.invoke; answering this
@@ -3204,92 +3400,326 @@ export async function agentFactoryRoutes(app: FastifyInstance) {
     }
   });
 
+  // FDE-first scope discovery. The model receives only the current bound,
+  // authoritative Ontology catalog and returns exact actor=Agent ids. A failed
+  // model/parse never degrades to "select everything".
+  app.post<{ Body: unknown }>(
+    "/agent-factory/scope-recommendation",
+    async (req, reply) => {
+      const auth = requirePermission(req, "agents.invoke");
+      const parsed = FactoryScopeRecommendationRequestSchema.safeParse(
+        req.body,
+      );
+      if (!parsed.success) {
+        auditFactoryMutation(auth, {
+          action: "agent_factory.scope.recommend",
+          targetType: "ontology_domain",
+          outcome: "failed",
+          errorCode: "bad_request",
+        });
+        return reply.fail(
+          "bad_request",
+          parsed.error.issues[0]?.message ?? "domain/scenario 参数无效",
+          400,
+        );
+      }
+      const { domain, scenario } = parsed.data;
+      try {
+        await requireBoundFactoryDomain(auth, domain);
+        const ontology = await makeFactoryPorts(
+          auth.tenantSlug,
+          auth.tenantId,
+          domain,
+        ).ontology.fetchOntology(domain);
+        const recommendation = await recommendFactoryActionScope({
+          ontology,
+          scenario,
+          scopeKey: `${auth.tenantId}\0${auth.tenantSlug}`,
+        });
+        issueFactoryScopeRecommendation({
+          tenantId: auth.tenantId,
+          domain,
+          recommendation,
+        });
+        auditFactoryMutation(auth, {
+          action: "agent_factory.scope.recommend",
+          targetType: "ontology_domain",
+          targetId: domain,
+          outcome: "succeeded",
+          meta: {
+            mode: recommendation.mode,
+            actionCount: recommendation.actionIds.length,
+            unresolvedCount: recommendation.unresolved?.length ?? 0,
+          },
+        });
+        return reply.ok(recommendation);
+      } catch (error) {
+        const errorCode =
+          error instanceof FactoryDomainBindingError
+            ? error.code
+            : error instanceof FactoryScopeRecommendationError
+              ? error.code
+              : "scope_recommendation_failed";
+        auditFactoryMutation(auth, {
+          action: "agent_factory.scope.recommend",
+          targetType: "ontology_domain",
+          targetId: domain,
+          outcome: "failed",
+          errorCode,
+          error,
+        });
+        if (error instanceof FactoryDomainBindingError) {
+          return bindingFailure(reply, error);
+        }
+        if (error instanceof FactoryScopeRecommendationError) {
+          return reply.fail(
+            error.code,
+            error.message,
+            error.code === "scenario_required"
+              ? 400
+              : error.retryable
+                ? 503
+                : 422,
+          );
+        }
+        return reply.fail(
+          "scope_recommendation_failed",
+          "暂时无法生成 Action 范围推荐；本次没有默认全选，请稍后重试。",
+          503,
+        );
+      }
+    },
+  );
+
   // Canonical start/continue transport.  Goals can include full attachment
   // contents without URL encoding or client-side truncation.  Starting is a
   // separate acknowledgement from streaming so an EventSource reconnect never
   // accidentally creates a second run.
-  app.post<{
-    Body: { domain?: unknown; goal?: unknown; conversation?: unknown };
-  }>("/agent-factory/runs/start", async (req, reply) => {
-    const auth = requirePermission(req, "agents.invoke");
-    const domain =
-      typeof req.body?.domain === "string" ? req.body.domain.trim() : "";
-    const goal = typeof req.body?.goal === "string" ? req.body.goal : "";
-    const conversationRaw = req.body?.conversation;
-    if (!domain || !goal.trim()) {
-      auditFactoryMutation(auth, {
-        action: "agent_factory.run.start",
-        targetType: "factory_run",
-        targetId:
-          typeof conversationRaw === "string"
-            ? conversationRaw.trim() || null
-            : null,
-        outcome: "failed",
-        errorCode: "bad_request",
-        meta: { domain: domain || null },
-      });
-      return reply.fail("bad_request", "domain 和 goal 必须是非空字符串", 400);
-    }
-    if (conversationRaw != null && typeof conversationRaw !== "string") {
-      auditFactoryMutation(auth, {
-        action: "agent_factory.run.start",
-        targetType: "factory_run",
-        outcome: "failed",
-        errorCode: "bad_request",
-        meta: { domain },
-      });
-      return reply.fail("bad_request", "conversation 必须是字符串", 400);
-    }
-    const conversationId =
-      typeof conversationRaw === "string" && conversationRaw.trim()
-        ? conversationRaw.trim()
-        : undefined;
-    try {
-      const started = await startFactoryRun(auth, domain, goal, conversationId);
-      auditFactoryMutation(auth, {
-        action: "agent_factory.run.start",
-        targetType: "factory_run",
-        targetId: started.runId,
-        outcome: "succeeded",
-        meta: {
+  app.post<{ Body: unknown }>(
+    "/agent-factory/runs/start",
+    async (req, reply) => {
+      const auth = requirePermission(req, "agents.invoke");
+      const parsed = FactoryRunStartRequestSchema.safeParse(req.body);
+      if (!parsed.success) {
+        const raw =
+          req.body && typeof req.body === "object" && !Array.isArray(req.body)
+            ? (req.body as Record<string, unknown>)
+            : {};
+        auditFactoryMutation(auth, {
+          action: "agent_factory.run.start",
+          targetType: "factory_run",
+          targetId:
+            typeof raw.conversation === "string"
+              ? raw.conversation.trim() || null
+              : null,
+          outcome: "failed",
+          errorCode: "bad_request",
+          meta: {
+            domain:
+              typeof raw.domain === "string" ? raw.domain.trim() || null : null,
+          },
+        });
+        return reply.fail(
+          "bad_request",
+          parsed.error.issues[0]?.message ?? "启动参数无效",
+          400,
+        );
+      }
+      const {
+        domain,
+        goal = "",
+        scenario = "",
+        conversation: conversationId,
+        interactionPolicy,
+        recommendationId,
+        ontologyHash,
+      } = parsed.data;
+      const actionIds = parsed.data.actionIds ?? [];
+      if (new Set(actionIds).size !== actionIds.length) {
+        auditFactoryMutation(auth, {
+          action: "agent_factory.run.start",
+          targetType: "factory_run",
+          targetId: conversationId ?? null,
+          outcome: "failed",
+          errorCode: "bad_request",
+          meta: { domain },
+        });
+        return reply.fail("bad_request", "actionIds 不能包含重复项", 400);
+      }
+      const hasStructuredScope = actionIds.length > 0 || Boolean(scenario);
+      if (hasStructuredScope && (!recommendationId || !ontologyHash)) {
+        auditFactoryMutation(auth, {
+          action: "agent_factory.run.start",
+          targetType: "factory_run",
+          targetId: conversationId ?? null,
+          outcome: "failed",
+          errorCode: "scope_recommendation_required",
+          meta: { domain },
+        });
+        return reply.fail(
+          "scope_recommendation_required",
+          "请先描述业务目标并分析 Ontology，再接受或微调 AI 推荐的 Action 范围。",
+          409,
+        );
+      }
+      try {
+        let generationDirective: FactoryGenerationDirective | undefined;
+        let executionGoal = goal;
+        let recommendationTuned = false;
+        if (hasStructuredScope) {
+          await requireBoundFactoryDomain(auth, domain);
+          const ontology = await makeFactoryPorts(
+            auth.tenantSlug,
+            auth.tenantId,
+            domain,
+          ).ontology.fetchOntology(domain);
+          assertFactoryScopeRecommendationCurrent({
+            scopeKey: `${auth.tenantId}\0${auth.tenantSlug}`,
+            domain,
+            ontology,
+            scenario,
+            recommendationId: recommendationId!,
+            ontologyHash: ontologyHash!,
+          });
+          const issued = getIssuedFactoryScopeRecommendation({
+            tenantId: auth.tenantId,
+            domain,
+            scenario,
+            recommendationId: recommendationId!,
+            ontologyHash: ontologyHash!,
+          });
+          if (!issued) {
+            throw new FactoryScopeRecommendationError(
+              "scope_recommendation_stale",
+              "这条 Action 范围推荐未签发、已过期或服务已重启，请重新分析 Ontology。",
+            );
+          }
+          if (issued.mode !== "virtual_scenario" && actionIds.length === 0) {
+            throw new FactoryScopeRecommendationError(
+              "scope_recommendation_invalid",
+              "已有 Action 的推荐范围不能被清空；请至少保留一个 Action，或重新描述场景进行分析。",
+            );
+          }
+          recommendationTuned =
+            issued.actionIds.length !== actionIds.length ||
+            issued.actionIds.some((id) => !actionIds.includes(id));
+          generationDirective = createFactoryGenerationDirective({
+            ontology,
+            actionIds,
+            scenario,
+            forceVirtual:
+              issued.mode === "virtual_scenario" && actionIds.length === 0,
+          });
+          executionGoal = factoryGenerationGoal(generationDirective, goal);
+        }
+        const persistGoal = goal.trim()
+          ? goal
+          : scenario ||
+            (generationDirective
+              ? `生成 Action：${generationDirective.requestedActionNames.join("、")}`
+              : executionGoal);
+        const started = await startFactoryRun(
+          auth,
           domain,
-          mode: started.mode,
-          conversationId: conversationId ?? null,
-        },
-      });
-      return reply.ok(started, 202);
-    } catch (error) {
-      const errorCode =
-        error instanceof FactoryDomainBindingError
-          ? error.code
-          : error instanceof FactoryRunStartRequestError ||
-              error instanceof FactoryMessageDeliveryError
+          executionGoal,
+          conversationId,
+          undefined,
+          {
+            interactionPolicy,
+            generationDirective,
+            persistGoal,
+          },
+        );
+        auditFactoryMutation(auth, {
+          action: "agent_factory.run.start",
+          targetType: "factory_run",
+          targetId: started.runId,
+          outcome: "succeeded",
+          meta: {
+            domain,
+            mode: started.mode,
+            conversationId: conversationId ?? null,
+            interactionPolicy: interactionPolicy ?? "strict",
+            generationMode: generationDirective?.mode ?? "legacy_goal",
+            actionCount: generationDirective?.requestedActionIds.length ?? 0,
+            recommendationId: recommendationId ?? null,
+            recommendationTuned,
+          },
+        });
+        return reply.ok(
+          {
+            ...started,
+            interactionPolicy: interactionPolicy ?? "strict",
+            ...(generationDirective
+              ? {
+                  generation: {
+                    mode: generationDirective.mode,
+                    actionIds: generationDirective.requestedActionIds,
+                    actionNames: generationDirective.requestedActionNames,
+                    virtualAction: generationDirective.virtualAction
+                      ? {
+                          id: generationDirective.virtualAction.id,
+                          name: generationDirective.virtualAction.name,
+                          trigger: generationDirective.virtualAction.trigger,
+                          emit: generationDirective.virtualAction
+                            .triggered_event,
+                          provenance:
+                            generationDirective.virtualAction.factoryProvenance,
+                        }
+                      : null,
+                  },
+                }
+              : {}),
+          },
+          202,
+        );
+      } catch (error) {
+        const errorCode =
+          error instanceof FactoryDomainBindingError
             ? error.code
-            : "run_start_failed";
-      auditFactoryMutation(auth, {
-        action: "agent_factory.run.start",
-        targetType: "factory_run",
-        targetId: conversationId ?? null,
-        outcome: "failed",
-        errorCode,
-        error,
-        meta: { domain, conversationId: conversationId ?? null },
-      });
-      if (error instanceof FactoryDomainBindingError)
-        return bindingFailure(reply, error);
-      if (error instanceof FactoryRunStartRequestError) {
-        return reply.fail(error.code, error.message, error.status);
+            : error instanceof FactoryGenerationDirectiveError
+              ? error.code
+              : error instanceof FactoryScopeRecommendationError
+                ? error.code
+                : error instanceof FactoryRunStartRequestError ||
+                    error instanceof FactoryMessageDeliveryError
+                  ? error.code
+                  : "run_start_failed";
+        auditFactoryMutation(auth, {
+          action: "agent_factory.run.start",
+          targetType: "factory_run",
+          targetId: conversationId ?? null,
+          outcome: "failed",
+          errorCode,
+          error,
+          meta: { domain, conversationId: conversationId ?? null },
+        });
+        if (error instanceof FactoryDomainBindingError)
+          return bindingFailure(reply, error);
+        if (error instanceof FactoryGenerationDirectiveError) {
+          return reply.fail(error.code, error.message, 400);
+        }
+        if (error instanceof FactoryScopeRecommendationError) {
+          return reply.fail(
+            error.code,
+            error.message,
+            error.code === "scope_recommendation_stale" ? 409 : 422,
+          );
+        }
+        if (error instanceof FactoryRunStartRequestError) {
+          return reply.fail(error.code, error.message, error.status);
+        }
+        if (error instanceof FactoryMessageDeliveryError) {
+          return reply.fail(error.code, error.message, 503);
+        }
+        return reply.fail(
+          "run_start_failed",
+          (error as Error).message ?? "无法启动 Agent 工厂任务",
+          503,
+        );
       }
-      if (error instanceof FactoryMessageDeliveryError) {
-        return reply.fail(error.code, error.message, 503);
-      }
-      return reply.fail(
-        "run_start_failed",
-        (error as Error).message ?? "无法启动 Agent 工厂任务",
-        503,
-      );
-    }
-  });
+    },
+  );
 
   // Stop button — abort the detached background run.
   app.post<{ Body: { runId?: string } }>(
@@ -3412,6 +3842,7 @@ export async function agentFactoryRoutes(app: FastifyInstance) {
 
     let unsub: (() => void) | null = null;
     let ended = false;
+    let unregisterDrain: () => void = () => undefined;
     // #ALIVE-PING — the old `: ping` was an SSE COMMENT, which per spec NEVER dispatches
     // EventSource.onmessage; the client's 60s silence watchdog therefore false-fired on every
     // legitimately quiet stretch (ask_user park waits up to 180s for the human; a deep-reasoning
@@ -3434,6 +3865,7 @@ export async function agentFactoryRoutes(app: FastifyInstance) {
       ended = true;
       clearInterval(keepalive);
       if (unsub) unsub();
+      unregisterDrain();
       try {
         reply.raw.write("event: end\ndata: ok\n\n");
         reply.raw.end();
@@ -3446,7 +3878,9 @@ export async function agentFactoryRoutes(app: FastifyInstance) {
       ended = true;
       clearInterval(keepalive);
       if (unsub) unsub();
+      unregisterDrain();
     });
+    unregisterDrain = registerStreamDrain(endStream);
 
     const send = (f: unknown) => {
       try {
@@ -3482,4 +3916,9 @@ export async function agentFactoryRoutes(app: FastifyInstance) {
     }
     return reply;
   });
+}
+export function isFactoryAuthorizationChallengeContext(value: string): boolean {
+  return /^(?:probe|integration_profile|sandbox_evidence_plan|sandbox_design_review)_authorization:v\d+:/i.test(
+    value,
+  );
 }

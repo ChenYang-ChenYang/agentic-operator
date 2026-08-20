@@ -51,6 +51,10 @@ export interface Integration {
   baseUrl: string | null;
   keyMasked: string | null;
   hasKey: boolean;
+  /** Non-secret dynamic field values keyed by spec key. */
+  config: Record<string, string>;
+  /** KEYS of stored extra secret fields (values never come down). */
+  secretKeysStored: string[];
   status: IntegrationStatus;
   lastCheckedAt: number | null;
   lastError: string | null;
@@ -66,6 +70,57 @@ export interface AvailableIntegration {
   defaultBaseUrl: string;
   description: string;
   docsUrl?: string;
+  /** "catalog" = built-in; "profile" = derived from a System Profile. */
+  source?: "catalog" | "profile";
+}
+
+// ── Dynamic config requirement (mirrors @agentic/contracts SystemConfigRequirement) ──
+
+export type ConfigFieldKind = "base_url" | "api_key" | "secret" | "text" | "select" | "env_only";
+
+export interface DerivedConfigField {
+  key: string;
+  label: string;
+  kind: ConfigFieldKind;
+  required: boolean;
+  secret?: boolean;
+  envRef?: string;
+  placeholder?: string;
+  hint?: string;
+  options?: string[];
+  source: "profile" | "tool" | "catalog" | "default";
+  satisfied: boolean;
+  envPresent?: boolean;
+}
+
+export interface ConfigRequirement {
+  provider: string | null;
+  posture: "fields" | "none" | "env_only" | "server_managed" | "planned" | "unsupported";
+  fields: DerivedConfigField[];
+  satisfied: boolean;
+  note?: string;
+}
+
+export interface RequirementPayload {
+  provider: string;
+  systemName: string;
+  profileId: string | null;
+  requirement: ConfigRequirement;
+}
+
+/** The dynamic form spec for one provider — what the editor renders. */
+export function useIntegrationRequirement(
+  provider: string | null,
+): UseQueryResult<RequirementPayload> {
+  return useQuery({
+    queryKey: ["integrations", "requirements", provider],
+    queryFn: () =>
+      callV1<RequirementPayload>(
+        `/v1/integrations/requirements?provider=${encodeURIComponent(provider!)}`,
+      ),
+    enabled: provider !== null && provider.length > 0,
+    staleTime: 10_000,
+  });
 }
 
 export interface IntegrationsPayload {
@@ -91,6 +146,9 @@ export interface UpsertIntegrationInput {
   baseUrl?: string;
   /** Omit to leave the stored key untouched; "" to clear it. */
   apiKey?: string;
+  /** Dynamic field values keyed by spec key ("" deletes; omitted keys keep).
+   *  The server routes secret vs plain by the field's spec — fail-closed. */
+  fields?: Record<string, string>;
   enabled?: boolean;
 }
 

@@ -25,6 +25,7 @@ import {
   renderedToolArguments,
   renderedToolCallback,
 } from "./plan-dataflow-code";
+import { validateConditionSyntax } from "./plan-projection";
 
 export interface TsFunctionModuleOpts {
   /** import profile:new-AO(全局工具 registry) | old-AO(@/lib/* 旧仓库形态)。默认 new-AO。 */
@@ -41,10 +42,13 @@ function esc(s: string): string {
 }
 /** 稳定 step id:动词-清洗过的锚点(旧六文件的 sanitize 惯例)。 */
 function stepId(verb: string, anchor: string): string {
-  const a = anchor.replace(/[^A-Za-z0-9-]/g, "-").slice(0, 40).replace(/-+/g, "-").replace(/^-|-$/g, "");
+  const a = anchor
+    .replace(/[^A-Za-z0-9-]/g, "-")
+    .slice(0, 40)
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
   return `${verb}-${a || "x"}`;
 }
-
 
 // ── #SLOT-2 errorTaxonomy(确定性填实)────────────────────────────────────────────
 const CLASSIFY_ERROR_SRC = [
@@ -150,46 +154,82 @@ const INVOKE_SRC = [
   `};`,
 ].join("\n");
 
-const VALUE_PATH_RE = /^[A-Za-z_$][A-Za-z0-9_$-]*(?:\.[A-Za-z_$][A-Za-z0-9_$-]*)*$/;
+const VALUE_PATH_RE =
+  /^[A-Za-z_$][A-Za-z0-9_$-]*(?:\.[A-Za-z_$][A-Za-z0-9_$-]*)*$/;
 
 /** The design/readiness gate normally validates plans first. The renderer still
  * guards its own executable boundary: unsupported loops and undeclared events
  * must fail at generation time instead of silently becoming a reasoning step. */
-function assertRenderablePlan(plan: PlanStep[], declaredEvents: string[]): void {
+function assertRenderablePlan(
+  plan: PlanStep[],
+  declaredEvents: string[],
+): void {
   const seen = new Set<string>();
   for (const step of plan) {
     const id = step.stepId || step.tool || step.kind;
-    if (!id || seen.has(id)) throw new Error(`cannot render plan: duplicate or empty stepId "${id || "(empty)"}"`);
+    if (!id || seen.has(id))
+      throw new Error(
+        `cannot render plan: duplicate or empty stepId "${id || "(empty)"}"`,
+      );
     seen.add(id);
     assertPlanDataflowRenderable(step, id);
-    if (step.timeoutS !== undefined && (!Number.isInteger(step.timeoutS) || step.timeoutS <= 0)) {
-      throw new Error(`cannot render step "${id}": timeoutS must be a positive integer`);
+    if (step.condition) {
+      const conditionError = validateConditionSyntax(step.condition);
+      if (conditionError) {
+        throw new Error(
+          `cannot render step "${id}": invalid condition — ${conditionError}`,
+        );
+      }
+    }
+    if (
+      step.timeoutS !== undefined &&
+      (!Number.isInteger(step.timeoutS) || step.timeoutS <= 0)
+    ) {
+      throw new Error(
+        `cannot render step "${id}": timeoutS must be a positive integer`,
+      );
     }
     if (step.kind === "emit") {
-      if (!step.emitEvent) throw new Error(`cannot render emit step "${id}": emitEvent is required`);
+      if (!step.emitEvent)
+        throw new Error(
+          `cannot render emit step "${id}": emitEvent is required`,
+        );
       if (!declaredEvents.includes(step.emitEvent)) {
-        throw new Error(`cannot render emit step "${id}": event "${step.emitEvent}" is not in the declared emit allow-list`);
+        throw new Error(
+          `cannot render emit step "${id}": event "${step.emitEvent}" is not in the declared emit allow-list`,
+        );
       }
       if (step.emitPayloadFrom && !VALUE_PATH_RE.test(step.emitPayloadFrom)) {
-        throw new Error(`cannot render emit step "${id}": emitPayloadFrom is not a safe data path`);
+        throw new Error(
+          `cannot render emit step "${id}": emitPayloadFrom is not a safe data path`,
+        );
       }
     }
     for (const rule of step.errorPolicy ?? []) {
       if (rule.emitEvent && !declaredEvents.includes(rule.emitEvent)) {
-        throw new Error(`cannot render errorPolicy for "${id}": event "${rule.emitEvent}" is not in the declared emit allow-list`);
+        throw new Error(
+          `cannot render errorPolicy for "${id}": event "${rule.emitEvent}" is not in the declared emit allow-list`,
+        );
       }
       if (rule.emitEvent && rule.suppressEmit) {
-        throw new Error(`cannot render errorPolicy for "${id}": emitEvent and suppressEmit cannot both be set`);
+        throw new Error(
+          `cannot render errorPolicy for "${id}": emitEvent and suppressEmit cannot both be set`,
+        );
       }
     }
     if (step.kind === "foreach") {
       if (!step.itemsFrom || !VALUE_PATH_RE.test(step.itemsFrom)) {
-        throw new Error(`cannot render foreach step "${id}": itemsFrom must be a safe data path`);
+        throw new Error(
+          `cannot render foreach step "${id}": itemsFrom must be a safe data path`,
+        );
       }
       if (!step.itemKeyFrom || !VALUE_PATH_RE.test(step.itemKeyFrom)) {
-        throw new Error(`cannot render foreach step "${id}": itemKeyFrom must be a safe replay-stable data path`);
+        throw new Error(
+          `cannot render foreach step "${id}": itemKeyFrom must be a safe replay-stable data path`,
+        );
       }
-      if (!step.body?.length) throw new Error(`cannot render foreach step "${id}": body is required`);
+      if (!step.body?.length)
+        throw new Error(`cannot render foreach step "${id}": body is required`);
       assertRenderablePlan(step.body, declaredEvents);
     }
   }
@@ -200,14 +240,21 @@ function indented(lines: string[], spaces: number): string[] {
   return lines.map((line) => `${prefix}${line}`);
 }
 
-function emitPayloadLines(step: PlanStep, scopeExpr: string, selectedVar: string, payloadVar: string): string[] {
+function emitPayloadLines(
+  step: PlanStep,
+  scopeExpr: string,
+  selectedVar: string,
+  payloadVar: string,
+): string[] {
   const select = step.emitPayloadFrom
     ? `readConditionPath(${scopeExpr}, ${JSON.stringify(step.emitPayloadFrom)})`
     : `(${scopeExpr}).lastResult`;
   return [
     `const ${selectedVar} = ${select};`,
     ...(step.emitPayloadFrom
-      ? [`if (${selectedVar} === undefined) throw new Error(${JSON.stringify(`[terminal] emit step ${step.stepId}: payload path ${step.emitPayloadFrom} did not resolve`)});`]
+      ? [
+          `if (${selectedVar} === undefined) throw new Error(${JSON.stringify(`[terminal] emit step ${step.stepId}: payload path ${step.emitPayloadFrom} did not resolve`)});`,
+        ]
       : []),
     `const ${payloadVar}Base = ${selectedVar} && typeof ${selectedVar} === "object" && !Array.isArray(${selectedVar}) ? (${selectedVar} as Record<string, unknown>) : ${selectedVar} === undefined ? {} : { value: ${selectedVar} };`,
     `const ${payloadVar}: Record<string, unknown> = { ...${payloadVar}Base, ...${JSON.stringify(step.emitPayload ?? {})} };`,
@@ -230,11 +277,12 @@ function policyFailureLines(
   lastVar: string,
   emitStepIdExpr: string,
 ): string[] {
-  const fallback = step.defaultResult !== undefined
-    ? JSON.stringify(step.defaultResult)
-    : step.onError === "soft"
-      ? "null"
-      : "undefined";
+  const fallback =
+    step.defaultResult !== undefined
+      ? JSON.stringify(step.defaultResult)
+      : step.onError === "soft"
+        ? "null"
+        : "undefined";
   return [
     `const _resolution = _afResolveFailure(${policySource(step)}, e, ${fallback});`,
     `if (_resolution.suppressEmit) _suppressImplicitEmit = true;`,
@@ -294,6 +342,12 @@ function renderForeachBody(
     const failureEmitExpr = `_foreachStepId(${env.parentIdExpr}, ${stableKey}, ${JSON.stringify(`${id}-failure-emit`)})`;
     const resultsExpr = `{ ...(${env.outerResultsExpr}), ...${localResults} }`;
     const localScope = `{ ...${locals}, locals: ${locals}, event: { name: ${JSON.stringify(evName)}, data: { ...(${env.inputExpr}), ...${locals} } }, lastResult: ${localLast}, results: ${resultsExpr}, input: ${env.inputExpr} }`;
+    const guards = [
+      ...(deps.length ? [`${localPass}(${JSON.stringify(deps)})`] : []),
+      ...(child.kind !== "condition" && child.condition
+        ? [`evalCondition(${JSON.stringify(child.condition)}, ${localScope})`]
+        : []),
+    ];
     const core: string[] = [];
 
     if (child.kind === "condition") {
@@ -304,48 +358,82 @@ function renderForeachBody(
     } else {
       const execute: string[] = [];
       if (child.kind === "tool") {
-        const toolArgs = renderedToolArguments(child, localScope, `${localCarry}()`);
-        if (toolArgs.legacy) execute.push(`// LEGACY WHOLE-CARRY: toolArguments 未声明；只为旧 plan 保留。`);
-        execute.push(`${localLast} = await step.run(${childStepExpr}, ${renderedToolCallback(child, `await callTool(${JSON.stringify(child.tool ?? id)}, ${toolArgs.expression})`)});`);
+        const toolArgs = renderedToolArguments(
+          child,
+          localScope,
+          `${localCarry}()`,
+        );
+        if (toolArgs.legacy)
+          execute.push(
+            `// LEGACY WHOLE-CARRY: toolArguments 未声明；只为旧 plan 保留。`,
+          );
+        execute.push(
+          `${localLast} = await step.run(${childStepExpr}, ${renderedToolCallback(child, `await callTool(${JSON.stringify(child.tool ?? id)}, ${toolArgs.expression})`)});`,
+        );
       } else if (child.kind === "invoke") {
         const target = child.invoke ?? id;
         const eventData = `{ ...(${env.inputExpr}), ...${locals} }`;
         const payload = `_invokePayload({ eventData: ${eventData}, invokeInput: ${renderedInvokeInput(child.invokeInput as Record<string, unknown> | undefined, localScope)}, forwardLastResult: ${String(child.forwardLastResult ?? true)}, forwardResults: ${String(child.forwardResults ?? false)}, lastResult: ${localLast}, results: ${resultsExpr} })`;
-        execute.push(`${localLast} = await step.invoke(${childStepExpr}, { function: _resolveInvokeTarget(${JSON.stringify(target)}), data: ${payload}${child.timeoutS ? `, timeout: ${JSON.stringify(`${child.timeoutS}s`)}` : ""} });`);
+        execute.push(
+          `${localLast} = await step.invoke(${childStepExpr}, { function: _resolveInvokeTarget(${JSON.stringify(target)}), data: ${payload}${child.timeoutS ? `, timeout: ${JSON.stringify(`${child.timeoutS}s`)}` : ""} });`,
+        );
       } else if (child.kind === "emit") {
-        execute.push(...emitPayloadLines(child, localScope, `_selected${n}`, `_payload${n}`));
+        execute.push(
+          ...emitPayloadLines(
+            child,
+            localScope,
+            `_selected${n}`,
+            `_payload${n}`,
+          ),
+        );
         execute.push(
           `await step.sendEvent(${childStepExpr}, { name: ${JSON.stringify(child.emitEvent)}, data: _payload${n} });`,
           `_explicitEmitCount++;`,
           `${localLast} = { ..._payload${n}, _emit: ${JSON.stringify(child.emitEvent)} };`,
         );
       } else if (child.kind === "foreach") {
-        execute.push(...renderForeachStep(spec, child, {
-          depth: n + 1,
-          inputExpr: env.inputExpr,
-          outerLastExpr: localLast,
-          outerResultsExpr: resultsExpr,
-          outerLocalsExpr: locals,
-          assignTo: localLast,
-          parentIdExpr: childStepExpr,
-        }));
+        execute.push(
+          ...renderForeachStep(spec, child, {
+            depth: n + 1,
+            inputExpr: env.inputExpr,
+            outerLastExpr: localLast,
+            outerResultsExpr: resultsExpr,
+            outerLocalsExpr: locals,
+            assignTo: localLast,
+            parentIdExpr: childStepExpr,
+          }),
+        );
       } else {
-        execute.push(`${localLast} = await step.run(${childStepExpr}, async () => await reasonCore(SYSTEM_PROMPT + ${JSON.stringify(`\n\n【foreach ${parent.stepId} 子步骤】${id}${child.description ? `：${child.description}` : ""}`)}, ${localCarry}()));`);
+        execute.push(
+          `${localLast} = await step.run(${childStepExpr}, async () => await reasonCore(SYSTEM_PROMPT + ${JSON.stringify(`\n\n【foreach ${parent.stepId} 子步骤】${id}${child.description ? `：${child.description}` : ""}`)}, ${localCarry}()));`,
+        );
       }
       core.push(
         `try {`,
         ...indented(execute, 2),
         `} catch (e) {`,
-        ...indented(policyFailureLines(spec, child, `${parent.stepId}/${id}`, localLast, failureEmitExpr), 2),
+        ...indented(
+          policyFailureLines(
+            spec,
+            child,
+            `${parent.stepId}/${id}`,
+            localLast,
+            failureEmitExpr,
+          ),
+          2,
+        ),
         `}`,
         `${localResults}[${JSON.stringify(id)}] = ${localLast};`,
       );
     }
 
-    out.push(`${localStepIds}.push(${childStepExpr});`, `// foreach child ${id} (${child.kind})`);
-    if (deps.length) {
+    out.push(
+      `${localStepIds}.push(${childStepExpr});`,
+      `// foreach child ${id} (${child.kind})`,
+    );
+    if (guards.length) {
       out.push(
-        `if (${localPass}(${JSON.stringify(deps)})) {`,
+        `if (${guards.join(" && ")}) {`,
         ...indented(core, 2),
         `} else {`,
         `  ${localSkipped}.add(${JSON.stringify(id)});`,
@@ -392,6 +480,10 @@ function renderForeachStep(
   const localPass = `_localPass${n}`;
   const localStepIds = `_localStepIds${n}`;
   const localCarry = `_localCarry${n}`;
+  const emitCountBefore = `_emitCountBefore${n}`;
+  const hasConditionalEmit = (step.body ?? []).some(
+    (child) => child.kind === "emit" && Boolean(child.condition),
+  );
   const scope = `{ event: { name: ${JSON.stringify(evName)}, data: { ...(${env.inputExpr}), ...(${env.outerLocalsExpr}) } }, lastResult: ${env.outerLastExpr}, results: ${env.outerResultsExpr}, input: ${env.inputExpr}, locals: ${env.outerLocalsExpr} }`;
   return [
     `const ${collection} = readConditionPath(${scope}, ${JSON.stringify(step.itemsFrom)});`,
@@ -419,7 +511,15 @@ function renderForeachStep(
     `  const ${localPass} = (deps: string[]): boolean => deps.every((dep) => !${localSkipped}.has(dep) && ${localCond}[dep] !== false);`,
     `  const ${localStepIds}: string[] = [];`,
     `  const ${localCarry} = (): Record<string, unknown> => ({ ...(${env.inputExpr}), ...(${env.outerLastExpr} && typeof ${env.outerLastExpr} === "object" ? (${env.outerLastExpr} as Record<string, unknown>) : {}), ...${locals}, ...(${localLast} && typeof ${localLast} === "object" ? (${localLast} as Record<string, unknown>) : {}), results: { ...(${env.outerResultsExpr}), ...${localResults} } });`,
+    ...(hasConditionalEmit
+      ? [`  const ${emitCountBefore} = _explicitEmitCount;`]
+      : []),
     ...indented(renderForeachBody(spec, step, env), 2),
+    ...(hasConditionalEmit
+      ? [
+          `  if (_explicitEmitCount === ${emitCountBefore}) throw new Error(${JSON.stringify(`[park] foreach ${id}: no authoritative conditional emit guard matched`)});`,
+        ]
+      : []),
     `  ${receipts}.push({ index: ${index}, key: ${businessKey}, stableKey: ${stableKey}, path: ${locals}._foreachPath, item: ${item}, stepIds: ${localStepIds}, results: ${localResults}, lastResult: ${localLast} });`,
     `}`,
     `${env.assignTo} = { count: ${receipts}.length, items: ${receipts}, byKey: Object.fromEntries(${receipts}.map((receipt) => [String(receipt.stableKey), receipt])) };`,
@@ -448,11 +548,22 @@ function renderPlanSteps(spec: GeneratedAgentSpec, plan: PlanStep[]): string {
   for (const p of plan) {
     const id = p.stepId || p.tool || p.kind;
     const deps = (p.dependsOn ?? []).filter(Boolean);
-    const baseId = stepId(p.kind === "tool" ? "call" : p.kind === "invoke" ? "invoke" : "do", `${spec.slug}-${id}`);
+    const baseId = stepId(
+      p.kind === "tool" ? "call" : p.kind === "invoke" ? "invoke" : "do",
+      `${spec.slug}-${id}`,
+    );
     // #G6 — resolve the suffix against the whole scope, so "input.x",
     // "results.<step>.y" and "lastResult.z" all address something real.
     const idScope = `{ input: mapped, event: { name: ${JSON.stringify(evName)}, data: mapped }, lastResult: last, results }`;
-    const idExpr = p.idempotencyKeyFrom ? `${JSON.stringify(baseId)} + idSuffix(${idScope}, ${JSON.stringify(p.idempotencyKeyFrom)})` : JSON.stringify(baseId);
+    const guards = [
+      ...(deps.length ? [`_pass(${JSON.stringify(deps)})`] : []),
+      ...(p.kind !== "condition" && p.condition
+        ? [`evalCondition(${JSON.stringify(p.condition)}, ${idScope})`]
+        : []),
+    ];
+    const idExpr = p.idempotencyKeyFrom
+      ? `${JSON.stringify(baseId)} + idSuffix(${idScope}, ${JSON.stringify(p.idempotencyKeyFrom)})`
+      : JSON.stringify(baseId);
 
     let execute: string[];
     switch (p.kind) {
@@ -475,7 +586,11 @@ function renderPlanSteps(spec: GeneratedAgentSpec, plan: PlanStep[]): string {
           const scope = `{ event: { name: ${JSON.stringify(evName)}, data: mapped }, lastResult: last, results, input: mapped }`;
           const toolArgs = renderedToolArguments(p, scope, "carry()");
           execute = [
-            ...(toolArgs.legacy ? [`// LEGACY WHOLE-CARRY: toolArguments 未声明；只为旧 plan 保留。`] : []),
+            ...(toolArgs.legacy
+              ? [
+                  `// LEGACY WHOLE-CARRY: toolArguments 未声明；只为旧 plan 保留。`,
+                ]
+              : []),
             `last = await step.run(${idExpr}, ${renderedToolCallback(p, `await callTool(${JSON.stringify(p.tool ?? id)}, ${toolArgs.expression})`)});`,
           ];
         }
@@ -501,7 +616,9 @@ function renderPlanSteps(spec: GeneratedAgentSpec, plan: PlanStep[]): string {
         execute = renderForeachStep(spec, p);
         break;
       default: // logic
-        execute = [`last = await step.run(${idExpr}, async () => await reasonCore(SYSTEM_PROMPT + ${JSON.stringify(`\n\n【当前子步骤】${id}${p.description ? `：${p.description}` : ""}`)}, carry()));`];
+        execute = [
+          `last = await step.run(${idExpr}, async () => await reasonCore(SYSTEM_PROMPT + ${JSON.stringify(`\n\n【当前子步骤】${id}${p.description ? `：${p.description}` : ""}`)}, carry()));`,
+        ];
     }
 
     const catchLines = policyFailureLines(
@@ -521,10 +638,10 @@ function renderPlanSteps(spec: GeneratedAgentSpec, plan: PlanStep[]): string {
       `      results[${JSON.stringify(id)}] = last;`,
     ];
 
-    if (deps.length) {
+    if (guards.length) {
       out.push(
         `      // step ${id} (${p.kind}) — 依赖: ${deps.join(", ")}`,
-        `      if (_pass(${JSON.stringify(deps)})) {`,
+        `      if (${guards.join(" && ")}) {`,
         ...tryBlock.map((l) => `  ${l}`),
         `      } else {`,
         `        _skipped.add(${JSON.stringify(id)});`,
@@ -532,14 +649,20 @@ function renderPlanSteps(spec: GeneratedAgentSpec, plan: PlanStep[]): string {
         `      }`,
       );
     } else {
-      out.push(`      // step ${id} (${p.kind})${p.description ? ` — ${p.description.replace(/\s+/g, " ").slice(0, 80)}` : ""}`, ...tryBlock);
+      out.push(
+        `      // step ${id} (${p.kind})${p.description ? ` — ${p.description.replace(/\s+/g, " ").slice(0, 80)}` : ""}`,
+        ...tryBlock,
+      );
     }
   }
   return out.join("\n");
 }
 
 /** 渲染一个 ts_function_module。 */
-export function renderTsFunctionModule(spec: GeneratedAgentSpec, opts: TsFunctionModuleOpts = {}): string {
+export function renderTsFunctionModule(
+  spec: GeneratedAgentSpec,
+  opts: TsFunctionModuleOpts = {},
+): string {
   const profile = opts.profile ?? "new-ao";
   const short = spec.short || spec.actionName || "agent";
   const exportName = camel(short) + (/agent$/i.test(short) ? "" : "Agent");
@@ -548,19 +671,32 @@ export function renderTsFunctionModule(spec: GeneratedAgentSpec, opts: TsFunctio
   const triggers = (spec.trigger ?? []).filter(Boolean);
   const plan = (spec.plan ?? []).filter(Boolean);
   assertRenderablePlan(plan, emits);
-  const allSteps = (steps: PlanStep[]): PlanStep[] => steps.flatMap((step) => [step, ...(step.body ? allSteps(step.body) : [])]);
+  const allSteps = (steps: PlanStep[]): PlanStep[] =>
+    steps.flatMap((step) => [step, ...(step.body ? allSteps(step.body) : [])]);
   const flattenedPlan = allSteps(plan);
   // HITL 强制 retries=1(人工闸不该自动重试;旧 AO 惯例);否则尊重 spec.retries,缺省 3。
   const retries = spec.hitl ? 1 : (spec.retries ?? 3);
   const failEmit = failEmitOf(spec);
   const successEmit = emits[0] ?? "DONE";
-  const hasConditions = flattenedPlan.some((p) => p.kind === "condition");
+  const hasConditions = flattenedPlan.some((p) => Boolean(p.condition));
   const hasForeach = flattenedPlan.some((p) => p.kind === "foreach");
   const hasInvoke = flattenedPlan.some((p) => p.kind === "invoke");
-  const hasExplicitEmits = flattenedPlan.some((p) => p.kind === "emit" || p.errorPolicy?.some((rule) => Boolean(rule.emitEvent)));
+  const hasExplicitEmits = flattenedPlan.some(
+    (p) =>
+      p.kind === "emit" ||
+      p.errorPolicy?.some((rule) => Boolean(rule.emitEvent)),
+  );
+  const hasConditionalExplicitEmits = flattenedPlan.some(
+    (p) => p.kind === "emit" && Boolean(p.condition),
+  );
   const hasExactDataflow = planUsesExactDataflow(plan);
-  const hasPathRuntime = hasConditions || hasForeach || hasExactDataflow || flattenedPlan.some((p) => p.kind === "emit" && Boolean(p.emitPayloadFrom));
-  const hasGating = hasConditions || flattenedPlan.some((p) => (p.dependsOn ?? []).length > 0);
+  const hasPathRuntime =
+    hasConditions ||
+    hasForeach ||
+    hasExactDataflow ||
+    flattenedPlan.some((p) => p.kind === "emit" && Boolean(p.emitPayloadFrom));
+  const hasGating =
+    hasConditions || flattenedPlan.some((p) => (p.dependsOn ?? []).length > 0);
   const hasSuffix = plan.some((p) => p.idempotencyKeyFrom);
 
   // 触发器:多 trigger → triggers:[{event}]（旧 create-jd 就是多 trigger）。
@@ -575,36 +711,51 @@ export function renderTsFunctionModule(spec: GeneratedAgentSpec, opts: TsFunctio
       ? [
           `import { inngest } from "@/server/inngest/client";`,
           `import { NonRetriableError } from "inngest";`,
-          ...(tools.length ? [`// [deploy-profile] 真部署时解开这些共享库 import 并把 __agentTool 接到它们:`, ...tools.map((t) => `// import { ${camel(t.split(".").pop() || "call")} } from "@/lib/${t.split(".")[0]}";`)] : []),
+          ...(tools.length
+            ? [
+                `// [deploy-profile] 真部署时解开这些共享库 import 并把 __agentTool 接到它们:`,
+                ...tools.map(
+                  (t) =>
+                    `// import { ${camel(t.split(".").pop() || "call")} } from "@/lib/${t.split(".")[0]}";`,
+                ),
+              ]
+            : []),
         ]
       : [
           `import { inngest } from "@/server/inngest/client";`,
           `import { NonRetriableError } from "inngest";`,
           `// [deploy-profile] new-AO 形态:外部能力经注入缝 __agentTool → 运行时全局工具 registry。`,
-          ...(tools.length ? [`// 本 agent 绑定的工具:${tools.join(", ")}`] : [`// 本 agent 不依赖外部工具。`]),
+          ...(tools.length
+            ? [`// 本 agent 绑定的工具:${tools.join(", ")}`]
+            : [`// 本 agent 不依赖外部工具。`]),
         ];
 
   // 步骤体:plan[] 优先(#SLOT-3 真控制流);否则每个绑定工具一个 step.run 真调用。
   const stepRuns = plan.length
     ? renderPlanSteps(spec, plan)
     : tools.length
-      ? tools.map((t) => {
-          const v = camel(t.split(".").pop() || "call");
-          const id = stepId(v, `${spec.slug}-${t}`);
-          return [
-            `      // LEGACY WHOLE-CARRY: spec 没有 plan/toolArguments；旧绑定工具兼容调用。`,
-            `      // 外部调用「${t}」包在 step.run(稳定 id):幂等 + durable;经注入缝真调用(fail-close)。`,
-            `      try {`,
-            `        last = await step.run(${JSON.stringify(id)}, async () => await callTool(${JSON.stringify(t)}, carry()));`,
-            `      } catch (e) {`,
-            `        logger.warn("${esc(spec.slug)} tool ${esc(t)} failed — recorded, decision core will see it", { error: String(e) });`,
-            `        last = { _toolFailed: ${JSON.stringify(t)}, _error: String((e as Error)?.message ?? e) };`,
-            `      }`,
-          ].join("\n");
-        }).join("\n")
+      ? tools
+          .map((t) => {
+            const v = camel(t.split(".").pop() || "call");
+            const id = stepId(v, `${spec.slug}-${t}`);
+            return [
+              `      // LEGACY WHOLE-CARRY: spec 没有 plan/toolArguments；旧绑定工具兼容调用。`,
+              `      // 外部调用「${t}」包在 step.run(稳定 id):幂等 + durable;经注入缝真调用(fail-close)。`,
+              `      try {`,
+              `        last = await step.run(${JSON.stringify(id)}, async () => await callTool(${JSON.stringify(t)}, carry()));`,
+              `      } catch (e) {`,
+              `        logger.warn("${esc(spec.slug)} tool ${esc(t)} failed — recorded, decision core will see it", { error: String(e) });`,
+              `        last = { _toolFailed: ${JSON.stringify(t)}, _error: String((e as Error)?.message ?? e) };`,
+              `      }`,
+            ].join("\n");
+          })
+          .join("\n")
       : "      // (无外部调用——纯推理决策)";
 
-  const emitInstr = emits.length > 1 ? `\n只输出 JSON;必须附字段 "emit" 选择产出事件,取值之一:${emits.join(" | ")};判定失败/拒绝时选失败/拒绝类事件。` : "\n只输出 JSON。";
+  const emitInstr =
+    emits.length > 1
+      ? `\n只输出 JSON;必须附字段 "emit" 选择产出事件,取值之一:${emits.join(" | ")};判定失败/拒绝时选失败/拒绝类事件。`
+      : "\n只输出 JSON。";
 
   // emit:单 emit 直发;多 emit 真选择(决策核心显式 emit 优先;失败走失败分支)——每个事件一个
   // 字面量分支 + 稳定 step id(重放稳定,也让事件名可静态审计)。
@@ -624,7 +775,10 @@ export function renderTsFunctionModule(spec: GeneratedAgentSpec, opts: TsFunctio
           `      let _chosen = _failed ? ${JSON.stringify(failEmit)} : ${JSON.stringify(successEmit)};`,
           `      if (typeof _route === "string" && _declared.includes(_route)) _chosen = _route;`,
           `      const _data = { ...carry(), ...decision };`,
-          ...emits.map((e, i) => `      ${i === 0 ? "if" : "else if"} (_chosen === ${JSON.stringify(e)}) await step.sendEvent(${JSON.stringify(stepId("emit", e))}, { name: ${JSON.stringify(e)}, data: _data });`),
+          ...emits.map(
+            (e, i) =>
+              `      ${i === 0 ? "if" : "else if"} (_chosen === ${JSON.stringify(e)}) await step.sendEvent(${JSON.stringify(stepId("emit", e))}, { name: ${JSON.stringify(e)}, data: _data });`,
+          ),
           `      else await step.sendEvent(${JSON.stringify(stepId("emit", failEmit))}, { name: ${JSON.stringify(failEmit)}, data: _data });`,
         ].join("\n");
 
@@ -637,14 +791,14 @@ export function renderTsFunctionModule(spec: GeneratedAgentSpec, opts: TsFunctio
     : "";
 
   return [
-    `// ${spec.nameZh || short} — 由 Agent 工厂从本体动作 \`${spec.actionName}\`(${spec.domainId})生成。`,
+    `// ${spec.nameZh || short} — 由 OntoCode 从本体动作 \`${spec.actionName}\`(${spec.domainId})生成。`,
     `// 目标形态:可部署到 Inngest 的 function(对标旧 AO server/inngest/agents/*.ts)。`,
     `// trigger: ${triggers.join(" / ") || "(entry)"} → emit: ${emits.join(" | ") || "(terminal)"}`,
     ``,
     ...imports.filter(Boolean),
     ``,
     `const AGENT_ID = ${JSON.stringify(spec.slug)};`,
-    `/** 工厂为这一个 agent 亲自推理出的 system prompt。 */`,
+    `/** OntoCode 为这一个 agent 基于本体推理生成的 system prompt。 */`,
     "const SYSTEM_PROMPT = `" + esc(spec.systemPrompt ?? "") + "`;",
     ``,
     renderMapFields(spec.inputSchema),
@@ -687,24 +841,37 @@ export function renderTsFunctionModule(spec: GeneratedAgentSpec, opts: TsFunctio
     // #G2 — the terminal event a routing condition selected, if the plan has one.
     `    let _route: string | undefined = undefined;`,
     ...(gatingDecls ? [gatingDecls] : []),
-    ...(opts.pauseGate ? [`    // 暂停闸(fleet kill-switch)——任何工作之前。`, `    // const paused = await ${opts.pauseGate}(AGENT_ID, logger); if (paused) return paused;`] : []),
+    ...(opts.pauseGate
+      ? [
+          `    // 暂停闸(fleet kill-switch)——任何工作之前。`,
+          `    // const paused = await ${opts.pauseGate}(AGENT_ID, logger); if (paused) return paused;`,
+        ]
+      : []),
     `    logger.info("${esc(spec.slug)} handler.start", { keys: Object.keys(mapped) });`,
     `    try {`,
     stepRuns,
     `      // 决策核心(fail-close):SYSTEM_PROMPT over mapped+lastResult,经注入缝走真 LLM;未注入/失败即抛(park)。`,
     `      const decision = (await step.run(${JSON.stringify(stepId("decide", spec.slug))}, async () => await reasonCore(SYSTEM_PROMPT + ${JSON.stringify(emitInstr)}, { input: mapped, lastResult: last, results }))) as Record<string, unknown> & { pass?: boolean; ok?: boolean; emit?: string };`,
-    ...(hasExplicitEmits
+    ...(hasConditionalExplicitEmits
       ? [
-          `      // 显式 emit plan 是权威 multi-emit；只有本次路径一个都没发时才走隐式终态选择。`,
+          `      // Conditional explicit emits own routing. A guard miss is`,
+          `      // unresolved and must never fall back to model-selected text.`,
           `      if (_explicitEmitCount === 0 && !_suppressImplicitEmit) {`,
-          ...emitBlock.split("\n").map((line) => `  ${line}`),
+          `        throw new Error("[park] no authoritative conditional emit guard matched");`,
           `      }`,
         ]
-      : [
-          `      if (!_suppressImplicitEmit) {`,
-          ...emitBlock.split("\n").map((line) => `  ${line}`),
-          `      }`,
-        ]),
+      : hasExplicitEmits
+        ? [
+            `      // 显式 emit plan 是权威 multi-emit；只有本次路径一个都没发时才走隐式终态选择。`,
+            `      if (_explicitEmitCount === 0 && !_suppressImplicitEmit) {`,
+            ...emitBlock.split("\n").map((line) => `  ${line}`),
+            `      }`,
+          ]
+        : [
+            `      if (!_suppressImplicitEmit) {`,
+            ...emitBlock.split("\n").map((line) => `  ${line}`),
+            `      }`,
+          ]),
     `      logger.info("${esc(spec.slug)} handler.done");`,
     `      return { ok: decision.pass !== false && decision.ok !== false };`,
     `    } catch (e) {`,

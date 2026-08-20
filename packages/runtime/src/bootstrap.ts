@@ -32,8 +32,9 @@ import {
   buildDeclarativeOverlay,
   globalToolRegistry,
   isToolExecutionPolicy,
+  listGlobalTools,
 } from "@agentic/tools";
-import { makeId } from "@agentic/shared";
+import { assessRisk, makeId, type RiskFacets } from "@agentic/shared";
 import { and, eq } from "drizzle-orm";
 import {
   loadModelsFromDisk,
@@ -42,6 +43,12 @@ import {
   type LoadedModels,
   type WorkflowManifest,
 } from "./manifest";
+import {
+  RuleGateDeclarationSchema,
+  ruleBindingsFromActions,
+  unboundMandatoryRules,
+  type RuleGateDeclaration,
+} from "./rule-guard";
 import {
   findMissingTenantPrompts,
   formatMissingPromptsError,
@@ -297,6 +304,35 @@ export function assertManifestToolsResolvable(spec: {
   }
 }
 
+/**
+ * Every name one manifest agent can be invoked by, in the exact set
+ * `fnRegistry` is keyed on.
+ *
+ * A generated agent carries two names for a single function: the manifest
+ * `name` (its short name, e.g. `RuleCheckForCandidateIdentityAgent`) and
+ * `factory_action_name` (the Ontology Action that authorised it, e.g.
+ * `ruleCheckForCandidateIdentity`). Generated plans reference the Action —
+ * that is the identity the business speaks — so the Action name has to be a
+ * first-class invoke reference. Before this, a six-agent generated fleet threw
+ * `ManifestInvokeConfigurationError` at boot and took the whole tenant's
+ * registration down: one plan step's reference blanked five healthy siblings.
+ *
+ * The identities are NOT interchangeable elsewhere: `factory_action_name`
+ * remains the business-Action provenance (manifest.ts), never a substitute for
+ * the tool-call name or the function id.
+ */
+function invokeTargetNames(
+  tenantSlug: string,
+  agent: WorkflowManifest[number],
+): string[] {
+  const names = [agent.name, `${tenantSlug}.${agent.name}`];
+  const actionName = agent.factory_action_name?.trim();
+  if (actionName && actionName !== agent.name) {
+    names.push(actionName, `${tenantSlug}.${actionName}`);
+  }
+  return names;
+}
+
 /** Validate the exact synchronous invoke surface that bootstrap's fnRegistry
  * can resolve. Invokes are terminal by default; soft continuation is legal
  * only when the author explicitly supplies a fallback value. */
@@ -309,8 +345,9 @@ export function assertManifestInvokesValid(spec: {
     // registerAgent returns null for trigger-less agents, so such an entry
     // cannot be a real step.invoke target in the current runtime.
     if ((agent.trigger ?? []).length === 0) continue;
-    callableTargets.add(agent.name);
-    callableTargets.add(`${spec.tenantSlug}.${agent.name}`);
+    for (const name of invokeTargetNames(spec.tenantSlug, agent)) {
+      callableTargets.add(name);
+    }
   }
 
   const issues: ManifestInvokeIssue[] = [];
@@ -542,6 +579,37 @@ export async function bootstrapTenant(spec: {
     tenant.id,
     { sandboxCloneOnly: isFactorySandboxTenant(spec.tenantSlug) },
   );
+  // #DISPATCH-VERIFY (D8) — carry each persisted tool's probe standing to the
+  // dispatcher. `buildDeclarativeOverlay` deliberately rebuilds only the request
+  // template plus the policy triple, so probeStatus/definitionHash/verifiedAt
+  // never reached run time and an expired or failed probe still executed.
+  const factoryToolProbeState: Record<
+    string,
+    { probeStatus?: string | null; definitionHash?: string | null; verifiedAt?: number | null }
+  > = {};
+  for (const row of matched) {
+    // #PROBE-DEFER — carry WHAT THE PROBE SAW, not just that it failed. A
+    // service that never answered may simply not be deployed yet, and an FDE
+    // holding a valid credential must not be blocked on that; a service that
+    // answered and refused is a configuration defect and still blocks.
+    const evidence =
+      row.probeEvidence && typeof row.probeEvidence === "object"
+        ? (row.probeEvidence as Record<string, unknown>)
+        : undefined;
+    const classification =
+      typeof evidence?.classification === "string" ? evidence.classification : undefined;
+    factoryToolProbeState[row.name] = {
+      probeStatus: row.probeStatus,
+      definitionHash: row.definitionHash,
+      verifiedAt: row.verifiedAt ? row.verifiedAt.getTime() : null,
+      ...(classification ? { classification } : {}),
+      // Inferred, and only from an actual probe attempt: the probe emits
+      // `needs_config` precisely when no credential was available, so any other
+      // recorded classification means one was present and used. With no evidence
+      // at all this stays undefined, which is not deferrable — fail closed.
+      ...(classification ? { credentialConfigured: classification !== "needs_config" } : {}),
+    };
+  }
   let declarativeTools: Record<string, ToolDescriptor> | undefined;
   if (matched.length > 0) {
     try {
@@ -843,6 +911,35 @@ export async function bootstrapTenant(spec: {
   const fnRegistry = new Map<string, InngestFunction.Any>();
   const resolveFunction = (ref: string): InngestFunction.Any | undefined =>
     fnRegistry.get(ref);
+  // #RULE-GATE — resolved once for the whole domain, before any function is
+  // registered, so every agent is judged against the same corpus.
+  const ontologyRuleContext = resolveOntologyRuleContext(loaded);
+  if (ontologyRuleContext.ontologyRules.length > 0) {
+    // An uncovered obligation that nobody mentions is indistinguishable from a
+    // satisfied one, so both coverage gaps are stated at boot.
+    const coverage = reportRuleGateCoverage({
+      tenantSlug: spec.tenantSlug,
+      manifest,
+      context: ontologyRuleContext,
+    });
+    if (coverage.ruleRefsWithoutTool.length > 0) {
+      console.warn(
+        `[rule-gate] ${spec.tenantSlug}: ${coverage.ruleRefsWithoutTool.length} ontology rule reference(s) hang off steps that name no tool and cannot be enforced at a tool boundary: ${coverage.ruleRefsWithoutTool.join(", ")}`,
+      );
+    }
+    if (coverage.unboundBlocking.length > 0) {
+      console.warn(
+        `[rule-gate] ${spec.tenantSlug}: ${coverage.unboundBlocking.length} blocking rule(s) are bound by no gate, so no dispatch consults them: ${coverage.unboundBlocking.join(", ")}`,
+      );
+    }
+    if (coverage.ungatedMutatingTools.length > 0) {
+      console.warn(
+        `[rule-gate] ${spec.tenantSlug}: ${coverage.ungatedMutatingTools.length} mutating tool call(s) are covered by no rule gate: ${coverage.ungatedMutatingTools
+          .map((t) => `${t.agent}/${t.tool}(${t.tier})`)
+          .join(", ")}`,
+      );
+    }
+  }
   for (const a of manifest) {
     let agentRow = db
       .select()
@@ -928,6 +1025,12 @@ export async function bootstrapTenant(spec: {
         eventAdapter,
         resolveFunction,
         declarativeTools,
+        // #RULE-GATE — the consumer `rules.json` never had. Resolved once per
+        // boot above; every registered agent in this domain is judged against
+        // the same server-authored corpus.
+        ontologyRules: ontologyRuleContext.ontologyRules,
+        ontologyRuleBindings: ontologyRuleContext.ontologyRuleBindings,
+        factoryToolProbeState,
         productionCodeActCapability: productionCodeActCapabilities.get(a.id),
         productionCodeActManifestSha256: productionCodeActManifestHashes.get(
           a.id,
@@ -943,12 +1046,12 @@ export async function bootstrapTenant(spec: {
       });
       if (fn) {
         registered.push(fn);
-        // Index by agent name + namespaced fn id so an invoke step can target either.
-        fnRegistry.set(a.name, fn as InngestFunction.Any);
-        fnRegistry.set(
-          `${spec.tenantSlug}.${a.name}`,
-          fn as InngestFunction.Any,
-        );
+        // Index by every name assertManifestInvokesValid accepts (agent name,
+        // namespaced fn id, and the business Action name a generated plan
+        // references) so validation and resolution can never disagree.
+        for (const target of invokeTargetNames(spec.tenantSlug, a)) {
+          fnRegistry.set(target, fn as InngestFunction.Any);
+        }
       }
     }
   }
@@ -1021,6 +1124,174 @@ export async function bootstrapTenant(spec: {
     tenantPrompts: promptCount,
     hasTenantPackage: tenantRegistry !== null,
     deploymentInserted,
+  };
+}
+
+/**
+ * #RULE-GATE — turn the loaded ontology into the rule context the runtime needs.
+ *
+ * `loadModelsFromDisk` has always returned `rules`, and until now nothing read
+ * it: there were `upsertEventTypes` and `upsertEntityTypes` and no rules
+ * consumer at all, so 248 RAAS rows and 17 zhaopin rows were parsed at every
+ * boot and dropped. This is the consumer. Both halves are SERVER-authored — the
+ * corpus from `rules.json` and the tool bindings from `actions.json`'s own
+ * `action_steps[].rules[]` — so a manifest can neither shrink the rule set that
+ * governs it nor exempt a tool by declining to declare a gate.
+ */
+export function resolveOntologyRuleContext(loaded: LoadedModels): {
+  ontologyRules: unknown[];
+  ontologyRuleBindings: Record<string, string[]>;
+  /** Rule ids the ontology attached to a step with no tool: unenforceable at a
+   * tool boundary, so surfaced rather than silently counted as covered. */
+  ruleRefsWithoutTool: string[];
+} {
+  const ontologyRules = Array.isArray(loaded.rules?.payload)
+    ? (loaded.rules.payload as unknown[])
+    : [];
+  // With no corpus there is nothing to enforce, and a binding pointing at an
+  // absent rule would demand a verdict nobody can produce.
+  if (ontologyRules.length === 0) {
+    return { ontologyRules: [], ontologyRuleBindings: {}, ruleRefsWithoutTool: [] };
+  }
+  const bindings = ruleBindingsFromActions(
+    Array.isArray(loaded.actionsExt) ? (loaded.actionsExt as unknown[]) : [],
+  );
+  // Merge the step-name route in. A `type:"tool"` action dispatches under its own
+  // action name, which equals the ontology step name, so this reaches rules the
+  // ontology attached to a step it never gave a tool name — without inventing a
+  // binding: an explicit tool name always wins.
+  const merged: Record<string, string[]> = { ...bindings.byStepName };
+  for (const [tool, ids] of Object.entries(bindings.byTool)) {
+    const bucket = (merged[tool] ??= []);
+    for (const id of ids) if (!bucket.includes(id)) bucket.push(id);
+  }
+  return {
+    ontologyRules,
+    ontologyRuleBindings: merged,
+    ruleRefsWithoutTool: bindings.withoutTool,
+  };
+}
+
+/**
+ * #RULE-GATE — coverage honesty at boot.
+ *
+ * Two ways a rule obligation can be silently uncovered, both of which look
+ * identical to "compliant" if nobody says them out loud:
+ *   - a blocking rule that no gate binds, so no dispatch ever consults it;
+ *   - a rule the ontology attached to a step that names no tool, which a
+ *     tool-boundary gate structurally cannot reach.
+ * Measured on the live corpora at the time of writing: zhaopin has 1 of the
+ * second kind, RAAS has 144 — which is the real reason RAAS is not enforceable
+ * today, and it is a data/authoring fact rather than a code defect.
+ */
+export function reportRuleGateCoverage(args: {
+  tenantSlug: string;
+  manifest: WorkflowManifest;
+  context: ReturnType<typeof resolveOntologyRuleContext>;
+}): {
+  unboundBlocking: string[];
+  ruleRefsWithoutTool: string[];
+  ontologyBoundRuleIds: string[];
+  /** #RISK-TIER — declared-mutating tools that no gate covers. The tier table
+   * decides which tools need one, so this is not a hand-kept list. */
+  ungatedMutatingTools: Array<{
+    agent: string;
+    tool: string;
+    tier: string;
+    reason: string;
+  }>;
+  /** Tools whose blast radius neither the manifest nor the catalog declares —
+   * reported as undeclared rather than guessed into a tier. */
+  undeclaredEffectTools: Array<{ agent: string; tool: string }>;
+} {
+  const { manifest, context } = args;
+  const declarations: RuleGateDeclaration[] = [];
+  for (const agent of manifest) {
+    for (const entry of agent.tool_use ?? []) {
+      const raw = (entry as { rule_gate?: unknown }).rule_gate;
+      if (raw == null) continue;
+      const parsed = RuleGateDeclarationSchema.safeParse(raw);
+      if (parsed.success) declarations.push(parsed.data);
+    }
+  }
+  // An ontology-derived binding is coverage too — it needs no manifest line.
+  const ontologyBoundRuleIds = [
+    ...new Set(Object.values(context.ontologyRuleBindings).flat()),
+  ];
+  if (ontologyBoundRuleIds.length > 0) {
+    declarations.push(
+      RuleGateDeclarationSchema.parse({
+        rules: { ids: ontologyBoundRuleIds },
+        verdict_from: ["results", "lastResult"],
+      }),
+    );
+  }
+  const unbound = unboundMandatoryRules(context.ontologyRules, declarations);
+
+  // #RISK-TIER — which tools SHOULD be gated is derived from what each tool
+  // declares, never from a maintained name list. A tool the tier table says
+  // needs a rule check, with neither a manifest gate nor an ontology binding,
+  // is a coverage gap worth naming.
+  const ungatedMutatingTools: Array<{
+    agent: string;
+    tool: string;
+    tier: string;
+    reason: string;
+  }> = [];
+  const undeclaredEffectTools: Array<{ agent: string; tool: string }> = [];
+  // The reviewed global catalog is authoritative for any tool it registers, so
+  // a hand-authored manifest that omits the policy triple is not "unknown" —
+  // it is simply not repeating what the registry already declares. Without this
+  // fallback a plain read like `fs.readFromInbox` lands in the conservative
+  // bucket and gets reported as an external write, which is worse than useless.
+  const catalogFacets = new Map<string, RiskFacets>();
+  for (const entry of listGlobalTools()) {
+    const facets: RiskFacets = {
+      sideEffect: entry.sideEffect,
+      operation: entry.operation,
+      effectScope: entry.effectScope,
+    };
+    for (const name of [entry.name, ...(entry.aliases ?? [])]) {
+      if (typeof name === "string") catalogFacets.set(name, facets);
+    }
+  }
+
+  for (const agent of manifest) {
+    for (const entry of agent.tool_use ?? []) {
+      const declaredGate = (entry as { rule_gate?: unknown }).rule_gate != null;
+      const ontologyBound = (context.ontologyRuleBindings[entry.name] ?? []).length > 0;
+      if (declaredGate || ontologyBound) continue;
+      const policy = (entry as { execution_policy?: Record<string, unknown> }).execution_policy;
+      const declared: RiskFacets = {
+        sideEffect: (entry as { side_effect?: string }).side_effect,
+        operation: policy?.operation as string | undefined,
+        effectScope: policy?.effectScope as string | undefined,
+      };
+      const assessment = assessRisk(
+        assessRisk(declared).undetermined ? (catalogFacets.get(entry.name) ?? declared) : declared,
+      );
+      if (assessment.undetermined) {
+        // A tenant tool the catalog does not know and the manifest does not
+        // describe. Reported as its own thing rather than guessed into a tier.
+        undeclaredEffectTools.push({ agent: agent.name, tool: entry.name });
+        continue;
+      }
+      if (!assessment.controls.includes("rule_check")) continue;
+      ungatedMutatingTools.push({
+        agent: agent.name,
+        tool: entry.name,
+        tier: assessment.tier,
+        reason: assessment.reason,
+      });
+    }
+  }
+
+  return {
+    unboundBlocking: unbound.map((facts) => facts.id).filter(Boolean),
+    ruleRefsWithoutTool: context.ruleRefsWithoutTool,
+    ontologyBoundRuleIds,
+    ungatedMutatingTools,
+    undeclaredEffectTools,
   };
 }
 

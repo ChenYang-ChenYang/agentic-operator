@@ -1,4 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
+import { generateKeyPairSync } from "node:crypto";
+import {
+  SANDBOX_EXECUTION_PLANE_ATTESTATION_SCHEMA,
+  sandboxExecutionPlaneCapabilities,
+  signSandboxExecutionPlaneAttestation,
+} from "@agentic/agent-factory";
 
 import {
   checkFactorySandboxRunner,
@@ -11,6 +17,18 @@ const EXECUTOR_TOKEN = "executor-health-token-that-is-at-least-32-bytes";
 const CANDIDATE_REF = `registry.example/codeact@sha256:${"a".repeat(64)}`;
 const CANDIDATE_IMAGE_ID = `sha256:${"b".repeat(64)}`;
 const SANDBOX_RESULT_KEY = "result-health-key-that-is-at-least-32-bytes";
+const platformKeys = generateKeyPairSync("ed25519");
+const platformPrivateKey = platformKeys.privateKey.export({
+  type: "pkcs8",
+  format: "pem",
+}).toString();
+const platformPublicKey = platformKeys.publicKey.export({
+  type: "spki",
+  format: "pem",
+}).toString();
+const remoteControlHostHash = `sha256:${"d".repeat(64)}`;
+const remoteWorkloadHostHash = `sha256:${"e".repeat(64)}`;
+const remoteDaemonHash = `sha256:${"f".repeat(64)}`;
 
 function executorEnv(): NodeJS.ProcessEnv {
   return {
@@ -57,6 +75,15 @@ function sandboxEnv(): NodeJS.ProcessEnv {
       runnerIdEnv: "FACTORY_SB_RUNNER_ID",
       allowedBuildIdsEnv: "FACTORY_SB_ALLOWED_BUILD_IDS",
       allowedImageDigestsEnv: "FACTORY_SB_ALLOWED_IMAGE_DIGESTS",
+      executionPlaneIdEnv: "FACTORY_SB_EXECUTION_PLANE_ID",
+      executionPlaneTrustDomainEnv: "FACTORY_SB_TRUST_DOMAIN",
+      platformAttestorKeyIdEnv: "FACTORY_SB_ATTESTOR_KEY_ID",
+      platformAttestorPublicKeyEnv: "FACTORY_SB_ATTESTOR_PUBLIC_KEY",
+      primaryHostIdentityHashEnv: "FACTORY_PRIMARY_HOST_HASH",
+      primaryDockerDaemonIdentityHashEnv: "FACTORY_PRIMARY_DAEMON_HASH",
+      allowedControlHostIdentityHashesEnv: "FACTORY_SB_CONTROL_HOST_HASHES",
+      allowedWorkloadHostIdentityHashesEnv: "FACTORY_SB_WORKLOAD_HOST_HASHES",
+      allowedDockerDaemonIdentityHashesEnv: "FACTORY_SB_DAEMON_HASHES",
     }),
     FACTORY_SB_RUNNER_URL: "https://sandbox.internal",
     FACTORY_SB_REQUEST_HMAC: "request-health-key-that-is-at-least-32-bytes",
@@ -67,10 +94,39 @@ function sandboxEnv(): NodeJS.ProcessEnv {
     FACTORY_SB_ALLOWED_IMAGE_DIGESTS: JSON.stringify([
       `sha256:${"c".repeat(64)}`,
     ]),
+    FACTORY_SB_EXECUTION_PLANE_ID: "sandbox-plane-reviewed",
+    FACTORY_SB_TRUST_DOMAIN: "sandbox.agentic.internal",
+    FACTORY_SB_ATTESTOR_KEY_ID: "platform-key-reviewed",
+    FACTORY_SB_ATTESTOR_PUBLIC_KEY: platformPublicKey,
+    FACTORY_PRIMARY_HOST_HASH: `sha256:${"1".repeat(64)}`,
+    FACTORY_PRIMARY_DAEMON_HASH: `sha256:${"2".repeat(64)}`,
+    FACTORY_SB_CONTROL_HOST_HASHES: JSON.stringify([remoteControlHostHash]),
+    FACTORY_SB_WORKLOAD_HOST_HASHES: JSON.stringify([remoteWorkloadHostHash]),
+    FACTORY_SB_DAEMON_HASHES: JSON.stringify([remoteDaemonHash]),
   };
 }
 
 function runnerBody(overrides: Record<string, unknown> = {}) {
+  const platformAttestation = signSandboxExecutionPlaneAttestation(
+    {
+      schema: SANDBOX_EXECUTION_PLANE_ATTESTATION_SCHEMA,
+      planeId: "sandbox-plane-reviewed",
+      trustDomain: "sandbox.agentic.internal",
+      runnerId: "runner-reviewed",
+      runnerBuildId: "sandbox-build-reviewed",
+      runtimeImageDigest: `sha256:${"c".repeat(64)}`,
+      isolationTier: "remote_vm",
+      controlHostIdentityHash: remoteControlHostHash,
+      workloadHostIdentityHash: remoteWorkloadHostHash,
+      dockerDaemonIdentityHash: remoteDaemonHash,
+      capabilities: sandboxExecutionPlaneCapabilities(),
+      issuedAt: new Date(NOW - 1_000).toISOString(),
+      expiresAt: new Date(NOW + 60_000).toISOString(),
+      attestorKeyId: "platform-key-reviewed",
+      signatureAlgorithm: "ed25519",
+    },
+    platformPrivateKey,
+  );
   return signRemoteSandboxRunnerHealth({
     role: "agent-factory-sandbox-runner",
     keyId: "key-reviewed",
@@ -78,6 +134,7 @@ function runnerBody(overrides: Record<string, unknown> = {}) {
     runnerBuildId: "sandbox-build-reviewed",
     runtimeImageDigest: `sha256:${"c".repeat(64)}`,
     isolationTier: "remote_vm",
+    platformAttestation,
     checkedAt: new Date(NOW).toISOString(),
     ok: true,
     broker: "ready",
@@ -204,16 +261,38 @@ describe("API execution-plane health dependencies", () => {
     });
   });
 
-  it("keeps a same-host Docker sandbox diagnostic-only", async () => {
+  it("keeps a healthy same-host Docker sandbox available for development diagnostics", async () => {
     const fetchFn = vi.fn(async () =>
       new Response(JSON.stringify(runnerBody({ isolationTier: "same_host_container" })), {
         status: 200,
       }),
     ) as unknown as typeof fetch;
     await expect(checkFactorySandboxRunner(fetchFn, sandboxEnv(), NOW)).resolves.toMatchObject({
+      ok: true,
+      state: "ready",
+      isolationTier: "same_host_container",
+      diagnosticOnly: true,
+      qualification: "development_only",
+      note: "sandbox_runner_same_host_development_only",
+    });
+  });
+
+  it("keeps a same-host Docker sandbox blocked in production", async () => {
+    const fetchFn = vi.fn(async () =>
+      new Response(JSON.stringify(runnerBody({ isolationTier: "same_host_container" })), {
+        status: 200,
+      }),
+    ) as unknown as typeof fetch;
+    await expect(checkFactorySandboxRunner(
+      fetchFn,
+      { ...sandboxEnv(), NODE_ENV: "production" },
+      NOW,
+    )).resolves.toMatchObject({
       ok: false,
       state: "blocked",
       isolationTier: "same_host_container",
+      diagnosticOnly: true,
+      qualification: "development_only",
       note: "sandbox_runner_shares_primary_host_docker_daemon",
     });
   });

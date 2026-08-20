@@ -263,13 +263,35 @@ describe("confirm_integration_profile and design profile gate", () => {
     expect(missingSandbox.ok).toBe(true);
     expect(missingSandbox.output).toMatchObject({
       readiness: {
+        schema: "agent-factory-execution-readiness/v1",
         authoringReady: true,
         sandboxReady: false,
         promotionReady: false,
         missingSandboxProfiles: ["vendor.lookup"],
+        externalApis: [
+          expect.objectContaining({
+            tool: "vendor.lookup",
+            systems: ["Vendor"],
+            sandboxReady: false,
+            promotionReady: false,
+            missingSandboxProfile: true,
+          }),
+        ],
       },
     });
     expect(ctx.specs).toHaveLength(1);
+    expect(ctx.specs[0]?.generatedCode).toContain("export");
+    expect(ctx.specs[0]?.executionReadiness).toMatchObject({
+      authoringReady: true,
+      sandboxReady: false,
+      promotionReady: false,
+      externalApis: [
+        expect.objectContaining({
+          tool: "vendor.lookup",
+          systems: ["Vendor"],
+        }),
+      ],
+    });
 
     const sandboxConfig = { region: "sandbox-cn" };
     const sandboxRequest = {

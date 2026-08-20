@@ -54,7 +54,7 @@ function context(ontology: DomainOntology): BrainCtx {
     budgetLedger: { tokens: 0, spawns: 0, maxTokens: null, maxSpawns: 50 },
     ports: {
       ontology: { fetchOntology: async () => ontology, listDomains: async () => [], fetchActionRules: async () => [] },
-      tools: { list: async () => [{ name: "vendor.lookup", description: "lookup", method: "GET", urlTemplate: "https://api.example.com/{work_id}", sideEffect: "read", operation: "read", effectScope: "external", sandboxPolicy: "live_external", domain: "test", capabilities: [{ systems: ["Vendor"], kinds: ["external_api"], roles: ["reads"], operations: ["lookup"], objectTypes: ["Work"] }], probeStatus: "verified" }], save: async () => {} },
+      tools: { list: async () => [{ name: "vendor.lookup", description: "lookup", method: "GET", urlTemplate: "https://api.example.com/{work_id}", sideEffect: "read", operation: "read", effectScope: "external", sandboxPolicy: "live_external", domain: "test", capabilities: [{ systems: ["Vendor"], kinds: ["external_api"], roles: ["reads"], operations: ["lookup"], objectTypes: ["Work"] }], probeStatus: "verified" }], saveDraft: async () => ({ revisionId: "tvr-subagent-test", version: 1, definitionHash: "a".repeat(64), status: "draft" as const }) },
       toolRegistry: { list: async () => [] },
       skills: { list: async () => [], save: async () => {}, bumpUse: async () => {}, recordEval: async () => {} },
       // Member sub-brains run a full runBrain, which reads reflections at boot — required for build mode.

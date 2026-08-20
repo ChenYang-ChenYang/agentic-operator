@@ -377,6 +377,31 @@ export interface ResolvedProviderCredential {
 }
 
 /**
+ * Resolve only the process environment credential for a built-in provider.
+ *
+ * This deliberately bypasses the vault. Compatible gateway routing uses it
+ * only after proving that the canonical built-in endpoint still matches the
+ * process-configured endpoint, so an arbitrary persisted URL cannot inherit a
+ * platform credential through a public credentialRef.
+ */
+export function getProviderEnvironmentCredential(
+  id: ProviderId,
+): ResolvedProviderCredential | null {
+  const envVar = ENV_VAR_BY_PROVIDER[id];
+  if (!envVar) return null;
+  const apiKey = process.env[envVar];
+  if (!apiKey || apiKey.trim().length === 0) return null;
+  return {
+    apiKey,
+    credentialId: `cred-env-${id}`,
+    provider: id,
+    source: "env",
+    scope: "workspace",
+    tenantId: null,
+  };
+}
+
+/**
  * Resolves both the secret and its public-safe identity. Consumers that
  * account for provider usage should retain `credentialId` and discard the
  * plaintext key once the provider adapter is configured.
@@ -417,19 +442,8 @@ export function getGatewayCredential(
     }
   }
 
-  const envVar = isProviderId(id) ? ENV_VAR_BY_PROVIDER[id] : undefined;
-  if (envVar && requiredScope !== "tenant") {
-    const apiKey = process.env[envVar];
-    if (apiKey && apiKey.trim().length > 0) {
-      return {
-        apiKey,
-        credentialId: `cred-env-${id}`,
-        provider: id,
-        source: "env",
-        scope: "workspace",
-        tenantId: null,
-      };
-    }
+  if (isProviderId(id) && requiredScope !== "tenant") {
+    return getProviderEnvironmentCredential(id);
   }
   return null;
 }

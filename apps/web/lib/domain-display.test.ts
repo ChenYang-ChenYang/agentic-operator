@@ -13,6 +13,14 @@ describe("domain display helpers", () => {
   it("shows empty runtime tenants and hides only internal tenants", () => {
     expect(isVisibleRuntimeDomain({ slug: "raas", name: "RAAS", agentCount: 0 })).toBe(true);
     expect(isVisibleRuntimeDomain({ slug: "pgvec-e2e", name: "pgvec e2e", agentCount: 0 })).toBe(true);
+    expect(
+      isVisibleRuntimeDomain({
+        slug: "agents-generation",
+        name: "Agents Generation legacy runtime",
+        productKind: "runtime_namespace",
+        agentCount: 6,
+      }),
+    ).toBe(false);
     expect(isVisibleRuntimeDomain({ slug: "raas-sb", name: "raas sandbox", agentCount: 6 })).toBe(false);
     expect(isVisibleRuntimeDomain({ slug: "__system", name: "system", agentCount: 2 })).toBe(false);
   });

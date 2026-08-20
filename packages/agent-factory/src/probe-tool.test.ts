@@ -103,7 +103,16 @@ function context(sideEffect: "read" | "write") {
     realTools: [real],
     askedQuestions: {},
     ports: {
-      tools: { probe, list: async () => [], save: async () => {} },
+      tools: {
+        probe,
+        list: async () => [],
+        saveDraft: async () => ({
+          revisionId: "tvr-probe-test",
+          version: 1,
+          definitionHash: "a".repeat(64),
+          status: "draft" as const,
+        }),
+      },
       toolRegistry: { list: async () => [{ ...real, probeStatus: "verified" as const }] },
       authorizationChallenges,
     },

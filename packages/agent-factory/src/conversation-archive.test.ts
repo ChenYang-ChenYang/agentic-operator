@@ -119,6 +119,22 @@ describe("#CONV-ARCHIVE — recall_conversation tool", () => {
     expect(String(res2.summary)).toContain("归档为空");
   });
 
+  // 「一次召回只有在【被归属】时才算证据」是这个工具自己写下的不变量，但渲染
+  // 只输出 {index, role, excerpt}：`at` 和 `foldSeq` 存了却在渲染时丢掉，大脑
+  // 拿到的是序号而没有任何时间线索。未归属的召回注入 prompt，与模型自己编的
+  // 东西无法区分。
+  it("ATTRIBUTES every recalled hit — fold sequence and archive time, honestly labelled", async () => {
+    const res = await recallConversationTool.execute({ reasoning: "核对", query: "边界" }, fakeCtx(stocked, "frn-1"));
+    const out = res.output as {
+      hits: Array<{ index: number; role: string; foldSeq: number | null; archivedAt: string }>;
+    };
+    expect(out.hits[0]).toMatchObject({ index: 2, role: "user", foldSeq: 1 });
+    expect(out.hits[0]!.archivedAt).toBe(new Date(3).toISOString());
+    // `at` is stamped at FOLD time, not utterance time. Saying so is the
+    // difference between attribution and a misleading clock.
+    expect(String(res.summary)).toContain("归档时刻");
+  });
+
   it("fails plainly without a configured archive or conversation id; archive errors are reported not swallowed", async () => {
     expect((await recallConversationTool.execute({ reasoning: "r", query: "x" }, fakeCtx(undefined, "frn-1"))).ok).toBe(false);
     expect((await recallConversationTool.execute({ reasoning: "r", query: "x" }, fakeCtx(stocked, undefined))).ok).toBe(false);

@@ -1308,7 +1308,9 @@ function LogsTab({ runId, tenant }: { runId: string; tenant: string }) {
             setReceivedCount((count) => count + batch.length);
             setLines((prev) => {
               const next = [...prev, ...batch];
-              return next.length > 5000 ? next.slice(next.length - 5000) : next;
+              return next.length > 50_000
+                ? next.slice(next.length - 50_000)
+                : next;
             });
           }
         }
@@ -1351,13 +1353,25 @@ function LogsTab({ runId, tenant }: { runId: string; tenant: string }) {
     return c;
   }, [parsed]);
 
-  function download() {
-    const blob = new Blob([lines.join("\n")], { type: "text/plain" });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = `${runId}.log`;
-    a.click();
-    URL.revokeObjectURL(a.href);
+  async function download() {
+    try {
+      const response = await fetch(
+        `/v1/runs/${encodeURIComponent(runId)}/logs/raw`,
+        {
+          credentials: "same-origin",
+          headers: { "x-agentic-tenant": tenant },
+        },
+      );
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const blob = await response.blob();
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `${runId}.log`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    }
   }
 
   const chip = (key: LogLevel | "ALL", label: string, color?: string) => (

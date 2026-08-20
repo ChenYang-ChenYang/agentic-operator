@@ -760,8 +760,13 @@ export function OntoCodeWorkspaceHubConnected() {
           ? "新的 Ontology Agent 项目"
           : "New Ontology Agent Project"),
       goal,
-      autonomyMode: "copilot",
+      autonomyMode: input.autonomyMode,
     });
+    // This surface has a real scope picker, so `full_domain`/`selected_actions`
+    // keep the legacy analyze_scope bootstrap. A free-text `scenario` with no
+    // chosen actions goes to the planner instead and may resolve to an
+    // explanation with no Harness Job — navigation stays unconditional so that
+    // Session opens on the assistant's reply rather than dead-ending.
     await bootstrapSession.mutateAsync({
       sessionId: receipt.session.id,
       goal,
@@ -1597,11 +1602,6 @@ export function OntoCodeWorkspaceSessionConnected() {
                 commandId,
                 kind,
                 expectedSessionRevision: decision.sessionRevision,
-                budget: {
-                  maxWallClockMs: 300_000,
-                  maxModelCalls: 12,
-                  maxToolCalls: 24,
-                },
               });
             }
             return;

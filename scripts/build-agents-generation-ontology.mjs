@@ -18,13 +18,16 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseDotEnv } from "./allmeta-full-domain-release-client.mjs";
+import {
+  assertNoAllmetaStorageMetadata,
+  parseDotEnv,
+} from "./allmeta-full-domain-release-client.mjs";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptDir, "..");
 const domainId = "Agents-generation";
-const version = "v0_4_000";
-const generatedAt = "2026-07-16T00:00:00.000+08:00";
+const version = "v0_4_001";
+const generatedAt = "2026-07-30T00:00:00.000+08:00";
 const outputDir = path.join(repoRoot, "artifacts", "ontology", domainId, version);
 
 const sourcePaths = {
@@ -53,6 +56,62 @@ const digest = (value) => `sha256:${createHash("sha256").update(JSON.stringify(c
 const unique = (values) => [...new Set(values.filter(Boolean))];
 const asArray = (value) => Array.isArray(value) ? value : [];
 const byId = (rows) => new Map(rows.map((row) => [text(row.id), row]));
+
+function sanitizeLiveReviewedDefinition(value, label) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${label} must be an object`);
+  }
+  let definition = clone(value);
+  if (typeof value.__allmeta_definition_json === "string") {
+    try {
+      definition = JSON.parse(value.__allmeta_definition_json);
+    } catch {
+      throw new Error(`${label} has malformed __allmeta_definition_json`);
+    }
+    if (!definition || typeof definition !== "object" || Array.isArray(definition)) {
+      throw new Error(`${label} __allmeta_definition_json must contain an object`);
+    }
+    const graphId = text(value.id);
+    const definitionId = text(definition.id);
+    if (graphId && definitionId && graphId !== definitionId) {
+      throw new Error(`${label} graph id disagrees with its reviewed definition`);
+    }
+    if (graphId && !definitionId) definition.id = graphId;
+  }
+
+  const clean = (current, currentLabel) => {
+    if (Array.isArray(current)) {
+      return current.map((item, index) => clean(item, `${currentLabel}[${index}]`));
+    }
+    if (!current || typeof current !== "object") return current;
+    const output = {};
+    for (const [key, item] of Object.entries(current)) {
+      if (key.startsWith("__allmeta_") || key === "source_file") continue;
+      if (key.endsWith("_json")) {
+        const logicalKey = key.slice(0, -"_json".length);
+        if (Object.hasOwn(current, logicalKey)) continue;
+        if (typeof item !== "string") {
+          throw new Error(`${currentLabel}.${key} must contain JSON text`);
+        }
+        try {
+          output[logicalKey] = clean(JSON.parse(item), `${currentLabel}.${logicalKey}`);
+        } catch (error) {
+          if (error instanceof SyntaxError) {
+            throw new Error(`${currentLabel}.${key} contains malformed JSON`);
+          }
+          throw error;
+        }
+        continue;
+      }
+      output[key] = clean(item, `${currentLabel}.${key}`);
+    }
+    return output;
+  };
+
+  const sanitized = clean(definition, label);
+  assertNoAllmetaStorageMetadata(sanitized, label);
+  return sanitized;
+}
 
 async function fetchLiveRules() {
   // This flag exists only for deterministic local/compiler tests.  It must
@@ -213,7 +272,8 @@ function normalizeRelatedEntities(values, objects) {
 }
 
 function buildRules(userDocument, liveRows, scaffoldDocument, objects) {
-  const live = byId(liveRows);
+  const live = byId(liveRows.map((row, index) =>
+    sanitizeLiveReviewedDefinition(row, `live Rules[${index}]`)));
   const scaffold = byId(scaffoldDocument.payload ?? []);
   const rules = [];
 
@@ -422,6 +482,19 @@ const rawFactOperationByStep = new Map([
   ["resolve_matchable_requirements", "requisition.matchable.list"],
 ]);
 
+// This is a reviewed Action-to-operation contract, not an operation inferred
+// from prose at runtime. `entities.write` receives only this immutable
+// server-catalog operation plus field-level values prepared by the Action.
+// The integration metadata must independently declare the same system and
+// capability, otherwise compilation fails closed.
+const databaseWriteBindingByAction = new Map([
+  ["4", { systemName: "RAAS_System", operation: "job_posting.sync" }],
+  ["9-1", { systemName: "RAAS_System", operation: "candidate.save" }],
+  ["10-1", { systemName: "RAAS_System", operation: "cmr.write_fail" }],
+  ["10-2", { systemName: "RAAS_System", operation: "match_result.save" }],
+  ["11-1", { systemName: "RAAS_System", operation: "invitation.mark_sent" }],
+]);
+
 const integrationKind = (value) => refKey(value);
 const integrationRole = (value) => refKey(value);
 
@@ -484,7 +557,7 @@ const recordTypeByObject = new Map([
  * renaming that tool produced a manifest which could not execute.  Derive one
  * generic record boundary per supported changed DataObject instead.  Objects
  * not owned by the local business-record store remain explicit in the
- * profile-bound PostgreSQL/Allmeta boundaries below.
+ * profile-bound external-database/Allmeta boundaries below.
  */
 function expandGenericRecordPersistence(action) {
   const authored = action.action_steps.filter((step) => step.tool === "records.upsert");
@@ -745,24 +818,46 @@ function modernizeOntologyAuthoredExecution(action) {
 
   const writes = systems;
   const firstEmit = action.action_steps.find((step) => step.object_type === "emit")?.step_id;
-  if (writes.some((system) => system.role === "write" && system.kind === "database")) {
+  const databaseWrites = writes.filter((system) =>
+    integrationRole(system.role) === integrationRole("write")
+    && integrationKind(system.kind) === integrationKind("database"));
+  if (databaseWrites.length > 0) {
+    if (databaseWrites.length !== 1) {
+      throw new Error(`Action ${action.id} must declare exactly one reviewed database write integration`);
+    }
+    const binding = databaseWriteBindingByAction.get(action.id);
+    if (!binding) {
+      throw new Error(`Action ${action.id} has a database write integration but no reviewed entities.write binding`);
+    }
+    const integration = databaseWrites[0];
+    const declaredOperation = text(integration.capability).split(/\s+—\s+/u)[0];
+    if (text(integration.name) !== binding.systemName || declaredOperation !== binding.operation) {
+      throw new Error(
+        `Action ${action.id} database write integration disagrees with reviewed binding `
+        + `${binding.systemName}/${binding.operation}`,
+      );
+    }
     insertBeforeStep(action, firstEmit, genericLogicStep(action, {
-      step_id: "prepare_external_database_transaction",
-      name: "prepareExternalDatabaseTransaction",
+      step_id: "prepare_external_database_write",
+      name: "prepareExternalDatabaseWrite",
       condition: "本地业务记录已持久化且 profile 已确认",
-      description: "依据当前 Action.side_effects、DataObject 主键和已确认的 server-owned statement catalog，产出 {transaction_key, operations}。operation 名和 values 参数必须逐项来自 profile；缺失时 ask_user，禁止从业务描述猜 SQL/表名。",
+      description: `严格按当前 Action.side_effects、DataObject 主键及 ${binding.systemName} 已审查的 ${binding.operation} statement 参数契约，逐字段产出 {values,idempotency_key}。operation 由本 Action 的发布契约固定，values 不得整包透传 Event；字段来源、稳定幂等键或 profile 缺失时 ask_user，禁止猜 SQL、表名或 operation。`,
     }));
     insertBeforeStep(action, firstEmit, genericToolStep(action, {
       step_id: "persist_external_database",
       name: "persistExternalDatabase",
-      tool: "postgres.executeTransaction",
+      tool: "entities.write",
       condition: "本 Action 的本地业务记录已幂等持久化",
-      description: "使用已确认 environment-specific profile 中的 server-owned transaction catalog 幂等写外部数据库；操作名、参数映射、幂等键和补偿/回读契约必须显式绑定并通过写探针，禁止内联 SQL。",
+      description: `通过 ${binding.systemName} 的 environment-specific profile 执行 server-owned operation ${binding.operation}；profile.allowed_operations 必须精确包含该 operation，values 参数映射、幂等键及补偿/回读契约必须显式绑定并通过写探针，禁止内联 SQL或由模型选择写操作。`,
       tool_arguments: {
-        operations: { from: "results.prepare_external_database_transaction.operations", required: true },
+        operation: { const: binding.operation },
+        values: { from: "results.prepare_external_database_write.values", required: true },
       },
-      idempotency_key_from: "results.prepare_external_database_transaction.transaction_key",
+      idempotency_key_from: "results.prepare_external_database_write.idempotency_key",
     }));
+  }
+  if (databaseWrites.length === 0 && databaseWriteBindingByAction.has(action.id)) {
+    throw new Error(`Action ${action.id} has a reviewed entities.write binding but no database write integration`);
   }
   const ontologyObjects = unique(writes
     .filter((system) => system.role === "write" && system.kind === "graph_db")
@@ -1330,6 +1425,15 @@ async function main() {
   const policyScopes = buildPolicyScopes(rules);
   const links = buildLinks(objects, rules, actions, events, policyScopes);
   const actionSteps = actions.flatMap((action) => action.action_steps.map((step) => ({ ...clone(step), action_id: action.id, action_name: action.name })));
+  assertNoAllmetaStorageMetadata({
+    objects,
+    rules,
+    actions,
+    actionSteps,
+    events,
+    policyScopes,
+    links,
+  }, `${domainId} ${version} release definitions`);
 
   const domainOntology = {
     domainId,
@@ -1382,7 +1486,8 @@ async function main() {
       "ambiguous rules outside the six-Agent executable slice retain needs_human_confirmation",
       "match threshold is stored in Job_Requisition and passed through Events; runtime must not contain a numeric fallback",
       "Agents-generation binds domain-neutral facts.query through reviewed integration metadata, then evaluates live Ontology rules; legacy tenant candidate/routing decisions are not executable capabilities",
-      "external database and Allmeta writes are separate generic profile-bound steps with mandatory live/write probes",
+      "each external database boundary uses entities.write with an Action-owned immutable server-catalog operation, field-level values and a stable idempotency key; Allmeta writes remain separate ontology.writeInstance steps",
+      "external database and Allmeta writes require independent environment-specific profiles and mandatory live/write probes",
     ],
     deferredHumanSemantics: rules.filter((rule) => rule.automationStatus === "needs_human_confirmation").map((rule) => ({
       id: rule.id,
@@ -1395,15 +1500,15 @@ async function main() {
 
   await mkdir(outputDir, { recursive: true });
   const outputs = [
-    ["objects_v0_4_000.json", { metadata: metadata("DataObjects", objects.length, sourceDigests), objects }],
-    ["rules_v0_4_000.json", { metadata: metadata("Rules", rules.length, sourceDigests), rules }],
-    ["actions_v0_4_000.json", { metadata: metadata("Actions", actions.length, sourceDigests), actions }],
-    ["events_v0_4_000.json", { metadata: metadata("Events", events.length, sourceDigests), events }],
-    ["policy_scopes_v0_4_000.json", { metadata: metadata("PolicyScopes", policyScopes.length, sourceDigests), policyScopes }],
-    ["links_v0_4_000.json", { metadata: metadata("Links", links.length, sourceDigests), links }],
-    ["domain_ontology_v0_4_000.json", domainOntology],
-    ["release_bundle_v0_4_000.json", releaseBundle],
-    ["synthesis_report_v0_4_000.json", report],
+    [`objects_${version}.json`, { metadata: metadata("DataObjects", objects.length, sourceDigests), objects }],
+    [`rules_${version}.json`, { metadata: metadata("Rules", rules.length, sourceDigests), rules }],
+    [`actions_${version}.json`, { metadata: metadata("Actions", actions.length, sourceDigests), actions }],
+    [`events_${version}.json`, { metadata: metadata("Events", events.length, sourceDigests), events }],
+    [`policy_scopes_${version}.json`, { metadata: metadata("PolicyScopes", policyScopes.length, sourceDigests), policyScopes }],
+    [`links_${version}.json`, { metadata: metadata("Links", links.length, sourceDigests), links }],
+    [`domain_ontology_${version}.json`, domainOntology],
+    [`release_bundle_${version}.json`, releaseBundle],
+    [`synthesis_report_${version}.json`, report],
   ];
   for (const [filename, value] of outputs) {
     await writeFile(path.join(outputDir, filename), `${JSON.stringify(value, null, 2)}\n`, "utf8");

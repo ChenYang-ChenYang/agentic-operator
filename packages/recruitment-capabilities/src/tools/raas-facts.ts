@@ -203,6 +203,13 @@ export const queryFacts = defineTool({
         roles: ["read", "reads", "lookup", "query", "load"],
         operations: [
           "facts.query",
+          // Exact capability coordinates currently authored in the
+          // Agents-generation Ontology. These are transport operations only;
+          // the reviewed statement catalog still owns SQL and meaning.
+          "requirement.load",
+          "candidate.pool_query",
+          "rule_context.load",
+          "material.backfill",
           "candidate.identity_facts.query",
           "requirement.facts.query",
           "rule_context.facts.query",

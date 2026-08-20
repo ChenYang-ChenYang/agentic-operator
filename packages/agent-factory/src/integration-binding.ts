@@ -24,6 +24,35 @@ export interface IntegrationRequirement {
    * reviewed without pretending they already carried event-boundary proof. */
   eventNames?: string[];
   replayable: boolean;
+  /**
+   * Exact, structured tool identity authored by the Ontology.
+   *
+   * `integration.systems[].via_tool` is authoritative when present. An
+   * `action_step_id` may additionally (or independently) point to one exact
+   * `action_steps[]` tool. Resolution never infers either value from
+   * descriptions, rationale, call order, or model prose.
+   */
+  toolBindingConstraint?: {
+    viaTool?: string;
+    actionStepId?: string;
+    actionStepTool?: string;
+    issue?: string;
+  };
+  /**
+   * Authoritative evidence that this integration path is disabled by default.
+   *
+   * This affects draft authoring only: the unresolved binding remains
+   * `missing`, `IntegrationBindingReport.ready` remains false, and sandbox /
+   * promotion continue to fail closed.  The evidence is carried on the
+   * requirement so reviewers can trace the decision back to the Ontology
+   * rather than to a model inference.
+   */
+  authoringOptional?: {
+    reason: "disabled_by_default";
+    source: "integration.systems" | "action_step.condition";
+    evidence: string;
+    stepId?: string;
+  };
 }
 
 export type IntegrationBindingStatus = "resolved" | "needs_config" | "needs_probe" | "missing" | "human_boundary";
@@ -45,6 +74,33 @@ export interface IntegrationBindingCandidate {
   bindingId: string;
   toolName?: string;
   score: number;
+}
+
+/** A human choice recorded by the server from one exact interaction option.
+ * The ontology hash is part of the authority coordinate: a changed Ontology
+ * never inherits an earlier binding choice. */
+export interface IntegrationBindingSelection {
+  ontologyHash: string;
+  actionName: string;
+  requirementId: string;
+  bindingKind: "tool" | "runtime";
+  bindingId: string;
+  interactionId?: string;
+  actor?: string;
+  selectedAt: number;
+}
+
+/** Server-owned state for the currently displayed integration choice. Tokens
+ * are opaque option values; free prose is never interpreted as a binding. */
+export interface PendingIntegrationSelectionAsk {
+  ontologyHash: string;
+  actionName: string;
+  options: Array<{
+    token: string;
+    requirementId: string;
+    bindingKind: "tool" | "runtime";
+    bindingId: string;
+  }>;
 }
 
 export type IntegrationExecutionRef =
@@ -139,6 +195,17 @@ function sameSystem(left: string, right: string, aliasGroups?: readonly (readonl
 }
 function operationsFromCapability(value: string): string[] {
   const operations = new Set<string>();
+  // Typed Ontology sources commonly publish a stable namespaced operation
+  // before the human description, for example `rules.fetch — 拉取现行规则`
+  // or `candidate.pool_query — ...`. Preserve that exact coordinate.
+  // Otherwise every graph/database tool with the same system/kind/role/object
+  // coverage becomes an equal candidate and a rule reader can be confused
+  // with a generic graph query SDK.
+  for (const match of value.matchAll(
+    /\b([A-Za-z0-9][A-Za-z0-9_-]*(?:[.:][A-Za-z0-9][A-Za-z0-9_-]*)+)\b/g,
+  )) {
+    if (match[1]) operations.add(match[1]);
+  }
   for (const match of value.matchAll(/\/(?:api\/v\d+\/)?([A-Za-z0-9_-]+)/g)) {
     if (match[1]) operations.add(match[1]);
   }
@@ -173,6 +240,251 @@ const roleAliases: Record<string, string> = {
 
 const canonicalRole = (value: string): string => roleAliases[key(value)] ?? key(value);
 const isReplayableRole = (value: string): boolean => !new Set(["trigger", "consume"]).has(canonicalRole(value));
+const explicitlyDisabledByDefault = (value: string): boolean =>
+  /(?:默认|缺省)\s*(?:关|关闭|停用|禁用)|default(?:s|ed)?\s*(?:to\s*)?(?:off|disabled)|disabled\s+by\s+default/i.test(value);
+
+function exactToolBindingConstraint(
+  action: OntologyAction,
+  system: Row,
+): IntegrationRequirement["toolBindingConstraint"] {
+  const viaTool = stringValue(system.via_tool ?? system.viaTool);
+  const actionStepId = stringValue(
+    system.action_step_id ??
+      system.actionStepId ??
+      system.step_id ??
+      system.stepId,
+  );
+  if (!viaTool && !actionStepId) return undefined;
+
+  if (!actionStepId) return { viaTool };
+  const pointed = rows(action.action_steps).filter((step) =>
+    [step.id, step.step_id, step.stepId, step.name].some(
+      (value) => stringValue(value) === actionStepId,
+    ),
+  );
+  if (pointed.length !== 1) {
+    return {
+      ...(viaTool ? { viaTool } : {}),
+      actionStepId,
+      issue:
+        pointed.length === 0
+          ? `action_step_id ${actionStepId} 未指向任何 action_steps[]`
+          : `action_step_id ${actionStepId} 指向多个 action_steps[]`,
+    };
+  }
+  const actionStepTool = stringValue(pointed[0]!.tool);
+  if (!actionStepTool) {
+    return {
+      ...(viaTool ? { viaTool } : {}),
+      actionStepId,
+      issue: `action_step_id ${actionStepId} 指向的步骤没有声明 tool`,
+    };
+  }
+  return {
+    ...(viaTool ? { viaTool } : {}),
+    actionStepId,
+    actionStepTool,
+  };
+}
+
+const exactIdentifierMention = (value: string, identifier: string): boolean => {
+  const haystack = value.normalize("NFKC");
+  const needle = identifier.normalize("NFKC").trim();
+  if (!haystack || !needle) return false;
+  const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(
+    `(?:^|[^\\p{L}\\p{N}_])${escaped}(?=$|[^\\p{L}\\p{N}_])`,
+    "iu",
+  ).test(haystack);
+};
+
+const identifierTokens = (value: string): string[] =>
+  value
+    .normalize("NFKC")
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .toLocaleLowerCase()
+    .split(/[^a-z0-9]+/u)
+    .filter(Boolean);
+
+/**
+ * Some live Ontology integrations expose a stable namespaced operation
+ * (`candidate.lock_check`) while the corresponding Action step deliberately
+ * uses an implementation-facing id (`optional_ownership_lock_check`).  The
+ * integration call order is not a safe join key: Allmeta numbers external
+ * calls independently from action_steps.
+ *
+ * Accept only the final segment of an explicitly namespaced capability and
+ * only when it contains at least two lexical tokens.  This keeps the join
+ * exact/auditable and prevents broad prose such as "optional enrichment" (or
+ * a single verb such as "read") from becoming identity evidence.
+ */
+function namespacedCapabilityReferencedStep(
+  action: OntologyAction,
+  system: Row,
+): Row | null | undefined {
+  const capability = stringValue(system.capability);
+  const stableIdentifier = capability
+    .split(/[\s—–]+/u)[0]
+    ?.match(/^[A-Za-z0-9][A-Za-z0-9_-]*(?:[.:/][A-Za-z0-9][A-Za-z0-9_-]*)+$/u)?.[0];
+  if (!stableIdentifier) return undefined;
+
+  const operation = stableIdentifier.split(/[.:/]/u).at(-1) ?? "";
+  const operationTokens = identifierTokens(operation);
+  if (operationTokens.length < 2) return undefined;
+
+  const containsOperation = (value: unknown): boolean => {
+    const candidateTokens = identifierTokens(stringValue(value));
+    if (candidateTokens.length < operationTokens.length) return false;
+    return candidateTokens.some((_, start) =>
+      operationTokens.every(
+        (token, offset) => candidateTokens[start + offset] === token,
+      ),
+    );
+  };
+  const matched = rows(action.action_steps).filter((step) =>
+    [step.step_id, step.stepId, step.id, step.name].some(containsOperation),
+  );
+  if (!matched.length) return undefined;
+  return matched.length === 1 ? matched[0] : null;
+}
+
+function explicitlyReferencedStep(
+  action: OntologyAction,
+  system: Row,
+): Row | null | undefined {
+  const actionSteps = rows(action.action_steps);
+  const systemName = stringValue(system.name ?? system.system);
+
+  // Prefer an explicit system -> step pointer when the source supplies one.
+  // A dangling or ambiguous pointer is contradictory evidence, so it must not
+  // silently fall back to a positional guess.
+  const declaredStepRef = stringValue(
+    system.action_step_id ??
+      system.actionStepId ??
+      system.step_id ??
+      system.stepId ??
+      system.step_name ??
+      system.stepName,
+  );
+  if (declaredStepRef) {
+    const pointed = actionSteps.filter((step) =>
+      [
+        step.id,
+        step.step_id,
+        step.stepId,
+        step.name,
+      ].some((value) => key(stringValue(value)) === key(declaredStepRef)),
+    );
+    return pointed.length === 1 ? pointed[0] : null;
+  }
+
+  if (!systemName) return undefined;
+  const structured = actionSteps.filter((step) =>
+    [
+      step.integration_system,
+      step.integrationSystem,
+      step.system,
+      step.system_name,
+      step.systemName,
+      step.external_system,
+      step.externalSystem,
+    ].some((value) => key(stringValue(value)) === key(systemName)),
+  );
+  if (structured.length) return structured.length === 1 ? structured[0] : null;
+
+  // Live Allmeta Actions may describe the owning integration in the step text
+  // while integration.call_order describes only the external-call sequence
+  // (not action_steps[] position). Require an exact system identifier and one
+  // unique step; fuzzy vendor-name matching would be unsafe here.
+  const mentioned = actionSteps.filter((step) =>
+    [
+      step.condition,
+      step.description,
+      step.instruction,
+    ].some((value) =>
+      exactIdentifierMention(stringValue(value), systemName),
+    ),
+  );
+  if (mentioned.length) return mentioned.length === 1 ? mentioned[0] : null;
+
+  return namespacedCapabilityReferencedStep(action, system);
+}
+
+function authoringOptionalEvidence(
+  action: OntologyAction,
+  system: Row,
+): IntegrationRequirement["authoringOptional"] {
+  const rolloutMode = stringValue(
+    system.rollout_mode ?? system.rolloutMode ?? system.execution_mode,
+  );
+  if (
+    system.enabled_by_default === false ||
+    system.default_enabled === false ||
+    system.dark_launch === true ||
+    /^(?:dark[-_ ]?launch|disabled|off)$/i.test(rolloutMode)
+  ) {
+    return {
+      reason: "disabled_by_default",
+      source: "integration.systems",
+      evidence:
+        system.enabled_by_default === false
+          ? "enabled_by_default=false"
+          : system.default_enabled === false
+            ? "default_enabled=false"
+            : system.dark_launch === true
+              ? "dark_launch=true"
+              : `rollout_mode=${rolloutMode}`,
+    };
+  }
+
+  const referencedStep = explicitlyReferencedStep(action, system);
+  if (referencedStep === null) return undefined;
+  if (referencedStep) {
+    const condition = stringValue(referencedStep.condition);
+    if (!explicitlyDisabledByDefault(condition)) return undefined;
+    const stepId = stringValue(
+      referencedStep.step_id ?? referencedStep.stepId ?? referencedStep.id,
+    );
+    return {
+      reason: "disabled_by_default",
+      source: "action_step.condition",
+      evidence: condition,
+      ...(stepId ? { stepId } : {}),
+    };
+  }
+
+  const callOrder = Number(system.call_order ?? system.callOrder);
+  if (!Number.isInteger(callOrder) || callOrder < 1) return undefined;
+  // Allmeta's live Action endpoint normalizes step.order to a zero-based
+  // index, while integration.call_order remains one-based. Uploaded/local
+  // Ontologies may preserve the original one-based order. Accept both shapes,
+  // but only when exactly one positional candidate carries an explicit
+  // disabled-by-default condition.
+  const matchingSteps = rows(action.action_steps).filter((step) => {
+    const order = Number(step.order ?? step.call_order ?? step.callOrder);
+    return Number.isInteger(order)
+      && (order === callOrder || order === callOrder - 1);
+  });
+  // A zero-based candidate and a one-based candidate are genuinely
+  // indistinguishable here, even if only one happens to mention the feature
+  // flag.  Treating the condition as a tie-breaker would infer which step the
+  // integration belongs to, so fail closed until the positional identity is
+  // unique.
+  if (matchingSteps.length !== 1) return undefined;
+  const disabledSteps = matchingSteps
+    .map((step) => ({ step, condition: stringValue(step.condition) }))
+    .filter(({ condition }) =>
+      Boolean(condition) && explicitlyDisabledByDefault(condition));
+  if (disabledSteps.length !== 1) return undefined;
+  const { step, condition } = disabledSteps[0]!;
+  const stepId = stringValue(step.step_id ?? step.stepId ?? step.id);
+  return {
+    reason: "disabled_by_default",
+    source: "action_step.condition",
+    evidence: condition,
+    ...(stepId ? { stepId } : {}),
+  };
+}
 
 /** Turn descriptive `integration.systems[]` into stable executable
  * requirements. This is intentionally generic; it never special-cases a domain,
@@ -190,6 +502,8 @@ export function deriveIntegrationRequirements(action: OntologyAction): Integrati
     const capability = stringValue(system.capability);
     const role = stringValue(system.role);
     const canonical = canonicalRole(role);
+    const optionalEvidence = authoringOptionalEvidence(action, system);
+    const toolBindingConstraint = exactToolBindingConstraint(action, system);
     const eventNames = canonical === "notify"
       ? [...new Set(notificationEvents)]
       : canonical === "trigger" || canonical === "consume"
@@ -208,6 +522,8 @@ export function deriveIntegrationRequirements(action: OntologyAction): Integrati
         : [],
       eventNames,
       replayable: isReplayableRole(role),
+      ...(toolBindingConstraint ? { toolBindingConstraint } : {}),
+      ...(optionalEvidence ? { authoringOptional: optionalEvidence } : {}),
     };
   });
 }
@@ -243,13 +559,45 @@ function capabilityMatches(
     return { matches: false, score: 0, reason: "object coverage mismatch" };
   }
   const declaredOperations = new Set((capability.operations ?? []).map(key));
-  const operationRequired = requirement.operations.length > 0 && requirement.kind === "external_api";
-  if (operationRequired && !requirement.operations.some((operation) => declaredOperations.has(key(operation)))) {
+  // A structured operation coordinate is authority for executable
+  // API/database/graph/LLM boundaries, not only HTTP. These transports are
+  // often deliberately broad on object coverage; ignoring `rules.fetch` or
+  // `candidate.pool_query` makes unrelated adapters indistinguishable.
+  // File/object-store capability prose remains descriptive for compatibility
+  // unless its descriptor explicitly sets requiresOperation.
+  if (capability.requiresOperation && requirement.operations.length === 0) {
+    return { matches: false, score: 0, reason: "operation required" };
+  }
+  const operationRequired =
+    requirement.operations.length > 0 &&
+    new Set([
+      "externalapi",
+      "graphdb",
+      "graphdatabase",
+      "ontology",
+      "rulebase",
+      "database",
+      "datastore",
+      "relationaldatabase",
+      "llm",
+      "llmgateway",
+      "modelgateway",
+    ]).has(key(requirement.kind));
+  const matchedOperationCount = requirement.operations.filter((operation) =>
+    declaredOperations.has(key(operation)),
+  ).length;
+  if (operationRequired && matchedOperationCount === 0) {
     return { matches: false, score: 0, reason: "operation mismatch" };
   }
   return {
     matches: true,
-    score: 100 + requirement.objectTypes.length * 5 + (operationRequired ? 10 : 0),
+    // Prefer an adapter that covers more of an explicit compound contract.
+    // For `rules.select + graph.verify`, a rules-only fetcher must not tie
+    // with the evaluator that covers both operations.
+    score:
+      100 +
+      requirement.objectTypes.length * 5 +
+      (operationRequired ? matchedOperationCount * 10 : 0),
   };
 }
 
@@ -270,6 +618,15 @@ export function resolveIntegrationBindings(
      * to the same external system. The ONLY sanctioned synonym source. */
     systemAliasGroups?: readonly (readonly string[])[];
     capabilityProviders?: IntegrationCapabilityProvider[];
+    /** Current-hash, server-recorded human choices. The caller is responsible
+     * for filtering by ontologyHash; the resolver additionally scopes every
+     * choice to this exact action + requirement id. */
+    bindingSelections?: Array<
+      Pick<
+        IntegrationBindingSelection,
+        "actionName" | "requirementId" | "bindingKind" | "bindingId"
+      >
+    >;
     /** The exact confirmed profile selected for each tool. Binding rechecks
      * identity and catalog profileScope; a stored config alone is not proof
      * that this action is authorized to use it. */
@@ -336,7 +693,7 @@ export function resolveIntegrationBindings(
     type RankedCandidate =
       | { bindingKind: "runtime"; bindingId: string; score: number; provider: IntegrationCapabilityProvider }
       | { bindingKind: "tool"; bindingId: string; score: number; tool: RealTool; capability: ToolCapabilityDescriptor };
-    const rankedRaw: RankedCandidate[] = [
+    let rankedRaw: RankedCandidate[] = [
       // An explicit bound tool disambiguates this requirement from runtime
       // providers. If none of the selected tools covers it, providers remain
       // eligible rather than making unrelated tool selections disable runtime.
@@ -354,6 +711,96 @@ export function resolveIntegrationBindings(
         capability,
       })),
     ];
+    const constraint = requirement.toolBindingConstraint;
+    if (constraint) {
+      if (constraint.issue) {
+        return {
+          requirement,
+          bindingKind: "tool",
+          status: "missing",
+          reason: `Ontology 的精确工具约束无效：${constraint.issue}`,
+        };
+      }
+      const declaredNames = [
+        ...new Set(
+          [constraint.viaTool, constraint.actionStepTool].filter(
+            (value): value is string => Boolean(value),
+          ),
+        ),
+      ];
+      const resolvedTools = declaredNames.map((declaredName) => {
+        const exact = tools.filter((tool) => tool.name === declaredName);
+        const aliases = exact.length
+          ? []
+          : tools.filter((tool) => (tool.aliases ?? []).includes(declaredName));
+        const matches = exact.length ? exact : aliases;
+        return { declaredName, matches };
+      });
+      const unresolved = resolvedTools.find(({ matches }) => matches.length !== 1);
+      if (unresolved) {
+        return {
+          requirement,
+          bindingKind: "tool",
+          status: "missing",
+          reason:
+            unresolved.matches.length === 0
+              ? `Ontology 精确声明的工具 ${unresolved.declaredName} 不在当前可执行 registry，禁止退回语义候选`
+              : `Ontology 精确声明的工具 ${unresolved.declaredName} 命中多个 registry identity，禁止猜测`,
+        };
+      }
+      const identities = new Set(
+        resolvedTools.map(({ matches }) => matches[0]!.name),
+      );
+      if (identities.size !== 1) {
+        return {
+          requirement,
+          bindingKind: "tool",
+          status: "missing",
+          reason: `integration via_tool 与 action_step_id 指向不同工具（${resolvedTools.map(({ declaredName, matches }) => `${declaredName}→${matches[0]!.name}`).join("、")}）`,
+        };
+      }
+      const exactTool = resolvedTools[0]!.matches[0]!;
+      if (
+        bound &&
+        !bound.has(exactTool.name) &&
+        !(exactTool.aliases ?? []).some((alias) => bound.has(alias))
+      ) {
+        return {
+          requirement,
+          bindingKind: "tool",
+          status: "missing",
+          reason: `Ontology 精确要求工具 ${exactTool.name}，但当前生成规格没有选择它`,
+        };
+      }
+      const exactMatches = (exactTool.capabilities ?? [])
+        .flatMap((capability) => {
+          const result = capabilityMatches(
+            requirement,
+            capability,
+            opts.systemAliasGroups,
+          );
+          return result.matches
+            ? [
+                {
+                  bindingKind: "tool" as const,
+                  bindingId: exactTool.name,
+                  score: result.score,
+                  tool: exactTool,
+                  capability,
+                },
+              ]
+            : [];
+        });
+      if (!exactMatches.length) {
+        return {
+          requirement,
+          bindingKind: "tool",
+          status: "missing",
+          reason: `Ontology 精确要求工具 ${exactTool.name}，但其当前 capability 与 ${requirement.system}/${requirement.kind}/${requirement.role} 不匹配`,
+        };
+      }
+      rankedRaw = exactMatches;
+    }
     // Multiple capability descriptors on the same provider/tool are one
     // binding candidate. Keep its strongest descriptor only.
     const rankedByIdentity = new Map<string, RankedCandidate>();
@@ -365,7 +812,40 @@ export function resolveIntegrationBindings(
     const ranked = [...rankedByIdentity.values()].sort((left, right) =>
       right.score - left.score || left.bindingKind.localeCompare(right.bindingKind) || left.bindingId.localeCompare(right.bindingId));
     const highestScore = ranked[0]?.score;
-    const highest = highestScore === undefined ? [] : ranked.filter((candidate) => candidate.score === highestScore);
+    let highest = highestScore === undefined ? [] : ranked.filter((candidate) => candidate.score === highestScore);
+    const recordedSelection = opts.bindingSelections?.find(
+      (selection) =>
+        selection.actionName === action.name &&
+        selection.requirementId === requirement.id,
+    );
+    if (!constraint && recordedSelection) {
+      const selected = ranked.find(
+        (candidate) =>
+          candidate.bindingKind === recordedSelection.bindingKind &&
+          candidate.bindingId === recordedSelection.bindingId,
+      );
+      if (!selected) {
+        const selectionCandidates: IntegrationBindingCandidate[] = highest.map(
+          (candidate) => ({
+            bindingKind: candidate.bindingKind,
+            bindingId: candidate.bindingId,
+            ...(candidate.bindingKind === "tool"
+              ? { toolName: candidate.tool.name }
+              : {}),
+            score: candidate.score,
+          }),
+        );
+        return {
+          requirement,
+          bindingKind: "tool",
+          status: "missing",
+          selectionRequired: true,
+          selectionCandidates,
+          reason: `此前记录的集成选择 ${recordedSelection.bindingKind}:${recordedSelection.bindingId} 已不满足当前 capability，必须重新选择`,
+        };
+      }
+      highest = [selected];
+    }
     if (highest.length > 1) {
       const selectionCandidates: IntegrationBindingCandidate[] = highest.map((candidate) => ({
         bindingKind: candidate.bindingKind,
@@ -769,4 +1249,28 @@ export function consumeIntegrationBoundaryAnswer(
     ...(meta.actor ? { actor: meta.actor } : {}),
     confirmedAt: meta.confirmedAt,
   }));
+}
+
+/** Consume only an exact option token emitted by the server-owned integration
+ * choice gate. Labels, prose, tool rationale, and partial identifiers are not
+ * binding authority. */
+export function consumeIntegrationSelectionAnswer(
+  pending: PendingIntegrationSelectionAsk,
+  answerValue: string,
+  meta: { interactionId?: string; actor?: string; selectedAt: number },
+): IntegrationBindingSelection | null {
+  const token = answerValue.trim();
+  if (!token) return null;
+  const selected = pending.options.find((option) => option.token === token);
+  if (!selected) return null;
+  return {
+    ontologyHash: pending.ontologyHash,
+    actionName: pending.actionName,
+    requirementId: selected.requirementId,
+    bindingKind: selected.bindingKind,
+    bindingId: selected.bindingId,
+    ...(meta.interactionId ? { interactionId: meta.interactionId } : {}),
+    ...(meta.actor ? { actor: meta.actor } : {}),
+    selectedAt: meta.selectedAt,
+  };
 }

@@ -7,6 +7,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, eq } from "drizzle-orm";
 import {
   getDb,
+  ontocodeArtifactBlobs,
+  ontocodeArtifactVersions,
   ontocodeArtifacts,
   ontocodeCommands,
   ontocodeEvidenceRecords,
@@ -107,7 +109,8 @@ describe("ontology_analysis end to end through the worker", () => {
         {
           id: originalBinding.ontologyDomainId,
           name:
-            originalBinding.ontologyDomainName ?? originalBinding.ontologyDomainId,
+            originalBinding.ontologyDomainName ??
+            originalBinding.ontologyDomainId,
         },
         originalBinding.source,
       );
@@ -198,6 +201,75 @@ describe("ontology_analysis end to end through the worker", () => {
     );
     expect(receipt).toBeDefined();
     expect(receipt?.kind).toBe("harness_receipt");
+    const analysisArtifact = artifacts.find(
+      (artifact) => artifact.logicalName === "analysis/ontology.json",
+    );
+    expect(analysisArtifact).toMatchObject({
+      kind: "ontology_analysis",
+      semanticPath: "/analysis/ontology",
+    });
+    const analysisVersion = getDb()
+      .select()
+      .from(ontocodeArtifactVersions)
+      .where(eq(ontocodeArtifactVersions.artifactId, analysisArtifact!.id))
+      .get();
+    const analysisBlob = getDb()
+      .select()
+      .from(ontocodeArtifactBlobs)
+      .where(eq(ontocodeArtifactBlobs.id, analysisVersion!.blobId))
+      .get();
+    const analysisPayload = JSON.parse(analysisBlob!.contentText) as {
+      request: { question: string | null };
+      limitations: string[];
+      presentation: {
+        schema: string;
+        blocks: Array<{
+          id: string;
+          kind: string;
+          totalRows?: number;
+          truncated?: boolean;
+          rows?: Array<Record<string, unknown>>;
+        }>;
+      };
+    };
+    // A raw quick action has no `arguments.instruction`; the executor falls
+    // back to the durable Command rationale so the analysis remains focused.
+    expect(analysisPayload.request.question).toBe(
+      "FDE asked to understand the Ontology",
+    );
+    expect(analysisPayload.presentation).toMatchObject({
+      schema: "ontocode-analysis-presentation/v1",
+    });
+    expect(analysisPayload.presentation.blocks.length).toBeGreaterThan(5);
+
+    // Q1 / Q4 / Q8 —— 三块新证据必须真的走完「worker 执行 → 产物落库」这条生产路径，
+    // 而不只是在 buildOntologyAnalysisPresentation 的单测里被构造出来。
+    const blockById = new Map(
+      analysisPayload.presentation.blocks.map((block) => [block.id, block]),
+    );
+    // Q1：关系表与关系图并存——表逐行给出全部边，图回答的是另一个问题。
+    expect(blockById.get("ontology-links")).toMatchObject({
+      kind: "table",
+      totalRows: (ontology.links ?? []).length,
+      truncated: false,
+    });
+    expect(blockById.get("ontology-relationships")?.kind).toBe("relationship");
+    // Q4：这个域的对象既没声明 primary_key 也没声明 properties，字段体检必须报出来。
+    expect(blockById.get("ontology-object-fields")).toMatchObject({
+      kind: "table",
+      totalRows: ontology.objects.length,
+    });
+    expect(blockById.get("ontology-object-field-defects")?.kind).toBe("table");
+    // Q8：该域不带已生成 agent 清单 → 必须落成「未核对」，绝不落成「一致」。
+    const consistencyBlock = blockById.get("agent-ontology-consistency");
+    expect(consistencyBlock?.kind).toBe("table");
+    expect(consistencyBlock?.rows?.length).toBeGreaterThan(0);
+    expect(
+      consistencyBlock?.rows?.every((row) => row.state === "not_checkable"),
+    ).toBe(true);
+    expect(analysisPayload.limitations.join("\n")).toContain(
+      "未能核对已生成 agent",
+    );
 
     // and as an evidence row — analysis is informational, never a test verdict
     const evidence = getDb()

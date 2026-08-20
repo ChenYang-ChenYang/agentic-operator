@@ -35,8 +35,10 @@ describe("buildActionBrief — deterministic member briefing", () => {
     expect(brief).toContain("content:String 必填 [event:content]");
     // object with primary key + fields
     expect(brief).toContain("Ticket（主键 ticket_id）");
-    // declared ontology tool takes priority wording
-    expect(brief).toContain("本体声明工具（优先采用）: classify.helper");
+    // source declarations remain visible but are explicitly canonicalized
+    // through registry/integration evidence instead of blindly prioritized.
+    expect(brief).toContain("本体源声明工具");
+    expect(brief).toContain("classify.helper");
     // action_steps → plan stepId requirement surfaced
     expect(brief).toContain("judge(logic)");
     expect(brief).toContain("CRM（external_api/reads）");
@@ -58,6 +60,8 @@ describe("buildActionBrief — deterministic member briefing", () => {
     expect(brief).not.toContain("other_action_issue"); // someone else's blocker never leaks into this slice
     expect(brief).toContain("crm.classify");
     expect(brief).toContain("需凭证 CRM_KEY");
+    expect(brief).toContain("结构化 integration 的 authoring 执行面");
+    expect(brief).toContain("CRM/external_api/reads => crm.classify");
   });
 
   it("includes the execution-bearing fields for every ontology action step", () => {
@@ -80,6 +84,114 @@ describe("buildActionBrief — deterministic member briefing", () => {
     expect(brief).toContain("ticket_id");
     expect(brief).toContain("if=input.ticket_id != null");
     expect(brief).toContain("不得读取其它租户数据");
+  });
+
+  it("uses the final bounded projection for the live processResume shape and never replaces exact fs with objectStore", () => {
+    const ont = ontology();
+    const action = ont.actions[0]!;
+    action.id = "processResume";
+    action.name = "processResume";
+    action.tool_use = [
+      "fs.readFromInbox",
+      "parseResumeApi",
+      "sourceOnlyAuditWriter",
+    ];
+    action.action_steps = [
+      {
+        order: 0,
+        step_id: "download_resume",
+        object_type: "tool",
+        tool: "fs.readFromInbox",
+      },
+      {
+        order: 1,
+        step_id: "parse_resume",
+        object_type: "tool",
+        tool: "parseResumeApi",
+      },
+    ];
+    action.integration = {
+      systems: [
+        {
+          call_order: 1,
+          name: "Resume_Object_Store",
+          kind: "object_store",
+          role: "reads",
+          capability: "resume.object.read",
+          objects: ["Ticket"],
+        },
+        {
+          call_order: 2,
+          name: "GoHire_System",
+          kind: "external_api",
+          role: "execute",
+          capability: "resume.parse",
+          objects: ["Ticket"],
+        },
+      ],
+    };
+    const realTools = [
+      {
+        name: "fs.readFromInbox",
+        capabilities: [
+          {
+            systems: ["Resume_Object_Store"],
+            kinds: ["object_store"],
+            roles: ["reads"],
+            operations: ["resume.object.read"],
+            objectTypes: ["Ticket"],
+          },
+        ],
+      },
+      {
+        name: "objectStore.getObject",
+        capabilities: [
+          {
+            systems: ["Resume_Object_Store"],
+            kinds: ["object_store"],
+            roles: ["reads"],
+            operations: ["resume.object.read"],
+            objectTypes: ["Ticket"],
+          },
+        ],
+      },
+      {
+        name: "gohireParseResumeApi",
+        aliases: ["parseResumeApi"],
+        capabilities: [
+          {
+            systems: ["GoHire_System"],
+            kinds: ["external_api"],
+            roles: ["execute"],
+            operations: ["resume.parse"],
+            objectTypes: ["Ticket"],
+          },
+        ],
+      },
+    ] as unknown as import("./tool-catalog").RealTool[];
+
+    const brief = buildActionBrief({
+      ontology: ont,
+      actionName: "processResume",
+      realTools,
+    });
+
+    expect(brief).toContain(
+      "fs.readFromInbox → fs.readFromInbox [registered canonical]",
+    );
+    expect(brief).toContain(
+      "parseResumeApi → gohireParseResumeApi [registry alias]",
+    );
+    expect(brief).toContain(
+      "BLOCKER sourceOnlyAuditWriter → 不可投影",
+    );
+    expect(brief).toContain(
+      "Resume_Object_Store/object_store/reads => fs.readFromInbox",
+    );
+    expect(brief).not.toContain("fs.readFromInbox → objectStore.getObject");
+    expect(brief).not.toContain(
+      "Resume_Object_Store/object_store/reads => objectStore.getObject",
+    );
   });
 
   it("tells simple actions to omit the plan, caps output, and fails plainly on unknown actions", () => {

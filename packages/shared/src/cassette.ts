@@ -46,6 +46,13 @@ export interface CassetteEvidenceAttestation {
     configHash: string;
     actor: string;
     mode: "live-probe" | "signed-fixture" | "runtime-record";
+    /** A bundle confirmation authorizes only this exact plan. This provenance
+     * is secret-free and covered by the cassette HMAC. */
+    authorization?: {
+      kind: "sandbox_evidence_plan";
+      subjectDigest: string;
+      challengeId: string;
+    };
   };
   signature: string;
 }
@@ -65,6 +72,14 @@ export interface CanonicalCassetteDocument {
     /** Secret-free proof that a write canary was created, cleaned up, and
      * subsequently read back as absent. Raw identifiers are never persisted. */
     writeProbe?: WriteProbeCassetteProof;
+    /** Immutable managed-tool revision identity used when a draft/retired
+     * revision is probed. This is added before attestation, so activation can
+     * prove the cassette belongs to the exact reviewed revision instead of
+     * trusting mutable database summary JSON. */
+    toolRevision?: {
+      id: string;
+      definitionHash: string;
+    };
     /** API-owned signature.  In particular, the text `signed-fixture` is not
      * trusted unless this envelope verifies against the persistent API key. */
     attestation?: CassetteEvidenceAttestation;

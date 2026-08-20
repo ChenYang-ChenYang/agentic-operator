@@ -4,6 +4,7 @@ import { z } from "zod";
 import { factorySourceOntologyHash } from "@agentic/agent-factory";
 import {
   ONTOCODE_COMMAND_POLICY,
+  resolveOntoCodeAutonomyActionPolicy,
   CancelOntoCodeConfigurationTaskRequestSchema,
   CloseOntoCodeSessionRequestSchema,
   CommitOntoCodeChangeSetRequestSchema,
@@ -68,6 +69,7 @@ import {
   OntoCodeProjectListReceiptSchema,
   OntoCodeSessionCreateReceiptSchema,
   OntoCodeSessionCloseReceiptSchema,
+  OntoCodeOntologyFreshnessSchema,
   OntoCodeSessionGetReceiptSchema,
   OntoCodeSessionListReceiptSchema,
   OntoCodeSessionUpdateReceiptSchema,
@@ -138,9 +140,18 @@ import {
   listOntoCodeSessions,
   makeOntoCodeIdempotencyKey,
   OntoCodeStoreError,
+  recordOntoCodeOntologyShadowing,
+  retryOntoCodeSessionJob,
   updateOntoCodeSession,
   type OntoCodeStoreContext,
 } from "../../services/ontocode-session-store";
+import { redactHarnessTelemetryPayload } from "../../services/ontocode-telemetry-redaction";
+import {
+  publicOntoCodeHarnessJob,
+  publicOntoCodeMessage,
+  publicOntoCodeSessionEvent,
+} from "../../services/ontocode-public-projection";
+import type { UploadedFirstOntologySource } from "../../services/agent-factory/uploaded-ontology-source";
 import {
   collectOntoCodeSessionFootprint,
   listOntoCodeSessionPurges,
@@ -316,6 +327,120 @@ export async function ontocodeRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
+  // Is the Ontology this Session is pinned to still what the authoritative
+  // source serves RIGHT NOW?
+  //
+  // Drift was already fail-closed at job time (`requireCurrentOntology`
+  // re-fetches and refuses a stale snapshot), but only at job time: between
+  // jobs an FDE had no way to ask, so the first sign of a moved Ontology was a
+  // job dying. This measures it on demand.
+  //
+  // Three honesty rules hold here and are asserted by the tests:
+  //   · a source we could not read is `unavailable` with the REAL reason —
+  //     never `current`, because "still fresh" and "we could not check" look
+  //     identical to a reader and only one is safe to act on;
+  //   · `servedBy` names the source object that actually produced the ontology,
+  //     measured from the resolution itself (DomainOntology.source cannot
+  //     answer it — an upload does not report "upload" there);
+  //   · nothing is cached. The whole point is that it is measured now.
+  app.get<{ Params: { sessionId: string } }>(
+    "/ontocode/sessions/:sessionId/ontology-freshness",
+    async (req, reply) => {
+      const auth = requirePermission(req, "workflows.read");
+      const ctx: OntoCodeStoreContext = {
+        tenantId: auth.tenantId,
+        actorId: auth.userId ?? auth.credentialId ?? null,
+      };
+      reply.header("Cache-Control", "no-store");
+
+      const session = getOntoCodeSession(ctx, req.params.sessionId);
+      const project = getOntoCodeProject(ctx, session.projectId);
+      const sessionSnapshotHash = session.ontologySnapshotHash ?? null;
+
+      let source: UploadedFirstOntologySource | null = null;
+      let currentHash: string | null = null;
+      let reason: string | null = null;
+      try {
+        source = makeBoundFactoryOntologySource(
+          auth.tenantSlug,
+          auth.tenantId,
+          project.ontologyDomainRegistrationId,
+          project.domain,
+        );
+        const ontology = await source.fetchOntology(project.domain);
+        if (ontology.domainId !== project.domain) {
+          throw new Error(
+            `Ontology source returned domain "${ontology.domainId}" for exact project domain "${project.domain}"`,
+          );
+        }
+        currentHash = factorySourceOntologyHash(ontology);
+      } catch (error) {
+        // A transport quotes its own configuration back in failure messages, so
+        // this reason crosses the SAME redaction boundary as every other
+        // Factory-originated string that reaches a durable Session sink.
+        // Redact BEFORE clipping: clipping first could split a credential and
+        // let the fragment through.
+        const raw = String((error as Error)?.message ?? error).slice(0, 2_000);
+        reason =
+          String(
+            redactHarnessTelemetryPayload({ reason: raw }).reason ?? raw,
+          ).slice(0, 500) || "本体源读取失败，且未给出原因";
+      }
+
+      // Provenance is reported from the RESOLUTION, never inferred from config,
+      // and a chain that cannot say which side served says null rather than
+      // guessing. It must never turn a successful measurement into a failure.
+      //
+      // `servedBy` is what PRODUCED the ontology, so a read that produced
+      // nothing has no source to name: when the fetch failed, both provenance
+      // fields stay empty rather than reporting the side the binding WOULD have
+      // picked — that would be inference from configuration, which is the exact
+      // thing this field exists to avoid. Which transport failed is in `reason`.
+      let servedBy: "allmeta" | "upload" | "manifest" | null = null;
+      let shadowed = false;
+      let baseTransport: "allmeta" | "manifest" | null = null;
+      if (source && currentHash !== null) {
+        try {
+          const resolution = await source.describeResolution(project.domain);
+          baseTransport = resolution.base?.kind ?? null;
+          servedBy =
+            resolution.servedBy === "upload" ? "upload" : baseTransport;
+          shadowed = resolution.shadowed;
+        } catch {
+          servedBy = null;
+          shadowed = false;
+        }
+      }
+
+      // #ONTOLOGY-SHADOW —— 不改谁赢，只是不再隐瞒。
+      if (shadowed) {
+        recordOntoCodeOntologyShadowing(ctx, session.id, {
+          ontologyDomainId: project.domain,
+          baseTransport,
+          currentHash,
+        });
+      }
+
+      return reply.ok(
+        OntoCodeOntologyFreshnessSchema.parse({
+          schema: "ontocode-ontology-freshness/v1",
+          sessionSnapshotHash,
+          status:
+            currentHash === null
+              ? "unavailable"
+              : currentHash === sessionSnapshotHash
+                ? "current"
+                : "changed",
+          currentHash,
+          servedBy,
+          shadowed,
+          checkedAt: Date.now(),
+          reason,
+        }),
+      );
+    },
+  );
+
   app.patch<{ Params: { sessionId: string } }>(
     "/ontocode/sessions/:sessionId",
     async (req, reply) => {
@@ -411,26 +536,23 @@ export async function ontocodeRoutes(app: FastifyInstance): Promise<void> {
   // 消息/事件/产物、清掉了哪些外部字节、哪些是【刻意保留】的以及为什么。
   // 同时它也是工单：清理失败的记录停在 partial，可以重试补完，而不是留下一堆
   // 没人知道属于谁的文件。
-  app.get(
-    "/ontocode/session-purges",
-    async (req, reply) => {
-      const ctx = actorContext(req, "workflows.read");
-      const query = z
-        .object({
-          status: z.enum(["pending", "completed", "partial"]).optional(),
-          limit: z.coerce.number().int().min(1).max(200).default(50),
-        })
-        .strict()
-        .parse(req.query);
-      reply.header("Cache-Control", "no-store");
-      return reply.ok({
-        items: listOntoCodeSessionPurges(ctx, {
-          ...(query.status ? { status: query.status } : {}),
-          limit: query.limit,
-        }),
-      });
-    },
-  );
+  app.get("/ontocode/session-purges", async (req, reply) => {
+    const ctx = actorContext(req, "workflows.read");
+    const query = z
+      .object({
+        status: z.enum(["pending", "completed", "partial"]).optional(),
+        limit: z.coerce.number().int().min(1).max(200).default(50),
+      })
+      .strict()
+      .parse(req.query);
+    reply.header("Cache-Control", "no-store");
+    return reply.ok({
+      items: listOntoCodeSessionPurges(ctx, {
+        ...(query.status ? { status: query.status } : {}),
+        limit: query.limit,
+      }),
+    });
+  });
 
   app.post<{ Params: { purgeId: string } }>(
     "/ontocode/session-purges/:purgeId/retry",
@@ -488,6 +610,36 @@ export async function ontocodeRoutes(app: FastifyInstance): Promise<void> {
           meta: { jobIds: receipt.jobIds },
         });
       }
+      return reply.ok(receipt);
+    },
+  );
+
+  app.post<{ Params: { sessionId: string }; Body?: { jobId?: string } }>(
+    "/ontocode/sessions/:sessionId/retry-job",
+    async (req, reply) => {
+      const ctx = actorContext(req, "workflows.write");
+      const jobId =
+        typeof req.body?.jobId === "string" ? req.body.jobId.trim() : "";
+      if (!jobId) {
+        throw new OntoCodeStoreError(
+          "ontocode_harness_retry_job_required",
+          "A Harness Job id is required for an explicit retry",
+          400,
+        );
+      }
+      const receipt = retryOntoCodeSessionJob(ctx, req.params.sessionId, jobId);
+      writeAudit({
+        tenantId: ctx.tenantId,
+        actorUserId: ctx.actorId ?? undefined,
+        action: "ontocode.harness_job.retry_requested",
+        targetType: "ontocode_harness_job",
+        targetId: receipt.jobId,
+        meta: {
+          sessionId: receipt.sessionId,
+          previousAttempt: receipt.attempt,
+          sessionRevision: receipt.sessionRevision,
+        },
+      });
       return reply.ok(receipt);
     },
   );
@@ -582,9 +734,13 @@ export async function ontocodeRoutes(app: FastifyInstance): Promise<void> {
       const ctx = actorContext(req, "workflows.read");
       const query = ListOntoCodeMessagesQuerySchema.parse(req.query);
       reply.header("Cache-Control", "no-store");
+      const page = listOntoCodeMessages(ctx, req.params.sessionId, query);
       return reply.ok(
         OntoCodeMessageListReceiptSchema.parse(
-          listOntoCodeMessages(ctx, req.params.sessionId, query),
+          {
+            ...page,
+            items: page.items.map(publicOntoCodeMessage),
+          },
         ),
       );
     },
@@ -636,9 +792,13 @@ export async function ontocodeRoutes(app: FastifyInstance): Promise<void> {
         query.visibility === "audit" ? "audit.read" : "workflows.read",
       );
       reply.header("Cache-Control", "no-store");
+      const page = listOntoCodeEvents(ctx, req.params.sessionId, query);
       return reply.ok(
         OntoCodeEventListReceiptSchema.parse(
-          listOntoCodeEvents(ctx, req.params.sessionId, query),
+          {
+            ...page,
+            items: page.items.map(publicOntoCodeSessionEvent),
+          },
         ),
       );
     },
@@ -709,9 +869,13 @@ export async function ontocodeRoutes(app: FastifyInstance): Promise<void> {
       const ctx = actorContext(req, "workflows.read");
       const query = ListOntoCodeHarnessJobsQuerySchema.parse(req.query);
       reply.header("Cache-Control", "no-store");
+      const page = listOntoCodeHarnessJobs(ctx, req.params.sessionId, query);
       return reply.ok(
         OntoCodeHarnessJobListReceiptSchema.parse(
-          listOntoCodeHarnessJobs(ctx, req.params.sessionId, query),
+          {
+            ...page,
+            items: page.items.map(publicOntoCodeHarnessJob),
+          },
         ),
       );
     },
@@ -722,55 +886,78 @@ export async function ontocodeRoutes(app: FastifyInstance): Promise<void> {
     async (req, reply) => {
       const ctx = actorContext(req, "workflows.write");
       const input = CreateOntoCodeHarnessJobRequestSchema.parse(req.body);
-      if (input.commandId) {
-        const command = getOntoCodeCommand(ctx, input.commandId);
-        const policy = ONTOCODE_COMMAND_POLICY[command.type];
-        const mismatches = {
-          ...(command.sessionId !== req.params.sessionId
-            ? {
-                sessionId: {
-                  expected: command.sessionId,
-                  received: req.params.sessionId,
-                },
-              }
-            : {}),
-          ...(input.kind !== policy.jobKind
-            ? {
-                jobKind: {
-                  expected: policy.jobKind,
-                  received: input.kind,
-                },
-              }
-            : {}),
-          ...(command.riskClass !== policy.riskClass
-            ? {
-                riskClass: {
-                  expected: policy.riskClass,
-                  received: command.riskClass,
-                },
-              }
-            : {}),
-          ...(command.requiresHuman !== policy.requiresHuman
-            ? {
-                requiresHuman: {
-                  expected: policy.requiresHuman,
-                  received: command.requiresHuman,
-                },
-              }
-            : {}),
-        };
-        if (Object.keys(mismatches).length > 0) {
-          throw new OntoCodeStoreError(
-            "ontocode_command_policy_mismatch",
-            "The Harness Job does not match the linked Command policy",
-            409,
-            {
-              commandId: command.id,
-              commandType: command.type,
-              mismatches,
-            },
-          );
-        }
+      // Public callers must always enter Harness execution through a
+      // server-derived Command. The store keeps its commandless seam for
+      // trusted internal/read-only fixtures, while this boundary prevents an
+      // API client from bypassing Session autonomy and approval policy.
+      if (!input.commandId) {
+        throw new OntoCodeStoreError(
+          "ontocode_harness_command_required",
+          "Public Harness Jobs require an attached, policy-derived OntoCode Command",
+          409,
+          { sessionId: req.params.sessionId, jobKind: input.kind },
+        );
+      }
+      const command = getOntoCodeCommand(ctx, input.commandId);
+      const session = getOntoCodeSession(ctx, req.params.sessionId);
+      const policy = ONTOCODE_COMMAND_POLICY[command.type];
+      const autonomyPolicy = resolveOntoCodeAutonomyActionPolicy(
+        session.autonomyMode,
+        command.type,
+      );
+      const mismatches = {
+        ...(command.sessionId !== req.params.sessionId
+          ? {
+              sessionId: {
+                expected: command.sessionId,
+                received: req.params.sessionId,
+              },
+            }
+          : {}),
+        ...(input.kind !== policy.jobKind
+          ? {
+              jobKind: {
+                expected: policy.jobKind,
+                received: input.kind,
+              },
+            }
+          : {}),
+        ...(command.riskClass !== policy.riskClass
+          ? {
+              riskClass: {
+                expected: policy.riskClass,
+                received: command.riskClass,
+              },
+            }
+          : {}),
+        ...(!autonomyPolicy.allowed
+          ? {
+              autonomyMode: {
+                expected: "read_only command in analysis-only mode",
+                received: command.type,
+              },
+            }
+          : {}),
+        ...(command.requiresHuman !== autonomyPolicy.requiresHuman
+          ? {
+              requiresHuman: {
+                expected: autonomyPolicy.requiresHuman,
+                received: command.requiresHuman,
+              },
+            }
+          : {}),
+      };
+      if (Object.keys(mismatches).length > 0) {
+        throw new OntoCodeStoreError(
+          "ontocode_command_policy_mismatch",
+          "The Harness Job does not match the linked Command policy",
+          409,
+          {
+            commandId: command.id,
+            commandType: command.type,
+            mismatches,
+          },
+        );
       }
       return reply.ok(
         OntoCodeHarnessJobCreateReceiptSchema.parse(
@@ -791,7 +978,9 @@ export async function ontocodeRoutes(app: FastifyInstance): Promise<void> {
       reply.header("Cache-Control", "no-store");
       return reply.ok(
         OntoCodeHarnessJobGetReceiptSchema.parse({
-          job: getOntoCodeHarnessJob(ctx, req.params.jobId),
+          job: publicOntoCodeHarnessJob(
+            getOntoCodeHarnessJob(ctx, req.params.jobId),
+          ),
         }),
       );
     },
@@ -972,6 +1161,34 @@ export async function ontocodeRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
+  // #CONFIG-GAPS — "what does THIS Build still need connected?" as one read.
+  // The Candidate's own validation blockers name every unready (system, tool,
+  // role); joining them with the derived config requirement is what lets
+  // 「去设置」 land on a page that shows the real work instead of the static
+  // one-entry provider catalogue. Read-only and secret-free: field NAMES and
+  // satisfaction only, never values.
+  app.get<{ Params: { sessionId: string } }>(
+    "/ontocode/sessions/:sessionId/configuration-gaps",
+    async (req, reply) => {
+      const ctx = actorContext(req, "workflows.read");
+      reply.header("Cache-Control", "no-store");
+      const { runtimeProvidedSystemNames } = await import(
+        "../../services/agent-factory/index"
+      );
+      const { collectOntoCodeConfigurationGaps } = await import(
+        "../../services/ontocode-configuration-gaps"
+      );
+      return reply.ok(
+        collectOntoCodeConfigurationGaps(ctx, req.params.sessionId, {
+          runtimeProvidedSystemNames,
+          envPresent: (name) =>
+            typeof process.env[name] === "string" &&
+            process.env[name]!.trim() !== "",
+        }),
+      );
+    },
+  );
+
   app.get<{ Params: { sessionId: string } }>(
     "/ontocode/sessions/:sessionId/suite-overview",
     async (req, reply) => {
@@ -998,7 +1215,9 @@ export async function ontocodeRoutes(app: FastifyInstance): Promise<void> {
       return reply.ok(
         confirmSessionHumanBoundaries(ctx, req.params.sessionId, {
           waitingJobId:
-            typeof body.waitingJobId === "string" ? body.waitingJobId : undefined,
+            typeof body.waitingJobId === "string"
+              ? body.waitingJobId
+              : undefined,
           note: typeof body.note === "string" ? body.note : undefined,
         }),
       );

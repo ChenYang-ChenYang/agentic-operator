@@ -18,6 +18,7 @@
     "./postgres": "./src/postgres/index.ts",
     "./crypto": "./src/crypto/index.ts",
     "./document": "./src/document/index.ts",
+    "./config": "./src/config/index.ts",
     "./search": "./src/search/index.ts"
   },
   "scripts": {

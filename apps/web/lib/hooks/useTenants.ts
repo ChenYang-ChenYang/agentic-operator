@@ -49,6 +49,7 @@ export interface TenantListItem {
   createdAt: number;
   updatedAt: number;
   archivedAt: number | null;
+  productKind: "business_domain" | "runtime_namespace";
   inngestEnabled: boolean;
   inngestProcessScoped: boolean;
   agentCount: number;
@@ -65,18 +66,34 @@ interface TenantsListResponse {
 
 export const TENANTS_KEYS = {
   all: ["tenants"] as const,
-  list: (includeArchived: boolean) => ["tenants", { includeArchived }] as const,
+  list: (includeArchived: boolean, includeRuntimeNamespaces = false) =>
+    [
+      "tenants",
+      { includeArchived, includeRuntimeNamespaces },
+    ] as const,
 };
 
 export function useTenants(opts?: {
   includeArchived?: boolean;
+  /** Management-only escape hatch. Normal product navigation must not expose
+   * compatibility execution namespaces as peer Business Domains. */
+  includeRuntimeNamespaces?: boolean;
 }): UseQueryResult<TenantsListResponse> {
   const includeArchived = opts?.includeArchived ?? false;
+  const includeRuntimeNamespaces = opts?.includeRuntimeNamespaces ?? false;
+  const search = new URLSearchParams();
+  if (includeArchived) search.set("include_archived", "1");
+  if (includeRuntimeNamespaces) {
+    search.set("include_runtime_namespaces", "1");
+  }
   return useQuery({
-    queryKey: TENANTS_KEYS.list(includeArchived),
+    queryKey: TENANTS_KEYS.list(
+      includeArchived,
+      includeRuntimeNamespaces,
+    ),
     queryFn: () =>
       callV1<TenantsListResponse>(
-        `/v1/tenants${includeArchived ? "?include_archived=1" : ""}`,
+        `/v1/tenants${search.size > 0 ? `?${search.toString()}` : ""}`,
       ),
     // Tenants change rarely; 30s stale time is enough for the sidebar to
     // feel live without hammering the api. Mutations explicitly invalidate.

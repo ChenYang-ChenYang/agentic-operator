@@ -33,6 +33,14 @@ export async function decodeFactoryResponse<T>(t: Translate, response: JsonRespo
   try {
     body = await response.json();
   } catch {
+    if ([500, 502, 503, 504].includes(response.status)) {
+      return {
+        ok: false,
+        status: response.status,
+        code: "api_restarting",
+        message: t("factory.api.serviceRestarting"),
+      };
+    }
     return {
       ok: false,
       status: response.status,
@@ -80,6 +88,29 @@ export function factoryNetworkFailure(t: Translate, error: unknown): FactoryApiR
 }
 
 export type HumanInteractionKind = "clarify" | "test_approval" | "boundary";
+
+/** Build the exact managed-revision CAS deactivation endpoint. A legacy
+ * projection with no active revision is intentionally not representable. */
+export function buildGeneratedToolDeactivationPath(input: {
+  name: string;
+  expectedActiveRevisionId: string;
+  revisionDomainId: string | null;
+}): string {
+  const name = input.name.trim();
+  const expectedActiveRevisionId = input.expectedActiveRevisionId.trim();
+  const revisionDomainId =
+    input.revisionDomainId?.trim() || "__unbound__";
+  if (!name || !expectedActiveRevisionId) {
+    throw new Error(
+      "managed tool deactivation requires an exact tool name and active revision",
+    );
+  }
+  const query = new URLSearchParams({
+    expectedActiveRevisionId,
+    revisionDomainId,
+  });
+  return `/v1/agent-factory/generated-tools/${encodeURIComponent(name)}?${query.toString()}`;
+}
 
 /** Keep the exact one-shot interaction coordinates in one tested transport
  * builder. Callers cannot accidentally fall back to the old text-only body. */

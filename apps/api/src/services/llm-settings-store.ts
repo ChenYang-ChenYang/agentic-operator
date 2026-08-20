@@ -18,7 +18,7 @@ import {
   renameSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import {
   CORE_LLM_TASK_TAXONOMY,
   LlmSettingsSchema,
@@ -79,20 +79,94 @@ function workspaceRoot(start = process.cwd()): string {
   }
 }
 
+/**
+ * A non-test API must never persist operator-owned routing state beneath the
+ * disposable test-run tree.  A leaked managed env block previously made a
+ * real NewAPI revision disappear as soon as that test directory was cleaned.
+ */
+export function assertDurableLlmSettingsPath(
+  path: string,
+  runtime: { nodeEnv?: string; workspaceRoot?: string } = {},
+): string {
+  if ((runtime.nodeEnv ?? process.env.NODE_ENV) === "test") return path;
+  const root = resolve(runtime.workspaceRoot ?? workspaceRoot());
+  const ephemeralRoot = join(root, "data", "test-runs");
+  const candidate = resolve(path);
+  const fromEphemeralRoot = relative(ephemeralRoot, candidate);
+  const isEphemeral =
+    fromEphemeralRoot === "" ||
+    (!fromEphemeralRoot.startsWith("..") && !isAbsolute(fromEphemeralRoot));
+  if (isEphemeral) {
+    throw new Error(
+      `AGENTIC_LLM_SETTINGS_PATH must not use the disposable test-run tree outside NODE_ENV=test: ${candidate}`,
+    );
+  }
+  return candidate;
+}
+
 export function llmSettingsPath(): string {
   const explicit = process.env.AGENTIC_LLM_SETTINGS_PATH?.trim();
-  if (explicit) return resolve(explicit);
+  if (explicit) return assertDurableLlmSettingsPath(resolve(explicit));
   const dbUrl = process.env.DATABASE_URL;
   if (dbUrl?.startsWith("file:")) {
-    return resolve(dirname(dbUrl.slice(5)), "llm-settings.json");
+    return assertDurableLlmSettingsPath(
+      resolve(dirname(dbUrl.slice(5)), "llm-settings.json"),
+    );
   }
-  return join(workspaceRoot(), "data", "llm-settings.json");
+  return assertDurableLlmSettingsPath(
+    join(workspaceRoot(), "data", "llm-settings.json"),
+  );
+}
+
+/**
+ * The JSON store and its env mirror are one persistence unit. In particular,
+ * a test-owned JSON path must never be mirrored into the operator's real
+ * `apps/api/.env.local`; that was the write-side hole left by guarding only
+ * `AGENTIC_LLM_SETTINGS_PATH`.
+ */
+export function assertSafeLlmSettingsEnvMirrorPath(
+  path: string,
+  runtime: { nodeEnv?: string; workspaceRoot?: string } = {},
+): string {
+  const root = resolve(runtime.workspaceRoot ?? workspaceRoot());
+  const candidate = resolve(path);
+  const operatorMirror = join(root, "apps", "api", ".env.local");
+  const ephemeralRoot = join(root, "data", "test-runs");
+  const fromEphemeralRoot = relative(ephemeralRoot, candidate);
+  const isEphemeral =
+    fromEphemeralRoot === "" ||
+    (!fromEphemeralRoot.startsWith("..") && !isAbsolute(fromEphemeralRoot));
+  const nodeEnv = runtime.nodeEnv ?? process.env.NODE_ENV;
+
+  if (nodeEnv === "test" && candidate === operatorMirror) {
+    throw new Error(
+      `test processes must not mirror AI settings into the operator env file: ${candidate}`,
+    );
+  }
+  if (nodeEnv !== "test" && isEphemeral) {
+    throw new Error(
+      `AGENTIC_LLM_ENV_MIRROR_PATH must not use the disposable test-run tree outside NODE_ENV=test: ${candidate}`,
+    );
+  }
+  return candidate;
 }
 
 export function llmSettingsEnvMirrorPath(): string {
   const explicit = process.env.AGENTIC_LLM_ENV_MIRROR_PATH?.trim();
-  if (explicit) return resolve(explicit);
-  return join(workspaceRoot(), "apps", "api", ".env.local");
+  if (explicit) {
+    return assertSafeLlmSettingsEnvMirrorPath(resolve(explicit));
+  }
+  if (process.env.NODE_ENV === "test") {
+    // Default to the same invocation-scoped directory as the JSON store.
+    // Tests that need a different mirror can still provide an explicit safe
+    // path, but omission can no longer mutate a developer's live env file.
+    return assertSafeLlmSettingsEnvMirrorPath(
+      join(dirname(llmSettingsPath()), "llm-settings.env.local"),
+    );
+  }
+  return assertSafeLlmSettingsEnvMirrorPath(
+    join(workspaceRoot(), "apps", "api", ".env.local"),
+  );
 }
 
 function providerKind(provider: ProviderId) {
@@ -164,6 +238,27 @@ export function defaultLlmSettings(): LlmSettings {
     },
     taskProfiles: [],
   });
+}
+
+function revisionZeroEnvironmentFingerprint(settings: LlmSettings): string {
+  return JSON.stringify(settings, (key, value) =>
+    key === "updatedAt" ? undefined : value,
+  );
+}
+
+/**
+ * Revision zero is reserved for the auto-generated environment projection.
+ * Keep that projection current without mutating any operator-owned revision.
+ * Once settings are explicitly saved they become revision >= 1 and remain
+ * pinned until another explicit save.
+ */
+function refreshRevisionZeroSettings(settings: LlmSettings): LlmSettings {
+  if (settings.revision !== 0) return settings;
+  const currentEnvironment = defaultLlmSettings();
+  return revisionZeroEnvironmentFingerprint(settings) ===
+    revisionZeroEnvironmentFingerprint(currentEnvironment)
+    ? settings
+    : currentEnvironment;
 }
 
 function providerEnvName(provider: ProviderId): string {
@@ -388,18 +483,28 @@ export function getLlmSettings(workspaceSlug: string): LlmSettingsSnapshot {
     };
     sync = persistFile(next);
   } else {
-    const content = canonicalJson(file);
-    const envPath = llmSettingsEnvMirrorPath();
-    const mirrorMessage = existsSync(envPath)
-      ? envMirrorDriftMessage(readFileSync(envPath, "utf8"), content)
-      : "the .env.local mirror is missing";
-    sync = {
-      status: mirrorMessage === null ? "synced" : "drift",
-      jsonPath: llmSettingsPath(),
-      envPath,
-      checksum: checksum(content),
-      message: mirrorMessage,
-    };
+    const refreshed = refreshRevisionZeroSettings(settings);
+    if (refreshed !== settings) {
+      settings = refreshed;
+      const next = {
+        ...file,
+        workspaces: { ...file.workspaces, [workspaceSlug]: settings },
+      };
+      sync = persistFile(next);
+    } else {
+      const content = canonicalJson(file);
+      const envPath = llmSettingsEnvMirrorPath();
+      const mirrorMessage = existsSync(envPath)
+        ? envMirrorDriftMessage(readFileSync(envPath, "utf8"), content)
+        : "the .env.local mirror is missing";
+      sync = {
+        status: mirrorMessage === null ? "synced" : "drift",
+        jsonPath: llmSettingsPath(),
+        envPath,
+        checksum: checksum(content),
+        message: mirrorMessage,
+      };
+    }
   }
   return { settings, sync };
 }

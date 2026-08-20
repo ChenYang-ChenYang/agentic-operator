@@ -129,7 +129,7 @@ export function humanMemoryFromInjectedMessage(
     // Authorization is a one-shot DB challenge, never reusable domain memory.
     // Match any protocol version so an upgrade cannot accidentally persist an
     // older/newer token as a durable human fact.
-    if (/^(?:probe|integration_profile|sandbox_design_review)_authorization:v\d+:/i.test(promptContext)) return null;
+    if (/^(?:probe|integration_profile|sandbox_evidence_plan|sandbox_design_review)_authorization:v\d+:/i.test(promptContext)) return null;
     const tagged = text.match(/^\[澄清回答\]\s*([\s\S]+)$/);
     const answer = (tagged?.[1] ?? text).trim();
     if (!answer) return null;

@@ -90,6 +90,17 @@ process.env.AGENTIC_IMPORTS_DIR = path.join(
 process.env.AGENTIC_KEY_VAULT_PATH = path.join(testRunRoot, "provider-keys.json");
 process.env.AGENTIC_MODEL_FLEET_PATH = path.join(testRunRoot, "model-fleet.json");
 process.env.AGENTIC_LLM_TELEMETRY_SPOOL_PATH = path.join(testRunRoot, "llm-telemetry.ndjson");
+// AI routing settings and their managed env mirror are one write unit. Pin
+// both halves to this invocation so a test that initializes settings can never
+// rewrite the developer's apps/api/.env.local.
+process.env.AGENTIC_LLM_SETTINGS_PATH = path.join(
+  testRunRoot,
+  "llm-settings.json",
+);
+process.env.AGENTIC_LLM_ENV_MIRROR_PATH = path.join(
+  testRunRoot,
+  "llm-settings.env.local",
+);
 
 // Clone the migrated database once per Vitest worker. better-sqlite3's backup
 // API includes committed WAL pages, so the snapshot is consistent even while

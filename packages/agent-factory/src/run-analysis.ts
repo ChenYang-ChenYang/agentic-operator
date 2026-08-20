@@ -7,7 +7,11 @@
 // digest-only result when no gateway is configured.
 
 import type { BrainEvent } from "./brain-types";
-import { chatJson, isGatewayConfigured } from "./stream-gateway";
+import {
+  chatJson,
+  hasFactoryModelAdapter,
+  isGatewayConfigured,
+} from "./stream-gateway";
 import { modelChain } from "./model-router";
 import { detectLang, resolveBrainLang } from "./i18n";
 
@@ -101,9 +105,19 @@ export function runDigest(events: BrainEvent[]): string {
     }
     flushThought();
     switch (e.t) {
-      case "model":
-        lines.push(`🧠 模型 ${String(g(e, "model") ?? "")} (${String(g(e, "tier") ?? "")} 档)`);
+      case "model": {
+        // 难度档没被满足是【降级】，必须写进叙事让质检评审员看得见——否则
+        // 「hard 档任务被 flash 跑了」和「hard 档任务被 hard 模型跑了」在这份
+        // 报告里长得一模一样。
+        const unmet =
+          g(e, "preferenceSatisfied") === false
+            ? `｜⚠ 难度档未满足: ${String(g(e, "preferenceReason") ?? "未给出原因")}`
+            : "";
+        lines.push(
+          `🧠 模型 ${String(g(e, "model") ?? "")} (${String(g(e, "tier") ?? "")} 档)${unmet}`,
+        );
         break;
+      }
       case "message":
         lines.push(`🗣 大脑: ${clip(String(g(e, "text") ?? ""), THOUGHT_CAP)}`);
         break;
@@ -200,9 +214,9 @@ export async function analyzeRun(events: BrainEvent[], opts: { signal?: AbortSig
   const sys =
     lang === "en"
       ? "You are the SENIOR QA REVIEWER of an Agent-Factory run. Below is the FULL narrative of an 'generate agents from an ontology' run — the brain's real thinking, every tool call's input + complete output, the code it wrote, validation issues, each refine round's critique + score change, reverts, clarifications, the real/simulated sandbox result, errors. Review each phase (read ontology → plan → design → validate → sandbox → deliver): was it grounded (no hallucination), are rules fetched dynamically at runtime, did it silently degrade, how is the code/prompt quality, did each refine round actually fix the right problem, were problems resolved sensibly or escalated to the user appropriately, did it really run (not simulated)." +
-        ' Output ONLY JSON: {"score":number(0-100),"summary":string,"strengths":string[],"problems":string[],"suggestions":string[]}. problems/suggestions must be specific to a phase, action, even a round (e.g. "IntakeResume refine round 2 dropped the wrong tool"). All English. No other text.'
+        ' Output ONLY JSON: {"score":number(0-100),"summary":string,"strengths":string[],"problems":string[],"suggestions":string[]}. problems/suggestions must be specific to a phase, action, even a round (e.g. "<agentName> refine round 2 dropped the wrong tool" — use agent/action names from THIS run). All English. No other text.'
       : "你是 Agent 工厂运行的【资深质检评审员】。下面给你的是一次「用本体生成 agents」运行的【完整活动叙事】——包含大脑真实的思考、每一次工具调用的输入与完整输出、写的代码、校验问题、每一轮精修的批评与评分变化、回滚、询问用户、沙箱真实/模拟结果、错误。请逐环节(读本体→规划→设计→校验→试运行→交付)审阅：是否接地不脑补、规则是否运行时动态抓、有没有默默降级、代码与提示质量如何、每一轮精修是否真的修对了问题、遇到问题是否合理解决或恰当询问用户、最终是否真跑通(非模拟)。" +
-        '只输出 JSON：{"score":number(0-100),"summary":string,"strengths":string[],"problems":string[],"suggestions":string[]}。problems/suggestions 必须具体到环节、动作、甚至某一轮(如「IntakeResume 第2轮精修把工具删错了」)。全部中文。不要任何其它文字。';
+        '只输出 JSON：{"score":number(0-100),"summary":string,"strengths":string[],"problems":string[],"suggestions":string[]}。problems/suggestions 必须具体到环节、动作、甚至某一轮(如「<本次运行里的某个 agent> 第2轮精修把工具删错了」——用本次运行自己的 agent/action 名)。全部中文。不要任何其它文字。';
   try {
     let served = "";
     const j = await chatJson<Record<string, unknown>>(sys, digest, { temperature: 0.3, maxTokens: 6000, signal: opts.signal, models: modelChain("review"), purpose: "run_analysis", onModel: (m) => { served = m; } });
@@ -217,7 +231,11 @@ export async function analyzeRun(events: BrainEvent[], opts: { signal?: AbortSig
       suggestions: arr(j.suggestions),
       rounds,
       // #12: the model that ACTUALLY served the critique (after fallback), not just the preferred id.
-      model: served || (modelChain("review")[0] ?? ""),
+      // Under the central gateway the "review" chain is a PREFERENCE PATTERN, not a model id — an
+      // unserved turn reports no model rather than passing a pattern off as one.
+      model:
+        served ||
+        (hasFactoryModelAdapter() ? "" : (modelChain("review")[0] ?? "")),
       digest,
     };
   } catch {

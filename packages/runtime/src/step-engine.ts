@@ -40,16 +40,45 @@ import type { CodeActDockerTransport } from "./codeact-container";
 import {
   ActionTimeoutError,
   applyToolResultMap,
+  evaluateActionPrecondition,
   evaluateConditionDetailed,
   foreachStepId,
+  hasAuthoritativeConditionalEmit,
   materializeForeach,
   materializeToolArguments,
+  readPath,
+  resolveBusinessKey,
   resolveConditionPath,
   runSequentialForeach,
   runWithActionTimeout,
   shouldSkip,
   type GateState,
+  type StepScope,
 } from "./action-plan";
+import {
+  RuleGateDeclarationSchema,
+  evaluateRuleGate,
+  normalizeRuleVerdict,
+  type RuleGateDecision,
+  type RuleGateDeclaration,
+  type RuleGateFinding,
+  type RuleGateMode,
+} from "./rule-guard";
+import {
+  evaluateProbeVerification,
+  probeVerificationPolicyFromEnv,
+  validateSuppliedArgTypes,
+  type ProbeVerificationResult,
+  type ToolProbeState,
+} from "./tool-dispatch-verification";
+import {
+  compareEffectReadback,
+  resolveEffectVerificationContract,
+  resolveReadbackArgs,
+  unverifiedEffect,
+  type EffectVerificationReceipt,
+} from "./effect-verification";
+import { globalToolEffectVerification } from "@agentic/tools/registry";
 import { mergeStepResults } from "./message-envelope";
 import type { EmitIntent } from "./emit-select";
 import {
@@ -100,6 +129,8 @@ import {
   type AgentConversationTurn,
 } from "./agent-execution";
 import { appendRuntimeTrace, type RuntimeTraceSink } from "./execution-trace";
+import { isRequiredStepEvidenceFailure } from "./step-evidence";
+import type { ToolCallLedgerEntry } from "./run-completion-reconciliation";
 import type { ReasoningConfigDTO, TextVerbosity } from "@agentic/contracts";
 import { parseStructuredJson } from "./structured-output";
 import { writeArtifact } from "./artifacts";
@@ -132,6 +163,13 @@ export interface ToolUseEntry {
   description?: string;
   input_schema?: unknown;
   config?: Record<string, unknown>;
+  /**
+   * #EFFECT-READBACK (D6) — per-tenant confirmation route for this tool's
+   * write, overriding the catalog default. Typed `unknown` on purpose: this
+   * arrives as manifest JSON and is validated structurally at dispatch, so a
+   * malformed declaration is REPORTED rather than trusted or dropped.
+   */
+  effect_verification?: unknown;
 }
 
 function declaredExecutionPolicy(
@@ -153,7 +191,9 @@ function reviewedExecutionPolicy(
   useGlobalMetadata: boolean,
 ): ToolExecutionPolicy | undefined {
   const declared = declaredExecutionPolicy(entry);
-  const catalog = useGlobalMetadata ? globalToolExecutionPolicy(name) : undefined;
+  const catalog = useGlobalMetadata
+    ? globalToolExecutionPolicy(name)
+    : undefined;
   if (catalog && declared && !toolExecutionPoliciesEqual(catalog, declared)) {
     throw new Error(
       `tool '${name}' execution_policy conflicts with current reviewed registry metadata`,
@@ -227,10 +267,12 @@ interface AgentSlots {
   factoryDomainId?: string;
   /** Server-authored sandbox identity + profile provenance. A tool config or
    * generated handler cannot manufacture this pair at dispatch time. */
-  factoryExecutionScope?: FactorySandboxExecutionScope | {
-    kind: "production";
-    target_domain_id?: string;
-  };
+  factoryExecutionScope?:
+    | FactorySandboxExecutionScope
+    | {
+        kind: "production";
+        target_domain_id?: string;
+      };
   factoryToolProfileRefs?: Record<string, string>;
   /** Server-authored, attempt-bound cassette hashes for external tools. */
   factoryToolReplayRefs?: Record<string, FactorySandboxReplayRef>;
@@ -252,6 +294,43 @@ interface AgentSlots {
   productionCodeActWorkflowManifestSha256?: string;
   /** Declared downstream event allow-list. Required by explicit `emit` actions. */
   triggeredEvents?: string[];
+  /**
+   * #RULE-GATE — server-authored ontology rule corpus for this agent's domain,
+   * threaded from `loadModelsFromDisk().rules.payload` at bootstrap.
+   *
+   * Deliberately NOT read from the manifest: if an agent could supply its own
+   * rule corpus it could shrink the set of rules that govern it, and severity
+   * (`failurePolicy`/`enforcementLevel`) would stop being authoritative. Same
+   * trust property as `factoryExecutionScope` — a manifest cannot manufacture it.
+   */
+  ontologyRules?: unknown[];
+  /**
+   * #RULE-GATE — server-authored tool → rule-id bindings derived from the
+   * ontology's own `action_steps[].rules[]`. The ontology ALREADY states which
+   * rules govern which tool step; without this the binding would have to be
+   * re-authored per manifest, and an agent that simply omitted it would be
+   * silently exempt.
+   */
+  ontologyRuleBindings?: Record<string, string[]>;
+  /**
+   * #DISPATCH-VERIFY — per-tool probe verification state as persisted, keyed by
+   * tool name. Threaded from the factory tool rows at bootstrap because the
+   * declarative overlay deliberately rebuilds only the request template and the
+   * policy triple; without this the dispatcher has nothing to check and an
+   * expired or failed probe executes anyway.
+   */
+  factoryToolProbeState?: Record<string, ToolProbeState>;
+  /**
+   * #RULE-GATE — obligations that govern a whole ACTION rather than one tool
+   * call. Measured need: of RAAS's 144 ontology rule references, 110 hang off
+   * steps whose `object_type` is `logic` — they govern a reasoning step, not an
+   * outbound call, so a tool-boundary gate structurally cannot reach them.
+   *
+   * The rule SELECTION is not declared here: it comes from the server-authored
+   * `ontologyRuleBindings` keyed on the action name, which the ontology step
+   * shares. Only the evidence location and the mode are authored.
+   */
+  action_rule_gate?: unknown;
 }
 
 interface ActionToolBoundary {
@@ -268,9 +347,7 @@ function resolveActionToolBoundary(
 ): ActionToolBoundary {
   const agentAllowed = [
     ...new Set(
-      (agent?.tool_use ?? [])
-        .map((entry) => entry.name.trim())
-        .filter(Boolean),
+      (agent?.tool_use ?? []).map((entry) => entry.name.trim()).filter(Boolean),
     ),
   ];
   if (action.allowed_tools === undefined) {
@@ -297,9 +374,11 @@ function hasVerifiedSandboxProfile(
   agent: AgentSlots | undefined,
   toolName: string,
 ): boolean {
-  return agent?.factoryExecutionScope?.kind === "sandbox"
-    && typeof agent.factoryToolProfileRefs?.[toolName] === "string"
-    && agent.factoryToolProfileRefs[toolName]!.trim().length > 0;
+  return (
+    agent?.factoryExecutionScope?.kind === "sandbox" &&
+    typeof agent.factoryToolProfileRefs?.[toolName] === "string" &&
+    agent.factoryToolProfileRefs[toolName]!.trim().length > 0
+  );
 }
 
 /** Hard cap on tool-use iterations per `logic` action. Anything above 8
@@ -393,7 +472,13 @@ export interface StepInput {
    * nested under foreach. A container is interpreted recursively, while each
    * leaf side effect receives a content-addressed step id. */
   durableActionRuntime?: {
-    run(stepId: string, operation: () => Promise<StepOutput>): Promise<StepOutput>;
+    run(
+      stepId: string,
+      operation: () => Promise<StepOutput>,
+      /** Human label for the body step (evidence records/logs). Optional so
+       * bare test runtimes keep working; register.ts consumes it. */
+      label?: { actionName?: string },
+    ): Promise<StepOutput>;
     invoke(args: {
       stepId: string;
       target: string;
@@ -424,6 +509,78 @@ export interface StepOutput {
   /** Set for manual steps that haven't been resolved yet. */
   pendingTaskTitle?: string;
   meta?: Record<string, unknown>;
+  /**
+   * #RUN-EVIDENCE (D6) — per-call evidence ledger entries persisted by the
+   * durable body steps under this output. Rides the RETURN VALUE (which for a
+   * body step is the memoized `step.run` result) so a replay reconciles
+   * against the same recorded calls; a foreach container aggregates its
+   * children's entries here so the run-level ledger counts every dispatch at
+   * every nesting depth.
+   */
+  toolLedger?: ToolCallLedgerEntry[];
+}
+
+/**
+ * #RULE-GATE — the generated-code (CodeAct) tool binding.
+ *
+ * Extracted as a named seam for the same reason `dispatchInvokeRpc` was: this is
+ * the third path that can reach a tool handler, and a gate that exists on the
+ * other two but is merely *believed* to exist here is not a gate. Keeping it a
+ * closure made that belief untestable.
+ *
+ * Enforces, in order: the action capability boundary (unchanged behaviour), then
+ * the ontology rule obligations — a capability set says whether this agent may
+ * ever call the tool, never whether it may call it on this run.
+ */
+export async function dispatchGeneratedCodeTool(args: {
+  name: string;
+  args?: unknown;
+  ctx: ToolContext;
+  agent: AgentSlots | undefined;
+  declaredCodeToolSet: ReadonlySet<string>;
+  tenantRegistry?: TenantRegistry;
+  scope: StepScope;
+}): Promise<unknown> {
+  const { name, ctx, agent, declaredCodeToolSet, tenantRegistry, scope } = args;
+  if (!declaredCodeToolSet.has(name)) {
+    throw new Error(
+      `[action_tool_not_allowed] generated-code tool '${name}' is outside the current action capability boundary`,
+    );
+  }
+  const tenantTool = tenantRegistry?.tools?.[name];
+  const globalTool = tenantTool ? undefined : globalToolRegistry.get(name);
+  const descriptor = tenantTool ?? globalTool;
+  if (!descriptor) throw new Error(`generated-code tool '${name}' is not registered`);
+
+  const gate = evaluateToolRuleGate({ agent, toolName: name, scope });
+  if (gate && !gate.decision.allowed) {
+    throw new Error(
+      gate.decision.steer ??
+        `rule_gate_refused: generated-code tool '${name}' has unsatisfied ontology rule obligations`,
+    );
+  }
+
+  const toolUse = agent?.tool_use?.find((entry) => entry.name === name);
+  const toolData =
+    args.args && typeof args.args === "object" && !Array.isArray(args.args)
+      ? (args.args as Record<string, unknown>)
+      : { value: args.args };
+  const toolCtx: ToolContext = {
+    ...ctx,
+    actionName: name,
+    event: {
+      name: ctx.event?.name ?? "generated-code.tool",
+      data: toolData,
+    },
+    ...(toolUse?.config ? { config: toolUse.config } : {}),
+  };
+  const toolResult = await runTenantTool(toolCtx, descriptor);
+  if (!toolResult.ok) {
+    throw new Error(
+      `generated-code tool '${name}' failed: ${JSON.stringify(toolResult.meta ?? toolResult.data)}`,
+    );
+  }
+  return toolResult.data;
 }
 
 async function runTenantTool(
@@ -562,9 +719,17 @@ async function callLLM(
       tools.push({
         name: entry.name,
         description: entry.description ?? handler.description ?? entry.name,
+        // #ARG-CONTRACT (D3) — a manifest-declared schema still wins, but when
+        // the manifest is silent, fall back to the contract the tool ITSELF
+        // declares before resorting to the permissive stand-in. Advertising
+        // `{additionalProperties:true}` while the descriptor holds a real schema
+        // is what left every MCP tool, and every catalog tool a manifest did not
+        // re-describe, with a contentless contract the model had to guess at.
         input_schema: isPlainSchema(entry.input_schema)
           ? entry.input_schema
-          : { type: "object", additionalProperties: true },
+          : isPlainSchema(handler.inputSchema)
+            ? handler.inputSchema
+            : { type: "object", additionalProperties: true },
       });
     }
   }
@@ -717,6 +882,16 @@ async function callLLM(
       ord: iter,
       promptPreview: iter === 0 ? capText(rendered, 4000) : undefined,
       responseText: capText(response.text ?? "", 8000),
+      requestMessages: structuredClone(messages),
+      requestTools: structuredClone(tools),
+      responseTextFull: response.text ?? "",
+      reasoningFull:
+        extractReasoning(response.raw) ?? response.reasoningSummary ?? null,
+      responseToolCalls: requestedCalls.map((call) => ({
+        id: call.id,
+        name: call.name,
+        input: call.input,
+      })),
       // Provider-native reasoning from raw, else the gateway's normalized
       // deliberately-summarized reasoning. The opaque replay-only
       // `reasoningContent` is intentionally NEVER persisted (contract).
@@ -866,6 +1041,14 @@ async function callLLM(
       let isError = false;
       let outputData: unknown = null;
       let sandboxDispatch: FactorySandboxDispatchReceipt | undefined;
+      let ruleGateRecord: ToolCallRuleGateRecord | undefined;
+      let probeRecord: ProbeVerificationResult | undefined;
+      // #EFFECT-READBACK — hoisted out of the try so the read-back below can
+      // see the SAME reviewed policy and the SAME dispatch decision this call
+      // actually ran under. Re-deriving either afterwards would risk confirming
+      // an effect against a different decision than the one that produced it.
+      let callReviewedPolicy: ToolExecutionPolicy | undefined;
+      let callDispatchDecision: string | undefined;
       try {
         if (!callIsAllowed) {
           throw new Error(
@@ -894,6 +1077,46 @@ async function callLLM(
             );
           }
         }
+        // #ARG-CONTRACT (D3) — when the manifest declared no schema, the tool's
+        // own contract still applies. Types only, never required-ness: see
+        // `validateSuppliedArgTypes` for why omission is legitimate here.
+        if (!isPlainSchema(toolUseEntry?.input_schema)) {
+          const argIssues = validateSuppliedArgTypes(
+            isPlainSchema(handler?.inputSchema) ? handler.inputSchema : undefined,
+            call.input,
+          );
+          if (argIssues.length > 0) {
+            throw new Error(
+              `tool_arguments_invalid: ${argIssues
+                .map((issue) => `${issue.path}: ${issue.message}`)
+                .join("; ")}`,
+            );
+          }
+        }
+        // #RULE-GATE — ontology rule obligations are a PRECONDITION, evaluated
+        // here beside the schema check and before any sandbox/dispatch decision.
+        // A refusal comes back as a tool_result error so the model can go get
+        // the missing verdict instead of retrying the same illegal call.
+        const gate = evaluateToolRuleGate({
+          agent,
+          toolName: call.name,
+          scope: {
+            event: ctx?.event,
+            subject: ctx?.subject,
+            lastResult: ctx?.lastResult,
+            results: ctx?.results,
+            locals: ctx?.locals,
+          },
+        });
+        if (gate) {
+          ruleGateRecord = gate.record;
+          if (!gate.decision.allowed) {
+            throw new Error(
+              gate.decision.steer ??
+                `rule_gate_refused: tool '${call.name}' has unsatisfied ontology rule obligations`,
+            );
+          }
+        }
         // #REDESIGN P1b — the LLM tool-use loop must honour sandbox gating too (not just the
         // type:"tool" plan path): in a `-sb` tenant, READS run live, external WRITES are gated
         // (marker, not fired) unless a server-owned attempt grant exists; mock/replay short-circuit.
@@ -902,20 +1125,48 @@ async function callLLM(
           toolUseEntry,
           !!globalHandler,
         );
+        callReviewedPolicy = reviewedPolicy;
+        // #DISPATCH-VERIFY (D8) — a probe verified at promote time says nothing
+        // about the definition running now. Checked here, against the reviewed
+        // policy rather than the tool's name.
+        const probeResult = verifyToolProbeAtDispatch({
+          agent,
+          toolName: call.name,
+          policy: reviewedPolicy,
+          declaredSideEffect: toolUseEntry?.side_effect,
+        });
+        if (probeResult) {
+          probeRecord = probeResult;
+          // #PROBE-DEFER — a service that simply is not deployed yet must not
+          // block an FDE who has the credential wired. The deferral is carried
+          // on the call record instead; a rejection or a missing credential
+          // still refuses.
+          if (
+            !probeResult.verified &&
+            !probeResult.deferrable &&
+            probeVerificationPolicyFromEnv(process.env) === "refuse"
+          ) {
+            throw new Error(
+              `probe_verification_failed: ${probeResult.issues.map((i) => i.code).join(", ")} — ${probeResult.issues.map((i) => i.detail).join("; ")}`,
+            );
+          }
+        }
         const factoryDecision = factorySandboxDispatchDecision(
           reviewedPolicy,
           callCtx.tenantSlug,
           agent?.factoryExecutionScope,
         );
-        const sbDecision = factoryDecision ?? (isSandboxTenant(callCtx.tenantSlug)
-          ? toolDispatchDecision(
-              reviewedPolicy,
-              sandboxToolMode(),
-              {
-                sandboxProfileVerified: hasVerifiedSandboxProfile(agent, call.name),
-              },
-            )
-          : "live");
+        const sbDecision =
+          factoryDecision ??
+          (isSandboxTenant(callCtx.tenantSlug)
+            ? toolDispatchDecision(reviewedPolicy, sandboxToolMode(), {
+                sandboxProfileVerified: hasVerifiedSandboxProfile(
+                  agent,
+                  call.name,
+                ),
+              })
+            : "live");
+        callDispatchDecision = sbDecision;
         if (sbDecision === "reject") {
           throw new Error(
             `tool '${call.name}' is missing valid reviewed execution_policy metadata`,
@@ -924,7 +1175,9 @@ async function callLLM(
         if (factoryDecision === "replay") {
           const scope = agent?.factoryExecutionScope;
           if (!scope || scope.kind !== "sandbox" || !reviewedPolicy) {
-            throw new Error(`factory sandbox replay scope is missing for tool '${call.name}'`);
+            throw new Error(
+              `factory sandbox replay scope is missing for tool '${call.name}'`,
+            );
           }
           const replayed = await replayFactorySandboxTool({
             scope,
@@ -953,8 +1206,12 @@ async function callLLM(
             sbDecision === "gate_profile"
               ? gatedToolMarker(call.name, call.input, "sandbox_profile")
               : sbDecision === "gate_grant"
-                ? gatedToolMarker(call.name, call.input, "requires_attempt_grant")
-              : (replayed ?? sandboxToolStub(call.name));
+                ? gatedToolMarker(
+                    call.name,
+                    call.input,
+                    "requires_attempt_grant",
+                  )
+                : (replayed ?? sandboxToolStub(call.name));
           const faultLoop = injectedFault(ctx?.event?.data, call.name); // #W3-FAULT — poisoned tool in the LLM loop
           if (faultLoop) outputData = faultResult(call.name, faultLoop.kind);
           // #W1-9 — make the sandbox decision VISIBLE in the artifact: a mocked/gated call must never
@@ -966,7 +1223,9 @@ async function callLLM(
           if (factoryDecision === "live") {
             const scope = agent?.factoryExecutionScope;
             if (!scope || scope.kind !== "sandbox" || !reviewedPolicy) {
-              throw new Error(`factory sandbox local scope is missing for tool '${call.name}'`);
+              throw new Error(
+                `factory sandbox local scope is missing for tool '${call.name}'`,
+              );
             }
             sandboxDispatch = await recordFactorySandboxLocalDispatch({
               scope,
@@ -1007,6 +1266,106 @@ async function callLLM(
         outputData = { error };
         outputBody = JSON.stringify(outputData);
       }
+      // #EFFECT-READBACK (D6) — for a call that CLAIMS an external effect, ask
+      // somebody other than the tool. Emitted for every write-capable call,
+      // including the ones nobody declared a read-back for: "not verified with
+      // a reason" is the honest record, and omitting it would let an
+      // unconfirmed write reconcile as if it had nothing to confirm.
+      const effectVerification: EffectVerificationReceipt | undefined =
+        toolClaimsEffect(callReviewedPolicy, toolUseEntry?.side_effect)
+          ? isError
+            ? unverifiedEffect("write_errored", {
+                detail: `tool '${call.name}' returned an error; there is no claimed effect to confirm`,
+              })
+            : callDispatchDecision !== undefined && callDispatchDecision !== "live"
+              ? unverifiedEffect("write_not_real", {
+                  detail: `dispatch decision '${callDispatchDecision}' — nothing was written, so nothing can be read back`,
+                })
+              : await verifyClaimedEffect({
+                  toolName: call.name,
+                  entry: toolUseEntry,
+                  useGlobalMetadata: !!globalHandler,
+                  input: call.input,
+                  output: outputData,
+                  resolveReadTool: (name) => {
+                    // Same resolution chain and same allow-list as the call
+                    // being verified — a read-back never widens the boundary.
+                    const tenantRead = tenantRegistry?.tools?.[name];
+                    const globalRead = tenantRead
+                      ? undefined
+                      : globalToolRegistry.get(name);
+                    const readEntry = agent?.tool_use?.find(
+                      (t) => (t as { name?: string })?.name === name,
+                    );
+                    let decision = "live";
+                    try {
+                      const readPolicy = reviewedExecutionPolicy(
+                        name,
+                        readEntry,
+                        !!globalRead,
+                      );
+                      const factoryRead = factorySandboxDispatchDecision(
+                        readPolicy,
+                        callCtx.tenantSlug,
+                        agent?.factoryExecutionScope,
+                      );
+                      decision =
+                        factoryRead ??
+                        (isSandboxTenant(callCtx.tenantSlug)
+                          ? toolDispatchDecision(readPolicy, sandboxToolMode(), {
+                              sandboxProfileVerified: hasVerifiedSandboxProfile(
+                                agent,
+                                name,
+                              ),
+                            })
+                          : "live");
+                    } catch {
+                      // A read tool whose policy cannot be reviewed is not a
+                      // live observation. Fail toward unverified.
+                      decision = "reject";
+                    }
+                    // #RULE-GATE — the read tool is judged by the same gate the
+                    // ordinary dispatch path would apply to it.
+                    let gateAllowed = true;
+                    try {
+                      const readGate = evaluateToolRuleGate({
+                        agent,
+                        toolName: name,
+                        scope: {
+                          event: ctx?.event,
+                          subject: ctx?.subject,
+                          lastResult: ctx?.lastResult,
+                          results: ctx?.results,
+                          locals: ctx?.locals,
+                        },
+                      });
+                      gateAllowed = readGate ? readGate.decision.allowed : true;
+                    } catch {
+                      // A malformed gate cannot be evaluated, so it cannot
+                      // authorize anything.
+                      gateAllowed = false;
+                    }
+                    return {
+                      allowed: effectiveToolAllowlist.has(name.trim()),
+                      ...(tenantRead ?? globalRead
+                        ? { handler: (tenantRead ?? globalRead)! }
+                        : {}),
+                      decision,
+                      gateAllowed,
+                    };
+                  },
+                  makeContext: (name, args) => ({
+                    ...callCtx,
+                    actionName: name,
+                    config: (
+                      agent?.tool_use?.find(
+                        (t) => (t as { name?: string })?.name === name,
+                      ) as { config?: Record<string, unknown> } | undefined
+                    )?.config,
+                    event: { name: `tool:${name}`, data: args },
+                  }),
+                })
+          : undefined;
       const toolDurationMs = Date.now() - startedAt;
       if (execution?.runId) {
         await emitTraceBestEffort(execution.trace, {
@@ -1034,6 +1393,10 @@ async function callLLM(
         isError,
         durationMs: toolDurationMs,
         ...(sandboxDispatch ? { sandboxDispatch } : {}),
+        ...(callDispatchDecision ? { sandboxDecision: callDispatchDecision } : {}),
+        ...(ruleGateRecord ? { ruleGate: ruleGateRecord } : {}),
+        ...(probeRecord ? { probe: probeRecord } : {}),
+        ...(effectVerification ? { effectVerification } : {}),
       });
 
       // #ACI (P1-8) — window the observation + make empty success EXPLICIT (silence otherwise
@@ -1080,6 +1443,12 @@ export interface LlmTurnTrace {
   promptPreview?: string | null;
   responseText: string | null;
   reasoning: string | null;
+  /** Exact provider request/response evidence; persisted in artifact files. */
+  requestMessages?: ChatMessage[];
+  requestTools?: ToolDef[];
+  responseTextFull?: string;
+  reasoningFull?: string | null;
+  responseToolCalls?: Array<{ id: string; name: string; input: unknown }>;
   toolCalls: Array<{ name: string; input: unknown }>;
   provider: string;
   model: string;
@@ -1153,10 +1522,453 @@ export interface ToolCallTrace {
   isError: boolean;
   durationMs: number;
   sandboxDispatch?: FactorySandboxDispatchReceipt;
+  /**
+   * #RUN-EVIDENCE — the dispatch decision this call actually ran under
+   * (`live` / `replay` / `gate_profile` / `gate_grant` / `mock`). Recorded
+   * explicitly rather than inferred from the presence of a factory receipt:
+   * a gated call produces no receipt at all, so absence could not distinguish
+   * "ran for real" from "was never dispatched". Undefined only when the call
+   * failed before a decision existed.
+   */
+  sandboxDecision?: string;
+  /** #RULE-GATE — the rule verdict this call was judged against. Present on
+   * every guarded call, including the ones that were allowed, so the record
+   * shows what was checked rather than only what failed. */
+  ruleGate?: ToolCallRuleGateRecord;
+  /** #DISPATCH-VERIFY — probe standing at the moment of dispatch. Present only
+   * for tools that actually require a probe. */
+  probe?: ProbeVerificationResult;
+  /** #EFFECT-READBACK — whether a declared read-back confirmed the claimed
+   * effect. Present on every write-capable call; absent means the call claimed
+   * no external effect, which is NOT the same as an unverified one. */
+  effectVerification?: EffectVerificationReceipt;
+}
+
+/** The auditable residue of one rule-gate evaluation. */
+export interface ToolCallRuleGateRecord {
+  mode: RuleGateMode;
+  allowed: boolean;
+  /** True when an enforcing gate would have refused — the whole point of
+   * `report` mode is that this stays visible. */
+  wouldRefuse: boolean;
+  applicable: string[];
+  refusals: RuleGateFinding[];
+  warnings: RuleGateFinding[];
+  scopeAxes: string[];
+  verdictSource?: string;
+  /** Where the bindings came from, so an unbound call is distinguishable from
+   * a call with no governing rules. */
+  bindingSource: "ontology" | "manifest" | "both";
 }
 
 function isPlainSchema(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+/**
+ * #RULE-GATE — the ontology's binding, looked up across a tool's whole identity.
+ *
+ * The ontology names a tool with whatever string its `actions.json` used, while
+ * the registry deliberately answers to synonyms: `parseResumeApi` and
+ * `gohire.parseResume` are back-compat aliases of `gohireParseResumeApi`, all
+ * three keys pointing at ONE descriptor. An exact-key lookup therefore loses the
+ * binding the moment a manifest is renamed to the canonical name CLAUDE.md asks
+ * new manifests to use — same handler dispatched, gate silently gone.
+ */
+function ontologyBindingsFor(agent: AgentSlots | undefined, toolName: string): string[] {
+  const bindings = agent?.ontologyRuleBindings;
+  if (!bindings) return [];
+  const direct = bindings[toolName];
+  if (direct?.length) return direct;
+  const descriptor = globalToolRegistry.get(toolName);
+  if (!descriptor) return [];
+  // Any other registry key resolving to the SAME descriptor is the same tool.
+  const merged = new Set<string>();
+  for (const [alias, candidate] of globalToolRegistry) {
+    if (candidate !== descriptor) continue;
+    for (const id of bindings[alias] ?? []) merged.add(id);
+  }
+  return [...merged];
+}
+
+/**
+ * #RULE-GATE — resolve and evaluate the rule obligations for one tool call.
+ *
+ * Returns `null` when no rule governs this call at all. Throws only when a
+ * declaration is malformed: a broken gate must not silently become "no gate".
+ */
+function evaluateToolRuleGate(args: {
+  agent: AgentSlots | undefined;
+  toolName: string;
+  /**
+   * The ACTION-level run state, not the per-call handler context. The gate is
+   * runtime infrastructure rather than a tool, so the data minimisation applied
+   * to handlers (the tool-use loop hands a tool only `lastResult`; an explicit
+   * `tool_arguments` mapping strips the carry entirely) must not blind it — the
+   * verdict it needs usually lives in `results`.
+   */
+  scope: StepScope;
+}): { decision: RuleGateDecision; record: ToolCallRuleGateRecord } | null {
+  const { agent, toolName, scope } = args;
+  const entry = agent?.tool_use?.find((t) => t?.name === toolName);
+  const rawDeclaration = (entry as { rule_gate?: unknown } | undefined)?.rule_gate;
+
+  const ontologyIds = ontologyBindingsFor(agent, toolName);
+  const hasOntologyBinding = ontologyIds.length > 0;
+  if (rawDeclaration == null && !hasOntologyBinding) return null;
+
+  // NOTE: an empty corpus is deliberately NOT an early return. A declared gate
+  // whose corpus never arrived is unresolvable, not absent, and returning "no
+  // gate" here turned a manifest `mode:"enforce"` into a silent allow in the
+  // 5 of 7 shipped model dirs that carry no rules file. `evaluateRuleGate`
+  // reports it as `corpus_unavailable` so enforce fails closed and report records.
+  const corpus = Array.isArray(agent?.ontologyRules) ? agent.ontologyRules : [];
+
+  let declaration: RuleGateDeclaration;
+  if (rawDeclaration == null) {
+    // Ontology-only binding: the ontology said which rules govern this tool but
+    // nothing declared where a verdict lives, so nothing can be discharged.
+    // Report mode makes that gap visible without breaking a live agent.
+    declaration = RuleGateDeclarationSchema.parse({
+      rules: { ids: ontologyIds },
+      verdict_from: ["results", "lastResult"],
+    });
+  } else {
+    const parsed = RuleGateDeclarationSchema.safeParse(rawDeclaration);
+    if (!parsed.success) {
+      throw new Error(
+        `rule_gate for tool '${toolName}' is malformed and cannot be enforced: ${parsed.error.issues
+          .map((i) => `${i.path.join(".")}: ${i.message}`)
+          .join("; ")}`,
+      );
+    }
+    declaration = parsed.data;
+    if (hasOntologyBinding) {
+      // The ontology's binding is authoritative and additive: a manifest may add
+      // rules to a gate, never remove the ones the ontology attached.
+      const ids = new Set([...(declaration.rules.ids ?? []), ...ontologyIds]);
+      declaration = { ...declaration, rules: { ...declaration.rules, ids: [...ids] } };
+    }
+  }
+
+  const verdict = firstVerdict(scope, declaration.verdict_from);
+  const humanBoundary = declaration.human_boundary_from
+    ? firstDefined(scope, declaration.human_boundary_from)
+    : undefined;
+
+  const decision = evaluateRuleGate({
+    declaration,
+    corpus,
+    context: {
+      client: declaration.scope?.client_from
+        ? resolveBusinessKey(declaration.scope.client_from, scope)
+        : undefined,
+      department: declaration.scope?.department_from
+        ? resolveBusinessKey(declaration.scope.department_from, scope)
+        : undefined,
+    },
+    verdict,
+    humanBoundary,
+  });
+
+  const bindingSource: ToolCallRuleGateRecord["bindingSource"] =
+    rawDeclaration == null ? "ontology" : hasOntologyBinding ? "both" : "manifest";
+
+  return {
+    decision,
+    record: {
+      mode: decision.mode,
+      allowed: decision.allowed,
+      wouldRefuse: decision.wouldRefuse,
+      applicable: decision.applicable,
+      refusals: decision.refusals,
+      warnings: decision.warnings,
+      scopeAxes: decision.scopeAxes,
+      ...(decision.verdictSource ? { verdictSource: decision.verdictSource } : {}),
+      bindingSource,
+    },
+  };
+}
+
+/**
+ * #DISPATCH-VERIFY — freshness window for a tool's live probe. Unset means no
+ * expiry is enforced, matching `evaluateProbeVerification`'s refusal to invent
+ * a policy. The cassette attestation layer uses a 7-day default, so an operator
+ * who wants the same window here sets it explicitly.
+ */
+function probeFreshnessWindowMs(): number | undefined {
+  const raw = process.env.AGENTIC_TOOL_PROBE_TTL_MS?.trim();
+  if (!raw) return undefined;
+  const parsed = Number(raw);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+/** The riskier of the two declared effect axes. `operation` and `side_effect`
+ * are separate vocabularies and either may be the one that says "this reaches
+ * out or mutates"; taking only the first defined value can silently drop the
+ * other. */
+function mostOutboundEffect(
+  operation: string | undefined,
+  declaredSideEffect: string | undefined,
+): string | undefined {
+  const RISKY = new Set(["write", "dual", "call", "read_write"]);
+  if (operation && RISKY.has(operation)) return operation;
+  if (declaredSideEffect && RISKY.has(declaredSideEffect)) return declaredSideEffect;
+  return operation ?? declaredSideEffect;
+}
+
+/**
+ * #DISPATCH-VERIFY — evaluate the probe standing of one tool about to run.
+ * Returns null when the tool needs no probe, so callers can distinguish
+ * "checked, nothing required" from "never checked".
+ */
+function verifyToolProbeAtDispatch(args: {
+  agent: AgentSlots | undefined;
+  toolName: string;
+  policy: ToolExecutionPolicy | undefined;
+  declaredSideEffect: string | undefined;
+  currentDefinitionHash?: string;
+}): ProbeVerificationResult | null {
+  const result = evaluateProbeVerification({
+    toolName: args.toolName,
+    // OR the two axes rather than `??`-ing them: a reviewed `operation` of
+    // "read" must not erase a manifest `side_effect` of "write"/"call". The
+    // riskier of the two declarations wins.
+    sideEffect: mostOutboundEffect(args.policy?.operation, args.declaredSideEffect),
+    effectScope: args.policy?.effectScope,
+    probe: args.agent?.factoryToolProbeState?.[args.toolName],
+    // NOT sourced from the probe state: comparing that hash against itself is
+    // tautological and made `probe_definition_drift` unreachable. Drift detection
+    // needs an INDEPENDENT hash of the definition being dispatched, which the
+    // runtime does not have today (bootstrap rebuilds the descriptor from the same
+    // row). Left unset rather than faked — a check that cannot fire must not look
+    // like one that passed.
+    currentDefinitionHash: args.currentDefinitionHash,
+    nowMs: Date.now(),
+    ttlMs: probeFreshnessWindowMs(),
+  });
+  return result.requiresProbe ? result : null;
+}
+
+/**
+ * #EFFECT-READBACK (D6) — is this call one that CLAIMS an external effect?
+ *
+ * Derived from the same two declared axes the probe gate uses, via the same
+ * `mostOutboundEffect` helper, so the two gates cannot disagree about what a
+ * tool does. `call` is deliberately excluded: an outbound read-only API call
+ * claims no state to read back, and minting an unverifiable receipt for it
+ * would drown the real writes in noise.
+ *
+ * An UNDECLARED tool is not write-capable here. That is not a fail-open: an
+ * undeclared tool already cannot pass `reviewedExecutionPolicy` for sandbox
+ * dispatch, and the run-level reconciliation separately reports declared write
+ * tools that produced no recorded write.
+ */
+export function toolClaimsEffect(
+  policy: ToolExecutionPolicy | undefined,
+  declaredSideEffect: string | undefined,
+): boolean {
+  const effect = mostOutboundEffect(policy?.operation, declaredSideEffect);
+  return effect === "write" || effect === "dual" || effect === "read_write";
+}
+
+/** Everything the read-back needs that only the dispatch site knows. */
+interface EffectReadbackDispatch {
+  toolName: string;
+  entry: ToolUseEntry | undefined;
+  useGlobalMetadata: boolean;
+  input: unknown;
+  output: unknown;
+  /** Allow-list membership + handler resolution for the DECLARED read tool.
+   * Supplied by the caller because the two dispatch sites resolve handlers
+   * differently, and a read-back must reuse each site's own resolution rather
+   * than inventing a third one. */
+  resolveReadTool: (name: string) => {
+    allowed: boolean;
+    handler?: ToolDescriptor;
+    /** The sandbox decision the read tool would receive. Anything other than
+     * `live` means the read-back could not observe anything real. */
+    decision: string;
+    /** #RULE-GATE — false when an ontology rule gate governs the read tool and
+     * would refuse it. A read-back must not perform a call the ordinary
+     * dispatch path would have blocked; verification cannot be a side door. */
+    gateAllowed: boolean;
+  };
+  makeContext: (name: string, args: Record<string, unknown>) => ToolContext;
+}
+
+/**
+ * Run the declared read-back for one completed write and return its verdict.
+ *
+ * Never throws: a read-back that fails is unverified evidence, and turning it
+ * into a step failure would convert a reporting mechanism into a new outage
+ * mode. Every early return names its reason.
+ */
+async function verifyClaimedEffect(
+  dispatch: EffectReadbackDispatch,
+): Promise<EffectVerificationReceipt> {
+  const resolution = resolveEffectVerificationContract({
+    manifest: dispatch.entry?.effect_verification,
+    catalog: dispatch.useGlobalMetadata
+      ? globalToolEffectVerification(dispatch.toolName)
+      : undefined,
+  });
+  if (!resolution.ok) {
+    return unverifiedEffect(resolution.reason, {
+      ...(resolution.detail ? { detail: resolution.detail } : {}),
+    });
+  }
+  const { contract, source } = resolution.resolved;
+  const base = { source, readTool: contract.readTool } as const;
+
+  const readTool = dispatch.resolveReadTool(contract.readTool);
+  if (!readTool.allowed) {
+    return unverifiedEffect("read_tool_not_allowed", {
+      ...base,
+      detail: `read-back tool '${contract.readTool}' is not in this agent's tool_use allow-list`,
+    });
+  }
+  if (!readTool.handler) {
+    return unverifiedEffect("read_tool_unresolved", {
+      ...base,
+      detail: `read-back tool '${contract.readTool}' resolved to no handler`,
+    });
+  }
+  if (!readTool.gateAllowed) {
+    return unverifiedEffect("read_tool_gate_refused", {
+      ...base,
+      detail: `an ontology rule gate refuses '${contract.readTool}'; verification must not perform a call the dispatch path would block`,
+    });
+  }
+  if (readTool.decision !== "live") {
+    return unverifiedEffect("readback_not_real", {
+      ...base,
+      detail: `read-back would have been dispatched as '${readTool.decision}'; a simulated observation is not evidence`,
+    });
+  }
+
+  const args = resolveReadbackArgs(contract, {
+    input: dispatch.input,
+    output: dispatch.output,
+  });
+  if (!args.ok) {
+    return unverifiedEffect("readback_args_unresolved", {
+      ...base,
+      detail: `read-back arguments could not be resolved from the write call: ${args.missing.join(", ")}`,
+    });
+  }
+
+  let observed: unknown;
+  try {
+    const result = await readTool.handler.handler(
+      dispatch.makeContext(contract.readTool, args.args),
+    );
+    observed = result.data;
+  } catch (error) {
+    return unverifiedEffect("readback_failed", {
+      ...base,
+      detail: `read-back tool '${contract.readTool}' threw: ${error instanceof Error ? error.message : String(error)}`,
+    });
+  }
+
+  const comparison = compareEffectReadback(contract, {
+    claim: dispatch.output,
+    observed,
+  });
+  return {
+    status: comparison.agreed ? "verified" : "disagreed",
+    ...base,
+    checks: comparison.checks,
+  };
+}
+
+/**
+ * #RULE-GATE at the ACTION boundary.
+ *
+ * Same obligation logic as the tool gate, keyed on the ACTION name. Returns null
+ * when nothing governs this action, so an unguarded action is untouched.
+ */
+function evaluateActionRuleGate(args: {
+  agent: AgentSlots | undefined;
+  actionName: string;
+  scope: StepScope;
+}): { decision: RuleGateDecision; record: ToolCallRuleGateRecord } | null {
+  const { agent, actionName, scope } = args;
+  const raw = agent?.action_rule_gate;
+  const boundIds = agent?.ontologyRuleBindings?.[actionName] ?? [];
+  if (raw == null || boundIds.length === 0) return null;
+
+  const corpus = Array.isArray(agent?.ontologyRules) ? agent.ontologyRules : [];
+  const parsed = RuleGateDeclarationSchema.safeParse({
+    ...(raw as Record<string, unknown>),
+    // Selection is server-authored: the manifest may say WHERE the verdict lives
+    // and how strict to be, never which rules govern the action.
+    rules: { ids: boundIds },
+  });
+  if (!parsed.success) {
+    throw new Error(
+      `action_rule_gate for action '${actionName}' is malformed and cannot be enforced: ${parsed.error.issues
+        .map((i) => `${i.path.join(".")}: ${i.message}`)
+        .join("; ")}`,
+    );
+  }
+  const declaration = parsed.data;
+  const decision = evaluateRuleGate({
+    declaration,
+    corpus,
+    context: {
+      client: declaration.scope?.client_from
+        ? resolveBusinessKey(declaration.scope.client_from, scope)
+        : undefined,
+      department: declaration.scope?.department_from
+        ? resolveBusinessKey(declaration.scope.department_from, scope)
+        : undefined,
+    },
+    verdict: firstVerdict(scope, declaration.verdict_from),
+    humanBoundary: declaration.human_boundary_from
+      ? firstDefined(scope, declaration.human_boundary_from)
+      : undefined,
+  });
+  return {
+    decision,
+    record: {
+      mode: decision.mode,
+      allowed: decision.allowed,
+      wouldRefuse: decision.wouldRefuse,
+      applicable: decision.applicable,
+      refusals: decision.refusals,
+      warnings: decision.warnings,
+      scopeAxes: decision.scopeAxes,
+      ...(decision.verdictSource ? { verdictSource: decision.verdictSource } : {}),
+      bindingSource: "ontology",
+    },
+  };
+}
+
+/** First declared path whose value normalizes to a real verdict./** First declared path whose value normalizes to a real verdict. Falling back
+ * through the list means a stale unrelated object cannot be mistaken for one. */
+function firstVerdict(scope: StepScope, paths: readonly string[]): unknown {
+  for (const path of paths) {
+    const candidate = readScopeValue(scope, path);
+    if (normalizeRuleVerdict(candidate)) return candidate;
+  }
+  return undefined;
+}
+
+function firstDefined(scope: StepScope, paths: readonly string[]): unknown {
+  for (const path of paths) {
+    const value = readScopeValue(scope, path);
+    if (value != null) return value;
+  }
+  return undefined;
+}
+
+/** Mirrors `resolveBusinessKey`'s convention: a bare key may name a field on
+ * the trigger event's data, a dotted path addresses the whole step scope. */
+function readScopeValue(scope: StepScope, path: string): unknown {
+  const direct = readPath(scope, path);
+  if (direct !== undefined) return direct;
+  return readPath(scope.event?.data, path);
 }
 
 function stringifyToolPayload(v: unknown): string {
@@ -1388,7 +2200,8 @@ async function runTenantPrompt(
     },
   );
   const sandboxDispatches = result.toolCalls.flatMap((call) =>
-    call.sandboxDispatch ? [call.sandboxDispatch] : []);
+    call.sandboxDispatch ? [call.sandboxDispatch] : [],
+  );
   if (result.terminalError) {
     return {
       ok: false,
@@ -1652,7 +2465,9 @@ function invokePayload(
   });
 }
 
-function failureEmitIntent(resolution: ActionFailureResolution): EmitIntent | undefined {
+function failureEmitIntent(
+  resolution: ActionFailureResolution,
+): EmitIntent | undefined {
   if (!resolution.emitEvent) return undefined;
   const fallback =
     resolution.defaultResult &&
@@ -1686,7 +2501,10 @@ function classifyNestedActionFailure(
   return classifyActionFailure({
     policy: action.on_error as RuntimeOnErrorPolicy,
     failure,
-    defaultResult: Object.prototype.hasOwnProperty.call(action, "default_result")
+    defaultResult: Object.prototype.hasOwnProperty.call(
+      action,
+      "default_result",
+    )
       ? action.default_result
       : action.on_error === "soft"
         ? null
@@ -1851,944 +2669,1349 @@ async function runActionCore(input: StepInput): Promise<StepOutput> {
   }
 
   let result: StepOutput;
+  let actionRuleGateRecord: ToolCallRuleGateRecord | undefined;
+  /**
+   * #RUN-EVIDENCE (D6) — a direct `type:"tool"` action dispatches a real tool
+   * without an LLM loop, so it never populated `meta.toolCalls` and therefore
+   * never reached the per-call evidence writer in register.ts. A run whose only
+   * external write went through this path produced a ledger of zero calls,
+   * which would make the run-level reconciliation understate the truth. The
+   * facts are collected here and projected into one `ToolCallTrace` after the
+   * switch, so every `break` path — refusal, gate, unresolved tool, live call —
+   * lands in the same record the LLM loop already produces.
+   */
+  let directToolDispatch:
+    | {
+        tool: string;
+        input: unknown;
+        startedAtMs: number;
+        decision?: string;
+        /** Whether this tool CLAIMS an external effect, per its reviewed
+         * policy / declared side-effect. Drives whether a read-back receipt is
+         * required at all. */
+        writeCapable?: boolean;
+        /** The tool's own return value, boxed so `undefined` stays
+         * distinguishable from "never captured". */
+        rawOutput?: { value: unknown };
+        probe?: ProbeVerificationResult;
+        effectVerification?: EffectVerificationReceipt;
+      }
+    | undefined;
   try {
-  switch (action.type) {
-    case "decision": {
-      if (!action.decision_table) {
+    switch (action.type) {
+      case "decision": {
+        if (!action.decision_table) {
+          result = {
+            ok: false,
+            type: "decision",
+            data: { __error: "decision_table_missing" },
+            meta: { error: "decision_table_missing" },
+          };
+          break;
+        }
+        const decision = evaluateDecisionTable(action.decision_table, {
+          input: ctx.event?.data ?? {},
+          event: ctx.event ?? {},
+          lastResult: ctx.lastResult,
+          results: ctx.results ?? {},
+        });
         result = {
-          ok: false,
+          ok: true,
           type: "decision",
-          data: { __error: "decision_table_missing" },
-          meta: { error: "decision_table_missing" },
-        };
-        break;
-      }
-      const decision = evaluateDecisionTable(action.decision_table, {
-        input: ctx.event?.data ?? {},
-        event: ctx.event ?? {},
-        lastResult: ctx.lastResult,
-        results: ctx.results ?? {},
-      });
-      result = {
-        ok: true,
-        type: "decision",
-        data: {
-          ...(decision.payload ?? {}),
-          outcome: decision.outcome,
-          decision_table: decision.tableId,
-          decision_row: decision.rowId,
-          ...(decision.emitEvent ? { _emit: decision.emitEvent } : {}),
-        },
-        meta: {
-          decisionTable: decision.tableId,
-          decisionRow: decision.rowId,
-          matched: decision.matched,
-        },
-      };
-      break;
-    }
-    case "tool": {
-      // v2 (Agent Studio) actions may carry an explicit `tool` identifier
-      // distinct from the action name; legacy manifests keep name === tool.
-      const toolName =
-        typeof action.tool === "string" && action.tool.length > 0
-          ? action.tool
-          : action.name;
-      let isV2ToolAgent = false;
-      try {
-        isV2ToolAgent =
-          agent !== undefined &&
-          normalizeAgentForExecution(agent).compatibilityMode === "v2";
-      } catch {
-        isV2ToolAgent = false;
-      }
-      const boundary = resolveActionToolBoundary(action, agent);
-      if (
-        boundary.explicit &&
-        (
-          boundary.actionAllowed.length !== 1 ||
-          boundary.actionAllowed[0] !== action.name ||
-          !boundary.effective.includes(action.name)
-        )
-      ) {
-        result = {
-          ok: false,
-          type: "tool",
           data: {
-            __error: "action_tool_not_allowed",
-            tool: action.name,
-            message: `工具 Action「${action.name}」只能调用自身，且该工具必须同时存在于 agent.tool_use。`,
+            ...(decision.payload ?? {}),
+            outcome: decision.outcome,
+            decision_table: decision.tableId,
+            decision_row: decision.rowId,
+            ...(decision.emitEvent ? { _emit: decision.emitEvent } : {}),
           },
           meta: {
-            error: "action_tool_not_allowed",
-            tool: action.name,
-            actionAllowedTools: boundary.actionAllowed,
-            agentAllowedTools: boundary.agentAllowed,
+            decisionTable: decision.tableId,
+            decisionRow: decision.rowId,
+            matched: decision.matched,
           },
         };
         break;
       }
-      const dataflowAction = action as ActionSpec & {
-        tool_arguments?: Record<string, { from: string; required?: boolean } | { const: unknown }>;
-      };
-      const materializedArguments = dataflowAction.tool_arguments
-        ? materializeToolArguments(dataflowAction.tool_arguments, {
-            event: ctx.event,
-            input: ctx.event?.data,
-            lastResult: ctx.lastResult,
-            results: ctx.results,
-            locals: ctx.locals,
-          })
-        : null;
-      if (materializedArguments && !materializedArguments.ok) {
-        result = {
-          ok: false,
-          type: "tool",
-          data: null,
-          meta: {
-            error: "tool_arguments_unresolved",
-            detail: materializedArguments.error,
-            argument: materializedArguments.argument,
-            path: materializedArguments.path,
-            tool: toolName,
-            argumentMode: "explicit",
-          },
+      case "tool": {
+        // v2 (Agent Studio) actions may carry an explicit `tool` identifier
+        // distinct from the action name; legacy manifests keep name === tool.
+        const toolName =
+          typeof action.tool === "string" && action.tool.length > 0
+            ? action.tool
+            : action.name;
+        directToolDispatch = {
+          tool: toolName,
+          input: ctx.event?.data ?? null,
+          startedAtMs: Date.now(),
         };
-        break;
-      }
-      const invocationCtx: ToolContext = materializedArguments?.ok
-        ? {
-            ...ctx,
-            event: {
-              name: ctx.event?.name ?? "generated-plan.tool",
-              data: materializedArguments.args,
+        let isV2ToolAgent = false;
+        try {
+          isV2ToolAgent =
+            agent !== undefined &&
+            normalizeAgentForExecution(agent).compatibilityMode === "v2";
+        } catch {
+          isV2ToolAgent = false;
+        }
+        const boundary = resolveActionToolBoundary(action, agent);
+        if (
+          boundary.explicit &&
+          (boundary.actionAllowed.length !== 1 ||
+            boundary.actionAllowed[0] !== action.name ||
+            !boundary.effective.includes(action.name))
+        ) {
+          result = {
+            ok: false,
+            type: "tool",
+            data: {
+              __error: "action_tool_not_allowed",
+              tool: action.name,
+              message: `工具 Action「${action.name}」只能调用自身，且该工具必须同时存在于 agent.tool_use。`,
             },
-            // An explicit mapping is also a capability/data-minimisation
-            // boundary. The handler receives the selected arguments, not a
-            // second implicit route to the entire preceding carry.
-            lastResult: undefined,
-            results: undefined,
-            locals: undefined,
-          }
-        : ctx;
-      // Resolve the handler and its reviewed side-effect metadata before the
-      // sandbox boundary. Policy is based on metadata, never on the tool name.
-      const tenantTool = tenantRegistry?.tools?.[toolName];
-      const globalTool = !tenantTool
-        ? globalToolRegistry.get(toolName)
-        : undefined;
-      const toolUseEntry = agent?.tool_use?.find(
-        (entry) => entry.name === toolName,
-      );
-      // v2 contract: `tool_use[]` is the execution trust boundary for direct
-      // actions just as it is for model-requested calls. A registered tool is
-      // never implicitly callable merely because an action knows its name.
-      if (isV2ToolAgent && !toolUseEntry) {
-        result = {
-          ok: false,
-          type: "tool",
-          data: null,
-          meta: {
-            error: "tool_not_allowed",
-            tool: toolName,
-            message: `Tool '${toolName}' is not present in this agent's tool_use allow-list`,
-          },
+            meta: {
+              error: "action_tool_not_allowed",
+              tool: action.name,
+              actionAllowedTools: boundary.actionAllowed,
+              agentAllowedTools: boundary.agentAllowed,
+            },
+          };
+          break;
+        }
+        const dataflowAction = action as ActionSpec & {
+          tool_arguments?: Record<
+            string,
+            { from: string; required?: boolean } | { const: unknown }
+          >;
         };
-        break;
-      }
-      // v2 contract: a declared input schema is enforced on the exact
-      // dispatched arguments before the handler runs.
-      if (isV2ToolAgent && isPlainSchema(toolUseEntry?.input_schema)) {
-        const schemaIssues = validateValueAgainstJsonSchema(
-          toolUseEntry.input_schema,
-          (invocationCtx.event?.data ?? {}) as Record<string, unknown>,
-          "/tool/input",
-          "tool_input_schema",
-        );
-        if (schemaIssues.length > 0) {
+        const materializedArguments = dataflowAction.tool_arguments
+          ? materializeToolArguments(dataflowAction.tool_arguments, {
+              event: ctx.event,
+              input: ctx.event?.data,
+              lastResult: ctx.lastResult,
+              results: ctx.results,
+              locals: ctx.locals,
+            })
+          : null;
+        if (materializedArguments && !materializedArguments.ok) {
           result = {
             ok: false,
             type: "tool",
             data: null,
             meta: {
-              error: "tool_input_schema_invalid",
+              error: "tool_arguments_unresolved",
+              detail: materializedArguments.error,
+              argument: materializedArguments.argument,
+              path: materializedArguments.path,
               tool: toolName,
-              validationIssues: schemaIssues,
+              argumentMode: "explicit",
             },
           };
           break;
         }
-      }
-      // Generated plans share the exact same immutable capability boundary as
-      // CodeAct and the LLM tool loop. Hand-written agents retain their
-      // historical tenant/global resolution behaviour.
-      if (
-        agent?.generated &&
-        !(agent.tool_use ?? []).some((entry) => entry.name === toolName)
-      ) {
-        result = {
-          ok: false,
-          type: "tool",
-          data: {
-            __error: "generated_tool_not_declared",
-            tool: toolName,
-            message: `生成 Agent「${agent.name ?? ctx.agentName}」的计划请求了未在不可变 agent.tool_use 中声明的工具「${toolName}」；已拒绝执行。`,
-          },
-          meta: {
-            error: "generated_tool_not_declared",
-            tool: toolName,
-            declaredTools: (agent.tool_use ?? []).map((entry) => entry.name),
-          },
-        };
-        break;
-      }
-      const reviewedPolicy = reviewedExecutionPolicy(
-        toolName,
-        toolUseEntry,
-        !!globalTool,
-      );
-      const factoryDecision = factorySandboxDispatchDecision(
-        reviewedPolicy,
-        ctx.tenantSlug,
-        agent?.factoryExecutionScope,
-      );
-      let sandboxLocalDispatch: FactorySandboxDispatchReceipt | undefined;
-      // T3 — sandbox interception: in the isolated `-sb` tenant, a Phase-1 `type:"tool"` step calls
-      // the real handler directly (no LLM in the loop), so without this it would hit RoboHire/etc.
-      // for real. Tests may use mock/replay; production accepts gated/live only.
-      if (isSandboxTenant(ctx.tenantSlug)) {
-        // #W3-FAULT — an injected fault (from a kind:"fault" test case's __fault payload marker) beats
-        // every dispatch mode: return a failing result so the step's onError policy is EXERCISED.
-        const fault = injectedFault(ctx.event?.data, toolName);
-        if (fault) {
+        const invocationCtx: ToolContext = materializedArguments?.ok
+          ? {
+              ...ctx,
+              event: {
+                name: ctx.event?.name ?? "generated-plan.tool",
+                data: materializedArguments.args,
+              },
+              // An explicit mapping is also a capability/data-minimisation
+              // boundary. The handler receives the selected arguments, not a
+              // second implicit route to the entire preceding carry.
+              lastResult: undefined,
+              results: undefined,
+              locals: undefined,
+            }
+          : ctx;
+        // Record the arguments the handler will actually receive, not the raw
+        // trigger payload: an explicit `tool_arguments` mapping is the real
+        // dispatched input and is what a read-back must be built from.
+        directToolDispatch.input = invocationCtx.event?.data ?? null;
+        // Resolve the handler and its reviewed side-effect metadata before the
+        // sandbox boundary. Policy is based on metadata, never on the tool name.
+        const tenantTool = tenantRegistry?.tools?.[toolName];
+        const globalTool = !tenantTool
+          ? globalToolRegistry.get(toolName)
+          : undefined;
+        const toolUseEntry = agent?.tool_use?.find(
+          (entry) => entry.name === toolName,
+        );
+        // v2 contract: `tool_use[]` is the execution trust boundary for direct
+        // actions just as it is for model-requested calls. A registered tool is
+        // never implicitly callable merely because an action knows its name.
+        if (isV2ToolAgent && !toolUseEntry) {
           result = {
             ok: false,
             type: "tool",
-            data: faultResult(toolName, fault.kind),
+            data: null,
             meta: {
+              error: "tool_not_allowed",
               tool: toolName,
-              sandbox: true,
-              injectedFault: fault.kind,
+              message: `Tool '${toolName}' is not present in this agent's tool_use allow-list`,
             },
           };
           break;
         }
-        const mode = factoryDecision === null ? sandboxToolMode() : "evidence_replay";
-        const decision = factoryDecision ?? toolDispatchDecision(
-          reviewedPolicy,
-          sandboxToolMode(),
-          { sandboxProfileVerified: hasVerifiedSandboxProfile(agent, toolName) },
-        );
-        if (decision === "reject") {
+        // v2 contract: a declared input schema is enforced on the exact
+        // dispatched arguments before the handler runs.
+        if (isV2ToolAgent && isPlainSchema(toolUseEntry?.input_schema)) {
+          const schemaIssues = validateValueAgainstJsonSchema(
+            toolUseEntry.input_schema,
+            (invocationCtx.event?.data ?? {}) as Record<string, unknown>,
+            "/tool/input",
+            "tool_input_schema",
+          );
+          if (schemaIssues.length > 0) {
+            result = {
+              ok: false,
+              type: "tool",
+              data: null,
+              meta: {
+                error: "tool_input_schema_invalid",
+                tool: toolName,
+                validationIssues: schemaIssues,
+              },
+            };
+            break;
+          }
+        }
+        // Generated plans share the exact same immutable capability boundary as
+        // CodeAct and the LLM tool loop. Hand-written agents retain their
+        // historical tenant/global resolution behaviour.
+        if (
+          agent?.generated &&
+          !(agent.tool_use ?? []).some((entry) => entry.name === toolName)
+        ) {
           result = {
             ok: false,
             type: "tool",
             data: {
-              __error: `tool '${toolName}' is missing valid reviewed execution_policy metadata`,
+              __error: "generated_tool_not_declared",
+              tool: toolName,
+              message: `生成 Agent「${agent.name ?? ctx.agentName}」的计划请求了未在不可变 agent.tool_use 中声明的工具「${toolName}」；已拒绝执行。`,
             },
             meta: {
+              error: "generated_tool_not_declared",
               tool: toolName,
-              sandbox: true,
-              toolMode: mode,
-              decision,
+              declaredTools: (agent.tool_use ?? []).map((entry) => entry.name),
             },
           };
           break;
         }
-        if (factoryDecision === "replay") {
-          const scope = agent?.factoryExecutionScope;
-          const args = (invocationCtx.event?.data ?? {}) as Record<string, unknown>;
-          if (!scope || scope.kind !== "sandbox" || !reviewedPolicy) {
+        // #RULE-GATE — the same precondition the LLM tool-use loop enforces.
+        // Without it, a plan could reach a guarded write by declaring it as a
+        // direct `type:"tool"` action instead of letting the model request it.
+        // #ARG-CONTRACT (D3) — the tool's own contract applies here too. Live
+        // manifest agents are almost entirely `type:"tool"` actions, so a check
+        // wired only into the LLM loop would miss the real production path.
+        if (!isPlainSchema(toolUseEntry?.input_schema)) {
+          const resolvedForArgs = tenantTool ?? globalTool;
+          const argIssues = validateSuppliedArgTypes(
+            isPlainSchema(resolvedForArgs?.inputSchema)
+              ? resolvedForArgs.inputSchema
+              : undefined,
+            invocationCtx.event?.data,
+          );
+          if (argIssues.length > 0) {
             result = {
               ok: false,
               type: "tool",
-              data: { __error: `factory sandbox replay scope is missing for tool '${toolName}'` },
-              meta: { tool: toolName, sandbox: true, toolMode: mode, decision: "reject" },
+              data: null,
+              meta: {
+                error: "tool_arguments_invalid",
+                tool: toolName,
+                validationIssues: argIssues,
+              },
             };
             break;
           }
-          try {
-            const replayed = await replayFactorySandboxTool({
-              scope,
-              tenantSlug: ctx.tenantSlug!,
-              toolName: toolName,
-              toolArgs: args,
-              policy: reviewedPolicy,
-              replayRef: agent.factoryToolReplayRefs?.[toolName],
-            });
-            result = {
-              ok: true,
-              type: "tool",
-              data: replayed.body,
-              meta: {
-                tool: toolName,
-                sandbox: true,
-                toolMode: mode,
-                decision: "replay",
-                replayed: true,
-                sandboxDispatches: [replayed.receipt],
-              },
-            };
-          } catch (error) {
-            result = {
-              ok: false,
-              type: "tool",
-              data: { __error: String((error as Error)?.message ?? error) },
-              meta: {
-                tool: toolName,
-                sandbox: true,
-                toolMode: mode,
-                decision: "replay",
-                replayed: false,
-              },
-            };
+        }
+        {
+          // Deliberately the action-level `ctx`, not `invocationCtx`: an
+          // explicit `tool_arguments` mapping nulls the carry for the handler as
+          // a capability boundary, but the gate must still see the run's state.
+          const gate = evaluateToolRuleGate({
+            agent,
+            toolName,
+            scope: {
+              event: ctx.event,
+              subject: ctx.subject,
+              lastResult: ctx.lastResult,
+              results: ctx.results,
+              locals: ctx.locals,
+            },
+          });
+          if (gate) {
+            actionRuleGateRecord = gate.record;
+            if (!gate.decision.allowed) {
+              result = {
+                ok: false,
+                type: "tool",
+                data: null,
+                meta: {
+                  error: "rule_gate_refused",
+                  tool: toolName,
+                  message: gate.decision.steer,
+                  ruleGate: gate.record,
+                },
+              };
+              break;
+            }
           }
+        }
+        const reviewedPolicy = reviewedExecutionPolicy(
+          toolName,
+          toolUseEntry,
+          !!globalTool,
+        );
+        // #DISPATCH-VERIFY (D8) — probe standing applies to this path too.
+        const actionProbe = verifyToolProbeAtDispatch({
+          agent,
+          toolName,
+          policy: reviewedPolicy,
+          declaredSideEffect: toolUseEntry?.side_effect,
+        });
+        if (actionProbe) directToolDispatch.probe = actionProbe;
+        directToolDispatch.writeCapable = toolClaimsEffect(
+          reviewedPolicy,
+          toolUseEntry?.side_effect,
+        );
+        if (
+          actionProbe &&
+          !actionProbe.verified &&
+          !actionProbe.deferrable &&
+          probeVerificationPolicyFromEnv(process.env) === "refuse"
+        ) {
+          result = {
+            ok: false,
+            type: "tool",
+            data: null,
+            meta: {
+              error: "probe_verification_failed",
+              tool: toolName,
+              probe: actionProbe,
+            },
+          };
           break;
         }
-        if (factoryDecision === "live") {
-          const scope = agent?.factoryExecutionScope;
-          if (!scope || scope.kind !== "sandbox" || !reviewedPolicy) {
+        const factoryDecision = factorySandboxDispatchDecision(
+          reviewedPolicy,
+          ctx.tenantSlug,
+          agent?.factoryExecutionScope,
+        );
+        let sandboxLocalDispatch: FactorySandboxDispatchReceipt | undefined;
+        // Ordinary production dispatch is `live`; the sandbox branch below
+        // replaces this with the decision it actually took. Recorded either
+        // way so the ledger never has to infer realness from silence.
+        directToolDispatch.decision = factoryDecision ?? "live";
+        // T3 — sandbox interception: in the isolated `-sb` tenant, a Phase-1 `type:"tool"` step calls
+        // the real handler directly (no LLM in the loop), so without this it would hit RoboHire/etc.
+        // for real. Tests may use mock/replay; production accepts gated/live only.
+        if (isSandboxTenant(ctx.tenantSlug)) {
+          // #W3-FAULT — an injected fault (from a kind:"fault" test case's __fault payload marker) beats
+          // every dispatch mode: return a failing result so the step's onError policy is EXERCISED.
+          const fault = injectedFault(ctx.event?.data, toolName);
+          if (fault) {
             result = {
               ok: false,
               type: "tool",
-              data: { __error: `factory sandbox local scope is missing for tool '${toolName}'` },
-              meta: { tool: toolName, sandbox: true, toolMode: mode, decision: "reject" },
+              data: faultResult(toolName, fault.kind),
+              meta: {
+                tool: toolName,
+                sandbox: true,
+                injectedFault: fault.kind,
+              },
             };
             break;
           }
-          sandboxLocalDispatch = await recordFactorySandboxLocalDispatch({
-            scope,
-            tenantSlug: ctx.tenantSlug!,
-            toolName: toolName,
-            toolArgs: invocationCtx.event?.data ?? {},
-            policy: reviewedPolicy,
-          });
-        }
-        if (decision !== "live") {
-          const args = (invocationCtx.event?.data ?? {}) as Record<string, unknown>;
-          const replayed =
-            decision === "replay"
-              ? await cassetteLookup(ctx.tenantSlug!, toolName, args)
-              : undefined;
-          if (decision === "replay" && replayed === undefined) {
+          const mode =
+            factoryDecision === null ? sandboxToolMode() : "evidence_replay";
+          const decision =
+            factoryDecision ??
+            toolDispatchDecision(reviewedPolicy, sandboxToolMode(), {
+              sandboxProfileVerified: hasVerifiedSandboxProfile(
+                agent,
+                toolName,
+              ),
+            });
+          directToolDispatch.decision = decision;
+          if (decision === "reject") {
             result = {
               ok: false,
               type: "tool",
               data: {
-                __error: `No replay cassette exists for tool '${toolName}'`,
+                __error: `tool '${toolName}' is missing valid reviewed execution_policy metadata`,
               },
               meta: {
                 tool: toolName,
                 sandbox: true,
                 toolMode: mode,
                 decision,
-                replayed: false,
               },
             };
             break;
           }
+          if (factoryDecision === "replay") {
+            const scope = agent?.factoryExecutionScope;
+            const args = (invocationCtx.event?.data ?? {}) as Record<
+              string,
+              unknown
+            >;
+            if (!scope || scope.kind !== "sandbox" || !reviewedPolicy) {
+              result = {
+                ok: false,
+                type: "tool",
+                data: {
+                  __error: `factory sandbox replay scope is missing for tool '${toolName}'`,
+                },
+                meta: {
+                  tool: toolName,
+                  sandbox: true,
+                  toolMode: mode,
+                  decision: "reject",
+                },
+              };
+              break;
+            }
+            try {
+              const replayed = await replayFactorySandboxTool({
+                scope,
+                tenantSlug: ctx.tenantSlug!,
+                toolName: toolName,
+                toolArgs: args,
+                policy: reviewedPolicy,
+                replayRef: agent.factoryToolReplayRefs?.[toolName],
+              });
+              result = {
+                ok: true,
+                type: "tool",
+                data: replayed.body,
+                meta: {
+                  tool: toolName,
+                  sandbox: true,
+                  toolMode: mode,
+                  decision: "replay",
+                  replayed: true,
+                  sandboxDispatches: [replayed.receipt],
+                },
+              };
+            } catch (error) {
+              result = {
+                ok: false,
+                type: "tool",
+                data: { __error: String((error as Error)?.message ?? error) },
+                meta: {
+                  tool: toolName,
+                  sandbox: true,
+                  toolMode: mode,
+                  decision: "replay",
+                  replayed: false,
+                },
+              };
+            }
+            break;
+          }
+          if (factoryDecision === "live") {
+            const scope = agent?.factoryExecutionScope;
+            if (!scope || scope.kind !== "sandbox" || !reviewedPolicy) {
+              result = {
+                ok: false,
+                type: "tool",
+                data: {
+                  __error: `factory sandbox local scope is missing for tool '${toolName}'`,
+                },
+                meta: {
+                  tool: toolName,
+                  sandbox: true,
+                  toolMode: mode,
+                  decision: "reject",
+                },
+              };
+              break;
+            }
+            sandboxLocalDispatch = await recordFactorySandboxLocalDispatch({
+              scope,
+              tenantSlug: ctx.tenantSlug!,
+              toolName: toolName,
+              toolArgs: invocationCtx.event?.data ?? {},
+              policy: reviewedPolicy,
+            });
+          }
+          if (decision !== "live") {
+            const args = (invocationCtx.event?.data ?? {}) as Record<
+              string,
+              unknown
+            >;
+            const replayed =
+              decision === "replay"
+                ? await cassetteLookup(ctx.tenantSlug!, toolName, args)
+                : undefined;
+            if (decision === "replay" && replayed === undefined) {
+              result = {
+                ok: false,
+                type: "tool",
+                data: {
+                  __error: `No replay cassette exists for tool '${toolName}'`,
+                },
+                meta: {
+                  tool: toolName,
+                  sandbox: true,
+                  toolMode: mode,
+                  decision,
+                  replayed: false,
+                },
+              };
+              break;
+            }
+            result = {
+              ok: true,
+              type: "tool",
+              data:
+                decision === "gate_profile"
+                  ? gatedToolMarker(toolName, args, "sandbox_profile")
+                  : decision === "gate_grant"
+                    ? gatedToolMarker(toolName, args, "requires_attempt_grant")
+                    : (replayed ?? sandboxToolStub(toolName)),
+              meta: {
+                tool: toolName,
+                sandbox: true,
+                toolMode: mode,
+                decision,
+                replayed: replayed !== undefined,
+              },
+            };
+            break;
+          }
+        }
+        // Same resolution chain as the LLM tool-use loop: tenant override
+        // → global registry. An unresolved name fails closed; there is no
+        // name-guessing or synthetic success path.
+        if (tenantTool || globalTool) {
+          // Look up matching tool_use[] entry by action name so per-tenant
+          // config flows the same way it does in the LLM tool-use loop.
+          // tenant-test1's writeWorkflowLog (a `type: "tool"` action with
+          // no LLM loop) relies on this path to receive its subdir/filename
+          // binding from the manifest.
+          const toolConfig =
+            toolUseEntry && typeof toolUseEntry === "object"
+              ? ((toolUseEntry as { config?: Record<string, unknown> })
+                  .config ?? undefined)
+              : undefined;
+          const enrichedCtx: ToolContext = toolConfig
+            ? { ...invocationCtx, config: toolConfig }
+            : invocationCtx;
+          result = await runTenantTool(
+            enrichedCtx,
+            (tenantTool ?? globalTool)!,
+          );
+          // #EFFECT-READBACK (D6) — the direct tool path reaches real external
+          // writes without any model in the loop, so it needs the same
+          // confirmation the LLM loop now performs.
+          if (directToolDispatch.writeCapable) {
+            directToolDispatch.effectVerification = !result.ok
+              ? unverifiedEffect("write_errored", {
+                  detail: `tool '${toolName}' returned ok=false; there is no claimed effect to confirm`,
+                })
+              : directToolDispatch.decision !== undefined
+                  && directToolDispatch.decision !== "live"
+                ? unverifiedEffect("write_not_real", {
+                    detail: `dispatch decision '${directToolDispatch.decision}' — nothing was written, so nothing can be read back`,
+                  })
+                : await verifyClaimedEffect({
+                    toolName,
+                    entry: toolUseEntry,
+                    useGlobalMetadata: !!globalTool,
+                    input: directToolDispatch.input,
+                    output: result.data,
+                    resolveReadTool: (name) => {
+                      const tenantRead = tenantRegistry?.tools?.[name];
+                      const globalRead = tenantRead
+                        ? undefined
+                        : globalToolRegistry.get(name);
+                      const readEntry = agent?.tool_use?.find(
+                        (entry) => entry.name === name,
+                      );
+                      // `tool_use[]` is the trust boundary on this path too:
+                      // an action may only reach a tool the agent declared.
+                      const allowed =
+                        agent?.tool_use === undefined
+                          ? true
+                          : agent.tool_use.some((entry) => entry.name === name);
+                      let decision = "live";
+                      try {
+                        const readPolicy = reviewedExecutionPolicy(
+                          name,
+                          readEntry,
+                          !!globalRead,
+                        );
+                        const factoryRead = factorySandboxDispatchDecision(
+                          readPolicy,
+                          ctx.tenantSlug,
+                          agent?.factoryExecutionScope,
+                        );
+                        decision =
+                          factoryRead ??
+                          (isSandboxTenant(ctx.tenantSlug)
+                            ? toolDispatchDecision(readPolicy, sandboxToolMode(), {
+                                sandboxProfileVerified:
+                                  hasVerifiedSandboxProfile(agent, name),
+                              })
+                            : "live");
+                      } catch {
+                        decision = "reject";
+                      }
+                      let gateAllowed = true;
+                      try {
+                        const readGate = evaluateToolRuleGate({
+                          agent,
+                          toolName: name,
+                          scope: {
+                            event: ctx.event,
+                            subject: ctx.subject,
+                            lastResult: ctx.lastResult,
+                            results: ctx.results,
+                            locals: ctx.locals,
+                          },
+                        });
+                        gateAllowed = readGate
+                          ? readGate.decision.allowed
+                          : true;
+                      } catch {
+                        gateAllowed = false;
+                      }
+                      return {
+                        allowed,
+                        ...(tenantRead ?? globalRead
+                          ? { handler: (tenantRead ?? globalRead)! }
+                          : {}),
+                        decision,
+                        gateAllowed,
+                      };
+                    },
+                    makeContext: (name, args) => ({
+                      ...invocationCtx,
+                      actionName: name,
+                      config: (
+                        agent?.tool_use?.find((entry) => entry.name === name) as
+                          | { config?: Record<string, unknown> }
+                          | undefined
+                      )?.config,
+                      event: { name: `tool:${name}`, data: args },
+                    }),
+                  });
+          }
+          if (sandboxLocalDispatch) {
+            result.meta = {
+              ...result.meta,
+              sandbox: true,
+              toolMode: "evidence_replay",
+              decision: "live",
+              sandboxDispatches: [sandboxLocalDispatch],
+            };
+          }
+        } else {
           result = {
-            ok: true,
+            ok: false,
             type: "tool",
-            data:
-              decision === "gate_profile"
-                ? gatedToolMarker(toolName, args, "sandbox_profile")
-                : decision === "gate_grant"
-                  ? gatedToolMarker(toolName, args, "requires_attempt_grant")
-                : (replayed ?? sandboxToolStub(toolName)),
+            data: {
+              __error: `工具「${toolName}」未注册（tenant/global 都没有）——生产不使用假桩兜底。请为该动作绑定真实工具或补进工具库。`,
+            },
             meta: {
               tool: toolName,
-              sandbox: true,
-              toolMode: mode,
-              decision,
-              replayed: replayed !== undefined,
+              unresolved: true,
+              error: "tool_not_registered",
             },
           };
-          break;
         }
+        break;
       }
-      // Same resolution chain as the LLM tool-use loop: tenant override
-      // → global registry. An unresolved name fails closed; there is no
-      // name-guessing or synthetic success path.
-      if (tenantTool || globalTool) {
-        // Look up matching tool_use[] entry by action name so per-tenant
-        // config flows the same way it does in the LLM tool-use loop.
-        // tenant-test1's writeWorkflowLog (a `type: "tool"` action with
-        // no LLM loop) relies on this path to receive its subdir/filename
-        // binding from the manifest.
-        const toolConfig =
-          toolUseEntry && typeof toolUseEntry === "object"
-            ? ((toolUseEntry as { config?: Record<string, unknown> }).config ??
-              undefined)
-            : undefined;
-        const enrichedCtx: ToolContext = toolConfig
-          ? { ...invocationCtx, config: toolConfig }
-          : invocationCtx;
-        result = await runTenantTool(enrichedCtx, (tenantTool ?? globalTool)!);
-        if (sandboxLocalDispatch) {
-          result.meta = {
-            ...result.meta,
-            sandbox: true,
-            toolMode: "evidence_replay",
-            decision: "live",
-            sandboxDispatches: [sandboxLocalDispatch],
-          };
-        }
-      } else {
-        result = {
-          ok: false,
-          type: "tool",
-          data: {
-            __error: `工具「${toolName}」未注册（tenant/global 都没有）——生产不使用假桩兜底。请为该动作绑定真实工具或补进工具库。`,
-          },
-          meta: { tool: toolName, unresolved: true, error: "tool_not_registered" },
-        };
-      }
-      break;
-    }
-    case "logic": {
-      const tenantPrompt = tenantRegistry?.prompts?.[action.name];
-      // A codeExecuted claim is authoritative: execute the exact bytes in the
-      // worker isolate or fail this step. There is no declarative/LLM fallback.
-      // Sandbox tenants use their attempt-scoped gate. Production requires an
-      // opaque capability minted from durable promotion evidence; manifest
-      // allow/hash fields are descriptive and are never execution authority.
-      if (agent?.generated && agent.codeExecuted) {
-        if (!agent.typescriptCode) {
-          const codeExecutionReceipt = makeCodeActExecutionReceipt({
-            codeExecuted: false,
-            codeRan: false,
-            isolation: null,
-            codeSha256: null,
-            attestation: "not_checked",
-            durationMs: 0,
-            failure: "empty_code",
+      case "logic": {
+        // #RULE-GATE — obligations that govern this whole action, checked before
+        // any model turn. Rules the ontology attached to a `logic` step are not
+        // about one outbound call, so the tool boundary cannot speak for them.
+        {
+          const actionGate = evaluateActionRuleGate({
+            agent,
+            actionName: action.name,
+            scope: {
+              event: ctx.event,
+              subject: ctx.subject,
+              lastResult: ctx.lastResult,
+              results: ctx.results,
+              locals: ctx.locals,
+            },
           });
-          result = {
-            ok: false,
-            type: "logic",
-            data: null,
-            meta: {
-              error: "generated_code_missing",
+          if (actionGate && !actionGate.decision.allowed) {
+            result = {
+              ok: false,
+              type: "logic",
+              data: null,
+              meta: {
+                error: "rule_gate_refused",
+                action: action.name,
+                message: actionGate.decision.steer,
+                ruleGate: actionGate.record,
+              },
+            };
+            break;
+          }
+        }
+        const tenantPrompt = tenantRegistry?.prompts?.[action.name];
+        // A codeExecuted claim is authoritative: execute the exact bytes in the
+        // worker isolate or fail this step. There is no declarative/LLM fallback.
+        // Sandbox tenants use their attempt-scoped gate. Production requires an
+        // opaque capability minted from durable promotion evidence; manifest
+        // allow/hash fields are descriptive and are never execution authority.
+        if (agent?.generated && agent.codeExecuted) {
+          if (!agent.typescriptCode) {
+            const codeExecutionReceipt = makeCodeActExecutionReceipt({
               codeExecuted: false,
+              codeRan: false,
               isolation: null,
-              codeAttestation: "not_checked",
-              codeExecutionReceipt,
-            },
-          };
-          break;
-        }
+              codeSha256: null,
+              attestation: "not_checked",
+              durationMs: 0,
+              failure: "empty_code",
+            });
+            result = {
+              ok: false,
+              type: "logic",
+              data: null,
+              meta: {
+                error: "generated_code_missing",
+                codeExecuted: false,
+                isolation: null,
+                codeAttestation: "not_checked",
+                codeExecutionReceipt,
+              },
+            };
+            break;
+          }
 
-        const codeSha256 = createHash("sha256")
-          .update(agent.typescriptCode, "utf8")
-          .digest("hex");
-        const sandboxCodeAct = isSandboxTenant(ctx.tenantSlug);
-        const productionClaims =
-          !sandboxCodeAct &&
-          ctx.tenantId &&
-          agent.id &&
-          agent.factoryDomainId &&
-          agent.factoryPromotionVersionId &&
-          agent.factoryRegressionSuiteFingerprint
-          && agent.productionCodeActManifestSha256
-          && agent.productionCodeActWorkflowManifestSha256
-            ? await revalidateProductionCodeActCapability(
-                agent.productionCodeActCapability,
-                {
-                  executionKind: "codeact",
-                  tenantId: ctx.tenantId,
-                  tenantSlug: ctx.tenantSlug,
-                  domainId: agent.factoryDomainId,
-                  agentSlug: agent.id,
-                  promotionVersionId: agent.factoryPromotionVersionId,
-                  regressionSuiteFingerprint:
-                    agent.factoryRegressionSuiteFingerprint,
-                  codeSha256,
-                  agentManifestSha256:
-                    agent.productionCodeActManifestSha256,
-                  workflowManifestSha256:
-                    agent.productionCodeActWorkflowManifestSha256,
-                },
-              )
-            : null;
-        if (!sandboxCodeAct && !productionClaims) {
-          const codeExecutionReceipt = makeCodeActExecutionReceipt({
-            codeExecuted: false,
-            codeRan: false,
-            isolation: null,
-            codeSha256,
-            attestation: "not_authorized",
-            durationMs: 0,
-            failure: "production_not_authorized",
-          });
-          result = {
-            ok: false,
-            type: "logic",
-            data: null,
-            meta: {
-              // Preserve the historical top-level code for callers while the
-              // structured receipt carries the precise durable denial.
-              error: "generated_code_requires_sandbox",
-              denialReason: "durable_production_authorization_missing",
+          const codeSha256 = createHash("sha256")
+            .update(agent.typescriptCode, "utf8")
+            .digest("hex");
+          const sandboxCodeAct = isSandboxTenant(ctx.tenantSlug);
+          const productionClaims =
+            !sandboxCodeAct &&
+            ctx.tenantId &&
+            agent.id &&
+            agent.factoryDomainId &&
+            agent.factoryPromotionVersionId &&
+            agent.factoryRegressionSuiteFingerprint &&
+            agent.productionCodeActManifestSha256 &&
+            agent.productionCodeActWorkflowManifestSha256
+              ? await revalidateProductionCodeActCapability(
+                  agent.productionCodeActCapability,
+                  {
+                    executionKind: "codeact",
+                    tenantId: ctx.tenantId,
+                    tenantSlug: ctx.tenantSlug,
+                    domainId: agent.factoryDomainId,
+                    agentSlug: agent.id,
+                    promotionVersionId: agent.factoryPromotionVersionId,
+                    regressionSuiteFingerprint:
+                      agent.factoryRegressionSuiteFingerprint,
+                    codeSha256,
+                    agentManifestSha256: agent.productionCodeActManifestSha256,
+                    workflowManifestSha256:
+                      agent.productionCodeActWorkflowManifestSha256,
+                  },
+                )
+              : null;
+          if (!sandboxCodeAct && !productionClaims) {
+            const codeExecutionReceipt = makeCodeActExecutionReceipt({
               codeExecuted: false,
+              codeRan: false,
               isolation: null,
               codeSha256,
-              codeAttestation: "not_authorized",
-              tenantSlug: ctx.tenantSlug,
-              codeExecutionReceipt,
-            },
-          };
-          break;
-        }
+              attestation: "not_authorized",
+              durationMs: 0,
+              failure: "production_not_authorized",
+            });
+            result = {
+              ok: false,
+              type: "logic",
+              data: null,
+              meta: {
+                // Preserve the historical top-level code for callers while the
+                // structured receipt carries the precise durable denial.
+                error: "generated_code_requires_sandbox",
+                denialReason: "durable_production_authorization_missing",
+                codeExecuted: false,
+                isolation: null,
+                codeSha256,
+                codeAttestation: "not_authorized",
+                tenantSlug: ctx.tenantSlug,
+                codeExecutionReceipt,
+              },
+            };
+            break;
+          }
 
-        const codeToolBoundary = resolveActionToolBoundary(action, agent);
-        const declaredCodeTools = codeToolBoundary.effective;
-        const declaredCodeToolSet = new Set(declaredCodeTools);
-        const unresolvedCodeTools = declaredCodeTools.filter(
-          (name) =>
-            !tenantRegistry?.tools?.[name] && !globalToolRegistry.get(name),
-        );
-        if (unresolvedCodeTools.length) {
-          const codeExecutionReceipt = makeCodeActExecutionReceipt({
-            codeExecuted: false,
-            codeRan: false,
-            isolation: null,
-            codeSha256: null,
-            attestation: "not_checked",
-            durationMs: 0,
-            failure: "generated_tool_configuration_missing",
-          });
+          const codeToolBoundary = resolveActionToolBoundary(action, agent);
+          const declaredCodeTools = codeToolBoundary.effective;
+          const declaredCodeToolSet = new Set(declaredCodeTools);
+          const unresolvedCodeTools = declaredCodeTools.filter(
+            (name) =>
+              !tenantRegistry?.tools?.[name] && !globalToolRegistry.get(name),
+          );
+          if (unresolvedCodeTools.length) {
+            const codeExecutionReceipt = makeCodeActExecutionReceipt({
+              codeExecuted: false,
+              codeRan: false,
+              isolation: null,
+              codeSha256: null,
+              attestation: "not_checked",
+              durationMs: 0,
+              failure: "generated_tool_configuration_missing",
+            });
+            result = {
+              ok: false,
+              type: "logic",
+              data: null,
+              meta: {
+                error: "generated_tool_configuration_missing",
+                codeExecuted: false,
+                missingTools: unresolvedCodeTools,
+                message: `生成 Agent「${agent.name ?? ctx.agentName}」声明的工具尚未注册/配置：${unresolvedCodeTools.join("、")}；代码未启动。`,
+                codeExecutionReceipt,
+              },
+            };
+            break;
+          }
+
+          const configuredHost = input.generatedCodeHostRuntime;
+          // #RULE-GATE — generated code is the THIRD way to reach a handler, and
+          // the capability set alone answers only "may this agent ever call this
+          // tool", never "may it call it right now". Extracted to a named seam
+          // (same shape as `dispatchInvokeRpc`) so the gate here is unit-testable
+          // rather than trusted.
+          const productionTool = async (
+            name: string,
+            args?: unknown,
+          ): Promise<unknown> =>
+            dispatchGeneratedCodeTool({
+              name,
+              args,
+              ctx,
+              agent,
+              declaredCodeToolSet,
+              tenantRegistry,
+              scope: {
+                event: ctx.event,
+                subject: ctx.subject,
+                lastResult: ctx.lastResult,
+                results: ctx.results,
+                locals: ctx.locals,
+              },
+            });
+          // The host binding resolves tenant/global handlers for both targets.
+          // In a nonce Factory sandbox, runGeneratedCodeIsolated applies the
+          // attempt replay gate before this binding is reachable: external tools
+          // never call it, while pure/sandbox_local tools may execute locally.
+          const hostRuntime: GeneratedCodeHostRuntime = {
+            ...configuredHost,
+            tool: configuredHost?.tool ?? productionTool,
+          };
+
+          const exec = await runGeneratedCodeIsolated(
+            agent.typescriptCode,
+            (ctx.event?.data ?? {}) as Record<string, unknown>,
+            {
+              systemPrompt: agent.ontology_instructions,
+              tenantSlug: ctx.tenantSlug,
+              tenantId: ctx.tenantId,
+              agentName: agent.name ?? ctx.agentName,
+              correlationId: ctx.correlationId,
+              subject: ctx.subject,
+              memory: input.memory,
+              runId: input.runId,
+              timeoutMs: input.resolvedTimeoutMs,
+              production: {
+                allowProduction: productionClaims !== null,
+                expectedCodeSha256: productionClaims?.codeSha256,
+                promotionVersionId: productionClaims?.promotionVersionId,
+                regressionSuiteFingerprint:
+                  productionClaims?.regressionSuiteFingerprint,
+              },
+              allowedTools: declaredCodeTools,
+              toolPolicies: Object.fromEntries(
+                (agent.tool_use ?? [])
+                  .filter((entry) => declaredCodeToolSet.has(entry.name.trim()))
+                  .flatMap((entry) => {
+                    const policy = reviewedExecutionPolicy(
+                      entry.name,
+                      entry,
+                      globalToolRegistry.has(entry.name),
+                    );
+                    return policy ? [[entry.name, policy] as const] : [];
+                  }),
+              ),
+              sandboxProfileVerifiedTools: declaredCodeTools.filter((name) =>
+                hasVerifiedSandboxProfile(agent, name),
+              ),
+              factoryExecutionScope: agent.factoryExecutionScope,
+              factoryToolReplayRefs: agent.factoryToolReplayRefs,
+              hostRuntime,
+              containerTransport: input.generatedCodeContainerTransport,
+              candidateImage: input.generatedCodeCandidateImage,
+            },
+          );
+          if (exec.ok) {
+            const codeExecutionReceipt = makeCodeActExecutionReceipt({
+              codeExecuted: exec.executorStarted,
+              codeRan: true,
+              isolation: exec.executorStarted ? exec.isolation : null,
+              codeSha256: exec.codeSha256,
+              attestation: exec.attestation,
+              durationMs: exec.durationMs,
+              failure: null,
+            });
+            result = {
+              ok: true,
+              type: "logic",
+              data: exec.data,
+              meta: {
+                codeExecuted: true,
+                emitted: exec.emitted,
+                isolation: exec.isolation,
+                codeSha256: exec.codeSha256,
+                codeAttestation: exec.attestation,
+                codeDurationMs: exec.durationMs,
+                productionAttested: exec.productionAttested,
+                ...(exec.containerEvidence
+                  ? { containerEvidence: exec.containerEvidence }
+                  : {}),
+                sandboxDispatches: exec.toolDispatches.flatMap((dispatch) =>
+                  dispatch.receipt ? [dispatch.receipt] : [],
+                ),
+                // #RUN-EVIDENCE (D6) — the host-side classification of every
+                // tool the generated code dispatched. `sandboxDispatches` only
+                // carries factory RECEIPTS, so a production live dispatch left
+                // no trace at all and the run-level ledger could not tell
+                // "generated code called nothing" from "generated code called
+                // things we never recorded". This list closes exactly that
+                // ambiguity; it is not a substitute for a per-call record.
+                codeToolDispatches: exec.toolDispatches.map((dispatch) => ({
+                  tool: dispatch.tool,
+                  kind: dispatch.kind,
+                })),
+                codeExecutionReceipt,
+              },
+            };
+          } else {
+            const productionPolicyDenied =
+              exec.failure === "production_not_authorized" ||
+              exec.failure === "attestation_missing";
+            const codeExecutionReceipt = makeCodeActExecutionReceipt({
+              codeExecuted: exec.executorStarted,
+              codeRan: false,
+              isolation: exec.executorStarted ? exec.isolation : null,
+              codeSha256: exec.codeSha256,
+              attestation: exec.attestation,
+              durationMs: exec.durationMs,
+              failure: exec.failure,
+            });
+            result = {
+              ok: false,
+              type: "logic",
+              data: null,
+              meta: {
+                // Keep the historical top-level code for an unattested legacy
+                // manifest while exposing the precise structured failure below.
+                error: productionPolicyDenied
+                  ? "generated_code_requires_sandbox"
+                  : exec.failure === "attestation_mismatch"
+                    ? "generated_code_attestation_failed"
+                    : "generated_code_execution_failed",
+                codeExecuted: exec.executorStarted,
+                codeExecutionFailure: exec.failure,
+                codeExecutionError: exec.error,
+                isolation: exec.executorStarted ? exec.isolation : null,
+                codeSha256: exec.codeSha256,
+                codeAttestation: exec.attestation,
+                codeDurationMs: exec.durationMs,
+                productionAttested: exec.productionAttested,
+                ...(exec.containerEvidence
+                  ? { containerEvidence: exec.containerEvidence }
+                  : {}),
+                sandboxDispatches: exec.toolDispatches.flatMap((dispatch) =>
+                  dispatch.receipt ? [dispatch.receipt] : [],
+                ),
+                // #RUN-EVIDENCE (D6) — the host-side classification of every
+                // tool the generated code dispatched. `sandboxDispatches` only
+                // carries factory RECEIPTS, so a production live dispatch left
+                // no trace at all and the run-level ledger could not tell
+                // "generated code called nothing" from "generated code called
+                // things we never recorded". This list closes exactly that
+                // ambiguity; it is not a substitute for a per-call record.
+                codeToolDispatches: exec.toolDispatches.map((dispatch) => ({
+                  tool: dispatch.tool,
+                  kind: dispatch.kind,
+                })),
+                tenantSlug: ctx.tenantSlug,
+                timedOut: exec.timedOut ?? false,
+                crashed: exec.crashed ?? false,
+                codeExecutionReceipt,
+                hint: "The exact generated handler did not complete in its isolate; no declarative fallback was executed.",
+              },
+            };
+          }
+        } else if (tenantPrompt || agent?.generated) {
+          // Declarative generated agents (codeExecuted=false) run their authored
+          // ontology instructions through the real gateway via the default
+          // generated prompt (now carrying the action's objective/description).
+          const logicPrompt =
+            tenantPrompt ??
+            makeGeneratedAgentPrompt(action.name, action.description);
+          // Per-action AI controls are true per-step overrides: any omitted
+          // field inherits the agent-level selection, so a cheap classifier, a
+          // reasoning-heavy planner, and a long-context synthesizer can coexist
+          // inside one authored agent.
+          const effectiveAgent = agent
+            ? {
+                ...agent,
+                ...(action.provider ? { provider: action.provider } : {}),
+                ...(action.model ? { model: action.model } : {}),
+                ...(action.task_class
+                  ? { task_class: action.task_class }
+                  : action.task_type
+                    ? { task_class: action.task_type }
+                    : {}),
+                ...(action.reasoning ? { reasoning: action.reasoning } : {}),
+                ...(action.verbosity ? { verbosity: action.verbosity } : {}),
+                ...(typeof action.store === "boolean"
+                  ? { store: action.store }
+                  : {}),
+                ...(typeof action.temperature === "number"
+                  ? { temperature: action.temperature }
+                  : {}),
+                ...(typeof action.max_tokens === "number"
+                  ? { max_tokens: action.max_tokens }
+                  : {}),
+                ...(typeof action.timeout_s === "number"
+                  ? { timeout_s: action.timeout_s }
+                  : {}),
+              }
+            : agent;
+          // Per-action retry budget. Parsed legacy manifests migrate action
+          // retries up to the agent-level Inngest budget (leaving 0 here);
+          // Studio test-lab callers pass raw v2 actions that may carry one.
+          const retryCount = Math.min(
+            10,
+            Math.max(0, (action as { retries?: number }).retries ?? 0),
+          );
+          const maxAttempts = retryCount + 1;
+          const hasOutputMapping =
+            isPlainSchema(
+              (action as { output_mapping?: unknown }).output_mapping,
+            ) &&
+            Object.keys(
+              (action as { output_mapping?: Record<string, unknown> })
+                .output_mapping ?? {},
+            ).length > 0;
+          let attempts = 0;
+          for (;;) {
+            attempts += 1;
+            try {
+              result = await runTenantPrompt(
+                ctx,
+                logicPrompt,
+                action,
+                effectiveAgent,
+                tenantRegistry,
+                {
+                  trace: input.trace,
+                  runId: input.runId ?? ctx.runId,
+                  stepId: input.stepId,
+                  validateOutput:
+                    (input.finalOutput ?? true) && !hasOutputMapping,
+                  conversationHistory: input.conversationHistory,
+                  usageAttribution: input.usageAttribution,
+                },
+              );
+            } catch (error) {
+              if (attempts >= maxAttempts) throw error;
+              if (input.runId) {
+                await emitTraceBestEffort(input.trace, {
+                  runId: input.runId,
+                  ...(input.stepId ? { stepId: input.stepId } : {}),
+                  kind: "step",
+                  level: "standard",
+                  name: `${action.name}.retry`,
+                  status: "running",
+                  summary: `Retrying logic action after attempt ${attempts} failed`,
+                  data: {
+                    attempt: attempts,
+                    maxAttempts,
+                    error:
+                      error instanceof Error ? error.message : String(error),
+                  },
+                  visibility: "operator",
+                });
+              }
+              continue;
+            }
+            const retryableResult =
+              !result.ok && result.meta?.error === "output_schema_invalid";
+            if (!retryableResult || attempts >= maxAttempts) break;
+          }
+          result = {
+            ...result,
+            meta: { ...result.meta, actionAttempts: attempts },
+          };
+        } else {
+          // UC-V11-25 / AR-GAP-13 — strict mode. Boot-time validation in
+          // `packages/runtime/src/bootstrap.ts` refuses to register a tenant
+          // whose manifest has logic actions without matching prompts.
+          // Reaching this branch means a hot-reload path bypassed validation
+          // or a test wired a partial registry. Fail loud instead of
+          // shipping `${name}: ${description}` (often non-English text) to
+          // the model as a user message.
           result = {
             ok: false,
             type: "logic",
             data: null,
             meta: {
-              error: "generated_tool_configuration_missing",
-              codeExecuted: false,
-              missingTools: unresolvedCodeTools,
-              message: `生成 Agent「${agent.name ?? ctx.agentName}」声明的工具尚未注册/配置：${unresolvedCodeTools.join("、")}；代码未启动。`,
-              codeExecutionReceipt,
+              error: "missing_tenant_prompt",
+              actionName: action.name,
+              hint:
+                "Add a definePrompt to tenants/<slug>/prompts/ and re-export it " +
+                "from the TenantRegistry.prompts map.",
+            },
+          };
+        }
+        break;
+      }
+      case "manual": {
+        // Real HITL flow lives in register.ts (step.waitForEvent + tasks).
+        // The engine never reaches this case via the main loop — register.ts
+        // short-circuits manual steps before calling runAction. Kept here so
+        // ad-hoc callers (tests, replays) get a sensible placeholder.
+        result = {
+          ok: false,
+          type: "manual",
+          data: {
+            error: "manual_step_requires_durable_runtime",
+            note: "manual steps must run through register.ts waitForEvent/task orchestration",
+          },
+          pendingTaskTitle: action.name,
+        };
+        break;
+      }
+      case "condition": {
+        // Phase 1a: the real, safe boolean evaluator (action-plan.ts) — supports path
+        // comparisons (==/!=/>/</>=/<=), presence, negation, &&/||, plus the legacy
+        // `lastResult == null` forms plus named `results.<stepId>` access. Unparseable is a
+        // configuration failure (ok:false), never a silent false branch.
+        // register.ts consumes `data.evaluated` to SKIP downstream dependsOn steps.
+        const condition =
+          (action as { condition?: string }).condition ?? "true";
+        const evaluation = evaluateConditionDetailed(condition, {
+          lastResult: ctx.lastResult,
+          results: ctx.results,
+          event: ctx.event,
+          input: ctx.event?.data,
+          locals: ctx.locals,
+        });
+        // v2 branch routing: expose the selected explicit target so register.ts
+        // (and the Studio test-runner) can jump to a later action.
+        const conditionTargetActionId = evaluation.valid
+          ? ((evaluation.value
+              ? action.true_action_id
+              : action.false_action_id) ?? null)
+          : null;
+        result = {
+          // Invalid expressions are configuration defects, not a false business branch. Fail the
+          // step closed so the plan cannot silently continue to its default success emit.
+          ok: evaluation.valid,
+          type: "condition",
+          data: {
+            evaluated: evaluation.value,
+            condition,
+            valid: evaluation.valid,
+            error: evaluation.error,
+            targetActionId: conditionTargetActionId,
+          },
+          ...(evaluation.valid
+            ? {}
+            : {
+                meta: { error: "invalid_condition", detail: evaluation.error },
+              }),
+        };
+        break;
+      }
+      case "delay": {
+        // Durable timers require Inngest's step.sleep and are orchestrated in
+        // register.ts. Refuse an ad-hoc in-process timer: setTimeout inside a
+        // worker is neither crash-safe nor replay-safe and could otherwise
+        // produce a false completion receipt after a restart.
+        const ms = (action as { delay_ms?: number }).delay_ms ?? 0;
+        // A non-positive delay is a no-op (Agent Studio's rewrite/simulation path
+        // emits delay_ms:0): it needs no durable timer, so it resolves instantly
+        // in-process — no setTimeout is spawned, so the crash/replay-safety
+        // rationale is fully preserved. Only a real positive delay is refused and
+        // forced through register.ts step.sleep orchestration.
+        if (ms <= 0) {
+          result = {
+            ok: true,
+            type: "delay",
+            data: { delay_ms: ms, sleptMs: ms },
+          };
+          break;
+        }
+        result = {
+          ok: false,
+          type: "delay",
+          data: {
+            error: "delay_requires_durable_runtime",
+            delay_ms: ms,
+            note: "delay steps must run through register.ts step.sleep orchestration",
+          },
+        };
+        break;
+      }
+      case "subflow": {
+        // P1-RT-03: placeholder. The real fork — emitting an event for the
+        // child agent and (optionally) awaiting its terminal event — is in
+        // register.ts. The engine version records the intended fanout so
+        // ad-hoc callers can inspect it.
+        const a = action as {
+          subflow?: string;
+          subflow_input?: Record<string, unknown>;
+        };
+        result = {
+          ok: false,
+          type: "subflow",
+          data: {
+            error: "subflow_requires_durable_runtime",
+            subflow: a.subflow ?? null,
+            subflow_input: a.subflow_input ?? {},
+          },
+        };
+        break;
+      }
+      case "emit": {
+        const a = action as ActionSpec & {
+          emit_event?: string;
+          emit_payload_from?: string;
+          emit_payload?: Record<string, unknown>;
+        };
+        const event = (a.emit_event ?? "").trim();
+        const allow = agent?.triggeredEvents;
+        if (!event || (allow && !allow.includes(event))) {
+          result = {
+            ok: false,
+            type: "emit",
+            data: null,
+            meta: {
+              error: !event ? "emit_event_missing" : "emit_event_not_declared",
+              event,
+              declared: allow ?? [],
             },
           };
           break;
         }
-
-        const configuredHost = input.generatedCodeHostRuntime;
-        const productionTool = async (
-          name: string,
-          args?: unknown,
-        ): Promise<unknown> => {
-          if (!declaredCodeToolSet.has(name)) {
-            throw new Error(
-              `[action_tool_not_allowed] generated-code tool '${name}' is outside the current action capability boundary`,
-            );
-          }
-          const tenantTool = tenantRegistry?.tools?.[name];
-          const globalTool = tenantTool
-            ? undefined
-            : globalToolRegistry.get(name);
-          const descriptor = tenantTool ?? globalTool;
-          if (!descriptor)
-            throw new Error(`generated-code tool '${name}' is not registered`);
-          const toolUse = agent.tool_use?.find((entry) => entry.name === name);
-          const toolData =
-            args && typeof args === "object" && !Array.isArray(args)
-              ? (args as Record<string, unknown>)
-              : { value: args };
-          const toolCtx: ToolContext = {
-            ...ctx,
-            actionName: name,
-            event: {
-              name: ctx.event?.name ?? "generated-code.tool",
-              data: toolData,
+        let selected: unknown = ctx.lastResult;
+        if (a.emit_payload_from) {
+          const resolved = resolveConditionPath(
+            {
+              lastResult: ctx.lastResult,
+              results: ctx.results,
+              event: ctx.event,
+              input: ctx.event?.data,
+              locals: ctx.locals,
             },
-            ...(toolUse?.config ? { config: toolUse.config } : {}),
+            a.emit_payload_from,
+          );
+          if (!resolved.valid || resolved.value === undefined) {
+            result = {
+              ok: false,
+              type: "emit",
+              data: null,
+              meta: {
+                error: "emit_payload_path_unresolved",
+                path: a.emit_payload_from,
+              },
+            };
+            break;
+          }
+          selected = resolved.value;
+        }
+        const selectedRecord =
+          selected && typeof selected === "object" && !Array.isArray(selected)
+            ? (selected as Record<string, unknown>)
+            : selected === undefined
+              ? {}
+              : { value: selected };
+        const payload = { ...selectedRecord, ...(a.emit_payload ?? {}) };
+        const intent: EmitIntent = { event, payload };
+        result = {
+          ok: true,
+          type: "emit",
+          // `_emit` keeps old one-branch consumers working; `_emits` is the lossless contract.
+          data: { ...payload, _emit: event, _emits: [intent] },
+          meta: { emitted: [intent], explicitEmit: true },
+        };
+        break;
+      }
+      case "invoke": {
+        const target = (action.invoke ?? "").trim();
+        if (!target || !input.durableActionRuntime) {
+          result = {
+            ok: false,
+            type: "invoke",
+            data: null,
+            meta: {
+              error: !target
+                ? "invoke_target_missing"
+                : "invoke_requires_durable_runtime",
+              target,
+            },
           };
-          const toolResult = await runTenantTool(toolCtx, descriptor);
-          if (!toolResult.ok) {
-            throw new Error(
-              `generated-code tool '${name}' failed: ${JSON.stringify(toolResult.meta ?? toolResult.data)}`,
-            );
-          }
-          return toolResult.data;
-        };
-        // The host binding resolves tenant/global handlers for both targets.
-        // In a nonce Factory sandbox, runGeneratedCodeIsolated applies the
-        // attempt replay gate before this binding is reachable: external tools
-        // never call it, while pure/sandbox_local tools may execute locally.
-        const hostRuntime: GeneratedCodeHostRuntime = {
-          ...configuredHost,
-          tool: configuredHost?.tool ?? productionTool,
-        };
-
-        const exec = await runGeneratedCodeIsolated(
-          agent.typescriptCode,
-          (ctx.event?.data ?? {}) as Record<string, unknown>,
-          {
-            systemPrompt: agent.ontology_instructions,
-            tenantSlug: ctx.tenantSlug,
-            tenantId: ctx.tenantId,
-            agentName: agent.name ?? ctx.agentName,
-            correlationId: ctx.correlationId,
-            subject: ctx.subject,
-            memory: input.memory,
-            runId: input.runId,
+          break;
+        }
+        try {
+          const data = await input.durableActionRuntime.invoke({
+            stepId: input.durableStepId ?? action.result_key ?? action.name,
+            target,
+            input: invokePayload(action, ctx),
             timeoutMs: input.resolvedTimeoutMs,
-            production: {
-              allowProduction: productionClaims !== null,
-              expectedCodeSha256: productionClaims?.codeSha256,
-              promotionVersionId: productionClaims?.promotionVersionId,
-              regressionSuiteFingerprint:
-                productionClaims?.regressionSuiteFingerprint,
-            },
-            allowedTools: declaredCodeTools,
-            toolPolicies: Object.fromEntries(
-              (agent.tool_use ?? [])
-                .filter((entry) => declaredCodeToolSet.has(entry.name.trim()))
-                .flatMap((entry) => {
-                  const policy = reviewedExecutionPolicy(
-                    entry.name,
-                    entry,
-                    globalToolRegistry.has(entry.name),
-                  );
-                  return policy ? [[entry.name, policy] as const] : [];
-                }),
-            ),
-            sandboxProfileVerifiedTools: declaredCodeTools.filter((name) =>
-              hasVerifiedSandboxProfile(agent, name)),
-            factoryExecutionScope: agent.factoryExecutionScope,
-            factoryToolReplayRefs: agent.factoryToolReplayRefs,
-            hostRuntime,
-            containerTransport: input.generatedCodeContainerTransport,
-            candidateImage: input.generatedCodeCandidateImage,
-          },
-        );
-        if (exec.ok) {
-          const codeExecutionReceipt = makeCodeActExecutionReceipt({
-            codeExecuted: exec.executorStarted,
-            codeRan: true,
-            isolation: exec.executorStarted ? exec.isolation : null,
-            codeSha256: exec.codeSha256,
-            attestation: exec.attestation,
-            durationMs: exec.durationMs,
-            failure: null,
           });
           result = {
             ok: true,
-            type: "logic",
-            data: exec.data,
-            meta: {
-              codeExecuted: true,
-              emitted: exec.emitted,
-              isolation: exec.isolation,
-              codeSha256: exec.codeSha256,
-              codeAttestation: exec.attestation,
-              codeDurationMs: exec.durationMs,
-              productionAttested: exec.productionAttested,
-              ...(exec.containerEvidence
-                ? { containerEvidence: exec.containerEvidence }
-                : {}),
-              sandboxDispatches: exec.toolDispatches.flatMap((dispatch) =>
-                dispatch.receipt ? [dispatch.receipt] : []),
-              codeExecutionReceipt,
-            },
+            type: "invoke",
+            data,
+            meta: { invoked: target, durableStepId: input.durableStepId },
           };
-        } else {
-          const productionPolicyDenied =
-            exec.failure === "production_not_authorized" ||
-            exec.failure === "attestation_missing";
-          const codeExecutionReceipt = makeCodeActExecutionReceipt({
-            codeExecuted: exec.executorStarted,
-            codeRan: false,
-            isolation: exec.executorStarted ? exec.isolation : null,
-            codeSha256: exec.codeSha256,
-            attestation: exec.attestation,
-            durationMs: exec.durationMs,
-            failure: exec.failure,
-          });
+        } catch (failure) {
+          const facts = actionErrorFacts(failure);
           result = {
             ok: false,
-            type: "logic",
-            data: null,
+            type: "invoke",
+            data: { __error: "invoke_failed", target },
             meta: {
-              // Keep the historical top-level code for an unattested legacy
-              // manifest while exposing the precise structured failure below.
-              error: productionPolicyDenied
-                ? "generated_code_requires_sandbox"
-                : exec.failure === "attestation_mismatch"
-                  ? "generated_code_attestation_failed"
-                  : "generated_code_execution_failed",
-              codeExecuted: exec.executorStarted,
-              codeExecutionFailure: exec.failure,
-              codeExecutionError: exec.error,
-              isolation: exec.executorStarted ? exec.isolation : null,
-              codeSha256: exec.codeSha256,
-              codeAttestation: exec.attestation,
-              codeDurationMs: exec.durationMs,
-              productionAttested: exec.productionAttested,
-              ...(exec.containerEvidence
-                ? { containerEvidence: exec.containerEvidence }
-                : {}),
-              sandboxDispatches: exec.toolDispatches.flatMap((dispatch) =>
-                dispatch.receipt ? [dispatch.receipt] : []),
-              tenantSlug: ctx.tenantSlug,
-              timedOut: exec.timedOut ?? false,
-              crashed: exec.crashed ?? false,
-              codeExecutionReceipt,
-              hint: "The exact generated handler did not complete in its isolate; no declarative fallback was executed.",
+              error: "invoke_failed",
+              target,
+              facts,
+              ...(facts.kind ? { kind: facts.kind } : {}),
+              ...(facts.code ? { code: facts.code } : {}),
+              ...(facts.status !== undefined ? { status: facts.status } : {}),
+              message: facts.message,
             },
           };
         }
-      } else if (tenantPrompt || agent?.generated) {
-        // Declarative generated agents (codeExecuted=false) run their authored
-        // ontology instructions through the real gateway via the default
-        // generated prompt (now carrying the action's objective/description).
-        const logicPrompt =
-          tenantPrompt ??
-          makeGeneratedAgentPrompt(action.name, action.description);
-        // Per-action AI controls are true per-step overrides: any omitted
-        // field inherits the agent-level selection, so a cheap classifier, a
-        // reasoning-heavy planner, and a long-context synthesizer can coexist
-        // inside one authored agent.
-        const effectiveAgent = agent
-          ? {
-              ...agent,
-              ...(action.provider ? { provider: action.provider } : {}),
-              ...(action.model ? { model: action.model } : {}),
-              ...(action.task_class
-                ? { task_class: action.task_class }
-                : action.task_type
-                  ? { task_class: action.task_type }
-                  : {}),
-              ...(action.reasoning ? { reasoning: action.reasoning } : {}),
-              ...(action.verbosity ? { verbosity: action.verbosity } : {}),
-              ...(typeof action.store === "boolean"
-                ? { store: action.store }
-                : {}),
-              ...(typeof action.temperature === "number"
-                ? { temperature: action.temperature }
-                : {}),
-              ...(typeof action.max_tokens === "number"
-                ? { max_tokens: action.max_tokens }
-                : {}),
-              ...(typeof action.timeout_s === "number"
-                ? { timeout_s: action.timeout_s }
-                : {}),
-            }
-          : agent;
-        // Per-action retry budget. Parsed legacy manifests migrate action
-        // retries up to the agent-level Inngest budget (leaving 0 here);
-        // Studio test-lab callers pass raw v2 actions that may carry one.
-        const retryCount = Math.min(
-          10,
-          Math.max(0, (action as { retries?: number }).retries ?? 0),
-        );
-        const maxAttempts = retryCount + 1;
-        const hasOutputMapping =
-          isPlainSchema((action as { output_mapping?: unknown }).output_mapping) &&
-          Object.keys(
-            (action as { output_mapping?: Record<string, unknown> })
-              .output_mapping ?? {},
-          ).length > 0;
-        let attempts = 0;
-        for (;;) {
-          attempts += 1;
-          try {
-            result = await runTenantPrompt(
-              ctx,
-              logicPrompt,
-              action,
-              effectiveAgent,
-              tenantRegistry,
-              {
-                trace: input.trace,
-                runId: input.runId ?? ctx.runId,
-                stepId: input.stepId,
-                validateOutput: (input.finalOutput ?? true) && !hasOutputMapping,
-                conversationHistory: input.conversationHistory,
-                usageAttribution: input.usageAttribution,
-              },
-            );
-          } catch (error) {
-            if (attempts >= maxAttempts) throw error;
-            if (input.runId) {
-              await emitTraceBestEffort(input.trace, {
-                runId: input.runId,
-                ...(input.stepId ? { stepId: input.stepId } : {}),
-                kind: "step",
-                level: "standard",
-                name: `${action.name}.retry`,
-                status: "running",
-                summary: `Retrying logic action after attempt ${attempts} failed`,
-                data: {
-                  attempt: attempts,
-                  maxAttempts,
-                  error: error instanceof Error ? error.message : String(error),
-                },
-                visibility: "operator",
-              });
-            }
-            continue;
-          }
-          const retryableResult =
-            !result.ok && result.meta?.error === "output_schema_invalid";
-          if (!retryableResult || attempts >= maxAttempts) break;
-        }
-        result = {
-          ...result,
-          meta: { ...result.meta, actionAttempts: attempts },
-        };
-      } else {
-        // UC-V11-25 / AR-GAP-13 — strict mode. Boot-time validation in
-        // `packages/runtime/src/bootstrap.ts` refuses to register a tenant
-        // whose manifest has logic actions without matching prompts.
-        // Reaching this branch means a hot-reload path bypassed validation
-        // or a test wired a partial registry. Fail loud instead of
-        // shipping `${name}: ${description}` (often non-English text) to
-        // the model as a user message.
-        result = {
-          ok: false,
-          type: "logic",
-          data: null,
-          meta: {
-            error: "missing_tenant_prompt",
-            actionName: action.name,
-            hint:
-              "Add a definePrompt to tenants/<slug>/prompts/ and re-export it " +
-              "from the TenantRegistry.prompts map.",
-          },
-        };
-      }
-      break;
-    }
-    case "manual": {
-      // Real HITL flow lives in register.ts (step.waitForEvent + tasks).
-      // The engine never reaches this case via the main loop — register.ts
-      // short-circuits manual steps before calling runAction. Kept here so
-      // ad-hoc callers (tests, replays) get a sensible placeholder.
-      result = {
-        ok: false,
-        type: "manual",
-        data: {
-          error: "manual_step_requires_durable_runtime",
-          note: "manual steps must run through register.ts waitForEvent/task orchestration",
-        },
-        pendingTaskTitle: action.name,
-      };
-      break;
-    }
-    case "condition": {
-      // Phase 1a: the real, safe boolean evaluator (action-plan.ts) — supports path
-      // comparisons (==/!=/>/</>=/<=), presence, negation, &&/||, plus the legacy
-      // `lastResult == null` forms plus named `results.<stepId>` access. Unparseable is a
-      // configuration failure (ok:false), never a silent false branch.
-      // register.ts consumes `data.evaluated` to SKIP downstream dependsOn steps.
-      const condition = (action as { condition?: string }).condition ?? "true";
-      const evaluation = evaluateConditionDetailed(condition, {
-        lastResult: ctx.lastResult,
-        results: ctx.results,
-        event: ctx.event,
-        input: ctx.event?.data,
-        locals: ctx.locals,
-      });
-      // v2 branch routing: expose the selected explicit target so register.ts
-      // (and the Studio test-runner) can jump to a later action.
-      const conditionTargetActionId = evaluation.valid
-        ? ((evaluation.value
-            ? action.true_action_id
-            : action.false_action_id) ?? null)
-        : null;
-      result = {
-        // Invalid expressions are configuration defects, not a false business branch. Fail the
-        // step closed so the plan cannot silently continue to its default success emit.
-        ok: evaluation.valid,
-        type: "condition",
-        data: {
-          evaluated: evaluation.value,
-          condition,
-          valid: evaluation.valid,
-          error: evaluation.error,
-          targetActionId: conditionTargetActionId,
-        },
-        ...(evaluation.valid
-          ? {}
-          : { meta: { error: "invalid_condition", detail: evaluation.error } }),
-      };
-      break;
-    }
-    case "delay": {
-      // Durable timers require Inngest's step.sleep and are orchestrated in
-      // register.ts. Refuse an ad-hoc in-process timer: setTimeout inside a
-      // worker is neither crash-safe nor replay-safe and could otherwise
-      // produce a false completion receipt after a restart.
-      const ms = (action as { delay_ms?: number }).delay_ms ?? 0;
-      // A non-positive delay is a no-op (Agent Studio's rewrite/simulation path
-      // emits delay_ms:0): it needs no durable timer, so it resolves instantly
-      // in-process — no setTimeout is spawned, so the crash/replay-safety
-      // rationale is fully preserved. Only a real positive delay is refused and
-      // forced through register.ts step.sleep orchestration.
-      if (ms <= 0) {
-        result = {
-          ok: true,
-          type: "delay",
-          data: { delay_ms: ms, sleptMs: ms },
-        };
         break;
       }
-      result = {
-        ok: false,
-        type: "delay",
-        data: {
-          error: "delay_requires_durable_runtime",
-          delay_ms: ms,
-          note: "delay steps must run through register.ts step.sleep orchestration",
-        },
-      };
-      break;
-    }
-    case "subflow": {
-      // P1-RT-03: placeholder. The real fork — emitting an event for the
-      // child agent and (optionally) awaiting its terminal event — is in
-      // register.ts. The engine version records the intended fanout so
-      // ad-hoc callers can inspect it.
-      const a = action as {
-        subflow?: string;
-        subflow_input?: Record<string, unknown>;
-      };
-      result = {
-        ok: false,
-        type: "subflow",
-        data: {
-          error: "subflow_requires_durable_runtime",
-          subflow: a.subflow ?? null,
-          subflow_input: a.subflow_input ?? {},
-        },
-      };
-      break;
-    }
-    case "emit": {
-      const a = action as ActionSpec & {
-        emit_event?: string;
-        emit_payload_from?: string;
-        emit_payload?: Record<string, unknown>;
-      };
-      const event = (a.emit_event ?? "").trim();
-      const allow = agent?.triggeredEvents;
-      if (!event || (allow && !allow.includes(event))) {
-        result = {
-          ok: false,
-          type: "emit",
-          data: null,
-          meta: {
-            error: !event ? "emit_event_missing" : "emit_event_not_declared",
-            event,
-            declared: allow ?? [],
-          },
+      case "foreach": {
+        const a = action as ActionSpec & {
+          items_from?: string;
+          item_as?: string;
+          item_key_from?: string;
+          foreach_actions?: ActionSpec[];
         };
-        break;
-      }
-      let selected: unknown = ctx.lastResult;
-      if (a.emit_payload_from) {
+        const itemsPath = a.items_from ?? "";
         const resolved = resolveConditionPath(
           {
             lastResult: ctx.lastResult,
@@ -2797,395 +4020,400 @@ async function runActionCore(input: StepInput): Promise<StepOutput> {
             input: ctx.event?.data,
             locals: ctx.locals,
           },
-          a.emit_payload_from,
+          itemsPath,
         );
-        if (!resolved.valid || resolved.value === undefined) {
+        if (!resolved.valid || !Array.isArray(resolved.value)) {
           result = {
             ok: false,
-            type: "emit",
+            type: "foreach",
             data: null,
-            meta: {
-              error: "emit_payload_path_unresolved",
-              path: a.emit_payload_from,
-            },
+            meta: { error: "foreach_items_not_array", path: itemsPath },
           };
           break;
         }
-        selected = resolved.value;
-      }
-      const selectedRecord =
-        selected && typeof selected === "object" && !Array.isArray(selected)
-          ? (selected as Record<string, unknown>)
-          : selected === undefined
-            ? {}
-            : { value: selected };
-      const payload = { ...selectedRecord, ...(a.emit_payload ?? {}) };
-      const intent: EmitIntent = { event, payload };
-      result = {
-        ok: true,
-        type: "emit",
-        // `_emit` keeps old one-branch consumers working; `_emits` is the lossless contract.
-        data: { ...payload, _emit: event, _emits: [intent] },
-        meta: { emitted: [intent], explicitEmit: true },
-      };
-      break;
-    }
-    case "invoke": {
-      const target = (action.invoke ?? "").trim();
-      if (!target || !input.durableActionRuntime) {
-        result = {
-          ok: false,
-          type: "invoke",
-          data: null,
-          meta: {
-            error: !target ? "invoke_target_missing" : "invoke_requires_durable_runtime",
-            target,
-          },
-        };
-        break;
-      }
-      try {
-        const data = await input.durableActionRuntime.invoke({
-          stepId: input.durableStepId ?? action.result_key ?? action.name,
-          target,
-          input: invokePayload(action, ctx),
-          timeoutMs: input.resolvedTimeoutMs,
+        const materialized = materializeForeach({
+          items: resolved.value,
+          itemAs: a.item_as,
+          itemKeyFrom: a.item_key_from ?? "",
         });
-        result = {
-          ok: true,
-          type: "invoke",
-          data,
-          meta: { invoked: target, durableStepId: input.durableStepId },
-        };
-      } catch (failure) {
-        const facts = actionErrorFacts(failure);
-        result = {
-          ok: false,
-          type: "invoke",
-          data: { __error: "invoke_failed", target },
-          meta: {
-            error: "invoke_failed",
-            target,
-            facts,
-            ...(facts.kind ? { kind: facts.kind } : {}),
-            ...(facts.code ? { code: facts.code } : {}),
-            ...(facts.status !== undefined ? { status: facts.status } : {}),
-            message: facts.message,
-          },
-        };
-      }
-      break;
-    }
-    case "foreach": {
-      const a = action as ActionSpec & {
-        items_from?: string;
-        item_as?: string;
-        item_key_from?: string;
-        foreach_actions?: ActionSpec[];
-      };
-      const itemsPath = a.items_from ?? "";
-      const resolved = resolveConditionPath(
-        {
-          lastResult: ctx.lastResult,
-          results: ctx.results,
-          event: ctx.event,
-          input: ctx.event?.data,
-          locals: ctx.locals,
-        },
-        itemsPath,
-      );
-      if (!resolved.valid || !Array.isArray(resolved.value)) {
-        result = {
-          ok: false,
-          type: "foreach",
-          data: null,
-          meta: { error: "foreach_items_not_array", path: itemsPath },
-        };
-        break;
-      }
-      const materialized = materializeForeach({
-        items: resolved.value,
-        itemAs: a.item_as,
-        itemKeyFrom: a.item_key_from ?? "",
-      });
-      if (!materialized.ok) {
-        result = {
-          ok: false,
-          type: "foreach",
-          data: null,
-          meta: { error: "foreach_key_invalid", detail: materialized.error },
-        };
-        break;
-      }
+        if (!materialized.ok) {
+          result = {
+            ok: false,
+            type: "foreach",
+            data: null,
+            meta: { error: "foreach_key_invalid", detail: materialized.error },
+          };
+          break;
+        }
 
-      let totalIn = 0;
-      let totalOut = 0;
-      const allEmitted: EmitIntent[] = [];
-      let suppressImplicitEmit = false;
-      let terminalFailure: {
-        stepId: string;
-        data: unknown;
-        resolution?: ActionFailureResolution;
-      } | null = null;
-      const parentId = input.durableStepId ?? action.result_key ?? action.name;
-      const receipts = await runSequentialForeach(
-        materialized.frames,
-        async (frame) => {
-          if (terminalFailure) {
+        let totalIn = 0;
+        let totalOut = 0;
+        // #RUN-EVIDENCE (D6) — aggregate the ledger entries the durable body
+        // steps persisted, so a nested container's caller counts every leaf
+        // dispatch exactly once (leaves write, containers only aggregate).
+        const bodyToolLedger: ToolCallLedgerEntry[] = [];
+        const allEmitted: EmitIntent[] = [];
+        let suppressImplicitEmit = false;
+        let terminalFailure: {
+          stepId: string;
+          data: unknown;
+          resolution?: ActionFailureResolution;
+        } | null = null;
+        const parentId =
+          input.durableStepId ?? action.result_key ?? action.name;
+        const foreachActions = a.foreach_actions ?? [];
+        const ownsConditionalEmitRouting =
+          hasAuthoritativeConditionalEmit(foreachActions);
+        const receipts = await runSequentialForeach(
+          materialized.frames,
+          async (frame) => {
+            if (terminalFailure) {
+              return {
+                index: frame.index,
+                key: frame.businessKey,
+                stableKey: frame.stableKey,
+                item: frame.item,
+                stepIds: [] as string[],
+                results: {} as Record<string, unknown>,
+                lastResult: frame.item as unknown,
+                skipped: true,
+                reason: "prior foreach item failed terminally",
+              };
+            }
+            let localLast: unknown = frame.item;
+            const localResults: Record<string, unknown> = {};
+            const localGate: GateState = {
+              conditionTrue: {},
+              skipped: new Set<string>(),
+            };
+            const stepIds: string[] = [];
+            const failures: Array<{
+              stepId: string;
+              action: string;
+              resolution: ActionFailureResolution;
+            }> = [];
+            // The count is item-local by construction. A conditional emit in
+            // item A must not make a no-match in item B look routed.
+            const emitCountBefore = allEmitted.length;
+            for (const child of foreachActions) {
+              if (ctx.signal?.aborted) break;
+              const childKey = child.result_key ?? child.name;
+              const durableId = foreachStepId(parentId, frame, childKey);
+              stepIds.push(durableId);
+              const skip = shouldSkip(
+                { name: childKey, dependsOn: child.depends_on },
+                localGate,
+              );
+              if (skip.skip) {
+                localGate.skipped.add(childKey);
+                localResults[childKey] = { skipped: true, reason: skip.reason };
+                continue;
+              }
+              const combinedLocals = { ...(ctx.locals ?? {}), ...frame.locals };
+              const childEvent = {
+                name: ctx.event?.name ?? "foreach",
+                data: {
+                  ...(ctx.event?.data ?? {}),
+                  ...combinedLocals,
+                  _foreach: {
+                    parentStepId: parentId,
+                    index: frame.index,
+                    key: frame.businessKey,
+                    stableKey: frame.stableKey,
+                  },
+                },
+              };
+              const childPrecondition = evaluateActionPrecondition(child, {
+                lastResult: localLast,
+                results: { ...(ctx.results ?? {}), ...localResults },
+                event: childEvent,
+                input: childEvent.data,
+                locals: combinedLocals,
+              });
+              if (childPrecondition.outcome === "invalid") {
+                terminalFailure = {
+                  stepId: durableId,
+                  data: {
+                    __error: "invalid_condition",
+                    condition: childPrecondition.condition,
+                    error: childPrecondition.error,
+                  },
+                };
+                break;
+              }
+              if (childPrecondition.outcome === "skip") {
+                localGate.skipped.add(childKey);
+                localResults[childKey] = {
+                  skipped: true,
+                  reason: childPrecondition.reason,
+                  condition: childPrecondition.condition,
+                  evaluated: false,
+                };
+                continue;
+              }
+              const childInput: StepInput = {
+                ...input,
+                runId: undefined,
+                stepOrd: undefined,
+                action: child,
+                durableStepId: durableId,
+                ctx: {
+                  ...ctx,
+                  actionName: child.name,
+                  event: childEvent,
+                  lastResult: localLast,
+                  results: { ...(ctx.results ?? {}), ...localResults },
+                  locals: combinedLocals,
+                },
+              };
+              let bodyResult: StepOutput;
+              try {
+                const operation = () => runAction(childInput);
+                // A foreach container owns no external side effect itself; its
+                // descendants receive their own ids. Every other body action is
+                // one durable item-local boundary (invoke uses host.invoke).
+                bodyResult =
+                  child.type === "foreach" || child.type === "invoke"
+                    ? await operation()
+                    : input.durableActionRuntime
+                      ? await input.durableActionRuntime.run(
+                          durableId,
+                          operation,
+                          { actionName: child.name },
+                        )
+                      : await operation();
+              } catch (failure) {
+                // #RUN-EVIDENCE — a failed evidence write is a runtime
+                // failure, never a business failure a manifest `on_error`
+                // policy may soften. Same carve-out register.ts applies.
+                // Recognizer, not instanceof: an SDK StepError round-trip
+                // keeps only the error's name, not its class identity.
+                if (isRequiredStepEvidenceFailure(failure)) throw failure;
+                const resolution = classifyNestedActionFailure(child, failure);
+                if (resolution.disposition === "retry") {
+                  throw failureForDisposition(resolution, failure) ?? failure;
+                }
+                failures.push({
+                  stepId: durableId,
+                  action: childKey,
+                  resolution,
+                });
+                suppressImplicitEmit ||= resolution.suppressEmit;
+                const intent = failureEmitIntent(resolution);
+                if (intent) allEmitted.push(intent);
+                if (resolution.disposition === "continue") {
+                  bodyResult = {
+                    ok: true,
+                    type: child.type,
+                    data: resolution.defaultResult,
+                    meta: { failureResolution: resolution, softFailed: true },
+                  };
+                } else {
+                  terminalFailure = {
+                    stepId: durableId,
+                    data: { error: resolution.facts },
+                    resolution,
+                  };
+                  break;
+                }
+              }
+              totalIn += bodyResult.tokensIn ?? 0;
+              totalOut += bodyResult.tokensOut ?? 0;
+              // Collected BEFORE the ok-check: a failed body step's dispatched
+              // calls happened and their evidence is already on disk.
+              if (Array.isArray(bodyResult.toolLedger)) {
+                bodyToolLedger.push(...bodyResult.toolLedger);
+              }
+              const emitted = (
+                bodyResult.meta as { emitted?: EmitIntent[] } | undefined
+              )?.emitted;
+              if (Array.isArray(emitted)) allEmitted.push(...emitted);
+              if (!bodyResult.ok) {
+                const resolution = classifyNestedActionFailure(child, {
+                  output: bodyResult,
+                });
+                if (resolution.disposition === "retry") {
+                  throw (
+                    failureForDisposition(resolution, { output: bodyResult }) ??
+                    new Error(`foreach child ${childKey} requested retry`)
+                  );
+                }
+                failures.push({
+                  stepId: durableId,
+                  action: childKey,
+                  resolution,
+                });
+                suppressImplicitEmit ||= resolution.suppressEmit;
+                const intent = failureEmitIntent(resolution);
+                if (intent) allEmitted.push(intent);
+                if (resolution.disposition === "continue") {
+                  localResults[childKey] = resolution.defaultResult;
+                  localLast = mergeStepResults(
+                    localLast,
+                    resolution.defaultResult,
+                  );
+                  continue;
+                }
+                terminalFailure = {
+                  stepId: durableId,
+                  data: bodyResult.data,
+                  resolution,
+                };
+                break;
+              }
+              localResults[childKey] = bodyResult.data;
+              localLast = mergeStepResults(localLast, bodyResult.data);
+              if (child.type === "condition") {
+                localGate.conditionTrue[childKey] = Boolean(
+                  (bodyResult.data as { evaluated?: boolean } | null)
+                    ?.evaluated,
+                );
+              }
+            }
+            if (
+              !terminalFailure &&
+              !ctx.signal?.aborted &&
+              ownsConditionalEmitRouting &&
+              allEmitted.length === emitCountBefore
+            ) {
+              terminalFailure = {
+                stepId: foreachStepId(
+                  parentId,
+                  frame,
+                  "conditional-emit-no-match",
+                ),
+                data: {
+                  __error: "conditional_emit_no_match",
+                  code: "CONDITIONAL_EMIT_NO_MATCH",
+                  message: `[park] foreach ${parentId}: no authoritative conditional emit guard matched`,
+                },
+              };
+            }
             return {
               index: frame.index,
               key: frame.businessKey,
               stableKey: frame.stableKey,
               item: frame.item,
-              stepIds: [] as string[],
-              results: {} as Record<string, unknown>,
-              lastResult: frame.item as unknown,
-              skipped: true,
-              reason: "prior foreach item failed terminally",
+              stepIds,
+              results: localResults,
+              lastResult: localLast,
+              failures,
             };
-          }
-          let localLast: unknown = frame.item;
-          const localResults: Record<string, unknown> = {};
-          const localGate: GateState = {
-            conditionTrue: {},
-            skipped: new Set<string>(),
-          };
-          const stepIds: string[] = [];
-          const failures: Array<{
-            stepId: string;
-            action: string;
-            resolution: ActionFailureResolution;
-          }> = [];
-          for (const child of a.foreach_actions ?? []) {
-            if (ctx.signal?.aborted) break;
-            const childKey = child.result_key ?? child.name;
-            const durableId = foreachStepId(parentId, frame, childKey);
-            stepIds.push(durableId);
-            const skip = shouldSkip(
-              { name: childKey, dependsOn: child.depends_on },
-              localGate,
-            );
-            if (skip.skip) {
-              localGate.skipped.add(childKey);
-              localResults[childKey] = { skipped: true, reason: skip.reason };
-              continue;
-            }
-            const combinedLocals = { ...(ctx.locals ?? {}), ...frame.locals };
-            const childInput: StepInput = {
-              ...input,
-              runId: undefined,
-              stepOrd: undefined,
-              action: child,
-              durableStepId: durableId,
-              ctx: {
-                ...ctx,
-                actionName: child.name,
-                event: {
-                  name: ctx.event?.name ?? "foreach",
-                  data: {
-                    ...(ctx.event?.data ?? {}),
-                    ...combinedLocals,
-                    _foreach: {
-                      parentStepId: parentId,
-                      index: frame.index,
-                      key: frame.businessKey,
-                      stableKey: frame.stableKey,
-                    },
-                  },
-                },
-                lastResult: localLast,
-                results: { ...(ctx.results ?? {}), ...localResults },
-                locals: combinedLocals,
-              },
-            };
-            let bodyResult: StepOutput;
-            try {
-              const operation = () => runAction(childInput);
-              // A foreach container owns no external side effect itself; its
-              // descendants receive their own ids. Every other body action is
-              // one durable item-local boundary (invoke uses host.invoke).
-              bodyResult = child.type === "foreach" || child.type === "invoke"
-                ? await operation()
-                : input.durableActionRuntime
-                  ? await input.durableActionRuntime.run(durableId, operation)
-                  : await operation();
-            } catch (failure) {
-              const resolution = classifyNestedActionFailure(child, failure);
-              if (resolution.disposition === "retry") {
-                throw failureForDisposition(resolution, failure) ?? failure;
-              }
-              failures.push({ stepId: durableId, action: childKey, resolution });
-              suppressImplicitEmit ||= resolution.suppressEmit;
-              const intent = failureEmitIntent(resolution);
-              if (intent) allEmitted.push(intent);
-              if (resolution.disposition === "continue") {
-                bodyResult = {
-                  ok: true,
-                  type: child.type,
-                  data: resolution.defaultResult,
-                  meta: { failureResolution: resolution, softFailed: true },
-                };
-              } else {
-                terminalFailure = {
-                  stepId: durableId,
-                  data: { error: resolution.facts },
-                  resolution,
-                };
-                break;
-              }
-            }
-            totalIn += bodyResult.tokensIn ?? 0;
-            totalOut += bodyResult.tokensOut ?? 0;
-            const emitted = (
-              bodyResult.meta as { emitted?: EmitIntent[] } | undefined
-            )?.emitted;
-            if (Array.isArray(emitted)) allEmitted.push(...emitted);
-            if (!bodyResult.ok) {
-              const resolution = classifyNestedActionFailure(child, {
-                output: bodyResult,
-              });
-              if (resolution.disposition === "retry") {
-                throw failureForDisposition(resolution, { output: bodyResult })
-                  ?? new Error(`foreach child ${childKey} requested retry`);
-              }
-              failures.push({ stepId: durableId, action: childKey, resolution });
-              suppressImplicitEmit ||= resolution.suppressEmit;
-              const intent = failureEmitIntent(resolution);
-              if (intent) allEmitted.push(intent);
-              if (resolution.disposition === "continue") {
-                localResults[childKey] = resolution.defaultResult;
-                localLast = mergeStepResults(localLast, resolution.defaultResult);
-                continue;
-              }
-              terminalFailure = {
-                stepId: durableId,
-                data: bodyResult.data,
-                resolution,
-              };
-              break;
-            }
-            localResults[childKey] = bodyResult.data;
-            localLast = mergeStepResults(localLast, bodyResult.data);
-            if (child.type === "condition") {
-              localGate.conditionTrue[childKey] = Boolean(
-                (bodyResult.data as { evaluated?: boolean } | null)?.evaluated,
-              );
-            }
-          }
-          return {
-            index: frame.index,
-            key: frame.businessKey,
-            stableKey: frame.stableKey,
-            item: frame.item,
-            stepIds,
-            results: localResults,
-            lastResult: localLast,
-            failures,
-          };
-        },
-      );
+          },
+        );
 
-      const resolvedTerminalFailure = terminalFailure as {
-        stepId: string;
-        data: unknown;
-        resolution?: ActionFailureResolution;
-      } | null;
-      if (resolvedTerminalFailure) {
+        const resolvedTerminalFailure = terminalFailure as {
+          stepId: string;
+          data: unknown;
+          resolution?: ActionFailureResolution;
+        } | null;
+        if (resolvedTerminalFailure) {
+          result = {
+            ok: false,
+            type: "foreach",
+            data: { receipts, failure: resolvedTerminalFailure },
+            tokensIn: totalIn,
+            tokensOut: totalOut,
+            ...(bodyToolLedger.length ? { toolLedger: bodyToolLedger } : {}),
+            meta: {
+              foreach: true,
+              emitted: allEmitted,
+              error: "foreach_body_failed",
+              suppressImplicitEmit,
+              ...(resolvedTerminalFailure.resolution
+                ? { failureResolution: resolvedTerminalFailure.resolution }
+                : {}),
+            },
+          };
+          break;
+        }
+        const byKey = Object.fromEntries(
+          receipts.map((receipt) => [receipt.stableKey, receipt]),
+        );
         result = {
-          ok: false,
+          ok: true,
           type: "foreach",
-          data: { receipts, failure: resolvedTerminalFailure },
+          data: { count: receipts.length, items: receipts, byKey },
           tokensIn: totalIn,
           tokensOut: totalOut,
+          ...(bodyToolLedger.length ? { toolLedger: bodyToolLedger } : {}),
           meta: {
             foreach: true,
+            mode: "sequential",
             emitted: allEmitted,
-            error: "foreach_body_failed",
             suppressImplicitEmit,
-            ...(resolvedTerminalFailure.resolution
-              ? { failureResolution: resolvedTerminalFailure.resolution }
-              : {}),
           },
         };
         break;
       }
-      const byKey = Object.fromEntries(
-        receipts.map((receipt) => [receipt.stableKey, receipt]),
-      );
-      result = {
-        ok: true,
-        type: "foreach",
-        data: { count: receipts.length, items: receipts, byKey },
-        tokensIn: totalIn,
-        tokensOut: totalOut,
-        meta: {
-          foreach: true,
-          mode: "sequential",
-          emitted: allEmitted,
-          suppressImplicitEmit,
-        },
-      };
-      break;
-    }
-    default: {
-      // Keep the switch fail-closed for any unexpected/ad-hoc type.
-      result = {
-        ok: false,
-        type: "logic",
-        data: null,
-        meta: {
-          error: "unsupported_action_type",
-          actionType: (action as { type?: string }).type,
-        },
-      };
-      break;
-    }
-  }
-
-  if (action.type === "tool") {
-    const dataflowAction = action as ActionSpec & {
-      tool_arguments?: Record<string, unknown>;
-      result_map?: { fields: Record<string, string>; include_raw?: boolean };
-    };
-    const argumentMode = dataflowAction.tool_arguments
-      ? "explicit"
-      : "legacy_whole_context";
-    if (result.ok && dataflowAction.result_map) {
-      const mapped = applyToolResultMap(result.data, dataflowAction.result_map);
-      if (!mapped.ok) {
+      default: {
+        // Keep the switch fail-closed for any unexpected/ad-hoc type.
         result = {
-          ...result,
           ok: false,
+          type: "logic",
           data: null,
           meta: {
-            ...(result.meta ?? {}),
-            error: "tool_result_map_unresolved",
-            detail: mapped.error,
-            field: mapped.field,
-            path: mapped.path,
-            argumentMode,
+            error: "unsupported_action_type",
+            actionType: (action as { type?: string }).type,
           },
         };
+        break;
+      }
+    }
+
+    if (action.type === "tool") {
+      // #RUN-EVIDENCE (D6) — capture what the TOOL returned, before
+      // `result_map` reshapes it. The audit record must show the tool's own
+      // answer; an authored projection of it would make the persisted evidence
+      // disagree with what the external system was actually told/asked.
+      if (directToolDispatch) {
+        directToolDispatch.rawOutput = { value: result.data };
+      }
+      const dataflowAction = action as ActionSpec & {
+        tool_arguments?: Record<string, unknown>;
+        result_map?: { fields: Record<string, string>; include_raw?: boolean };
+      };
+      const argumentMode = dataflowAction.tool_arguments
+        ? "explicit"
+        : "legacy_whole_context";
+      if (result.ok && dataflowAction.result_map) {
+        const mapped = applyToolResultMap(
+          result.data,
+          dataflowAction.result_map,
+        );
+        if (!mapped.ok) {
+          result = {
+            ...result,
+            ok: false,
+            data: null,
+            meta: {
+              ...(result.meta ?? {}),
+              error: "tool_result_map_unresolved",
+              detail: mapped.error,
+              field: mapped.field,
+              path: mapped.path,
+              argumentMode,
+            },
+          };
+        } else {
+          result = {
+            ...result,
+            data: mapped.value,
+            meta: {
+              ...(result.meta ?? {}),
+              argumentMode,
+              resultMapped: true,
+              rawResultIncluded: dataflowAction.result_map.include_raw === true,
+            },
+          };
+        }
       } else {
         result = {
           ...result,
-          data: mapped.value,
-          meta: {
-            ...(result.meta ?? {}),
-            argumentMode,
-            resultMapped: true,
-            rawResultIncluded: dataflowAction.result_map.include_raw === true,
-          },
+          meta: { ...(result.meta ?? {}), argumentMode },
         };
       }
-    } else {
-      result = {
-        ...result,
-        meta: { ...(result.meta ?? {}), argumentMode },
-      };
     }
-  }
-
   } catch (error) {
     // A thrown dispatch still closes its structured step trace so Studio's
     // timeline never shows a forever-running action. Rethrow unchanged —
@@ -3212,6 +4440,62 @@ async function runActionCore(input: StepInput): Promise<StepOutput> {
       });
     }
     throw error;
+  }
+
+  if (actionRuleGateRecord) {
+    result.meta = {
+      ...result.meta,
+      ruleGate: actionRuleGateRecord,
+    };
+  }
+
+  // #RUN-EVIDENCE (D6) — project the direct `type:"tool"` dispatch into the
+  // same `meta.toolCalls` shape the LLM loop emits, so register.ts's existing
+  // per-call evidence writer records it and the run-level reconciliation counts
+  // it. Done BEFORE `applyActionOutputMapping` so the recorded output is what
+  // the tool actually returned rather than an authored reshaping of it. Never
+  // overwrites an existing array: a path that already produced traces owns them.
+  if (directToolDispatch && !Array.isArray(result.meta?.toolCalls)) {
+    const directTrace: ToolCallTrace = {
+      id: `direct-${action.name}`,
+      name: directToolDispatch.tool,
+      input:
+        directToolDispatch.input
+        && typeof directToolDispatch.input === "object"
+        && !Array.isArray(directToolDispatch.input)
+          ? (directToolDispatch.input as Record<string, unknown>)
+          : { __value: directToolDispatch.input },
+      output: directToolDispatch.rawOutput
+        ? directToolDispatch.rawOutput.value
+        : result.data,
+      isError: !result.ok,
+      durationMs: Math.max(0, Date.now() - directToolDispatch.startedAtMs),
+      ...(directToolDispatch.decision
+        ? { sandboxDecision: directToolDispatch.decision }
+        : {}),
+      ...(actionRuleGateRecord ? { ruleGate: actionRuleGateRecord } : {}),
+      ...(directToolDispatch.probe ? { probe: directToolDispatch.probe } : {}),
+      // A write-capable action that never reached the live dispatch — gated,
+      // stubbed, replayed, refused by a gate, or failed before dispatch — still
+      // owes a receipt. Falling through with none would let the reconciliation
+      // read the call as one that claimed no effect at all.
+      ...((): { effectVerification?: EffectVerificationReceipt } => {
+        if (directToolDispatch.effectVerification) {
+          return { effectVerification: directToolDispatch.effectVerification };
+        }
+        if (!directToolDispatch.writeCapable) return {};
+        return {
+          effectVerification: !result.ok
+            ? unverifiedEffect("write_errored", {
+                detail: `action '${action.name}' did not complete a write; there is no claimed effect to confirm`,
+              })
+            : unverifiedEffect("write_not_real", {
+                detail: `dispatch decision '${directToolDispatch.decision ?? "(none)"}' — nothing was written, so nothing can be read back`,
+              }),
+        };
+      })(),
+    };
+    result.meta = { ...result.meta, toolCalls: [directTrace] };
   }
 
   // v2 declarative per-action output mapping (applies after our tool
@@ -3280,6 +4564,49 @@ export async function runAction(input: StepInput): Promise<StepOutput> {
     functionName: `manifest.${mappedCtx.tenantSlug ?? "unknown"}.${mappedCtx.agentName ?? input.agent?.name ?? "unknown"}.${input.action.name}`,
   });
   input = { ...input, ctx: mappedCtx, usageAttribution };
+  const precondition = evaluateActionPrecondition(input.action, {
+    lastResult: input.ctx.lastResult,
+    results: input.ctx.results,
+    event: input.ctx.event,
+    input: input.ctx.event?.data,
+    locals: input.ctx.locals,
+  });
+  if (precondition.outcome === "invalid") {
+    return {
+      ok: false,
+      type: input.action.type,
+      data: {
+        __error: "invalid_condition",
+        condition: precondition.condition,
+        error: precondition.error,
+      },
+      meta: {
+        error: "invalid_condition",
+        condition: precondition.condition,
+        detail: precondition.error,
+        conditionGuard: true,
+      },
+    };
+  }
+  if (precondition.outcome === "skip") {
+    return {
+      ok: true,
+      type: input.action.type,
+      data: {
+        skipped: true,
+        reason: precondition.reason,
+        condition: precondition.condition,
+        evaluated: false,
+      },
+      meta: {
+        skipped: true,
+        skipReason: "condition_false",
+        condition: precondition.condition,
+        evaluated: false,
+        conditionGuard: true,
+      },
+    };
+  }
   const now = Date.now();
   const localTimeoutMs =
     typeof input.action.timeout_s === "number"
@@ -3293,9 +4620,10 @@ export async function runAction(input: StepInput): Promise<StepOutput> {
       : localDeadlineAt === undefined
         ? input.deadlineAt
         : Math.min(input.deadlineAt, localDeadlineAt);
-  const remainingDeadlineMs = effectiveDeadlineAt === undefined
-    ? undefined
-    : Math.max(0, effectiveDeadlineAt - now);
+  const remainingDeadlineMs =
+    effectiveDeadlineAt === undefined
+      ? undefined
+      : Math.max(0, effectiveDeadlineAt - now);
   const deadlineSource =
     input.deadlineAt !== undefined &&
     (localDeadlineAt === undefined || input.deadlineAt <= localDeadlineAt)

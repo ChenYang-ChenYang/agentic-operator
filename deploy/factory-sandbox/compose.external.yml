@@ -309,8 +309,11 @@ services:
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     pids_limit: 128
-    mem_limit: 256m
-    cpus: "0.5"
+    # 256m 是 Node 18 时代定的；Node 26 的基线常驻加上 healthcheck 派生的第二个
+    # node 进程会撞穿它（实测 cgroup OOM：CONSTRAINT_MEMCG，anon-rss 已 221MB，
+    # 容器反复 exit 137）。与 runner/workload 一样交给 env 可调，别再写死。
+    mem_limit: "${EXTERNAL_SANDBOX_GATEWAY_MEMORY_LIMIT:-768m}"
+    cpus: "${EXTERNAL_SANDBOX_GATEWAY_CPUS:-0.5}"
     expose: ["3562"]
     environment:
       NODE_ENV: production

@@ -231,6 +231,7 @@ export const AGENT_STUDIO_KEYS = {
     ["agent-studio", "versions", id, query] as const,
   trace: (runId: string, after: number) =>
     ["agent-studio", "trace", runId, after] as const,
+  traceAll: (runId: string) => ["agent-studio", "trace-all", runId] as const,
   output: (runId: string) => ["agent-studio", "output", runId] as const,
   session: (sessionId: string) =>
     ["agent-studio", "session", sessionId] as const,
@@ -618,6 +619,44 @@ export function useRunTrace(
           `/v1/runs/${encodeURIComponent(runId!)}/trace${query ? `?${query}` : ""}`,
         ),
       ),
+    enabled: Boolean(runId),
+    staleTime: live ? 0 : 2_000,
+    refetchInterval: live ? 1_500 : false,
+  });
+}
+
+/**
+ * Resolve the entire durable trace ledger for one run. The API deliberately
+ * caps each response at 1,000 entries; this hook follows `nextAfter` so the
+ * operator trace tree never silently stops at the first page.
+ */
+export function useRunTraceAll(runId: string | null | undefined, live = false) {
+  return useQuery({
+    queryKey: runId
+      ? AGENT_STUDIO_KEYS.traceAll(runId)
+      : (["agent-studio", "trace-all", "__none__"] as const),
+    queryFn: async (): Promise<RunTracePage> => {
+      const events: RunTraceEvent[] = [];
+      let after = 0;
+      let nextAfter: number | null = null;
+      do {
+        const query = makeQuery({ after, limit: 1_000 });
+        const page = GetRunTraceResponseSchema.parse(
+          await callV1<unknown>(
+            `/v1/runs/${encodeURIComponent(runId!)}/trace${query ? `?${query}` : ""}`,
+          ),
+        );
+        events.push(...page.events);
+        nextAfter = page.nextAfter;
+        if (nextAfter !== null) {
+          if (nextAfter <= after) {
+            throw new Error("Trace pagination cursor did not advance");
+          }
+          after = nextAfter;
+        }
+      } while (nextAfter !== null);
+      return { events, nextAfter: null };
+    },
     enabled: Boolean(runId),
     staleTime: live ? 0 : 2_000,
     refetchInterval: live ? 1_500 : false,

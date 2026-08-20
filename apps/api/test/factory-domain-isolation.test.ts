@@ -197,4 +197,67 @@ describe("Agent Factory tenant/domain isolation", () => {
       }),
     ).toThrow(/target is not an enabled/);
   });
+
+  it("accepts a generated invoke that names the business Action it was built from", () => {
+    // Generated fleets carry two names for one function: the manifest `name`
+    // (the agent's short name) and `factory_action_name` (the Ontology Action
+    // that authorised it). A generated plan step naturally writes the Action
+    // name, which used to fail the whole tenant's bootstrap — one dangling
+    // reference took its five healthy siblings down with it.
+    const child = AgentSchema.parse({
+      id: "agents-gener-rule-check-for-candidate-identity",
+      name: "RuleCheckForCandidateIdentityAgent",
+      factory_action_name: "ruleCheckForCandidateIdentity",
+      actor: ["Agent"],
+      trigger: ["CANDIDATE_IDENTITY_REQUESTED"],
+      triggered_event: [],
+      actions: [{ order: "1", name: "check", type: "logic" }],
+    });
+    const parent = (invoke: string) =>
+      AgentSchema.parse({
+        id: "agents-gener-process-resume",
+        name: "ProcessResumeAgent",
+        factory_action_name: "processResume",
+        actor: ["Agent"],
+        trigger: ["RESUME_DOWNLOADED"],
+        triggered_event: ["RESUME_PROCESSED"],
+        actions: [
+          { order: "1", name: "invoke_candidate_identity", type: "invoke", invoke },
+        ],
+      });
+
+    expect(() =>
+      assertManifestInvokesValid({
+        tenantSlug: "agents-generation",
+        manifest: [parent("ruleCheckForCandidateIdentity"), child],
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertManifestInvokesValid({
+        tenantSlug: "agents-generation",
+        manifest: [
+          parent("agents-generation.ruleCheckForCandidateIdentity"),
+          child,
+        ],
+      }),
+    ).not.toThrow();
+    // An Action name nobody generated stays dangling.
+    expect(() =>
+      assertManifestInvokesValid({
+        tenantSlug: "agents-generation",
+        manifest: [parent("ruleCheckForSomethingElse"), child],
+      }),
+    ).toThrow(/target is not an enabled/);
+    // A trigger-less agent is not a callable target under either name.
+    const triggerless = AgentSchema.parse({
+      ...child,
+      trigger: [],
+    });
+    expect(() =>
+      assertManifestInvokesValid({
+        tenantSlug: "agents-generation",
+        manifest: [parent("ruleCheckForCandidateIdentity"), triggerless],
+      }),
+    ).toThrow(/target is not an enabled/);
+  });
 });

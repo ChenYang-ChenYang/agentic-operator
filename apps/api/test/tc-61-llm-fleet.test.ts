@@ -137,6 +137,27 @@ describe("TC-61: /v1/llm/fleet model-fleet CRUD", () => {
     expect(body.data.availabilityCheckedAt).toBeNull();
   });
 
+  it("GET /fleet reports whether each entry's provider is usable here", async () => {
+    // A fleet entry outlives its provider's credentials. Listing must say so,
+    // or the authoring UI auto-selects an entry that cannot run and the first
+    // click fails with `provider is not configured`.
+    const res = await env.fetch("/v1/llm/fleet");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      data: Array<{ provider: string; providerConfigured: boolean }>;
+    };
+    expect(body.data.length).toBeGreaterThan(0);
+    for (const entry of body.data) {
+      expect(typeof entry.providerConfigured).toBe("boolean");
+    }
+    // openrouter carries no key in the test process.
+    expect(
+      body.data
+        .filter((entry) => entry.provider === "openrouter")
+        .every((entry) => entry.providerConfigured === false),
+    ).toBe(true);
+  });
+
   it("omits temperature by default and rejects it for unsupported models", async () => {
     const res = await env.fetch("/v1/llm/fleet", {
       method: "POST",
@@ -347,24 +368,45 @@ describe("TC-61: /v1/llm/fleet model-fleet CRUD", () => {
   // user saw `bad_request — model … not in openrouter catalog` when trying
   // to add them through the Settings picker. Guard the catalog so the
   // entries don't get pruned by a future cleanup.
+  // Assert exactly the invariant the bug above was about: adding one of these
+  // must never fail for a CATALOG-MEMBERSHIP reason. It may legitimately fail
+  // for the AGE policy — a catalog entry stops being selectable
+  // CURRENT_MODEL_MAX_AGE_DAYS (365) after its releaseDate — which is what
+  // silently turned this block red on 2026-08-05, with no code change at all,
+  // when openai/gpt-oss-120b (released 2025-08-05) aged out. A flat
+  // `expect(200)` here is a calendar bomb, not a test.
+  //
+  // Worth knowing: google/gemini-3-flash-preview and minimax/minimax-m2.7 are
+  // no longer in PROVIDER_MODEL_CATALOG.openrouter at all. The old flat-200
+  // assertion passed for them regardless, because addFleetEntry deliberately
+  // lets IDs it does not know through (the live provider list may lead the
+  // checked-in catalog). So the "guard against a future cleanup" above was
+  // already vacuous for 2 of its 5 entries: it could not detect the very
+  // pruning it was written to detect.
   it.each([
     "openai/gpt-oss-120b",
     "google/gemini-3-flash-preview",
     "deepseek/deepseek-v4-pro",
     "deepseek/deepseek-v4-flash",
     "minimax/minimax-m2.7",
-  ])("POST /fleet accepts catalog model %s", async (modelName) => {
+  ])("POST /fleet never rejects %s for catalog membership", async (modelName) => {
     const res = await env.fetch("/v1/llm/fleet", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ provider: "openrouter", modelName }),
     });
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as {
-      ok: boolean;
-      data: { modelName: string };
-    };
-    expect(body.ok).toBe(true);
-    expect(body.data.modelName).toBe(modelName);
+    if (res.status === 200) {
+      const body = (await res.json()) as {
+        ok: boolean;
+        data: { modelName: string };
+      };
+      expect(body.ok).toBe(true);
+      expect(body.data.modelName).toBe(modelName);
+      return;
+    }
+    // The only tolerated rejection is the age policy — never "not in catalog".
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { message: string } };
+    expect(body.error.message).toMatch(/is not selectable \(/);
   });
 });

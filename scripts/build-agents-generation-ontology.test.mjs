@@ -4,17 +4,22 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
-import { hashFullDomainArtifact, validateReleaseBundle } from "./allmeta-full-domain-release-client.mjs";
+import {
+  assertNoAllmetaStorageMetadata,
+  hashFullDomainArtifact,
+  validateReleaseBundle,
+} from "./allmeta-full-domain-release-client.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const artifactDir = join(repoRoot, "artifacts/ontology/Agents-generation/v0_4_000");
-const bundle = JSON.parse(await readFile(join(artifactDir, "release_bundle_v0_4_000.json"), "utf8"));
+const artifactDir = join(repoRoot, "artifacts/ontology/Agents-generation/v0_4_001");
+const bundle = JSON.parse(await readFile(join(artifactDir, "release_bundle_v0_4_001.json"), "utf8"));
 const agentActions = bundle.actions.filter((action) => action.actor?.includes("Agent"));
 const legacyTenantDecisionTools = new Set([
   "loadRaasRequirement", "loadRaasRuleContext", "candidateDedupLookup",
   "persistJd", "persistRaasEntities", "persistRuleCheckAudit",
   "routeResumeProcessed", "routeMatchOutcome", "routeInterviewInvitation",
 ]);
+const supplementalRuleIds = ["4-2", "4-3", "4-4", "9-14", "9-15"];
 
 function canonical(value) {
   if (Array.isArray(value)) return value.map(canonical);
@@ -31,16 +36,28 @@ function unique(values, label) {
   }
 }
 
-test("offline compiler artifact is integrity-complete but categorically non-releasable", () => {
-  assert.deepEqual(bundle.releaseGrounding, {
-    schema: "agents-generation-release-grounding/v1",
-    allmetaRulesRead: false,
-    liveRuleCount: 0,
-    liveRuleDigest: bundle.sourceDigests.live_rules_before_release,
-    mode: "offline_scaffold_test",
-    releasable: false,
-  });
-  assert.throws(() => validateReleaseBundle(bundle), /not grounded in a non-empty live Allmeta Rules read/);
+test("compiler artifact is integrity-complete and its grounding state is enforced", () => {
+  assert.equal(bundle.releaseGrounding.schema, "agents-generation-release-grounding/v1");
+  assert.equal(
+    bundle.releaseGrounding.liveRuleDigest,
+    bundle.sourceDigests.live_rules_before_release,
+  );
+  if (bundle.releaseGrounding.mode === "live_allmeta_api") {
+    assert.equal(bundle.releaseGrounding.allmetaRulesRead, true);
+    assert.equal(bundle.releaseGrounding.releasable, true);
+    assert.ok(bundle.releaseGrounding.liveRuleCount > 0);
+    assert.doesNotThrow(() => validateReleaseBundle(bundle));
+  } else {
+    assert.deepEqual(bundle.releaseGrounding, {
+      schema: "agents-generation-release-grounding/v1",
+      allmetaRulesRead: false,
+      liveRuleCount: 0,
+      liveRuleDigest: bundle.sourceDigests.live_rules_before_release,
+      mode: "offline_scaffold_test",
+      releasable: false,
+    });
+    assert.throws(() => validateReleaseBundle(bundle), /not grounded in a non-empty live Allmeta Rules read/);
+  }
   assert.equal(bundle.payloadDigest, hashFullDomainArtifact({
     objects: bundle.objects,
     rules: bundle.rules,
@@ -50,6 +67,38 @@ test("offline compiler artifact is integrity-complete but categorically non-rele
     policyScopes: bundle.policyScopes,
     links: bundle.links,
   }));
+});
+
+test("five live supplemental Rules contain logical definitions only", () => {
+  assert.doesNotThrow(() => assertNoAllmetaStorageMetadata({
+    objects: bundle.objects,
+    rules: bundle.rules,
+    actions: bundle.actions,
+    actionSteps: bundle.actionSteps,
+    events: bundle.events,
+    policyScopes: bundle.policyScopes,
+    links: bundle.links,
+  }));
+  assert.deepEqual(
+    bundle.rules
+      .filter((rule) => supplementalRuleIds.includes(rule.id))
+      .map((rule) => rule.id)
+      .sort(),
+    [...supplementalRuleIds].sort(),
+  );
+  for (const id of supplementalRuleIds) {
+    const rule = bundle.rules.find((candidate) => candidate.id === id);
+    assert.equal(rule.sourceAuthority, "live_allmeta_required_by_old6_action_steps");
+    for (const key of [
+      "__allmeta_definition_json",
+      "__allmeta_position",
+      "source_file",
+      "relatedEntities_json",
+      "updatedAt_json",
+    ]) {
+      assert.ok(!Object.hasOwn(rule, key), `supplemental Rule ${id} leaked ${key}`);
+    }
+  }
 });
 
 test("six Agent Actions expose no old tenant business-decision capability", () => {
@@ -112,10 +161,17 @@ test("reviewed external tools receive explicit field-level dataflow", () => {
   assert.equal(inviteArgs?.jd?.from, "results.resolve_resume_and_jd_text.invitation_request.jd");
 });
 
-test("generic local and external writes have one-record/one-object contracts", () => {
+test("generic local, entities.write, and ontology writes have explicit one-boundary contracts", () => {
   const allowedRecordTypes = new Set([
     "candidate", "resume", "job_posting", "candidate_match_result",
     "candidate_identity_result", "communication_log",
+  ]);
+  const expectedDatabaseOperation = new Map([
+    ["4", "job_posting.sync"],
+    ["9-1", "candidate.save"],
+    ["10-1", "cmr.write_fail"],
+    ["10-2", "match_result.save"],
+    ["11-1", "invitation.mark_sent"],
   ]);
   for (const action of agentActions) {
     for (const step of action.action_steps.filter((item) => item.tool === "records.upsert")) {
@@ -135,11 +191,23 @@ test("generic local and external writes have one-record/one-object contracts", (
       assert.equal(step.tool_arguments.properties.required, true);
       assert.equal(typeof step.idempotency_key_from, "string");
     }
-    for (const step of action.action_steps.filter((item) => item.tool === "postgres.executeTransaction")) {
+    assert.ok(
+      !action.action_steps.some((item) => item.tool === "postgres.executeTransaction"),
+      `${action.name} must not expose the generic transaction executor`,
+    );
+    const entityWrites = action.action_steps.filter((item) => item.tool === "entities.write");
+    const expectedOperation = expectedDatabaseOperation.get(action.id);
+    assert.equal(
+      entityWrites.length,
+      expectedOperation ? 1 : 0,
+      `${action.name} must have exactly the reviewed number of external database writes`,
+    );
+    for (const step of entityWrites) {
       assert.deepEqual(step.tool_arguments, {
-        operations: { from: "results.prepare_external_database_transaction.operations", required: true },
+        operation: { const: expectedOperation },
+        values: { from: "results.prepare_external_database_write.values", required: true },
       });
-      assert.equal(step.idempotency_key_from, "results.prepare_external_database_transaction.transaction_key");
+      assert.equal(step.idempotency_key_from, "results.prepare_external_database_write.idempotency_key");
     }
   }
   const matchRuleCheck = agentActions.find((action) => action.id === "10-1");
@@ -211,7 +279,7 @@ test("10-1 encodes a replay-stable foreach and scopes every per-JR effect", () =
   });
   const children = action.action_steps.filter((step) => step.parent_step === parent.step_id);
   assert.ok(children.some((step) => step.step_id === "evaluate_rules_per_requisition"));
-  assert.ok(children.some((step) => step.tool === "postgres.executeTransaction"));
+  assert.ok(children.some((step) => step.tool === "entities.write"));
   assert.ok(children.some((step) => step.tool === "ontology.writeInstance"));
   assert.deepEqual(
     children.filter((step) => step.object_type === "emit").map((step) => step.event).sort(),

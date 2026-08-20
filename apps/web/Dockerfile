@@ -64,6 +64,16 @@ ENV AGENTIC_API_URL=${AGENTIC_API_URL}
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN pnpm --filter @agentic/web build
+# Next 的 `public/` 是可选目录，本仓没有它：663eca0（2026-07-20）清理未追踪的
+# 运行时产物时删掉了它，而它当时唯一的内容 `public/demo/index.html` 属于按
+# docs/merge/2026-07-20-kenny-merge-playbook.md 必须永久删除的 demo 模式。
+# 所以正确做法不是把目录加回版本控制（那会复活一个已被决策删除的东西），而是
+# 在这里保证它存在——下面 runtime 阶段的 COPY 是无条件的，缺了就整条生产构建
+# 断在最后一步：
+#   COPY /app/apps/web/public → failed to compute cache key: "…/public": not found
+# 建空目录后，「将来真的加了静态资源」与「现在没有」两种情况都能构建。
+# 契约由 apps/api/test/dockerfile-copy-paths.test.ts 守住。
+RUN mkdir -p /app/apps/web/public
 
 # --- runtime -------------------------------------------------------------
 FROM ${NODE_BASE_IMAGE} AS runtime

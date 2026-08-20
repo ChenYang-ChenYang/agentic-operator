@@ -23,6 +23,7 @@ import {
   isNull,
   isNotNull,
   ne,
+  or,
   sql,
 } from "drizzle-orm";
 import {
@@ -33,6 +34,7 @@ import {
   runs,
   tasks,
   tenants,
+  tenantRuntimeNamespaces,
   tenantBudgets,
   workflows,
   deployments,
@@ -49,6 +51,9 @@ interface ListOptions {
   includeArchived?: boolean;
   /** When provided, limits results to tenants where the user has a membership. */
   forUserId?: string | null;
+  /** Platform-management escape hatch. Default product lists show only
+   * canonical Business Domains, not compatibility execution namespaces. */
+  includeRuntimeNamespaces?: boolean;
 }
 
 /**
@@ -65,6 +70,16 @@ export async function listTenantsWithCounts(
   const archivePred = opts.includeArchived
     ? undefined
     : isNull(tenants.archivedAt);
+  const productPred = opts.includeRuntimeNamespaces
+    ? undefined
+    : or(
+        isNull(tenantRuntimeNamespaces.tenantId),
+        ne(tenantRuntimeNamespaces.status, "active"),
+      );
+  const basePred =
+    archivePred && productPred
+      ? and(archivePred, productPred)
+      : (archivePred ?? productPred);
 
   let rows;
   if (opts.forUserId) {
@@ -78,13 +93,19 @@ export async function listTenantsWithCounts(
         createdAt: tenants.createdAt,
         updatedAt: tenants.updatedAt,
         archivedAt: tenants.archivedAt,
+        runtimeNamespaceTenantId: tenantRuntimeNamespaces.tenantId,
+        runtimeNamespaceStatus: tenantRuntimeNamespaces.status,
         role: memberships.role,
       })
       .from(tenants)
       .innerJoin(memberships, eq(memberships.tenantId, tenants.id))
+      .leftJoin(
+        tenantRuntimeNamespaces,
+        eq(tenantRuntimeNamespaces.tenantId, tenants.id),
+      )
       .where(
-        archivePred
-          ? and(archivePred, eq(memberships.userId, opts.forUserId))
+        basePred
+          ? and(basePred, eq(memberships.userId, opts.forUserId))
           : eq(memberships.userId, opts.forUserId),
       )
       .orderBy(desc(tenants.createdAt))
@@ -100,10 +121,16 @@ export async function listTenantsWithCounts(
         createdAt: tenants.createdAt,
         updatedAt: tenants.updatedAt,
         archivedAt: tenants.archivedAt,
+        runtimeNamespaceTenantId: tenantRuntimeNamespaces.tenantId,
+        runtimeNamespaceStatus: tenantRuntimeNamespaces.status,
         role: sql<null>`NULL`.as("role"),
       })
       .from(tenants)
-      .where(archivePred ?? sql`1=1`)
+      .leftJoin(
+        tenantRuntimeNamespaces,
+        eq(tenantRuntimeNamespaces.tenantId, tenants.id),
+      )
+      .where(basePred ?? sql`1=1`)
       .orderBy(desc(tenants.createdAt))
       .all();
   }
@@ -176,6 +203,11 @@ export async function listTenantsWithCounts(
     createdAt: r.createdAt.getTime(),
     updatedAt: r.updatedAt.getTime(),
     archivedAt: r.archivedAt ? r.archivedAt.getTime() : null,
+    productKind:
+      r.runtimeNamespaceTenantId &&
+      r.runtimeNamespaceStatus === "active"
+        ? "runtime_namespace"
+        : "business_domain",
     inngestEnabled: inngestEnabledByTenant.get(r.id) ?? true,
     inngestProcessScoped: isTenantInProcessDeploymentScope(r.slug),
     agentCount: agentByTenant.get(r.id) ?? 0,
@@ -200,6 +232,11 @@ export async function getTenantDetail(
   const db = getDb();
   const t = db.select().from(tenants).where(eq(tenants.slug, slug)).all()[0];
   if (!t) return null;
+  const runtimeNamespace = db
+    .select({ status: tenantRuntimeNamespaces.status })
+    .from(tenantRuntimeNamespaces)
+    .where(eq(tenantRuntimeNamespaces.tenantId, t.id))
+    .get();
 
   const since = new Date(Date.now() - DAY_MS);
 
@@ -282,6 +319,10 @@ export async function getTenantDetail(
     createdAt: t.createdAt.getTime(),
     updatedAt: t.updatedAt.getTime(),
     archivedAt: t.archivedAt ? t.archivedAt.getTime() : null,
+    productKind:
+      runtimeNamespace?.status === "active"
+        ? "runtime_namespace"
+        : "business_domain",
     inngestEnabled: isTenantInngestDeploymentEnabled(t.id),
     inngestProcessScoped: isTenantInProcessDeploymentScope(t.slug),
     agentCount: Number(agentCount ?? 0),
@@ -375,6 +416,7 @@ export function shapeTenantRow(row: typeof tenants.$inferSelect): Tenant {
     createdAt: row.createdAt.getTime(),
     updatedAt: row.updatedAt.getTime(),
     archivedAt: row.archivedAt ? row.archivedAt.getTime() : null,
+    productKind: "business_domain",
     inngestEnabled: isTenantInngestDeploymentEnabled(row.id),
   };
 }

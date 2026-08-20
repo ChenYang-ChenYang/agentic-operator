@@ -69,6 +69,12 @@ export interface FleetEntry {
   availability: "provider_confirmed" | "unverified";
   availabilityCheckedAt: number | null;
   availabilityMessage: string | null;
+  /**
+   * Whether this entry's provider can serve traffic in the running API —
+   * false once its credential is removed. Distinct from `availability`, which
+   * describes whether the model id was confirmed upstream at add time.
+   */
+  providerConfigured?: boolean;
 }
 
 export interface AvailableModel {

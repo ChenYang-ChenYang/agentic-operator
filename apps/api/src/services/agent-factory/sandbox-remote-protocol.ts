@@ -7,9 +7,14 @@ import {
 
 import {
   canonicalEvidenceJson,
+  SANDBOX_CANDIDATE_BUNDLE_VERIFICATION_SCHEMA,
+  sandboxCandidateBundleVerificationEvidenceHash,
   sandboxExecutionReceiptHash,
   sandboxExecutionReceiptIssues,
+  sandboxExecutionPlaneAttestationIssues,
+  type SandboxCandidateBundleVerificationEvidence,
   type SandboxExecutionPlaneReceipt,
+  type SandboxExecutionPlaneAttestationExpected,
 } from "@agentic/agent-factory";
 
 export const REMOTE_SANDBOX_ENVELOPE_SCHEMA =
@@ -513,6 +518,78 @@ export function remoteSandboxResultHash(result: unknown): string {
   return `sandbox-result:v1:${canonicalSandboxSha256(body)}`;
 }
 
+/** Control-signer readback of the exact transport-complete candidate bundle.
+ * This intentionally lives in the narrow protocol module so the signer can
+ * recompute identities without importing any deployment or tenant adapter. */
+export function verifyExactSandboxCandidateBundle(
+  value: unknown,
+  verifiedAt: string,
+): SandboxCandidateBundleVerificationEvidence {
+  assertRemoteSandboxJson(value, "bundle");
+  assertRemoteSandboxSecretFree(value, "bundle");
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new RemoteSandboxProtocolError(
+      "bundle_identity_mismatch",
+      "Sandbox candidate bundle must be an object",
+    );
+  }
+  const bundle = value as Record<string, unknown>;
+  const {
+    bundleHash: _bundleHash,
+    ...body
+  } = bundle;
+  const expectedBundleHash =
+    `sandbox-bundle:v2:${canonicalSandboxSha256(body)}`;
+  const expectedSpecsFingerprint =
+    `specs:v2:${canonicalSandboxSha256(bundle.specs)}`;
+  const expectedManifestHash =
+    `manifest:v1:${canonicalSandboxSha256(bundle.manifest)}`;
+  if (
+    bundle.schema !== "agent-factory-sandbox-candidate-bundle/v2"
+    || bundle.bundleHash !== expectedBundleHash
+    || bundle.specsFingerprint !== expectedSpecsFingerprint
+    || bundle.manifestHash !== expectedManifestHash
+    || typeof bundle.attemptId !== "string"
+    || !bundle.attemptId.trim()
+    || typeof bundle.candidateFingerprint !== "string"
+    || !bundle.candidateFingerprint.trim()
+    || !Array.isArray(bundle.testCases)
+    || !Array.isArray(bundle.toolDefinitions)
+    || !Array.isArray(bundle.toolEvidence)
+    || Number.isNaN(Date.parse(verifiedAt))
+  ) {
+    throw new RemoteSandboxProtocolError(
+      "bundle_identity_mismatch",
+      "Sandbox candidate bundle did not pass exact content-addressed readback",
+    );
+  }
+  const evidenceBody = {
+    schema: SANDBOX_CANDIDATE_BUNDLE_VERIFICATION_SCHEMA,
+    candidateBundleSchema:
+      "agent-factory-sandbox-candidate-bundle/v2" as const,
+    sandboxAttemptId: bundle.attemptId,
+    candidateFingerprint: bundle.candidateFingerprint,
+    bundleHash: expectedBundleHash,
+    specsFingerprint: expectedSpecsFingerprint,
+    manifestHash: expectedManifestHash,
+    testSuiteHash:
+      `test-suite:v1:${canonicalSandboxSha256(bundle.testCases)}`,
+    toolSnapshotHash: `tool-snapshot:v1:${canonicalSandboxSha256({
+      definitions: bundle.toolDefinitions,
+      evidence: bundle.toolEvidence,
+    })}`,
+    verifiedAt,
+  } satisfies Omit<
+    SandboxCandidateBundleVerificationEvidence,
+    "evidenceHash"
+  >;
+  return {
+    ...evidenceBody,
+    evidenceHash:
+      sandboxCandidateBundleVerificationEvidenceHash(evidenceBody),
+  };
+}
+
 function executionReceiptSignatureInput(
   receipt: SandboxExecutionPlaneReceipt,
 ): unknown {
@@ -545,6 +622,7 @@ export function verifySandboxExecutionPlaneReceipt(
     expectedRunnerId: string;
     allowedRunnerBuildIds: ReadonlySet<string>;
     allowedRuntimeImageDigests: ReadonlySet<string>;
+    platformAttestationExpected?: SandboxExecutionPlaneAttestationExpected;
     /** Permit signature/identity validation of a same-host diagnostic receipt.
      * This never changes the receipt's non-promotable semantics; callers must
      * explicitly downgrade the resulting run and promotion never sets it. */
@@ -553,11 +631,18 @@ export function verifySandboxExecutionPlaneReceipt(
     clockSkewMs?: number;
   },
 ): void {
+  const diagnosticSameHost = (
+    args.allowDiagnosticSameHost === true
+    && receipt.isolationTier === "same_host_container"
+  );
   const issues = sandboxExecutionReceiptIssues(receipt, args.expected).filter(
     (issue) => !(
-      args.allowDiagnosticSameHost === true
-      && receipt.isolationTier === "same_host_container"
-      && issue === "sandbox isolation tier is not promotable"
+      diagnosticSameHost
+      && (
+        issue === "sandbox isolation tier is not promotable"
+        || issue
+          === "sandbox execution-plane platform attestation is incomplete"
+      )
     ),
   );
   if (issues.length) {
@@ -565,6 +650,28 @@ export function verifySandboxExecutionPlaneReceipt(
       "execution_receipt_invalid",
       `Remote sandbox execution receipt is invalid: ${issues.join("; ")}`,
     );
+  }
+  // Same-host evidence may be authenticated for diagnostics, but it is
+  // deliberately outside the independently attested remote-plane contract.
+  // It remains non-promotable regardless of any embedded platform document.
+  if (!diagnosticSameHost) {
+    if (!args.platformAttestationExpected) {
+      throw new RemoteSandboxProtocolError(
+        "execution_plane_attestation_unconfigured",
+        "Primary API has no allowlisted execution-plane attestor/host/daemon comparison",
+      );
+    } else {
+      const platformIssues = sandboxExecutionPlaneAttestationIssues(
+        receipt.platformAttestation,
+        args.platformAttestationExpected,
+      );
+      if (platformIssues.length) {
+        throw new RemoteSandboxProtocolError(
+          "execution_plane_attestation_invalid",
+          `Remote sandbox platform attestation is invalid: ${platformIssues.join("; ")}`,
+        );
+      }
+    }
   }
   if (receipt.runnerId !== args.expectedRunnerId) {
     throw new RemoteSandboxProtocolError(

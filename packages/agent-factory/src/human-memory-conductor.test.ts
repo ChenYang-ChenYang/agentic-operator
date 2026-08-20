@@ -199,6 +199,12 @@ describe("runBrain eager human-memory seed", () => {
     let interactionId = "";
     const gateTool: BrainTool = {
       name: "open_test_gate_for_ack",
+      effect: {
+        sideEffect: "write",
+        scope: "conversation",
+        checkpoint: "turn",
+        gate: "any",
+      },
       description: "test-only gate",
       parameters: { type: "object", properties: {} },
       async execute(_args, ctx) {
@@ -337,6 +343,12 @@ describe("runBrain eager human-memory seed", () => {
     let mailboxReads = 0;
     const gateTool: BrainTool = {
       name: "open_gate",
+      effect: {
+        sideEffect: "write",
+        scope: "conversation",
+        checkpoint: "turn",
+        gate: "any",
+      },
       description: "test-only gate",
       parameters: { type: "object", properties: {} },
       async execute(_args, ctx) {
@@ -404,6 +416,12 @@ describe("runBrain eager human-memory seed", () => {
     let snapshot: { messages: unknown[]; ctx: Record<string, unknown> } | undefined;
     const gateTool: BrainTool = {
       name: "open_authorization_gate",
+      effect: {
+        sideEffect: "write",
+        scope: "conversation",
+        checkpoint: "turn",
+        gate: "any",
+      },
       description: "test-only authorization gate",
       parameters: { type: "object", properties: {} },
       async execute(_args, ctx) {

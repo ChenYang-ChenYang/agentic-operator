@@ -13,6 +13,7 @@ import type { RunStreamEvent } from "@agentic/contracts";
 import { subscribeStreamEvents } from "@agentic/runtime";
 import { can, requirePermission } from "../../plugins/rbac";
 import { getRecentActivity } from "../../queries/activity";
+import { createSseDrainRegistry } from "../../plugins/sse-drain";
 
 const KEEPALIVE_MS = 15_000;
 const MAX_PENDING_FRAMES = 2_048;
@@ -76,6 +77,7 @@ function sseFrame(id: string, event: RunStreamEvent): string {
 }
 
 export async function streamRoutes(app: FastifyInstance): Promise<void> {
+  const registerStreamDrain = createSseDrainRegistry(app);
   app.get<{ Querystring: StreamQuery }>(
     "/stream",
     async (
@@ -119,6 +121,7 @@ export async function streamRoutes(app: FastifyInstance): Promise<void> {
       let bootOverflow = false;
       let keepalive: ReturnType<typeof setInterval> | null = null;
       let unsub: () => void = () => undefined;
+      let unregisterDrain: () => void = () => undefined;
       const pendingFrames: string[] = [];
       const bootEvents: RunStreamEvent[] = [];
       const seen = new Set<string>();
@@ -133,6 +136,7 @@ export async function streamRoutes(app: FastifyInstance): Promise<void> {
         bootEvents.length = 0;
         raw.off("drain", flush);
         unsub();
+        unregisterDrain();
         try {
           raw.end();
         } catch {
@@ -234,6 +238,7 @@ export async function streamRoutes(app: FastifyInstance): Promise<void> {
       raw.on("error", cleanup);
       req.raw.on("close", cleanup);
       req.raw.on("error", cleanup);
+      unregisterDrain = registerStreamDrain(cleanup);
 
       writeFrame(": stream open\n\nretry: 1000\n\n");
 

@@ -56,6 +56,8 @@ export const ROLE_OF_TOOL: Record<string, string> = {
   sandbox_run: "沙箱工程师",
   run_regression: "回归测试员",
   inspect_run: "沙箱工程师",
+  // #RUN-EVIDENCE — 只读盘上真源、给可引用位置的取证工位（与「故障诊断师」分工：取证不下结论）。
+  read_run_evidence: "运行取证员",
   analyze_failure: "故障诊断师",
   // 交付
   finish: "交付负责人",

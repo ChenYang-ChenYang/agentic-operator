@@ -62,4 +62,19 @@ export interface McpServerStatus {
   toolCount: number;
   connectedAt?: number;
   lastError?: string;
+  /**
+   * Tools whose advertised `inputSchema` was refused at the trust boundary.
+   * They are still callable (the server owns the real validation), but the
+   * model sees no argument contract for them — so the refusal must be visible
+   * rather than silent. Undefined means every listed schema was usable.
+   */
+  schemaIssues?: McpToolSchemaIssue[];
+}
+
+/** One refused argument contract. `reason` is structural only — schema payload
+ *  never enters it, because this rides on a diagnostics surface. */
+export interface McpToolSchemaIssue {
+  /** Qualified shim name (`<server>.<tool>`), matching the tool map key. */
+  tool: string;
+  reason: string;
 }

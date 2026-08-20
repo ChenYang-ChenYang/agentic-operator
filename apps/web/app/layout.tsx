@@ -25,19 +25,6 @@ export default function RootLayout({
       suppressHydrationWarning
     >
       <head>
-        {/* No-flash: set theme/density/lang from localStorage before first
-            paint, resolving `system` via the OS preference. Mutating <html>
-            pre-hydration is why <html> carries suppressHydrationWarning. */}
-        <script
-          dangerouslySetInnerHTML={{
-            __html:
-              "(function(){try{var t=JSON.parse(localStorage.getItem('agentic.tweaks')||'{}');" +
-              "var th=t.theme;if(th!=='light'&&th!=='dark'){th=(window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches)?'dark':'light';}" +
-              "var d=document.documentElement;d.setAttribute('data-theme',th);" +
-              "if(t.density==='compact'||t.density==='comfortable'||t.density==='default'){d.setAttribute('data-density',t.density);}" +
-              "if(t.language==='en'||t.language==='zh'){d.setAttribute('lang',t.language);}}catch(e){}})();",
-          }}
-        />
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link
           rel="preconnect"

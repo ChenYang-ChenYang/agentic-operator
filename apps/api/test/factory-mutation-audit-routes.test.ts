@@ -14,6 +14,7 @@ const tenantSlug = `factory-audit-${suffix}`;
 const userId = `usr-factory-audit-${suffix}`;
 const domain = `factory-audit-domain-${suffix}`;
 const runId = `frn-factory-audit-${suffix}`;
+const waitingRunId = `frn-factory-audit-waiting-${suffix}`;
 let app: ReturnType<typeof Fastify>;
 
 function audits(action: string, targetId: string) {
@@ -118,5 +119,65 @@ describe("Agent Factory mutation truth + operation audit", () => {
       ...audits("agent_factory.run.delete", runId),
       ...audits("agent_factory.run.restore", runId),
     ].map((row) => row.metaJson))).not.toContain("private goal");
+  });
+
+  it("durably stops a waiting-human run without deleting its history", async () => {
+    recordRunStart(
+      domain,
+      "waiting for a decision that the operator chose to abandon",
+      tenantId,
+      waitingRunId,
+    );
+    recordRunFinish(
+      waitingRunId,
+      {
+        status: "waiting_human",
+        tokensUsed: 2,
+        turns: 1,
+        agentsCount: 0,
+        reachedTerminal: false,
+        transcript: [
+          {
+            t: "done",
+            status: "waiting_human",
+            completionKind: "incomplete",
+          },
+        ],
+      },
+      tenantId,
+    );
+
+    const stopped = await app.inject({
+      method: "POST",
+      url: "/v1/agent-factory/stop",
+      payload: { runId: waitingRunId },
+    });
+
+    expect(stopped.statusCode, stopped.body).toBe(200);
+    expect(stopped.json().data).toEqual({
+      aborted: false,
+      finalized: true,
+    });
+    expect(getDb().select().from(factoryRuns).where(
+      and(
+        eq(factoryRuns.tenantId, tenantId),
+        eq(factoryRuns.id, waitingRunId),
+      ),
+    ).all()[0]).toMatchObject({
+      status: "aborted",
+      deletedAt: null,
+    });
+    expect(
+      audits("agent_factory.run.stop", waitingRunId).map(
+        (row) => row.metaJson,
+      ),
+    ).toContainEqual(
+      expect.objectContaining({
+        decision: "allow",
+        outcome: "succeeded",
+        mode: "orphan_durably_finalized",
+        previousStatus: "waiting_human",
+      }),
+    );
   });
 });

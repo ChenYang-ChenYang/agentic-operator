@@ -527,6 +527,75 @@ export function evaluateCondition(expr: string, scope: ConditionScope): boolean 
   return result.valid ? result.value : false;
 }
 
+/**
+ * An authored `condition` on an ordinary action is a precondition for that
+ * action, not a standalone branch verdict.  Keeping this distinction in one
+ * helper prevents the durable register loop and the recursive step engine
+ * from drifting: `type:"condition"` retains its existing result/route
+ * semantics, while every other action either runs, is skipped, or fails
+ * closed before it can perform work.
+ */
+export type ActionPreconditionEvaluation =
+  | { outcome: "not_applicable" }
+  | { outcome: "run"; condition: string }
+  | { outcome: "skip"; condition: string; reason: string }
+  | { outcome: "invalid"; condition: string; error: string };
+
+/** Legacy ontology/manifests also use `condition` for human-readable
+ * provenance such as "审计已落库". Only the exact safe DSL is executable;
+ * prose remains round-tripped evidence and is deliberately not guessed into
+ * a boolean predicate. New generated plans validate this same DSL before
+ * projection, so their guards continue to fail closed at execution time. */
+export function executableActionCondition(
+  condition: string | undefined,
+): string | undefined {
+  if (condition === undefined) return undefined;
+  const source = condition.trim();
+  return source && validateConditionSyntax(source) === null
+    ? source
+    : undefined;
+}
+
+export function evaluateActionPrecondition(
+  action: { type: string; name: string; condition?: string },
+  scope: ConditionScope,
+): ActionPreconditionEvaluation {
+  if (action.type === "condition" || action.condition === undefined) {
+    return { outcome: "not_applicable" };
+  }
+  const condition = executableActionCondition(action.condition);
+  if (!condition) return { outcome: "not_applicable" };
+  const evaluated = evaluateConditionDetailed(condition, scope);
+  if (!evaluated.valid) {
+    return {
+      outcome: "invalid",
+      condition,
+      error: evaluated.error ?? "condition evaluation failed",
+    };
+  }
+  if (!evaluated.value) {
+    return {
+      outcome: "skip",
+      condition,
+      reason: `action condition "${condition}" evaluated false`,
+    };
+  }
+  return { outcome: "run", condition };
+}
+
+/** Whether this lexical action scope delegates event routing to one or more
+ * explicitly guarded emit actions. Nested foreach scopes are checked by their
+ * own executor so a match in one item/scope cannot hide a no-match in another. */
+export function hasAuthoritativeConditionalEmit(
+  actions: ReadonlyArray<{ type: string; condition?: string }>,
+): boolean {
+  return actions.some(
+    (action) =>
+      action.type === "emit" &&
+      executableActionCondition(action.condition) !== undefined,
+  );
+}
+
 // ── dependsOn gating (real branching) ──────────────────────────────────────────
 
 export interface GateState {

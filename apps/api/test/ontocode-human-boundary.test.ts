@@ -1,8 +1,9 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import {
   getDb,
+  ontocodeBuildExecutions,
   ontocodeHarnessJobs,
   ontocodeProjects,
   ontocodeSessionEvents,
@@ -11,6 +12,7 @@ import {
 import {
   createOntoCodeProject,
   createOntoCodeSession,
+  createOntoCodeTurn,
   deleteOntoCodeSession,
 } from "../src/services/ontocode-session-store";
 import {
@@ -30,6 +32,9 @@ describe("confirmSessionHumanBoundaries", () => {
   let tenantId: string;
   let originalBinding: FactoryDomainBinding | null;
   const projectIds: string[] = [];
+  const ontologyHash = createHash("sha256")
+    .update("ontocode-human-boundary-legacy-fixture/v1")
+    .digest("hex");
 
   beforeAll(async () => {
     await buildTestEnv();
@@ -43,7 +48,10 @@ describe("confirmSessionHumanBoundaries", () => {
     originalBinding = getFactoryDomainBinding(tenantId);
     setFactoryDomainBinding(
       tenantId,
-      { id: "ontocode-worker-test", name: "OntoCode human-boundary test Ontology" },
+      {
+        id: "ontocode-worker-test",
+        name: "OntoCode human-boundary test Ontology",
+      },
       "explicit",
     );
   });
@@ -71,7 +79,10 @@ describe("confirmSessionHumanBoundaries", () => {
     }
   });
 
-  function seedWaitingBuild(systems: string[]) {
+  function seedWaitingBuild(
+    systems: string[],
+    autonomyMode: "copilot" | "sandbox_autopilot" = "sandbox_autopilot",
+  ) {
     const ctx = { tenantId, actorId: "test-fde" };
     const suffix = randomUUID().slice(0, 8);
     const { project } = createOntoCodeProject(ctx, {
@@ -83,7 +94,8 @@ describe("confirmSessionHumanBoundaries", () => {
       projectId: project.id,
       title: `HB session ${suffix}`,
       goal: "Generate agents",
-      autonomyMode: "copilot",
+      autonomyMode,
+      ontologySnapshotHash: ontologyHash,
     });
     const db = getDb();
     const now = new Date();
@@ -125,6 +137,7 @@ describe("confirmSessionHumanBoundaries", () => {
         payloadJson: JSON.stringify({
           jobId,
           kind: "build",
+          ontologyHash,
           question: {
             id: `q-${suffix}`,
             kind: "config",
@@ -170,13 +183,55 @@ describe("confirmSessionHumanBoundaries", () => {
       .all();
     const original = jobs.find((j) => j.id === jobId);
     expect(original?.status).toBe("cancelled");
-    const resumed = jobs.find(
-      (j) => j.id !== jobId && j.kind === "build",
-    );
+    const resumed = jobs.find((j) => j.id !== jobId && j.kind === "build");
     expect(resumed).toBeDefined();
     expect(resumed?.status === "queued" || resumed?.status === "leased").toBe(
       true,
     );
+    expect(original?.buildExecutionId).toMatch(/^ocx-/);
+    expect(resumed?.buildExecutionId).toBe(original?.buildExecutionId);
+    expect(
+      getDb()
+        .select()
+        .from(ontocodeBuildExecutions)
+        .where(eq(ontocodeBuildExecutions.id, original!.buildExecutionId!))
+        .get(),
+    ).toMatchObject({
+      sessionId: session.id,
+      state: "resuming",
+      ontologyHash,
+      engineKind: "agent_factory",
+      // This pre-Factory question has no historical private run. Adoption
+      // must not manufacture one merely to make the continuation look modern.
+      engineRunId: null,
+      pendingInteractionId: expect.stringMatching(/^q-/),
+      pendingInteractionKind: "execution_readiness",
+      pendingAnswerStatus: "pending",
+    });
+  });
+
+  it("keeps the resumed build behind explicit approval in copilot mode", () => {
+    const { ctx, session, jobId } = seedWaitingBuild(
+      ["Copilot_Boundary_System"],
+      "copilot",
+    );
+
+    const result = confirmSessionHumanBoundaries(ctx, session.id);
+
+    expect(result.resumed).toBe(true);
+    const jobs = getDb()
+      .select()
+      .from(ontocodeHarnessJobs)
+      .where(eq(ontocodeHarnessJobs.sessionId, session.id))
+      .all();
+    expect(jobs.find((job) => job.id === jobId)?.status).toBe("cancelled");
+    const continuation = jobs.find(
+      (job) => job.id !== jobId && job.kind === "build",
+    );
+    expect(continuation).toMatchObject({
+      status: "waiting_user",
+    });
+    expect(continuation?.commandId).not.toBeNull();
   });
 
   it("deletes a parked session outright, cascading its children", () => {
@@ -214,6 +269,73 @@ describe("confirmSessionHumanBoundaries", () => {
     ).toHaveLength(0);
     // deleting again is a clean 404, not a crash
     expect(() => deleteOntoCodeSession(ctx, session.id)).toThrow();
+  });
+
+  it("refuses conflicting legacy private-run evidence without creating or binding an execution", () => {
+    const { ctx, session, jobId } = seedWaitingBuild([
+      "Ambiguous_Boundary_System",
+    ]);
+    const db = getDb();
+    const now = new Date();
+    for (const [offset, factoryRunId] of [
+      "ocf-conflicting-legacy-a",
+      "ocf-conflicting-legacy-b",
+    ].entries()) {
+      db.insert(ontocodeSessionEvents)
+        .values({
+          id: `oce-${randomUUID().replace(/-/g, "").slice(0, 16)}`,
+          seq: 901 + offset,
+          tenantId,
+          projectId: session.projectId,
+          sessionId: session.id,
+          harnessJobId: jobId,
+          commandId: null,
+          correlationId: `cor-conflict-${offset}`,
+          causationId: null,
+          type: "harness.build.factory_started",
+          visibility: "audit",
+          payloadJson: JSON.stringify({ jobId, factoryRunId }),
+          createdAt: now,
+        })
+        .run();
+    }
+
+    expect(() =>
+      createOntoCodeTurn(ctx, session.id, {
+        text: "Use the confirmed boundary and continue",
+        behavior: "execute",
+        action: "generate_package",
+        arguments: {
+          actionIds: ["process-resume"],
+          resumeWaitingUserJobId: jobId,
+          clarificationAnswer: "Treat the system as a human boundary",
+        },
+        affectedSemanticPaths: [],
+        requestedCapabilities: [],
+        idempotencyKey: `ambiguous-legacy-${randomUUID()}`,
+      }),
+    ).toThrow("more than one private generation run");
+
+    expect(
+      db
+        .select()
+        .from(ontocodeHarnessJobs)
+        .where(eq(ontocodeHarnessJobs.sessionId, session.id))
+        .all(),
+    ).toEqual([
+      expect.objectContaining({
+        id: jobId,
+        status: "waiting_user",
+        buildExecutionId: null,
+      }),
+    ]);
+    expect(
+      db
+        .select()
+        .from(ontocodeBuildExecutions)
+        .where(eq(ontocodeBuildExecutions.sessionId, session.id))
+        .all(),
+    ).toHaveLength(0);
   });
 
   it("refuses to delete a session from another Business Domain", () => {

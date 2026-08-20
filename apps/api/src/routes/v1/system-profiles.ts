@@ -14,7 +14,12 @@
  */
 
 import type { FastifyInstance } from "fastify";
-import { SystemProfileV1Schema, systemProfileNames } from "@agentic/contracts";
+import {
+  SystemProfileV1Schema,
+  systemProfileNames,
+  type SystemConfigRequirement,
+  type SystemProfileV1,
+} from "@agentic/contracts";
 import {
   chatOnce,
   isGatewayConfigured,
@@ -30,6 +35,7 @@ import {
 import {
   buildToolSystemsMap,
   finalizeSystemCoverageScope,
+  norm,
   parseSystemCoverageScopeList,
   resolveSystemCoverageScope,
   summarizeSystemCoverage,
@@ -41,7 +47,10 @@ import {
   requirementFor,
   type IntegrationLite,
 } from "../../services/system-config-requirements";
-import { classifyProbeError } from "../../services/probe-classify";
+import {
+  classifyProbeError,
+  redactProbeDetail,
+} from "../../services/probe-classify";
 import { probeHttpHealth } from "../../services/generic-probe";
 import { listGlobalTools, gohire } from "@agentic/tools";
 import {
@@ -50,12 +59,103 @@ import {
   listIntegrations,
 } from "../../services/integration-store";
 import { recordSystemProbe } from "../../services/system-profile-store";
+import { getFactoryDomainBinding } from "../../services/agent-factory/domain-binding";
+import {
+  AllmetaOntologySource,
+  normDomainId,
+} from "../../services/agent-factory/allmeta-ontology-source";
+import type { UploadedFirstOntologySource } from "../../services/agent-factory/uploaded-ontology-source";
+import {
+  classifyOntologyReadFailure,
+  classifySystemProfileStoreFailure,
+  redactOntologyStack,
+  type OntologyReadStage,
+} from "../../services/ontology-read-failure";
 
 /** A system's connection probe reuses the provider's health-probe tool (the
  * same one Settings→Integrations 连接测试 uses). Only providers with a health
  * tool can be auto-probed; others report honestly that no auto test exists. */
 function healthToolFor(provider: string) {
   return provider === "gohire" ? gohire.gohireHealthApi : null;
+}
+
+export type SystemProfileProbeKind =
+  | "provider_health"
+  | "allmeta_ontology_read";
+
+const ALLMETA_PROFILE_IDENTITIES = new Set([
+  "allmeta",
+  "allmetaontology",
+  "allmetaontologysystem",
+]);
+
+/** Allmeta's System Profile intentionally uses deployment env refs rather than
+ * a Settings provider row. Match only its reviewed identity vocabulary; an
+ * arbitrary env-only profile must never inherit the Allmeta read probe. */
+export function isAllmetaOntologyProfile(profile: SystemProfileV1): boolean {
+  return systemProfileNames(profile).some((name) =>
+    ALLMETA_PROFILE_IDENTITIES.has(norm(name)),
+  );
+}
+
+/** Describe whether the workbench can actually execute a probe. Configuration
+ * presence and probe availability are independent: an env-only profile may be
+ * fully configured while still having no safe automatic probe. */
+export function systemProfileProbeKind(input: {
+  profile: SystemProfileV1 | undefined;
+  credentialProvider: string | null;
+  providerIntegrationConfigured: boolean;
+  bindingSource: "explicit" | "auto" | "upload" | null;
+}): SystemProfileProbeKind | null {
+  if (!input.profile || input.profile.availability === "planned") return null;
+  if (
+    isAllmetaOntologyProfile(input.profile) &&
+    input.bindingSource === "explicit"
+  ) {
+    return "allmeta_ontology_read";
+  }
+  if (input.credentialProvider && input.providerIntegrationConfigured) {
+    return "provider_health";
+  }
+  return null;
+}
+
+/**
+ * A bound domain id is an identity, so the read never folds case to "help".
+ * Naming the catalog's own spelling is the honest alternative: the caller is
+ * told exactly what to type, and nothing is substituted on their behalf.
+ * Returns undefined when the catalog cannot be consulted — an absent hint,
+ * never an invented one.
+ */
+async function nearMissDomainHint(
+  source: UploadedFirstOntologySource | null,
+  domain: string,
+): Promise<string | undefined> {
+  if (!source) return undefined;
+  try {
+    const wanted = normDomainId(domain);
+    const near = (await source.listDomains())
+      .map((entry) => entry.id)
+      .filter((id) => id !== domain && normDomainId(id) === wanted);
+    if (!near.length) return undefined;
+    return (
+      `目录里有写法相近的业务域：${near.map((id) => `「${id}」`).join("、")}。` +
+      `业务域 id 区分大小写，请照抄目录里的写法。`
+    );
+  } catch {
+    return undefined;
+  }
+}
+
+export function systemConfigurationIsReady(input: {
+  providerIntegrationConfigured: boolean;
+  requirement: SystemConfigRequirement;
+}): boolean {
+  return (
+    input.providerIntegrationConfigured ||
+    (input.requirement.posture === "env_only" &&
+      input.requirement.satisfied)
+  );
 }
 
 // 起草规程（含凭证字段规格）见 docs/skills/system-config-drafting.md —— 改这里
@@ -98,14 +198,14 @@ export async function systemProfilesRoutes(
     try {
       profiles = listSystemProfiles(auth.tenantId);
     } catch (e) {
-      if (String((e as Error).message).includes("no such table")) {
-        return reply.fail(
-          "MIGRATION_PENDING",
-          "system_profiles 表尚未迁移——停掉 dev 栈后运行 pnpm db:migrate 再重启。",
-          503,
-        );
-      }
-      throw e;
+      const failure = classifySystemProfileStoreFailure(e);
+      return reply.fail(
+        failure.code,
+        failure.message,
+        503,
+        undefined,
+        failure.details,
+      );
     }
     return reply.ok({
       profiles,
@@ -118,8 +218,24 @@ export async function systemProfilesRoutes(
 
   // 系统覆盖：默认是整个域；actionIds / agentSlugs 可把范围收敛到本次
   // 生成套件。systems 只是完整性断言，绝不直接过滤服务端推导出的依赖。
-  // Pre-migration DBs degrade to "no profiles" — coverage still reports the
-  // referenced systems (all unprofiled), which is exactly the actionable truth.
+  //
+  // Failure discipline for this handler: no catch-all mapping. Every step of
+  // the coverage read runs inside one guard that remembers WHICH step it is on,
+  // so an escaping error is reported with a real reason and a named stage
+  // instead of a bare 500 or a blanket "domain not found". Inputs this route
+  // cannot read (profile table, integration table, ontology) fail closed —
+  // reporting "nothing is configured" because a table was unreadable would be a
+  // different answer, not a smaller one.
+  //
+  // Two statements DO run before the guard, deliberately, because neither one
+  // is a coverage read and neither may be reported as one:
+  //   · `requireAuth` — an unauthenticated or non-member caller is a 401/403
+  //     about the caller. Folding it into the guard would relabel it as an
+  //     internal coverage defect at stage `resolve_binding` and tell an FDE to
+  //     report a platform bug for their own expired session.
+  //   · reading `domain` off the query string — a pure string read that decides
+  //     the 400, and the value the guard's own error messages are written
+  //     around.
   app.get<{
     Querystring: {
       domain?: string;
@@ -131,58 +247,80 @@ export async function systemProfilesRoutes(
     const auth = requireAuth(req);
     const domain = String(req.query?.domain ?? "").trim();
     if (!domain) return reply.fail("BAD_REQUEST", "domain is required", 400);
-    let scopeRequest;
+    let stage: OntologyReadStage = "resolve_binding";
+    let source: UploadedFirstOntologySource | null = null;
     try {
-      scopeRequest = {
-        actionIds: parseSystemCoverageScopeList(
-          req.query?.actionIds,
-          "actionIds",
-        ),
-        agentSlugs: parseSystemCoverageScopeList(
-          req.query?.agentSlugs,
-          "agentSlugs",
-        ),
-        systems: parseSystemCoverageScopeList(req.query?.systems, "systems"),
-      };
-    } catch (error) {
-      if (error instanceof SystemCoverageScopeError) {
-        return reply.fail(error.code, error.message, 400);
+      // Which ontology graph a tenant reads is that tenant's own decision, and
+      // it is recorded as a binding. Without one there is nothing to fall back
+      // to that would still be true: an unbound tenant would silently read a
+      // catalog domain it never chose, and every profile lookup would come back
+      // empty because profiles are tenant-scoped — reported as "0 configured".
+      const binding = getFactoryDomainBinding(auth.tenantId);
+      if (!binding) {
+        return reply.fail(
+          "NO_DOMAIN_BINDING",
+          "这个工作区还没有选择业务域，因此无从判断要连哪些外部系统。" +
+            "请先在业务域设置里选择或上传一个业务域，再回到这里。",
+          409,
+          undefined,
+          { reason: "no_domain_binding", stage: "resolve_binding", domain },
+        );
       }
-      throw error;
-    }
-    let profiles: ReturnType<typeof listSystemProfiles> = [];
-    try {
-      profiles = listSystemProfiles(auth.tenantId);
-    } catch (e) {
-      if (!String((e as Error).message).includes("no such table")) throw e;
-    }
-    const { makeBoundFactoryOntologySource } =
-      await import("../../services/agent-factory/bound-ontology-source");
-    const source = makeBoundFactoryOntologySource(
-      auth.tenantSlug,
-      auth.tenantId,
-    );
-    // A1 — an agent most often reaches an external system through a tool
-    // (tool_use[]), not an integration.systems block. Feed the global tool
-    // catalog's capability.systems so pure-tool_use actions are not silently
-    // reported as "fully covered".
-    const toolSystems = buildToolSystemsMap(listGlobalTools());
-    // Systems the platform runtime already satisfies (LLM gateway / internal
-    // invoke) — folded in like tool_use so AO_Internal / LLM_Gateway show as
-    // covered ("运行时提供") instead of demanding an external profile.
-    let runtimeSystems: string[] = [];
-    try {
+
+      let scopeRequest;
+      try {
+        scopeRequest = {
+          actionIds: parseSystemCoverageScopeList(
+            req.query?.actionIds,
+            "actionIds",
+          ),
+          agentSlugs: parseSystemCoverageScopeList(
+            req.query?.agentSlugs,
+            "agentSlugs",
+          ),
+          systems: parseSystemCoverageScopeList(req.query?.systems, "systems"),
+        };
+      } catch (error) {
+        if (error instanceof SystemCoverageScopeError) {
+          return reply.fail(error.code, error.message, 400);
+        }
+        throw error;
+      }
+
+      stage = "read_profiles";
+      let profiles: ReturnType<typeof listSystemProfiles>;
+      try {
+        profiles = listSystemProfiles(auth.tenantId);
+      } catch (e) {
+        const failure = classifySystemProfileStoreFailure(e);
+        return reply.fail(
+          failure.code,
+          failure.message,
+          503,
+          undefined,
+          failure.details,
+        );
+      }
+
+      stage = "build_source";
+      const { makeBoundFactoryOntologySource } =
+        await import("../../services/agent-factory/bound-ontology-source");
+      source = makeBoundFactoryOntologySource(auth.tenantSlug, auth.tenantId);
+      // A1 — an agent most often reaches an external system through a tool
+      // (tool_use[]), not an integration.systems block. Feed the global tool
+      // catalog's capability.systems so pure-tool_use actions are not silently
+      // reported as "fully covered".
+      const toolSystems = buildToolSystemsMap(listGlobalTools());
+      // Systems the platform runtime already satisfies (LLM gateway / internal
+      // invoke) — folded in like tool_use so AO_Internal / LLM_Gateway show as
+      // covered ("运行时提供") instead of demanding an external profile.
       const { runtimeProvidedSystemNames } =
         await import("../../services/agent-factory/index");
-      runtimeSystems = runtimeProvidedSystemNames();
-    } catch {
-      /* factory index unavailable — runtime systems simply not folded in */
-    }
-    // Connection-ladder inputs: which credential providers are configured,
-    // plus the secret-free row view the requirement derivation checks.
-    let configuredProviders = new Set<string>();
-    const integrationsByProvider = new Map<string, IntegrationLite>();
-    try {
+      const runtimeSystems = runtimeProvidedSystemNames();
+      // Connection-ladder inputs: which credential providers are configured,
+      // plus the secret-free row view the requirement derivation checks.
+      const configuredProviders = new Set<string>();
+      const integrationsByProvider = new Map<string, IntegrationLite>();
       for (const i of listIntegrations(auth.tenantId)) {
         if (!i.enabled) continue;
         configuredProviders.add(i.provider);
@@ -194,13 +332,13 @@ export async function systemProfilesRoutes(
           enabled: i.enabled,
         });
       }
-    } catch {
-      /* pre-migration / no integrations — everything shows unconfigured */
-    }
-    const profileById = new Map(profiles.map((p) => [p.id, p]));
-    const systemToolIndex = buildSystemToolIndex(listGlobalTools());
-    try {
+      const profileById = new Map(profiles.map((p) => [p.id, p]));
+      const systemToolIndex = buildSystemToolIndex(listGlobalTools());
+
+      stage = "read_ontology";
       const ontology = await source.fetchOntology(domain);
+
+      stage = "read_agent_drafts";
       let agentScopes: SystemCoverageAgentScope[] = [];
       if (scopeRequest.agentSlugs.length) {
         // A slug is trusted only after resolving it from this tenant/domain's
@@ -227,6 +365,7 @@ export async function systemProfilesRoutes(
           ...(draft.versionId ? { versionId: draft.versionId } : {}),
         }));
       }
+      stage = "summarize";
       const resolvedScope = resolveSystemCoverageScope(
         ontology.actions ?? [],
         scopeRequest,
@@ -243,6 +382,8 @@ export async function systemProfilesRoutes(
         summary,
         profiles,
       );
+
+      stage = "enrich";
       // Enrich each row with the full connection maturity ladder so the
       // workbench card can show "还差几步能用" without extra round-trips.
       const systems = summary.systems.map((row) => {
@@ -258,18 +399,34 @@ export async function systemProfilesRoutes(
           integrationsByProvider,
           runtimeProvided: row.runtimeProvided,
         });
+        const resolvedProvider =
+          credentialProvider ?? configRequirement.provider;
+        const providerIntegrationConfigured = resolvedProvider
+          ? configuredProviders.has(resolvedProvider)
+          : false;
+        // Deployment env refs are a real configuration channel even though
+        // they intentionally have no Settings integration row. This is the
+        // Allmeta shape (`ALLMETA_BASE_URL` + `ALLMETA_API_KEY`).
+        const credentialConfigured =
+          systemConfigurationIsReady({
+            providerIntegrationConfigured,
+            requirement: configRequirement,
+          });
+        const probeKind = systemProfileProbeKind({
+          profile,
+          credentialProvider: resolvedProvider,
+          providerIntegrationConfigured,
+          bindingSource: binding.source,
+        });
         return {
           ...row,
           hasTool: row.referencedVia.includes("tool"),
-          credentialProvider: credentialProvider ?? configRequirement.provider,
-          credentialConfigured:
-            (credentialProvider ?? configRequirement.provider)
-              ? configuredProviders.has(
-                  (credentialProvider ?? configRequirement.provider)!,
-                )
-              : false,
+          credentialProvider: resolvedProvider,
+          credentialConfigured,
           probeOk: profile?.lastProbe?.ok ?? null,
           probeAt: profile?.lastProbe?.at ?? null,
+          probeSupported: probeKind !== null,
+          probeKind,
           availability: profile?.availability ?? "live",
           plannedFallback: profile?.plannedFallback ?? "block",
           configRequirement,
@@ -280,10 +437,28 @@ export async function systemProfilesRoutes(
       if (e instanceof SystemCoverageScopeError) {
         return reply.fail(e.code, e.message, 400);
       }
+      const failure = classifyOntologyReadFailure({ error: e, stage, domain });
+      const hint =
+        failure.details.reason === "domain_not_in_catalog"
+          ? await nearMissDomainHint(source, domain)
+          : undefined;
+      req.log.error(
+        {
+          stage,
+          domain,
+          reason: failure.details.reason,
+          code: failure.code,
+          diagnostic: failure.details.diagnostic,
+          stack: redactOntologyStack(e),
+        },
+        "system coverage read failed",
+      );
       return reply.fail(
-        "NOT_FOUND",
-        `无法读取域 ${domain}：${(e as Error).message}`,
-        404,
+        failure.code,
+        failure.message,
+        failure.status,
+        hint,
+        failure.details,
       );
     }
   });
@@ -364,6 +539,50 @@ export async function systemProfilesRoutes(
           400,
         );
       }
+
+      // Allmeta is deliberately env-only: there is no Settings provider row
+      // and no generic `/health` contract. Prove the connection by reading the
+      // tenant's exact, persisted Allmeta domain through the same strict source
+      // used by Factory authoring. This is read-only connection evidence; it
+      // does not claim sandbox write verification or Candidate promotion.
+      if (isAllmetaOntologyProfile(profile)) {
+        const binding = getFactoryDomainBinding(auth.tenantId);
+        if (!binding || binding.source !== "explicit") {
+          return reply.fail(
+            "NO_ALLMETA_BINDING",
+            "当前租户未绑定 Allmeta Ontology 域——请先在业务域设置中选择 Allmeta 来源",
+            400,
+          );
+        }
+        const at = Date.now();
+        let ok = false;
+        let detail: string;
+        try {
+          const ontology = await new AllmetaOntologySource(undefined, {
+            domainIdentity: "exact",
+          }).fetchOntology(binding.ontologyDomainId);
+          ok = true;
+          detail =
+            `只读 Ontology 探针通过：${binding.ontologyDomainId}` +
+            `（objects=${ontology.objects.length}, actions=${ontology.actions.length}, ` +
+            `events=${ontology.events.length}, rules=${ontology.rules.length}）`;
+        } catch (error) {
+          detail = `只读 Ontology 探针失败：${redactProbeDetail(error)}`;
+        }
+        recordSystemProbe(auth.tenantId, profile.id, {
+          ok,
+          at,
+          detail,
+        });
+        return reply.ok({
+          ok,
+          probeKind: "allmeta_ontology_read" as const,
+          domain: binding.ontologyDomainId,
+          at,
+          detail,
+        });
+      }
+
       const provider = profile.credential?.provider;
       if (!provider) {
         return reply.fail(
@@ -403,7 +622,11 @@ export async function systemProfilesRoutes(
             detail = cls.note;
           } else {
             ok = false;
-            detail = err instanceof Error ? err.message : String(err);
+            // The tool folds the WHOLE upstream error body into its message,
+            // and this probe reached that upstream holding a decrypted key —
+            // an auth error that quotes the key it rejected would otherwise be
+            // persisted verbatim on the profile row.
+            detail = redactProbeDetail(err);
           }
         }
       } else {
@@ -425,7 +648,9 @@ export async function systemProfilesRoutes(
           healthPath: profile.credential?.healthPath,
         });
         ok = result.ok;
-        detail = result.detail;
+        // `detail` keeps up to 200 characters of the upstream's own body, and
+        // the probe sent it a Bearer credential — same echo risk as above.
+        detail = redactProbeDetail(result.detail);
       }
       const at = Date.now();
       recordSystemProbe(auth.tenantId, profile.id, {
@@ -451,7 +676,7 @@ export async function systemProfilesRoutes(
   app.post<{ Body: { url?: string; text?: string; hint?: string } }>(
     "/system-profiles/draft-from-doc",
     async (req, reply) => {
-      requireAuth(req);
+      const auth = requireAuth(req);
       let doc = String(req.body?.text ?? "").trim();
       const url = String(req.body?.url ?? "").trim();
       const hint = String(req.body?.hint ?? "").trim();
@@ -508,7 +733,19 @@ export async function systemProfilesRoutes(
         const text = await chatOnce(
           DRAFT_SYS,
           `${hint ? `平台提示：${hint}\n\n` : ""}对接文档（截断）：\n${doc.slice(0, 6000)}`,
-          { temperature: 0.2, maxTokens: 1600, models: modelChain("review") },
+          {
+            temperature: 0.2,
+            maxTokens: 1600,
+            models: modelChain("review"),
+            purpose: "system-profile.draft",
+            context: {
+              tenantId: auth.tenantId,
+              tenantSlug: auth.tenantSlug,
+              domain:
+                getFactoryDomainBinding(auth.tenantId)?.ontologyDomainId ??
+                undefined,
+            },
+          },
         );
         const match = text.match(/\{[\s\S]*\}/);
         if (!match)

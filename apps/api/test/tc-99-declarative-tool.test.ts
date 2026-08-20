@@ -6,7 +6,15 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import Fastify from "fastify";
-import { auditLog, factoryTools, getDb, tenants, users } from "@agentic/db";
+import {
+  auditLog,
+  factoryToolProbes,
+  factoryToolRevisions,
+  factoryTools,
+  getDb,
+  tenants,
+  users,
+} from "@agentic/db";
 import {
   saveDeclarativeTool,
   listDeclarativeTools,
@@ -14,7 +22,11 @@ import {
   DeclarativeToolQueryError,
 } from "../src/services/agent-factory/declarative-tool";
 import { registerEnvelope } from "../src/plugins/error";
-import { toolsRoutes } from "../src/routes/v1/tools";
+import {
+  selectGeneratedToolDraftFields,
+  toolsRoutes,
+} from "../src/routes/v1/tools";
+import { agentFactoryRoutes } from "../src/routes/v1/agent-factory";
 import type { TestEnv } from "./harness";
 
 const suffix = Date.now().toString(36);
@@ -51,18 +63,20 @@ describe("TC-99: declarative tool tenant scope", () => {
     const app = Fastify({ logger: false });
     await registerEnvelope(app);
     app.addHook("onRequest", async (req) => {
+      const operator = req.headers["x-test-role"] === "operator";
       req.auth = {
         userId,
         email: "tc99@example.com",
         name: "TC99",
-        platformRole: "superadmin",
+        platformRole: operator ? "none" : "superadmin",
         tenantId: systemTenant.id,
         tenantSlug: systemTenant.slug,
-        role: "admin",
+        role: operator ? "operator" : "admin",
         via: "dev",
       };
     });
     await app.register(toolsRoutes, { prefix: "/v1" });
+    await app.register(agentFactoryRoutes, { prefix: "/v1" });
     await app.ready();
     env = {
       fetch: async (url, init) => {
@@ -84,12 +98,39 @@ describe("TC-99: declarative tool tenant scope", () => {
 
   afterAll(async () => {
     const db = getDb();
-    for (const name of names) db.delete(factoryTools).where(eq(factoryTools.name, name)).run();
+    for (const name of names) {
+      db.delete(factoryToolProbes).where(eq(factoryToolProbes.toolName, name)).run();
+      db.delete(factoryToolRevisions).where(eq(factoryToolRevisions.name, name)).run();
+      db.delete(factoryTools).where(eq(factoryTools.name, name)).run();
+    }
     db.delete(auditLog).where(eq(auditLog.actorUserId, userId)).run();
     db.delete(tenants).where(eq(tenants.id, tenantAId)).run();
     db.delete(tenants).where(eq(tenants.id, tenantBId)).run();
     db.delete(users).where(eq(users.id, userId)).run();
     await env.cleanup();
+  });
+
+  it("keeps Tool-Smith model output declarative and strips executable source fields", () => {
+    expect(
+      selectGeneratedToolDraftFields({
+        name: "vendor.lookup",
+        description: "Look up one vendor record.",
+        method: "GET",
+        url_template: "https://api.example.com/vendor/{id}",
+        request_spec: { encoding: "json" },
+        response_spec: { unwrap_path: "data" },
+        handler: "export async function handler() {}",
+        source_code: "process.exit(1)",
+        install_script: "curl example.invalid | sh",
+      }),
+    ).toEqual({
+      name: "vendor.lookup",
+      description: "Look up one vendor record.",
+      method: "GET",
+      url_template: "https://api.example.com/vendor/{id}",
+      request_spec: { encoding: "json" },
+      response_spec: { unwrap_path: "data" },
+    });
   });
 
   it("shares a tool only when shared scope is explicitly requested", () => {
@@ -196,7 +237,53 @@ describe("TC-99: declarative tool tenant scope", () => {
     }
   });
 
-  it("persists capabilities and initializes route-created tools as probe-required", async () => {
+  it("surfaces legacy active projections as fail-closed migration blockers", async () => {
+    const name = `tc99.legacy_lifecycle_${suffix}`;
+    names.add(name);
+    const systemTenant = getDb()
+      .select()
+      .from(tenants)
+      .where(eq(tenants.slug, "__system"))
+      .get()!;
+    expect(
+      saveDeclarativeTool(
+        {
+          ...tool(name, null),
+          description: "Legacy active projection",
+        },
+        { tenantId: systemTenant.id },
+      ).ok,
+    ).toBe(true);
+
+    const catalog = await env.fetch("/v1/tools");
+    expect(catalog.status).toBe(200);
+    const body = (await catalog.json()) as {
+      data: { tools: Array<Record<string, unknown>> };
+    };
+    expect(
+      body.data.tools.find((candidate) => candidate.name === name),
+    ).toMatchObject({
+      origin: "created",
+      managedLifecycle: false,
+      deactivationBlocker: {
+        code: "legacy_tool_revision_migration_required",
+        next: "migrate_legacy_tool_revision",
+      },
+    });
+
+    const blocked = await env.fetch(
+      `/v1/tools/${encodeURIComponent(name)}?expectedActiveRevisionId=tvr-fabricated`,
+      { method: "DELETE" },
+    );
+    expect(blocked.status).toBe(404);
+    expect(
+      listDeclarativeTools(systemTenant.id).some(
+        (candidate) => candidate.name === name,
+      ),
+    ).toBe(true);
+  });
+
+  it("persists route-created tools as governed revisions, not active tools", async () => {
     const name = `tc99.capabilities_${suffix}`;
     names.add(name);
     const capabilities = [{
@@ -219,18 +306,90 @@ describe("TC-99: declarative tool tenant scope", () => {
         operation: "write",
         effect_scope: "external",
         sandbox_policy: "requires_attempt_grant",
+        request_spec: { encoding: "json" },
+        response_spec: {
+          unwrap_path: "data",
+          assertions: [
+            {
+              path: "data.accepted",
+              op: "exists",
+              failure: "terminal",
+              code: "accepted_missing",
+            },
+          ],
+        },
+        examples: [
+          {
+            request: { resume_id: "resume-example" },
+            response: { data: { accepted: true } },
+            source: "documentation",
+          },
+        ],
+        params_schema: { resume_id: { type: "string", required: true } },
+        returns_schema: { accepted: { type: "boolean", required: true } },
         capabilities,
       }),
     });
     expect(res.status).toBe(200);
 
+    const body = await res.json() as {
+      data: {
+        saved: boolean;
+        draft: boolean;
+        runtimeActive: boolean;
+        lifecycle: string;
+        revisionId: string;
+      };
+    };
+    expect(body.data).toMatchObject({
+      saved: true,
+      draft: true,
+      runtimeActive: false,
+      lifecycle: "draft",
+    });
     const systemTenant = getDb().select().from(tenants).where(eq(tenants.slug, "__system")).get();
     expect(systemTenant).toBeTruthy();
     const persisted = listDeclarativeTools(systemTenant!.id).find((candidate) => candidate.name === name);
-    expect(persisted).toMatchObject({ capabilities, probeStatus: "required" });
-    expect(persisted?.definitionHash).toBeUndefined();
-    expect(persisted?.probeEvidence).toBeUndefined();
-    expect(persisted?.verifiedAt).toBeUndefined();
+    expect(persisted).toBeUndefined();
+    expect(
+      getDb()
+        .select()
+        .from(factoryToolRevisions)
+        .where(eq(factoryToolRevisions.id, body.data.revisionId))
+        .get(),
+    ).toMatchObject({
+      status: "draft",
+      definitionJson: expect.objectContaining({
+        capabilities,
+        requestSpec: { encoding: "json" },
+        responseSpec: expect.objectContaining({
+          unwrapPath: "data",
+        }),
+        examples: [
+          expect.objectContaining({
+            request: { resume_id: "resume-example" },
+            response: { data: { accepted: true } },
+            source: "documentation",
+          }),
+        ],
+      }),
+    });
+    const discoverable = await env.fetch(
+      `/v1/tools/revisions?status=draft&limit=1&name=${encodeURIComponent(name)}`,
+    );
+    expect(discoverable.status).toBe(200);
+    expect(await discoverable.json()).toMatchObject({
+      ok: true,
+      data: {
+        revisions: [
+          expect.objectContaining({
+            id: body.data.revisionId,
+            name,
+            status: "draft",
+          }),
+        ],
+      },
+    });
   });
 
   it("persists successful probe evidence without config or response secrets", async () => {
@@ -251,9 +410,21 @@ describe("TC-99: declarative tool tenant scope", () => {
         sandbox_policy: "live_external",
         params_schema: { id: { type: "string", required: true } },
         returns_schema: { result: { type: "object", required: true } },
+        capabilities: [{
+          systems: ["Example"],
+          kinds: ["external_api"],
+          roles: ["reads"],
+          operations: ["lookup"],
+          objectTypes: ["Record"],
+          probeRequired: true,
+        }],
       }),
     });
     expect(created.status).toBe(200);
+    const createdBody = (await created.json() as {
+      data: { revisionId: string; runtimeActive: boolean };
+    }).data;
+    expect(createdBody.runtimeActive).toBe(false);
 
     const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       expect(new Headers(init?.headers).get("authorization")).toBe("Bearer config-secret");
@@ -267,16 +438,27 @@ describe("TC-99: declarative tool tenant scope", () => {
       body: JSON.stringify({
         args: { id: "resume-1" },
         config: { api_key_env: "TC99_PROBE_API_KEY" },
+        revision_id: createdBody.revisionId,
         persist_cassette: false,
       }),
     });
-    expect(probed.status).toBe(200);
     const responseText = await probed.text();
+    expect(probed.status, responseText).toBe(200);
     expect(responseText).not.toContain("config-secret");
     expect(responseText).not.toContain("vendor-secret");
     expect(fetchMock).toHaveBeenCalledOnce();
 
     const systemTenant = getDb().select().from(tenants).where(eq(tenants.slug, "__system")).get()!;
+    expect(listDeclarativeTools(systemTenant.id).find((candidate) => candidate.name === name)).toBeUndefined();
+    const activated = await env.fetch(
+      `/v1/tools/${encodeURIComponent(name)}/revisions/${encodeURIComponent(createdBody.revisionId)}/activate`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ expectedActiveRevisionId: null }),
+      },
+    );
+    expect(activated.status).toBe(200);
     const persisted = listDeclarativeTools(systemTenant.id).find((candidate) => candidate.name === name);
     expect(persisted?.probeStatus).toBe("verified");
     expect(persisted?.definitionHash).toMatch(/^[a-f0-9]{64}$/);
@@ -284,6 +466,121 @@ describe("TC-99: declarative tool tenant scope", () => {
     expect(persisted?.probeEvidence).toMatchObject({ classification: "verified", status: 200 });
     expect(JSON.stringify(persisted?.probeEvidence)).not.toContain("config-secret");
     expect(JSON.stringify(persisted?.probeEvidence)).not.toContain("vendor-secret");
+
+    const catalog = await env.fetch("/v1/tools");
+    const catalogBody = (await catalog.json()) as {
+      data: {
+        tools: Array<{
+          name: string;
+          activeRevisionId?: string;
+          activeRevisionDomainId?: string;
+        }>;
+      };
+    };
+    expect(
+      catalogBody.data.tools.find((tool) => tool.name === name),
+    ).toMatchObject({
+      activeRevisionId: createdBody.revisionId,
+      activeRevisionDomainId: "__unbound__",
+    });
+    const factoryCatalog = await env.fetch(
+      "/v1/agent-factory/generated-tools",
+    );
+    expect(factoryCatalog.status).toBe(200);
+    expect(
+      (
+        (await factoryCatalog.json()) as {
+          data: {
+            tools: Array<{
+              name: string;
+              activeRevisionId?: string;
+              activeRevisionDomainId?: string;
+            }>;
+          };
+        }
+      ).data.tools.find((tool) => tool.name === name),
+    ).toMatchObject({
+      activeRevisionId: createdBody.revisionId,
+      activeRevisionDomainId: "__unbound__",
+    });
+
+    const missingCas = await env.fetch(
+      `/v1/tools/${encodeURIComponent(name)}`,
+      { method: "DELETE" },
+    );
+    expect(missingCas.status).toBe(400);
+    const staleCas = await env.fetch(
+      `/v1/tools/${encodeURIComponent(name)}?expectedActiveRevisionId=tvr-stale`,
+      { method: "DELETE" },
+    );
+    expect(staleCas.status).toBe(409);
+    expect(
+      listDeclarativeTools(systemTenant.id).some(
+        (candidate) => candidate.name === name,
+      ),
+    ).toBe(true);
+    const deactivated = await env.fetch(
+      `/v1/tools/${encodeURIComponent(name)}?expectedActiveRevisionId=${encodeURIComponent(createdBody.revisionId)}`,
+      { method: "DELETE" },
+    );
+    expect(deactivated.status).toBe(200);
+    expect(await deactivated.json()).toMatchObject({
+      data: {
+        deactivated: true,
+        deleted: false,
+        retainedHistory: true,
+        revision: { id: createdBody.revisionId, status: "retired" },
+      },
+    });
+    expect(
+      listDeclarativeTools(systemTenant.id).some(
+        (candidate) => candidate.name === name,
+      ),
+    ).toBe(false);
+
+    // A still-valid exact receipt can reactivate the retired immutable
+    // revision. The Factory compatibility DELETE must then use the same
+    // transaction/CAS path, never the legacy row delete.
+    const reactivated = await env.fetch(
+      `/v1/tools/${encodeURIComponent(name)}/revisions/${encodeURIComponent(createdBody.revisionId)}/activate`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ expectedActiveRevisionId: null }),
+      },
+    );
+    expect(reactivated.status).toBe(200);
+    const factoryMissingCas = await env.fetch(
+      `/v1/agent-factory/generated-tools/${encodeURIComponent(name)}`,
+      { method: "DELETE" },
+    );
+    expect(factoryMissingCas.status).toBe(400);
+    const operatorCannotDeactivate = await env.fetch(
+      `/v1/agent-factory/generated-tools/${encodeURIComponent(name)}?expectedActiveRevisionId=${encodeURIComponent(createdBody.revisionId)}`,
+      {
+        method: "DELETE",
+        headers: { "x-test-role": "operator" },
+      },
+    );
+    expect(operatorCannotDeactivate.status).toBe(403);
+    expect(
+      listDeclarativeTools(systemTenant.id).some(
+        (candidate) => candidate.name === name,
+      ),
+    ).toBe(true);
+    const factoryDeactivated = await env.fetch(
+      `/v1/agent-factory/generated-tools/${encodeURIComponent(name)}?expectedActiveRevisionId=${encodeURIComponent(createdBody.revisionId)}`,
+      { method: "DELETE" },
+    );
+    expect(factoryDeactivated.status).toBe(200);
+    expect(await factoryDeactivated.json()).toMatchObject({
+      data: {
+        deactivated: true,
+        deleted: false,
+        retainedHistory: true,
+        revision: { id: createdBody.revisionId, status: "retired" },
+      },
+    });
     delete process.env.TC99_PROBE_API_KEY;
   });
 
@@ -295,21 +592,39 @@ describe("TC-99: declarative tool tenant scope", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         name,
+        description: "failed read probe",
         method: "GET",
         url_template: "https://api.example.com/failure",
         side_effect: "read",
         operation: "read",
         effect_scope: "external",
         sandbox_policy: "live_external",
+        params_schema: { id: { type: "string", required: true } },
+        returns_schema: { ok: { type: "boolean", required: true } },
+        capabilities: [{
+          systems: ["Example"],
+          kinds: ["external_api"],
+          roles: ["reads"],
+          operations: ["failure_probe"],
+          objectTypes: ["Record"],
+          probeRequired: true,
+        }],
       }),
     });
     expect(created.status).toBe(200);
+    const createdBody = (await created.json() as {
+      data: { revisionId: string };
+    }).data;
     vi.stubGlobal("fetch", vi.fn(async () => new Response('{"token":"failure-secret"}', { status: 503 })));
 
     const probed = await env.fetch(`/v1/tools/${encodeURIComponent(name)}/probe`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ persist_cassette: false }),
+      body: JSON.stringify({
+        revision_id: createdBody.revisionId,
+        args: { id: "failed-record" },
+        persist_cassette: false,
+      }),
     });
     expect(probed.status).toBe(422);
     const responseText = await probed.text();
@@ -317,15 +632,20 @@ describe("TC-99: declarative tool tenant scope", () => {
     expect(responseText).not.toContain("failure-secret");
 
     const systemTenant = getDb().select().from(tenants).where(eq(tenants.slug, "__system")).get()!;
-    const persisted = listDeclarativeTools(systemTenant.id).find((candidate) => candidate.name === name);
-    expect(persisted?.probeStatus).toBe("failed");
-    expect(persisted?.definitionHash).toMatch(/^[a-f0-9]{64}$/);
-    expect(persisted?.verifiedAt).toBeUndefined();
-    expect(persisted?.probeEvidence).toMatchObject({ classification: "http_5xx", status: 503 });
-    expect(JSON.stringify(persisted?.probeEvidence)).not.toContain("failure-secret");
+    expect(listDeclarativeTools(systemTenant.id).find((candidate) => candidate.name === name)).toBeUndefined();
+    const receipt = getDb()
+      .select()
+      .from(factoryToolProbes)
+      .where(eq(factoryToolProbes.toolName, name))
+      .get();
+    expect(receipt?.status).toBe("failed");
+    expect(receipt?.definitionHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(receipt?.verifiedAt).toBeNull();
+    expect(receipt?.evidence).toMatchObject({ classification: "http_5xx", status: 503 });
+    expect(JSON.stringify(receipt?.evidence)).not.toContain("failure-secret");
   });
 
-  it("returns needs_config before a declarative write probe lacking canary cleanup metadata", async () => {
+  it("returns a permanent structured blocker before any managed write probe I/O", async () => {
     const name = `tc99.probe_write_${suffix}`;
     names.add(name);
     const created = await env.fetch("/v1/tools", {
@@ -333,37 +653,170 @@ describe("TC-99: declarative tool tenant scope", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         name,
+        description: "write probe requiring canary lifecycle",
         method: "POST",
         url_template: "https://api.example.com/create",
         side_effect: "write",
         operation: "write",
         effect_scope: "external",
         sandbox_policy: "requires_attempt_grant",
+        params_schema: { id: { type: "string", required: true } },
+        returns_schema: { ok: { type: "boolean", required: true } },
+        capabilities: [{
+          systems: ["Example"],
+          kinds: ["external_api"],
+          roles: ["writes"],
+          operations: ["create"],
+          objectTypes: ["Record"],
+          probeRequired: true,
+        }],
       }),
     });
     expect(created.status).toBe(200);
+    const createdBody = (await created.json() as {
+      data: { revisionId: string };
+    }).data;
     const fetchMock = vi.fn(async () => new Response("{}", { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
 
     const probed = await env.fetch(`/v1/tools/${encodeURIComponent(name)}/probe`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ args: {}, allow_side_effects: true }),
+      body: JSON.stringify({
+        revision_id: createdBody.revisionId,
+        args: {},
+        allow_side_effects: true,
+      }),
     });
-    expect(probed.status).toBe(428);
-    const body = await probed.json() as { status: string; next: string; missing: string[]; error: { code: string } };
+    expect(probed.status).toBe(409);
+    const body = await probed.json() as {
+      status: string;
+      blockers: Array<{ code: string; next: string }>;
+      error: { code: string };
+    };
     expect(body).toMatchObject({
-      status: "needs_config",
-      next: "ask_user",
-      error: { code: "PROBE_CANARY_CONFIG_REQUIRED" },
-      missing: expect.arrayContaining(["test_data_contract", "cleanup", "absence_readback"]),
+      status: "blocked",
+      error: { code: "PROBE_WRITE_LIFECYCLE_UNAVAILABLE" },
+      blockers: [
+        expect.objectContaining({
+          code: "managed_write_probe_lifecycle_unavailable",
+          next: "fde_register_code_owned_write_lifecycle",
+        }),
+      ],
     });
     expect(fetchMock).not.toHaveBeenCalled();
 
     const systemTenant = getDb().select().from(tenants).where(eq(tenants.slug, "__system")).get()!;
-    const persisted = listDeclarativeTools(systemTenant.id).find((candidate) => candidate.name === name);
-    expect(persisted?.probeStatus).toBe("required");
-    expect(persisted?.definitionHash).toBeUndefined();
+    expect(listDeclarativeTools(systemTenant.id).find((candidate) => candidate.name === name)).toBeUndefined();
+    expect(
+      getDb()
+        .select()
+        .from(factoryToolRevisions)
+        .where(eq(factoryToolRevisions.id, createdBody.revisionId))
+        .get(),
+    ).toMatchObject({ status: "draft" });
+  });
+
+  it("rejects direct publication for every role", async () => {
+    const systemTenant = getDb()
+      .select()
+      .from(tenants)
+      .where(eq(tenants.slug, "__system"))
+      .get()!;
+    const app = Fastify({ logger: false });
+    await registerEnvelope(app);
+    app.addHook("onRequest", async (req) => {
+      req.auth = {
+        userId: "usr-non-platform-admin",
+        email: "tenant-admin@example.test",
+        name: "Tenant admin",
+        platformRole: "member",
+        tenantId: systemTenant.id,
+        tenantSlug: systemTenant.slug,
+        role: "admin",
+        via: "dev",
+      };
+    });
+    await app.register(toolsRoutes, { prefix: "/v1" });
+    await app.ready();
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/v1/tools",
+        payload: {
+          name: `vendor.breakglass_${suffix}`,
+          description: "must not publish",
+          method: "GET",
+          url_template: "https://api.example.com/read",
+          side_effect: "read",
+          operation: "read",
+          effect_scope: "external",
+          sandbox_policy: "live_external",
+          trusted_manual_publish: true,
+          review_reason: "tenant admin cannot use platform break glass",
+        },
+      });
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toMatchObject({
+        ok: false,
+        error: { code: "DIRECT_TOOL_PUBLISH_DISABLED" },
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("does not let superadmin bypass revision, probe, and activation", async () => {
+    const name = `vendor.breakglass_audited_${suffix}`;
+    names.add(name);
+    const response = await env.fetch("/v1/tools", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        name,
+        description: "Reviewed emergency compatibility adapter",
+        method: "GET",
+        url_template: "https://api.example.com/emergency/{id}",
+        side_effect: "read",
+        operation: "read",
+        effect_scope: "external",
+        sandbox_policy: "live_external",
+        params_schema: { id: { type: "string", required: true } },
+        returns_schema: { ok: { type: "boolean", required: true } },
+        capabilities: [{
+          systems: ["Example"],
+          kinds: ["external_api"],
+          roles: ["reads"],
+          operations: ["emergency_read"],
+          objectTypes: ["Record"],
+          probeRequired: true,
+        }],
+        trusted_manual_publish: true,
+        review_reason: "Incident recovery requires this reviewed compatibility adapter",
+      }),
+    });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({
+      ok: false,
+      error: { code: "DIRECT_TOOL_PUBLISH_DISABLED" },
+    });
+    const audit = getDb()
+      .select()
+      .from(auditLog)
+      .where(eq(auditLog.action, "tool.trusted_manual_publish"))
+      .all()
+      .find((row) => row.targetId === name);
+    expect(audit).toBeUndefined();
+    const systemTenant = getDb()
+      .select()
+      .from(tenants)
+      .where(eq(tenants.slug, "__system"))
+      .get()!;
+    expect(
+      listDeclarativeTools(systemTenant.id).find(
+        (candidate) => candidate.name === name,
+      ),
+    ).toBeUndefined();
   });
 
   it("requires an explicit environment and keeps same-key sandbox/production profiles separate", async () => {

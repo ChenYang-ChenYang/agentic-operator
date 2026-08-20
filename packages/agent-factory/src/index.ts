@@ -31,6 +31,7 @@ export * from "./codegen";
 export * from "./code-lint";
 export * from "./plan-projection";
 export * from "./ontology-execution";
+export * from "./rule-gate-authoring";
 export * from "./ontology-readiness";
 export * from "./ontology-references";
 export * from "./input-bindings";
@@ -71,11 +72,39 @@ export * from "./report-verify";
 export * from "./conductor";
 export * from "./ontology-analysis";
 export * from "./ontology-tool-requirements";
+// Deterministic chart aggregates + table derivations, and the bounded
+// read-only ReAct analysis loop that presents them:
+export * from "./ontology-aggregates";
+export * from "./ontology-tables";
+// deterministic graph READS the inquiry loop dispatches: relationship edges,
+// rule bodies + their step bindings, workflow entries, coverage gaps, action
+// diffs. Pure functions of ONE ontology.
+export * from "./ontology-graph-reads";
+// The READ-ONLY tool layer (schemas + handlers closed over ONE ontology),
+// shared by the prose analysis loop and by the conversation path. Exported so a
+// host can build the same closure without reaching into either consumer.
+export * from "./ontology-read-tools";
+export * from "./ontology-inquiry";
+// #INQUIRY-COMPACT — the analysis loop's fold + its conversation-bound archive
+// port. Exported so a host can construct the port (bindOntologyInquiryArchive)
+// without reaching into the package's internals.
+export * from "./ontology-inquiry-compaction";
+// #ONTOCODE-COMPREHEND — the understanding layer: per-entity content digests +
+// the anchor index built from them, and the anchored-annotation pack that lets
+// a prior reading of an ontology be inherited one anchor at a time.
+export * from "./ontology-entity-digest";
+export * from "./ontology-comprehension";
+// #READINESS-LEDGER — 交付就绪账本（纯派生；持久化在 apps/api 侧）:
+export * from "./delivery-readiness-ledger";
 // business-flow SVG renderer (融合蓝图 P1.5 — pure swimlane visual):
 export * from "./business-flow-svg";
 // ontology-grounded blueprint model + deterministic SVG renderers (phase-flow / sequence):
 export * from "./blueprint";
 export * from "./blueprint-svg";
+// #BLUEPRINT-REASON — the reasoning half of that blueprint: per-phase kernel
+// derivation of what each step reads/writes/emits and which rules constrain it,
+// re-grounded through `blueprint.ts` so nothing unanchored can ship.
+export * from "./blueprint-reasoning";
 // #P5 — capability ladder + spawnable-skill model (融合蓝图 §06):
 export * from "./capability-ladder";
 // #P1 — ts_function_module renderer (inngest.createFunction 形态,对标旧 AO 六文件):
@@ -101,3 +130,28 @@ export * from "./skill-induction";
 export * from "./skill-promotion";
 // #P1-6 — 技能导出为 Agent Skills 开放标准(SKILL.md,可带出工厂被任意 harness 复用):
 export * from "./skill-export";
+// #RUN-EVIDENCE (P1-1) — 大脑读【持久运行转录】的有界读路径(read_run_evidence / inspect_run 用它):
+export * from "./run-evidence";
+// #REASONING-KERNEL / #STRATEGY — the reasoning METHOD layer, exported narrowly
+// rather than with `export *` because both modules define short, collision-prone
+// names. A host (today: the OntoCode conversation path) needs exactly this much:
+// the method catalogue the model is shown, the parser for what it declared, the
+// server's PRIOR suggestion, and the kernel that really executes the plan.
+export {
+  STRATEGY_DESC,
+  estimateDifficulty,
+  parseStrategyPlan,
+  selectStrategy,
+  type Difficulty,
+  type IntentKind,
+  type ReasoningStrategy,
+  type StrategyContext,
+  type StrategyPlan,
+  type StrategyStep,
+} from "./reasoning-policy";
+export {
+  runReasoning,
+  type ReasoningInput,
+  type ReasoningResult,
+  type ReasoningStepResult,
+} from "./reasoning-kernel";

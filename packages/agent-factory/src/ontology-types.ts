@@ -90,6 +90,15 @@ export type OntologyAction = {
   /** OPTIONAL declared integration block (systems[] / event_sources) — business-flow's
    *  DECLARED source of truth for external-system edges; preserved verbatim. */
   integration?: Record<string, unknown>;
+  /** A server-created session overlay is explicitly non-authoritative. It is
+   * never persisted back into Allmeta/uploaded Ontology storage. */
+  factoryProvenance?: {
+    schema: "agent-factory-virtual-action/v1";
+    kind: "virtual_scenario";
+    source: "factory_session_overlay";
+    authoritative: false;
+    scenarioHash: string;
+  };
 };
 
 export type OntologyEvent = {
@@ -119,6 +128,7 @@ export type OntologyEvent = {
       impacted_properties: string[];
     }>;
   };
+  factoryProvenance?: OntologyAction["factoryProvenance"];
 };
 
 export type OntologyRule = Record<string, unknown>;
@@ -157,4 +167,12 @@ export type DomainOntology = {
   /** #AUDIT-FIX(P2-04) — 严格源(Allmeta)失败后退化到薄 manifest artifact 的标记。set 时说明
    *  本体不完整（可能缺 events/objects/rules），read_ontology 会向 AI/用户明示，禁止据此自动 publish。 */
   degraded?: { from: string; reason: string };
+  /** Trusted in-memory overlay metadata. Source adapters never write this. */
+  factorySessionOverlay?: {
+    schema: "agent-factory-session-overlay/v1";
+    authoritative: false;
+    mode: "virtual_scenario";
+    actionIds: string[];
+    scenarioHash: string;
+  };
 };

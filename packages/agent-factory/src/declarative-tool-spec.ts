@@ -383,7 +383,12 @@ export const DECLARATIVE_RESPONSE_SPEC_SCHEMA: Record<string, unknown> = {
           path: { type: "string" },
           op: { type: "string", enum: ["exists", "non_empty", "eq", "neq", "in", "not_in"] },
           value: {},
-          values: { type: "array" },
+          // `items` is REQUIRED by strict provider validators (Google AI Studio
+          // rejects the whole tool list with 400 INVALID_ARGUMENT on a bare
+          // `type:"array"`). The element type is deliberately unconstrained —
+          // an `in`/`not_in` assertion compares against whatever the response
+          // field holds — so the loosest legal item schema is the honest one.
+          values: { type: "array", items: {} },
           failure: { type: "string", enum: ["retryable", "terminal"] },
           code: { type: "string" },
           message: { type: "string" },

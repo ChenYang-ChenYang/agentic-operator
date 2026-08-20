@@ -40,6 +40,12 @@ import { workflowRoutes } from "./routes/v1/workflow";
 import { workflowAuthoringRoutes } from "./routes/v1/workflow-authoring";
 import { toolsRoutes } from "./routes/v1/tools";
 import { integrationsRoutes } from "./routes/v1/integrations";
+import { systemProfilesRoutes } from "./routes/v1/system-profiles";
+import { ontocodeRoutes } from "./routes/v1/ontocode";
+import { ontocodeAssistantRoutes } from "./routes/v1/ontocode-assistant";
+import { ontocodeStreamRoutes } from "./routes/v1/ontocode-stream";
+import { businessOntologyDomainRoutes } from "./routes/v1/business-ontology-domains";
+import { runtimeProfileRoutes } from "./routes/v1/runtime-profiles";
 import { apiTokensRoutes } from "./routes/v1/api-tokens";
 import { authRoutes } from "./routes/v1/auth";
 import { membersRoutes } from "./routes/v1/members";
@@ -63,6 +69,16 @@ import {
   assertInheritedSqliteWriterLease,
   checkpointAndCloseDb,
 } from "@agentic/db";
+import {
+  startOntoCodeHarnessWorker,
+  type OntoCodeHarnessWorkerController,
+} from "./services/ontocode-harness-worker";
+
+// Executable-entrypoint state only. `build()` never assigns this, so API tests
+// and embedders get routes/storage without an unexpected background poller.
+let executableOntoCodeHarnessWorker:
+  | OntoCodeHarnessWorkerController
+  | null = null;
 
 function startupErrorSummary(error: unknown): {
   name: string;
@@ -96,6 +112,16 @@ function positiveIntegerEnv(name: string, fallback: number): number {
     );
   }
   return value;
+}
+
+function ontocodeHarnessWorkerEnabled(): boolean {
+  const raw = process.env.ONTOCODE_HARNESS_WORKER_ENABLED?.trim().toLowerCase();
+  if (!raw) return true;
+  if (raw === "true") return true;
+  if (raw === "false") return false;
+  throw new Error(
+    `ONTOCODE_HARNESS_WORKER_ENABLED must be true or false; received ${JSON.stringify(raw)}`,
+  );
 }
 
 function webOrigin(): string {
@@ -153,6 +179,18 @@ export async function build() {
   // child or Redis client has opened), build() closes the partial app below
   // and this hook drains every resource instead of leaving the process alive.
   app.addHook("onClose", async () => {
+    const shutdownErrors: unknown[] = [];
+    const ontocodeWorker = executableOntoCodeHarnessWorker;
+    executableOntoCodeHarnessWorker = null;
+    if (ontocodeWorker) {
+      try {
+        // Abort only sandbox work, persist retry_scheduled, and relinquish its
+        // fenced lease while SQLite is still writable.
+        await ontocodeWorker.stop({ abortActive: true });
+      } catch (error) {
+        shutdownErrors.push(error);
+      }
+    }
     try {
       const { stopGovernanceRunner } =
         await import("./services/agent-factory/fleet-governance-runner");
@@ -190,7 +228,18 @@ export async function build() {
     // This is the durable writer hand-off boundary. Checkpoint/close failures
     // must reject Fastify shutdown; the outer supervisor will retain its
     // canonical lease instead of allowing a second writer to start.
-    checkpointAndCloseDb();
+    try {
+      checkpointAndCloseDb();
+    } catch (error) {
+      shutdownErrors.push(error);
+    }
+    if (shutdownErrors.length === 1) throw shutdownErrors[0];
+    if (shutdownErrors.length > 1) {
+      throw new AggregateError(
+        shutdownErrors,
+        "OntoCode worker drain and SQLite shutdown both failed",
+      );
+    }
   });
 
   try {
@@ -295,6 +344,17 @@ export async function build() {
         // External-service integrations (Settings → Integrations). GoHire ATS
         // base URL + encrypted API key, read by the GoHire tool family.
         await v1.register(integrationsRoutes);
+        // OntoCode 外部系统档案 — external platform declarations (aliases +
+        // api/events/data capabilities) powering integration binding.
+        await v1.register(systemProfilesRoutes);
+        // Tenant-facing Business Domain → managed Ontology Domain registry.
+        await v1.register(runtimeProfileRoutes);
+        await v1.register(businessOntologyDomainRoutes);
+        // OntoCode conversational engineering workspace — durable projects,
+        // sessions, messages, typed commands, Harness jobs, and event history.
+        await v1.register(ontocodeRoutes);
+        await v1.register(ontocodeAssistantRoutes);
+        await v1.register(ontocodeStreamRoutes);
         // Workspace API-token lifecycle for Settings → API tokens. Secrets are
         // returned once on create/rotate and stored only as bearer-compatible
         // SHA-256 hashes.
@@ -392,6 +452,19 @@ if (isMain) {
     if (syncFailures.length) {
       throw new Error(
         `initial Inngest app sync failed: ${syncFailures.map((result) => `${result.slug}(${result.error ?? result.status ?? "unknown"})`).join(", ")}`,
+      );
+    }
+    if (ontocodeHarnessWorkerEnabled()) {
+      if (executableOntoCodeHarnessWorker) {
+        throw new Error("OntoCode Harness Worker is already running");
+      }
+      executableOntoCodeHarnessWorker = startOntoCodeHarnessWorker();
+      runtimeApp.log.info(
+        "OntoCode Harness Worker started after successful initial app sync",
+      );
+    } else {
+      runtimeApp.log.info(
+        "OntoCode Harness Worker disabled by ONTOCODE_HARNESS_WORKER_ENABLED=false",
       );
     }
     startAppReconciler({

@@ -5,8 +5,15 @@
 // Ported verbatim from the OLD repo's lib/agent-factory-gen/types.ts (pure types,
 // zero imports) as part of the M1 migration into @agentic/agent-factory.
 
-import type { IntegrationRequirement, IntegrationToolBinding } from "./integration-binding";
+import type {
+  IntegrationRequirement,
+  IntegrationToolBinding,
+} from "./integration-binding";
 import type { OntologyInputBindingKind } from "./ontology-types";
+import type {
+  AuthoredRuleGate,
+  RuleGateAuthoringGap,
+} from "./rule-gate-authoring";
 import type { DecisionTable } from "@agentic/shared";
 
 export interface GeneratedStep {
@@ -21,7 +28,13 @@ export interface GeneratedStep {
 // register.ts), giving a generated agent the per-step durability + branching + soft-fail of a
 // hand-written production agent. When a spec carries no `plan`, the deploy falls back to the
 // legacy single-logic action (back-compat).
-export type PlanStepKind = "tool" | "logic" | "condition" | "invoke" | "foreach" | "emit";
+export type PlanStepKind =
+  | "tool"
+  | "logic"
+  | "condition"
+  | "invoke"
+  | "foreach"
+  | "emit";
 
 export type ErrorPolicyAction = "park" | "retry" | "terminal" | "continue";
 export interface ErrorPolicyOutcome {
@@ -153,7 +166,10 @@ export interface PlanStep {
   /** Map the raw tool return into stable named fields. Missing source paths
    * fail closed; no parameter/result name inference is performed. */
   resultMap?: PlanResultMap;
-  /** boolean expression evaluated against lastResult/event — for kind:"condition" */
+  /** Safe boolean guard evaluated against input/event/lastResult/results/locals.
+   * For kind:"condition" the verdict is recorded for downstream dependsOn/routes.
+   * For every other kind it is a fail-closed precondition: false skips that
+   * step before any tool/invoke/emit side effect can run. */
   condition?: string;
   /** #G1/#G2 — the two declared events this condition routes to. A condition
    * step with no dependents used to be computed and then discarded, because the
@@ -314,7 +330,8 @@ export type GeneratedInputBinding =
 
 /** Compile-time exhaustiveness helper used by consumers that accept ontology
  * binding-kind strings before they become a `GeneratedInputBinding`. */
-export type GeneratedInputBindingKind = GeneratedInputBinding["kind"] & OntologyInputBindingKind;
+export type GeneratedInputBindingKind = GeneratedInputBinding["kind"] &
+  OntologyInputBindingKind;
 
 /** How the executor sequences this agent's tools.
  *  - "parallel": run all tool-bound steps up-front, then decide once (default).
@@ -336,6 +353,45 @@ export interface GeneratedToolExecutionPolicy {
     | "sandbox_local"
     | "live_external"
     | "requires_attempt_grant";
+}
+
+/** Authoring-time execution readiness is deliberately separate from code
+ * generation. A draft may carry complete, reviewable function code while an
+ * external API still lacks a sandbox profile, current probe, or live
+ * credential. Consumers must never interpret this record as sandbox evidence:
+ * it only explains which later-stage gates remain closed. */
+export interface GeneratedExternalApiReadiness {
+  tool: string;
+  systems: string[];
+  bindingStatuses: string[];
+  sandboxReady: boolean;
+  promotionReady: boolean;
+  missingSandboxProfile: boolean;
+  missingProductionProfile: boolean;
+  missingCredentialEnv: string[];
+  sandboxReasons: string[];
+  promotionReasons: string[];
+}
+
+export interface GeneratedAgentExecutionReadiness {
+  schema: "agent-factory-execution-readiness/v1";
+  authoringReady: true;
+  /** Prerequisite readiness only. A true value is not proof that a sandbox ran. */
+  sandboxReady: boolean;
+  /** Prerequisite readiness only. Promotion still requires its own evidence gate. */
+  promotionReady: boolean;
+  sandboxBlockers: string[];
+  promotionBlockers: string[];
+  missingSandboxProfiles: string[];
+  missingProductionProfiles: string[];
+  probeGaps: Array<{
+    tool: string;
+    reasons: string[];
+    sandboxReasons: string[];
+    promotionReasons: string[];
+    evidenceMode?: "live-probe" | "signed-fixture" | "runtime-record";
+  }>;
+  externalApis: GeneratedExternalApiReadiness[];
 }
 
 /** #G20 —— 开关变量名的合法形态。渲染期校验，避免把任意字符串拼进生成代码。 */
@@ -391,6 +447,10 @@ export interface GeneratedAgentSpec {
    * Acceptance only treats `resolved` bindings to a selected tool as complete;
    * missing configuration or probe evidence remains a delivery blocker. */
   integrationBindings?: IntegrationToolBinding[];
+  /** Stage-separated, authoring-time readiness snapshot. It keeps draft code
+   * useful to an FDE without overstating that external APIs are runnable,
+   * sandbox-verified, or promotable. */
+  executionReadiness?: GeneratedAgentExecutionReadiness;
   /** target_objects */
   objects: string[];
   /** R5 — per-DataObject read/write intent, grounded in the ontology: `reads` are the trigger
@@ -414,6 +474,15 @@ export interface GeneratedAgentSpec {
   /** Phase 1 — structured ordered plan; projected into one manifest action per step. */
   plan?: PlanStep[];
   ruleRefs: string[];
+  /** #RULE-GATE-AUTHOR — per-tool rule obligations, derived from the Ontology's own
+   * `action_steps[].rules[]` and this agent's plan. Each entry projects verbatim onto the
+   * manifest's `tool_use[].rule_gate`. Severity is never here (the runtime reads it off the rule
+   * row) and `mode` is never `enforce` (that is a human authoring decision). */
+  ruleGates?: AuthoredRuleGate[];
+  /** Rule obligations that could NOT be turned into a working gate — an unreachable step, a
+   * missing verdict producer, a Human-executor rule with no decision evidence. Kept ON the spec so
+   * "no gate" is never indistinguishable from "no rules". */
+  ruleGateGaps?: RuleGateAuthoringGap[];
   retries: number;
   hitl: boolean;
   confidence: number;
@@ -523,7 +592,14 @@ export interface GenerateResult {
 /** Streamed generation events — the factory's internal reasoning surfaced live.
  *  Emitted in order as the pipeline runs; consumed by the SSE route + UI. */
 export type GenEvent =
-  | { t: "ontology"; domain: string; source: string; actions: number; events: number; agentActions: number }
+  | {
+      t: "ontology";
+      domain: string;
+      source: string;
+      actions: number;
+      events: number;
+      agentActions: number;
+    }
   | { t: "log"; line: string }
   | { t: "agent-start"; actionName: string; index: number; total: number }
   | { t: "tools"; actionName: string; tools: string[]; unresolved: string[] }
@@ -531,17 +607,44 @@ export type GenEvent =
   /** the exact meta-prompt the factory sends to the LLM to author this agent's prompt */
   | { t: "llm-request"; actionName: string; prompt: string }
   /** the exact LLM response (or degradation note) */
-  | { t: "llm-response"; actionName: string; text: string; source: PromptSource }
+  | {
+      t: "llm-response";
+      actionName: string;
+      text: string;
+      source: PromptSource;
+    }
   /** a bounded reflexion round: the critic's score + issues for this agent's prompt */
-  | { t: "prompt-critique"; actionName: string; iteration: number; score: number; issues: PromptIssue[] }
+  | {
+      t: "prompt-critique";
+      actionName: string;
+      iteration: number;
+      score: number;
+      issues: PromptIssue[];
+    }
   /** the reviser's outcome for this round */
-  | { t: "prompt-revise"; actionName: string; iteration: number; changed: boolean; source: PromptSource }
+  | {
+      t: "prompt-revise";
+      actionName: string;
+      iteration: number;
+      changed: boolean;
+      source: PromptSource;
+    }
   /** a Human-actor action became a HITL gate instead of being dropped */
   | { t: "hitl"; actionName: string; gateKey: string }
   | { t: "agent-done"; spec: GeneratedAgentSpec }
   | { t: "validation"; report: ValidationReport }
   /** per-spec LLM prompt-quality judge result (streamed as each completes) */
-  | { t: "judge"; slug: string; available: boolean; promptScore: number | null; perCriterion?: Array<{ key: string; score: number; justification: string }> }
+  | {
+      t: "judge";
+      slug: string;
+      available: boolean;
+      promptScore: number | null;
+      perCriterion?: Array<{
+        key: string;
+        score: number;
+        justification: string;
+      }>;
+    }
   | {
       t: "score";
       scored: boolean;
@@ -550,11 +653,29 @@ export type GenEvent =
       /** old snapshot-vs-snapshot agreement, demoted to a secondary signal */
       structuralMatch: number;
       /** golden parsed from the REAL running agents (server/inngest/agents/*) */
-      realSource: { overall: number; matchedCount: number; perAgent: Array<{ logical: string; matched: boolean; realScore: number }> };
+      realSource: {
+        overall: number;
+        matchedCount: number;
+        perAgent: Array<{
+          logical: string;
+          matched: boolean;
+          realScore: number;
+        }>;
+      };
       /** LLM prompt-quality judge aggregate */
-      promptJudge: { available: number; overall: number | null; perAgent: Array<{ slug: string; promptScore: number | null }> };
+      promptJudge: {
+        available: number;
+        overall: number | null;
+        perAgent: Array<{ slug: string; promptScore: number | null }>;
+      };
     }
-  | { t: "persist"; persisted: string[]; skipped: string[]; errors: Array<{ slug: string; error: string }>; versionLabel: string }
+  | {
+      t: "persist";
+      persisted: string[];
+      skipped: string[];
+      errors: Array<{ slug: string; error: string }>;
+      versionLabel: string;
+    }
   | { t: "done"; scored: boolean }
   | { t: "error"; message: string };
 

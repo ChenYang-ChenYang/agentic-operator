@@ -8,20 +8,28 @@
  * reference the shimmed tools the same way they reference native ones
  * — `agent.tool_use[*].name`.
  *
+ * Each shim also carries the server's advertised `inputSchema` on
+ * `ToolDescriptor.inputSchema` when that schema passes the trust boundary in
+ * `./input-schema`, so the model sees the tool's real argument contract instead
+ * of a contentless one.
+ *
  * Public API:
  *   - `McpServerConfig` / `McpServerConfigSchema` — declarative server spec
  *   - `McpManager` — lifecycle owner; usually accessed via the singleton
  *   - `getMcpManager()` — process-wide singleton
+ *   - `sanitizeMcpInputSchema()` — argument-contract trust boundary
  */
 
 export {
   McpServerConfigSchema,
   type McpServerConfig,
   type McpServerStatus,
+  type McpToolSchemaIssue,
 } from "./types";
 
 export {
-  McpManager,
-  getMcpManager,
-  __resetMcpManagerForTest,
-} from "./manager";
+  sanitizeMcpInputSchema,
+  type McpInputSchemaDecision,
+} from "./input-schema";
+
+export { McpManager, getMcpManager, __resetMcpManagerForTest } from "./manager";

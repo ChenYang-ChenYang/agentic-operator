@@ -15,6 +15,7 @@ import { makeToolCassetteEntry } from "@agentic/shared/cassette";
 import {
   attestLiveProbeCassette,
   cassetteConfigHash,
+  createAuthorizedSandboxEvidencePlanCassette,
   createAuthorizedSignedFixtureCassette,
   signedFixtureAuthorizationSubject,
   verifyCassetteEvidenceAttestation,
@@ -197,6 +198,68 @@ describe("factory cassette evidence attestation", () => {
       ],
       authorization,
       execution,
+    }, { key })).toThrow(/exact consumed human authorization/);
+  });
+
+  it("mints plan cassettes only for the exact kind, subject, run and conversation", async () => {
+    const recordedAt = new Date().toISOString();
+    const expiresAt = new Date(Date.now() + 5 * 60_000).toISOString();
+    const planSubjectDigest = "9".repeat(64);
+    const execution = { runId: `run-plan-${suffix}`, conversationId: `conversation-plan-${suffix}` };
+    const store = new DrizzleFactoryAuthorizationChallengeStore(tenantId, domainId);
+    const challenge = await store.issue(domainId, {
+      kind: "sandbox_evidence_plan",
+      subjectDigest: planSubjectDigest,
+      ...execution,
+      question: "是否确认这份精确 sandbox evidence plan？",
+      declineLabel: "不确认",
+      confirmLabel: "仅确认一次",
+    });
+    const authorization = await store.consume(domainId, {
+      challenge,
+      answer: challenge.token,
+      actor: "usr-plan-reviewer",
+      question: challenge.question,
+      context: challenge.context,
+      options: challenge.options,
+    });
+    const input = {
+      tenantId,
+      tenantSlug,
+      domainId,
+      toolName,
+      definitionHash,
+      config,
+      entries: [entry()],
+      recordedAt,
+      expiresAt,
+      authorization,
+      execution,
+      planSubjectDigest,
+    };
+    const signed = createAuthorizedSandboxEvidencePlanCassette(input, { key });
+    expect(signed.evidence).toMatchObject({
+      mode: "signed-fixture",
+      authorization: {
+        kind: "sandbox_evidence_plan",
+        subjectDigest: planSubjectDigest,
+        challengeId: challenge.id,
+      },
+    });
+    expect(verifyCassetteEvidenceAttestation(signed, {
+      ...expected,
+      allowedModes: ["signed-fixture"],
+    }, { key })).toMatchObject({ valid: true });
+    expect(() => createAuthorizedSandboxEvidencePlanCassette({
+      ...input,
+      planSubjectDigest: "8".repeat(64),
+    }, { key })).toThrow(/exact consumed human authorization/);
+    expect(() => createAuthorizedSandboxEvidencePlanCassette({
+      ...input,
+      execution: { ...execution, conversationId: "other-conversation" },
+    }, { key })).toThrow(/current execution/);
+    expect(() => createAuthorizedSignedFixtureCassette({
+      ...input,
     }, { key })).toThrow(/exact consumed human authorization/);
   });
 

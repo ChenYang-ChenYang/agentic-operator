@@ -157,13 +157,33 @@ describe("reviewed Ontology to real global tool capability alignment", () => {
     })).toBe("needs_config");
   });
 
-  it("does not turn the rule reader into a nonexistent Allmeta instance reader", () => {
+  it("binds the exact Allmeta graph rule operation without turning it into an instance reader", () => {
+    expect(bindingStatus({
+      name: "identityRules",
+      tool: "ontology.fetchActionRules",
+      system: "Allmeta_Ontology_System",
+      kind: "graph_db",
+      role: "read",
+      capability: "rules.fetch — 拉取身份/查重现行规则补充审计依据",
+      objects: ["Candidate_Identity_Result"],
+    })).toBe("needs_config");
+
     expect(bindingStatus({
       name: "identityCheck",
       tool: "ontology.fetchActionRules",
       system: "Allmeta_Ontology_System",
       kind: "graph_db",
       role: "read",
+      objects: ["Candidate_Identity_Result"],
+    })).toBe("missing");
+
+    expect(bindingStatus({
+      name: "identityRules",
+      tool: "ontology.query",
+      system: "Allmeta_Ontology_System",
+      kind: "graph_db",
+      role: "read",
+      capability: "rules.fetch — 拉取身份/查重现行规则补充审计依据",
       objects: ["Candidate_Identity_Result"],
     })).toBe("missing");
   });

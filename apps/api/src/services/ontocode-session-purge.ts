@@ -25,8 +25,9 @@
 import { createHash } from "node:crypto";
 import { readdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
-import { eq, inArray } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import {
+  agentMemoryLong,
   getDb,
   ontocodeArtifactBlobs,
   ontocodeArtifacts,
@@ -40,11 +41,49 @@ import {
   ontocodeSessions,
   tenantScope,
 } from "@agentic/db";
+import { resolveDataRootPath } from "../config/data-paths";
+import { jobIdOfPurgeCollectableFile } from "./agent-factory/conversation-archive-store";
+import {
+  analysisMemorySubject,
+  decodeAnalysisMemoryValue,
+} from "./agent-factory/ontocode-analysis-memory";
 
 export type OntoCodePurgeTargetKind =
   | "factory_run_transcript"
   | "conversation_archive"
+  /**
+   * #ONTOCODE-MEM —— 跨会话分析记忆行（agent_memory_long）。
+   *
+   * 和归档是同一条隐私规则、同一个陷阱：这些行没有 session 外键，唯一的归属线索
+   * 是信封里的 `sourceRunId`（形如 `ocj-…`，与 ontocode_harness_jobs.id 同形），
+   * 而 cascade 恰恰先删作业行。不采集就意味着——用户以为抹掉的 Session，它得出的
+   * 结论仍会作为「先前会话的分析结论」预置给之后每一次分析。
+   *
+   * 不需要给 FactoryMemoryPort 加 list()：purge 本来就直连 db（artifact_blob 就是
+   * 这么删的），按 subject 前缀取行、逐行 decode 判 sourceRunId 即可，也就不必为
+   * 一次删除给记忆端口开一个全量枚举面。
+   */
+  | "analysis_memory_row"
   | "artifact_blob";
+
+/** `analysis_memory_row` 的 ref 编码：subject 与 key 都是不透明字符串，用 NUL
+ *  分隔——两者都不可能包含它，所以这个复合键不会因内容而歧义。 */
+const MEMORY_REF_SEPARATOR = "\u0000";
+
+export function encodeAnalysisMemoryRef(subject: string, key: string): string {
+  return `${subject}${MEMORY_REF_SEPARATOR}${key}`;
+}
+
+export function decodeAnalysisMemoryRef(
+  ref: string,
+): { subject: string; key: string } | null {
+  const index = ref.indexOf(MEMORY_REF_SEPARATOR);
+  if (index <= 0) return null;
+  return {
+    subject: ref.slice(0, index),
+    key: ref.slice(index + MEMORY_REF_SEPARATOR.length),
+  };
+}
 
 export interface OntoCodePurgeTarget {
   kind: OntoCodePurgeTargetKind;
@@ -85,8 +124,11 @@ export interface OntoCodeSessionFootprint {
   retained: OntoCodeSessionRetention[];
 }
 
+// 与归档写入侧【同一个】解析函数。读写两边对根目录的理解只要不一致，删除就会
+// 去一个从来没人写过的目录里找文件，然后如实报告「没有可删的」——正是这条隐私
+// 缺陷本身。
 function dataRoot(): string {
-  return process.env.AGENTIC_DATA_ROOT?.trim() || "./data";
+  return resolveDataRootPath();
 }
 
 /** 与各存储自身的落盘规则一致：id 是不透明字符串，绝不让它逃出目录。 */
@@ -111,10 +153,14 @@ async function listIfPresent(dir: string): Promise<string[]> {
   }
 }
 
-/** `ocf-<jobId>-a<attempt>.ndjson` → jobId，不匹配返回 null。 */
-function jobIdOfRunFile(fileName: string): string | null {
-  return /^ocf-(ocj-[A-Za-z0-9]+)-a\d+\.ndjson$/.exec(fileName)?.[1] ?? null;
-}
+/**
+ * `ocf-<jobId>-a<attempt>.ndjson` → jobId，不匹配返回 null。
+ *
+ * 这个匹配器【不在这里定义】：它和归档 id 的铸造是同一份契约，两边一旦漂移，
+ * 铸出来的归档就永远收不走（用户以为删掉的 Session 仍能被检索）。所以从写入侧
+ * 导入同一个函数，让漂移在编译期就不可能发生。
+ */
+const jobIdOfRunFile = jobIdOfPurgeCollectableFile;
 
 /**
  * 采集一个 Session 的全部外部足迹。**必须在删行之前调用** —— 之后作业行没了，
@@ -203,6 +249,36 @@ export async function collectOntoCodeSessionFootprint(
         ref: file,
         bytes: await fileBytes(file),
         via,
+      });
+    }
+  }
+
+  // ── 3.5：跨会话分析记忆行 ───────────────────────────────────────────────
+  //
+  // 这些行的归属证据在【值里】而不在列上：信封的 sourceRunId 就是写下它的分析
+  // 作业。所以按 subject 命名空间取回本租户本域的行，逐行严格 decode，只收
+  // sourceRunId 落在本 Session 作业集合里的那些。decode 不出来的行一律不动——
+  // 它不是本 lane 写的，凭猜删别人的数据比留着更糟。
+  if (domain) {
+    const subject = analysisMemorySubject(domain);
+    for (const row of db
+      .select({
+        subject: agentMemoryLong.subject,
+        key: agentMemoryLong.key,
+        valueJson: agentMemoryLong.valueJson,
+      })
+      .from(agentMemoryLong)
+      .where(
+        tenantScope(ctx, agentMemoryLong)(eq(agentMemoryLong.subject, subject)),
+      )
+      .all()) {
+      const envelope = decodeAnalysisMemoryValue(row.valueJson);
+      if (!envelope || !jobIds.has(envelope.sourceRunId)) continue;
+      targets.push({
+        kind: "analysis_memory_row",
+        ref: encodeAnalysisMemoryRef(row.subject, row.key),
+        bytes: row.valueJson.length,
+        via: envelope.sourceRunId,
       });
     }
   }
@@ -351,6 +427,13 @@ async function describeRetention(
       what: "本次清除记录（ontocode_session_purges）",
       why: "它是这个 Session 曾经存在过的唯一凭证，也是清理失败时的重试清单。",
     },
+    // #ONTOCODE-COMPREHEND —— 保留是【可论证的】而不是遗漏：理解层的产出提示里
+    // 结构上没有问题槽（buildComprehensionPrompt 不接受问题），所以它只可能是本体
+    // 本身的函数，不含任何会话内容。同域其它 Session 也在用它。但保留必须说出口。
+    {
+      what: `对本体的既有理解（域「${domain || "—"}」，按本体版本存放）`,
+      why: "它只由本体内容产生、不含会话内容，且同域其它 Session 共用；按 Session 删会让同域其他分析重新从零读一遍本体。要清空请在域层面操作。",
+    },
   ];
 
   // 生成的 agent 草稿按【域】分目录，同域多个 Session 共用一棵树，所以删一个
@@ -471,6 +554,27 @@ export async function purgeCollectedTargets(
               ctx,
               ontocodeArtifactBlobs,
             )(eq(ontocodeArtifactBlobs.id, target.ref)),
+          )
+          .run();
+      } else if (target.kind === "analysis_memory_row") {
+        const decoded = decodeAnalysisMemoryRef(target.ref);
+        if (!decoded) {
+          // 采集时能编码、执行时解不开，说明记录本身坏了。如实报失败并进重试
+          // 清单，绝不当作「已删」结算掉。
+          throw new Error("分析记忆目标的引用无法解析，未执行删除");
+        }
+        getDb()
+          .delete(agentMemoryLong)
+          .where(
+            tenantScope(
+              ctx,
+              agentMemoryLong,
+            )(
+              and(
+                eq(agentMemoryLong.subject, decoded.subject),
+                eq(agentMemoryLong.key, decoded.key),
+              ),
+            ),
           )
           .run();
       } else {

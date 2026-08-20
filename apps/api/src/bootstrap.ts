@@ -40,6 +40,7 @@ import northwindTenant from "@tenants/northwind";
 import insightlabTenant from "@tenants/insightlab";
 import zhaopinTenant from "@tenants/zhaopin";
 import agentsGenerationTenant from "@tenants/agents-generation";
+import "./services/integration-contract-wiring";
 import {
   bootstrapCodeAgents,
   setGateway as setAgentGateway,
@@ -58,6 +59,7 @@ import {
   assertDefaultLLMProviderReachable,
   assertRealLLMGateway,
   getLLMGateway,
+  strictLlmStartupProbeEnabled,
 } from "./services/llm";
 import { wireLlmTelemetry } from "./services/agent-factory/llm-telemetry";
 import { metrics } from "./services/metrics";
@@ -80,7 +82,10 @@ import { getFactorySandboxTenantRegistryAlias } from "./services/agent-factory/s
 import { createSandboxModelProxyGateway } from "./services/agent-factory/sandbox-model-client";
 import { installProductionGeneratedAgentAuthorizationVerifier } from "./services/agent-factory/production-codeact-authorization";
 import { studioRunnerFn } from "./services/studio-runner";
+import { createOntoCodeConfigurationTaskVerifier } from "./services/ontocode-configuration-task-verifier";
+import { setOntoCodeConfigurationTaskVerifier } from "./services/ontocode-configuration-task-store";
 import { enabledTenantDeploymentScope } from "./services/tenant-deployment-scope";
+import { installFactoryModelAdapter } from "./services/agent-factory/factory-model-adapter";
 
 /**
  * v4 typing: TS2742 surfaces because `InngestFunction` references internal
@@ -166,7 +171,8 @@ export async function ensureTenantRegistrySnapshotForReadOnlyPreflight(
   const dynamic = dynamicVersion
     ? await loadTenant(tenantSlug, dynamicVersion)
     : null;
-  const registry = dynamic?.registry ?? PRODUCTION_TENANT_REGISTRIES[tenantSlug];
+  const registry =
+    dynamic?.registry ?? PRODUCTION_TENANT_REGISTRIES[tenantSlug];
   if (!registry) return undefined;
   const selectedVersion = dynamic?.registry
     ? dynamicVersion!
@@ -268,20 +274,24 @@ export async function rebuildTenantFns(
     // from the signed job; no domain or tool name is hard-coded here.
     const sandboxAlias = getFactorySandboxTenantRegistryAlias(slug);
     if (sandboxAlias) {
-      const targetRegistry = sandboxAlias.replayRegistry
-        ?? cachedExpanded[sandboxAlias.targetTenantSlug];
+      const targetRegistry =
+        sandboxAlias.replayRegistry ??
+        cachedExpanded[sandboxAlias.targetTenantSlug];
       const targetSnapshot = sandboxAlias.replayRegistry
         ? undefined
         : getRuntimeTenantRegistrySnapshot(sandboxAlias.targetTenantSlug);
-      if (!targetRegistry || (!sandboxAlias.replayRegistry && !targetSnapshot)) {
+      if (
+        !targetRegistry ||
+        (!sandboxAlias.replayRegistry && !targetSnapshot)
+      ) {
         throw new Error(
           `sandbox target registry is unavailable: ${sandboxAlias.targetTenantSlug}`,
         );
       }
       if (
-        !sandboxAlias.replayRegistry
-        && sandboxAlias.expectedRegistryVersion
-        && targetSnapshot!.selectedVersion !== sandboxAlias.expectedRegistryVersion
+        !sandboxAlias.replayRegistry &&
+        sandboxAlias.expectedRegistryVersion &&
+        targetSnapshot!.selectedVersion !== sandboxAlias.expectedRegistryVersion
       ) {
         throw new Error(
           `sandbox target registry version mismatch: expected ${sandboxAlias.expectedRegistryVersion}, got ${targetSnapshot!.selectedVersion}`,
@@ -308,7 +318,10 @@ export async function rebuildTenantFns(
       ? (await loadTenant(slug, selectedVersion))?.registry
       : null;
     if (selected) {
-      const expanded = await expandTenantRegistry(slug, selected as TenantRegistry);
+      const expanded = await expandTenantRegistry(
+        slug,
+        selected as TenantRegistry,
+      );
       cachedExpanded = { ...cachedExpanded, [slug]: expanded };
       if (expanded) {
         publishRuntimeTenantRegistrySnapshot({
@@ -322,9 +335,13 @@ export async function rebuildTenantFns(
     return bootstrapTenantBySlug(slug, cachedExpanded);
   }
   syncTenantReasoningConfigs(cachedExpanded);
-  return [...(await bootstrapAllByTenant(cachedExpanded, {
-    enabledTenantSlugs: enabledTenantScope() ?? undefined,
-  })).values()].flat();
+  return [
+    ...(
+      await bootstrapAllByTenant(cachedExpanded, {
+        enabledTenantSlugs: enabledTenantScope() ?? undefined,
+      })
+    ).values(),
+  ].flat();
 }
 
 /**
@@ -383,7 +400,8 @@ export async function bootstrapSandboxWorkloadRuntime(): Promise<BootstrapResult
   const registries: TenantRegistries = { ...PRODUCTION_TENANT_REGISTRIES };
   for (const [slug, registry] of Object.entries(registries)) {
     if (!registry) continue;
-    const selectedVersion = registry.factory?.source.version || "workspace-unversioned";
+    const selectedVersion =
+      registry.factory?.source.version || "workspace-unversioned";
     selectedTenantRegistryVersions.set(slug, selectedVersion);
     publishRuntimeTenantRegistrySnapshot({
       tenantSlug: slug,
@@ -407,9 +425,8 @@ export async function bootstrapRuntime(
   // ephemeral manifest or register it as a normal tenant app. Tests exercise
   // this service in isolation and never call a real Inngest/Allmeta endpoint.
   if (process.env.NODE_ENV !== "test") {
-    const { reconcileFactorySandboxOrphans } = await import(
-      "./services/agent-factory/sandbox-reaper"
-    );
+    const { reconcileFactorySandboxOrphans } =
+      await import("./services/agent-factory/sandbox-reaper");
     await reconcileFactorySandboxOrphans({ startup: true });
   }
   if (
@@ -419,7 +436,9 @@ export async function bootstrapRuntime(
       .select({ slug: tenants.slug })
       .from(tenants)
       .all()
-      .some((tenant) => tenant.slug === "zhaopin" && isTenantEnabled(tenant.slug))
+      .some(
+        (tenant) => tenant.slug === "zhaopin" && isTenantEnabled(tenant.slug),
+      )
   ) {
     assertZhaopinProductionRuntimeConfig();
   }
@@ -435,9 +454,8 @@ export async function bootstrapRuntime(
   // later would make a recoverable crash look like an unauthorized tenant.
   let protectedFactoryDeploymentIds: string[] = [];
   if (!sandboxRunner && process.env.NODE_ENV !== "test") {
-    const { reconcilePendingFactoryPromotions } = await import(
-      "./services/agent-factory/promotion-recovery"
-    );
+    const { reconcilePendingFactoryPromotions } =
+      await import("./services/agent-factory/promotion-recovery");
     const promotionRecovery = await reconcilePendingFactoryPromotions({
       startupExclusive: true,
     });
@@ -462,7 +480,20 @@ export async function bootstrapRuntime(
   const gateway = getLLMGateway();
   if (!sandboxRunner) {
     assertRealLLMGateway("API bootstrap", gateway);
-    await assertDefaultLLMProviderReachable("API bootstrap");
+    try {
+      await assertDefaultLLMProviderReachable("API bootstrap");
+    } catch (error) {
+      if (strictLlmStartupProbeEnabled()) throw error;
+      // Keep the control plane available so an FDE can inspect and repair the
+      // gateway. This is an explicit degraded state, never a mock fallback:
+      // model-backed operations still fail on the real provider and /health
+      // publishes the failed live probe.
+      console.warn(
+        `[bootstrap] LLM provider is configured but its startup probe is degraded; control plane remains online (${String(
+          (error as Error)?.message ?? error,
+        )})`,
+      );
+    }
   } else {
     // The runner has no public egress by default. Exact CodeAct candidates do
     // not call a model and are admitted by ManifestSandboxDeployer only when
@@ -473,6 +504,10 @@ export async function bootstrapRuntime(
       `[bootstrap] sandbox runner gateway loaded without connectivity probe — provider=${gateway.defaultProvider}`,
     );
   }
+  // Agent Factory must use the same tenant/vault-aware gateway as BaseAgent
+  // and the manifest runtime. Its package-local direct transport remains only
+  // for standalone/test consumers and is never the API production path.
+  installFactoryModelAdapter(gateway);
   setAgentGateway(gateway);
   setRuntimeGateway(gateway);
   // Wire the integration credential resolver so DB-backed integrations
@@ -481,6 +516,11 @@ export async function bootstrapRuntime(
   setIntegrationResolver((tenantSlug, provider) =>
     resolveCredsByTenantSlug(tenantSlug, provider),
   );
+  if (!sandboxRunner) {
+    setOntoCodeConfigurationTaskVerifier(
+      createOntoCodeConfigurationTaskVerifier(),
+    );
+  }
   // Vector-recall memory: register a real driver so ctx.memory.search() returns cosine-ranked hits
   // instead of NoMemoryDriverError. Prefer a gateway embed model when MEMORY_EMBED_MODEL is set,
   // else the self-contained local (offline, deterministic) embedder. Opt out with MEMORY_VECTOR=off.
@@ -581,14 +621,16 @@ export async function bootstrapRuntime(
     // Native registry handlers are already inside the allowlisted image and
     // are version-bound in the candidate bundle; remote/MCP tools must arrive
     // as declarative definitions plus replay evidence instead.
-    expanded[slug] = sandboxRunner ? base : await expandTenantRegistry(slug, base);
+    expanded[slug] = sandboxRunner
+      ? base
+      : await expandTenantRegistry(slug, base);
     if (expanded[slug]) {
       publishRuntimeTenantRegistrySnapshot({
         tenantSlug: slug,
         selectedVersion:
-          selectedTenantRegistryVersions.get(slug)
-          ?? expanded[slug]!.factory?.source.version
-          ?? "workspace-unversioned",
+          selectedTenantRegistryVersions.get(slug) ??
+          expanded[slug]!.factory?.source.version ??
+          "workspace-unversioned",
         registry: expanded[slug]!,
       });
     }
@@ -724,16 +766,17 @@ export async function bootstrapRuntime(
 
   // #P7-infra — 治理巡检:定时对每个租户的已交付 function 聚合近 14 天生产战绩 → 建议返工(待人签核,
   // 不自动开)。内部 gated(AGENTIC_GOVERNANCE=1 且非 test),无条件调用安全(默认 no-op)。
-  if (!sandboxRunner) await startGovernanceRunner({
-    tenantSlugs: () => {
-      return getDb()
-        .select({ slug: tenants.slug })
-        .from(tenants)
-        .all()
-        .map((row) => row.slug)
-        .filter(Boolean);
-    },
-  });
+  if (!sandboxRunner)
+    await startGovernanceRunner({
+      tenantSlugs: () => {
+        return getDb()
+          .select({ slug: tenants.slug })
+          .from(tenants)
+          .all()
+          .map((row) => row.slug)
+          .filter(Boolean);
+      },
+    });
 
   return { inngest, functions: allFns };
 }

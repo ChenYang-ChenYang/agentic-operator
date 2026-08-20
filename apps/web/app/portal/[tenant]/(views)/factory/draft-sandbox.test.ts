@@ -134,6 +134,8 @@ describe("Factory draft sandbox review and finish receipts", () => {
       baseVersionId: scope.versionId,
       versionId: "v-sandboxed-two",
       regressionReady: true,
+      diagnosticOnly: false,
+      qualification: "promotable",
       fingerprint: `sandbox-evidence:v6:${"d".repeat(64)}`,
       sandbox: {
         appId: "factory-test-af-sbx-one",
@@ -141,6 +143,8 @@ describe("Factory draft sandbox review and finish receipts", () => {
         cleanupVerified: true,
         functionsRegistered: 2,
         agentsRan: 2,
+        qualification: "promotable",
+        isolationTier: "remote_vm",
       },
       regressionReplay: { pass: true, suiteFingerprint: "suite-one", results: 2 },
     };
@@ -149,5 +153,66 @@ describe("Factory draft sandbox review and finish receipts", () => {
     expect(readDraftSandboxFinishReceipt(t, { ...receipt, versionId: scope.versionId }, finishScope)).toMatchObject({ ok: false });
     expect(readDraftSandboxFinishReceipt(t, { ...receipt, sandbox: { ...receipt.sandbox, cleanupVerified: false } }, finishScope)).toMatchObject({ ok: false });
     expect(readDraftSandboxFinishReceipt(t, { ...receipt, regressionReplay: { ...receipt.regressionReplay, results: 0 } }, finishScope)).toMatchObject({ ok: false });
+  });
+
+  it("accepts a persisted same-host diagnostic without treating it as a fresh regression version", () => {
+    const receipt = {
+      schema: "agent-factory-draft-sandbox-finish/v1",
+      scope: {
+        ...scope,
+        versionId: scope.versionId,
+        baseVersionId: scope.versionId,
+      },
+      baseVersionId: scope.versionId,
+      versionId: scope.versionId,
+      regressionReady: false,
+      diagnosticOnly: true,
+      qualification: "development_only",
+      fingerprint: `sandbox-evidence:v6:${"e".repeat(64)}`,
+      sandbox: {
+        appId: "factory-test-af-sbx-diagnostic",
+        attemptId: "attempt-diagnostic",
+        cleanupVerified: true,
+        functionsRegistered: 2,
+        agentsRan: 2,
+        qualification: "development_only",
+        isolationTier: "same_host_container",
+      },
+      diagnosticEvidence: {
+        schema: "agent-factory-draft-sandbox-diagnostic/v1",
+        receiptId: "review-diagnostic",
+        persisted: true,
+        promotionBlockers: ["Independent execution plane is still required."],
+      },
+      regressionReplay: {
+        pass: false,
+        skipped: true,
+        reason: "development-only diagnostic",
+      },
+    };
+    const finishScope = {
+      tenantSlug: scope.tenantSlug,
+      domain: scope.domain,
+      slug: scope.slug,
+      baseVersionId: scope.versionId,
+    };
+    expect(
+      readDraftSandboxFinishReceipt(t, receipt, finishScope),
+    ).toMatchObject({
+      ok: true,
+      data: {
+        regressionReady: false,
+        diagnosticOnly: true,
+        qualification: "development_only",
+      },
+    });
+    expect(readDraftSandboxFinishReceipt(
+      t,
+      {
+        ...receipt,
+        qualification: "promotable",
+      },
+      finishScope,
+    )).toMatchObject({ ok: false });
   });
 });

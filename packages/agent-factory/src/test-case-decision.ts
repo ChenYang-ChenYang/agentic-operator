@@ -1,4 +1,8 @@
-export type TestCaseDecision = "approve" | "regenerate" | "supply_data";
+export type TestCaseDecision =
+  | "approve"
+  | "regenerate"
+  | "supply_data"
+  | "save_draft";
 
 export interface ParsedTestCaseDecision {
   decision: TestCaseDecision;
@@ -21,14 +25,24 @@ export function isTestCaseDecisionTaggedMessage(input: string): boolean {
 function decisionForTaggedToken(token: string): TestCaseDecision | null {
   const normalized = token.trim().toLowerCase().replace(/\s+/g, " ");
   if (normalized === "执行" || normalized === "approve") return "approve";
-  if (normalized === "重新生成" || normalized === "regenerate") return "regenerate";
+  if (normalized === "重新生成" || normalized === "regenerate")
+    return "regenerate";
   if (
-    normalized === "补数据"
-    || normalized === "supply_data"
-    || normalized === "supply-data"
-    || normalized === "supply data"
-    || normalized === "edit"
-  ) return "supply_data";
+    normalized === "补数据" ||
+    normalized === "supply_data" ||
+    normalized === "supply-data" ||
+    normalized === "supply data" ||
+    normalized === "edit"
+  )
+    return "supply_data";
+  if (
+    normalized === "保存设计稿" ||
+    normalized === "保存草稿" ||
+    normalized === "save_draft" ||
+    normalized === "save-draft" ||
+    normalized === "save draft"
+  )
+    return "save_draft";
   return null;
 }
 
@@ -40,7 +54,9 @@ function decisionForTaggedToken(token: string): TestCaseDecision | null {
  * punctuation delimiter and note. Ordinary conversational text must not open
  * or close a deployment gate.
  */
-export function parseTestCaseDecision(input: string): ParsedTestCaseDecision | null {
+export function parseTestCaseDecision(
+  input: string,
+): ParsedTestCaseDecision | null {
   const raw = input.trim();
   if (!raw) return null;
 
@@ -66,7 +82,9 @@ export function parseTestCaseDecision(input: string): ParsedTestCaseDecision | n
   if (/^(?:重新生成|regenerate|重做)$/i.test(raw)) {
     return { decision: "regenerate", note: "", raw, source: "phrase" };
   }
-  const regenerateWithNote = raw.match(/^(?:重新生成|regenerate|重做)[，,：:]\s*([\s\S]+)$/i);
+  const regenerateWithNote = raw.match(
+    /^(?:重新生成|regenerate|重做)[，,：:]\s*([\s\S]+)$/i,
+  );
   if (regenerateWithNote) {
     return {
       decision: "regenerate",
@@ -78,5 +96,37 @@ export function parseTestCaseDecision(input: string): ParsedTestCaseDecision | n
   if (/^(?:补数据|补充测试数据|supply(?:\s+|[_-])data)$/i.test(raw)) {
     return { decision: "supply_data", note: "", raw, source: "phrase" };
   }
+  if (/^(?:保存设计稿|保存草稿|save(?:\s+|[_-])draft)$/i.test(raw)) {
+    return { decision: "save_draft", note: "", raw, source: "phrase" };
+  }
   return null;
+}
+
+/**
+ * Recognize an unambiguous request to leave test preparation and persist only
+ * an unverified draft.
+ *
+ * The ordinary test-approval protocol remains intentionally exact. This
+ * helper exists for a narrower case: while answering a test-fixture
+ * clarification, the user may explicitly say "directly call save_draft" (or
+ * its Chinese equivalent) instead of replying with another fixture value.
+ * Clause anchoring keeps explanatory/negative prose such as "不要直接
+ * save_draft" from becoming a control-plane decision.
+ */
+export function isExplicitDraftOnlyDirective(input: string): boolean {
+  const raw = input.trim();
+  if (!raw) return false;
+  if (parseTestCaseDecision(raw)?.decision === "save_draft") return true;
+
+  const clauseStart = String.raw`(?:^|[，,。；;：:\n])\s*`;
+  const imperative = String.raw`(?:(?:当前|现在)\s*)?(?:(?:只|仅)(?:要求)?|请(?:直接)?|直接)`;
+  const machineCommand = new RegExp(
+    `${clauseStart}${imperative}\\s*(?:调用\\s*)?save(?:\\s+|[_-])draft\\b`,
+    "i",
+  );
+  const chineseCommand = new RegExp(
+    `${clauseStart}${imperative}[^。；;\\n]{0,120}(?:保存|保留)[^。；;\\n]{0,60}(?:未验证)?(?:设计稿|代码草稿|草稿)`,
+    "i",
+  );
+  return machineCommand.test(raw) || chineseCommand.test(raw);
 }

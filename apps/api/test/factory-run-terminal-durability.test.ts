@@ -13,7 +13,13 @@ const state = vi.hoisted(() => ({
     lastMakeFactoryPortsArgs: null as null | unknown[],
 }));
 
-vi.mock("@agentic/agent-factory", () => ({
+vi.mock("@agentic/agent-factory", async (importOriginal) => ({
+  // #P0-3 — the registry owns each run's LLM attribution scope. Use the REAL
+  // implementation rather than a stub so this mock cannot silently drop the
+  // scope the driver depends on; only runBrain is faked here.
+  runWithLlmCallContext: (
+    await importOriginal<typeof import("@agentic/agent-factory")>()
+  ).runWithLlmCallContext,
   runBrain: async function* (args: Record<string, unknown>) {
     state.lastRunBrainArgs = args;
     yield { t: "message", text: "working" };

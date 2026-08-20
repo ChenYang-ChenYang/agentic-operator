@@ -20,7 +20,12 @@ import { tenantHeader } from "@/lib/hooks/tenant-header";
 import type { BrainEvent } from "@/lib/hooks/useBrainStream";
 import { FactoryRequestGate } from "@/lib/factory-request-gate";
 import { chip } from "./atoms";
-import { decodeFactoryResponse, factoryNetworkFailure, type FactoryApiResult } from "./factory-api";
+import {
+  buildGeneratedToolDeactivationPath,
+  decodeFactoryResponse,
+  factoryNetworkFailure,
+  type FactoryApiResult,
+} from "./factory-api";
 import type { RunRow } from "./model";
 import { deriveSessionTasks, deriveGeneratedTools, deriveAcceptance, type SessionTask, type SessionTaskStatus } from "./workers";
 import { derivePhaseTimeline, type PhaseGroup } from "./phase-timeline";
@@ -72,6 +77,14 @@ interface ReportJobRow {
 interface LibToolRow {
   name: string;
   description: string;
+  activeRevisionId?: string;
+  activeRevisionDomainId?: string | null;
+  managedLifecycle?: boolean;
+  deactivationBlocker?: {
+    code: string;
+    message: string;
+    next?: string;
+  };
 }
 
 const EMPTY_BACKGROUND: { runs: BgRun[]; jobs: ReportJobRow[] } = { runs: [], jobs: [] };
@@ -586,10 +599,27 @@ export function BackgroundPanel({ tenant, domain, events, running, convId, viewi
     const scope = { tenant, domain };
     const ticket = requestGate.begin("tool-mutation", scope);
     setNote("");
-    const r = await apiSend<{ deleted: boolean }>(t, tenant, `/v1/agent-factory/generated-tools/${encodeURIComponent(name)}`, "DELETE");
+    const tool = libTools.find((candidate) => candidate.name === name);
+    if (!tool?.activeRevisionId) {
+      setNote(
+        tool?.deactivationBlocker?.message ??
+          `工具「${name}」没有可核验的 active revision；请先完成 lifecycle migration。`,
+      );
+      return;
+    }
+    const path = buildGeneratedToolDeactivationPath({
+      name,
+      expectedActiveRevisionId: tool.activeRevisionId,
+      revisionDomainId: tool.activeRevisionDomainId ?? null,
+    });
+    const r = await apiSend<{
+      deactivated: boolean;
+      deleted: boolean;
+      retainedHistory: boolean;
+    }>(t, tenant, path, "DELETE");
     if (!isViewedTenant(tenant) || !requestGate.isCurrent(ticket, scope)) return;
-    if (!r.ok || r.data.deleted !== true) {
-      setNote(t("factory.backgroundPanel.error.deleteToolFailed", { name, detail: r.ok ? t("factory.backgroundPanel.error.serverNotDeleted") : r.message }));
+    if (!r.ok || r.data.deactivated !== true) {
+      setNote(t("factory.backgroundPanel.error.deleteToolFailed", { name, detail: r.ok ? "服务端未确认 deactivated:true" : r.message }));
       refreshLibTools();
       return;
     }
@@ -785,6 +815,10 @@ export function BackgroundPanel({ tenant, domain, events, running, convId, viewi
         {visibleTasks.map((task) => {
           const toolName = task.toolName ?? "";
           const askThis = task.kind === "tool" && !!toolName && pendingToolNames.has(toolName);
+          const libraryTool = askThis
+            ? libTools.find((candidate) => candidate.name === toolName)
+            : undefined;
+          const canDeactivate = Boolean(libraryTool?.activeRevisionId);
           return (
             <div
               key={task.id}
@@ -810,10 +844,38 @@ export function BackgroundPanel({ tenant, domain, events, running, convId, viewi
                 <span aria-hidden style={{ color: "var(--text-4)", fontSize: 16, lineHeight: 1, alignSelf: "center", flexShrink: 0 }}>›</span>
               </div>
               {askThis && <div style={{ fontSize: 11, color: "var(--amber)", paddingLeft: 16 }}>{t("factory.backgroundPanel.tool.keepOrDelete")}</div>}
+              {askThis && !canDeactivate && (
+                <div
+                  role="alert"
+                  style={{
+                    fontSize: 10.5,
+                    color: "var(--red)",
+                    lineHeight: 1.45,
+                    paddingLeft: 16,
+                  }}
+                >
+                  {libraryTool?.deactivationBlocker?.message ??
+                    "缺少 managed active revision；需先完成 lifecycle migration，系统不会伪造历史或直接删除。"}
+                </div>
+              )}
               {askThis && (
                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap", paddingLeft: 16 }}>
                   <button onClick={(e) => { e.stopPropagation(); void acceptTool(toolName); }} style={{ ...linkBtn, border: "1px solid var(--green)", color: "var(--green)" }}>{t("factory.backgroundPanel.tool.keep")}</button>
-                  <button onClick={(e) => { e.stopPropagation(); void declineTool(toolName); }} style={linkBtn}>{t("factory.backgroundPanel.tool.delete")}</button>
+                  <button
+                    disabled={!canDeactivate}
+                    title={libraryTool?.deactivationBlocker?.message}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void declineTool(toolName);
+                    }}
+                    style={{
+                      ...linkBtn,
+                      opacity: canDeactivate ? 1 : 0.45,
+                      cursor: canDeactivate ? "pointer" : "not-allowed",
+                    }}
+                  >
+                    停用（保留 revision 历史）
+                  </button>
                 </div>
               )}
             </div>

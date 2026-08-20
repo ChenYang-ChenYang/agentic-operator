@@ -12,7 +12,7 @@
     "ensure:native": "pnpm run ensure:node && node scripts/ensure-native-modules.mjs",
     "preinstall": "node scripts/ensure-node-version.mjs",
     "predev": "pnpm run ensure:native && if [ \"${AGENTIC_SKIP_PREDEV_STOP:-0}\" != \"1\" ]; then bash scripts/stop-dev.sh; fi",
-    "dev": "concurrently --kill-others-on-fail -n web,api,inngest -c blue,green,magenta \"pnpm --filter @agentic/web run dev\" \"pnpm --filter @agentic/api run dev\" \"pnpm dlx inngest-cli@latest dev -u http://localhost:3540/inngest -p 8488 --connect-gateway-port 8489 --connect-gateway-grpc-port 50152 --connect-executor-grpc-port 50153\"",
+    "dev": "concurrently --kill-others-on-fail -n web,api,inngest -c blue,green,magenta \"pnpm --filter @agentic/web run dev\" \"pnpm --filter @agentic/api run dev\" \"pnpm exec inngest-cli dev -u http://localhost:3540/inngest -p 8488 --connect-gateway-port 8489 --connect-gateway-grpc-port 50152 --connect-executor-grpc-port 50153\"",
     "dev:restart": "bash scripts/restart-dev.sh",
     "restart": "bash scripts/restart-dev.sh",
     "prebuild": "pnpm run ensure:native",

@@ -2,8 +2,10 @@
 
 import type { FastifyInstance } from "fastify";
 import { constants } from "node:fs";
-import { open, realpath, stat } from "node:fs/promises";
+import { open, readFile, realpath, stat } from "node:fs/promises";
 import path from "node:path";
+import { createGunzip, gunzip } from "node:zlib";
+import { promisify } from "node:util";
 import { authorizedRunLogPath } from "@agentic/runtime";
 import { requirePermission } from "../../plugins/rbac";
 import { getRun } from "../../queries/runs";
@@ -12,6 +14,7 @@ const POLL_MS = 250;
 const HEARTBEAT_MS = 15_000;
 const MAX_READ_BYTES = 256 * 1024;
 const MAX_PARTIAL_LINE_BYTES = 1024 * 1024;
+const gunzipAsync = promisify(gunzip);
 
 function dateDir(at: Date): string {
   const y = at.getUTCFullYear();
@@ -83,17 +86,42 @@ export async function runsLogsRoute(app: FastifyInstance) {
       }
     };
 
-    // A one-shot read of a missing file is not a successful empty log. Fail
+    let archived = false;
+    // A one-shot read of a missing file is not a successful empty log. Rotated
+    // logs remain readable from the sibling .gz archive.
     // before hijacking so callers receive a normal, inspectable HTTP error.
     try {
       await stat(filePath);
       await assertResolvedDirectory();
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT" && follow) {
-        // The runtime creates the file after inserting the run row. Follow
-        // mode intentionally waits through that gap.
-      } else if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-        return reply.fail("log_not_found", "run log file is not present", 404);
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        try {
+          await stat(`${filePath}.gz`);
+          filePath = `${filePath}.gz`;
+          archived = true;
+          await assertResolvedDirectory();
+        } catch (archiveError) {
+          if (
+            (archiveError as NodeJS.ErrnoException).code === "ENOENT" &&
+            follow
+          ) {
+            // Runtime creates the file after inserting the run row.
+          } else if (
+            (archiveError as NodeJS.ErrnoException).code === "ENOENT"
+          ) {
+            return reply.fail(
+              "log_not_found",
+              "run log file is not present",
+              404,
+            );
+          } else {
+            return reply.fail(
+              "log_unreadable",
+              "run log archive could not be safely read",
+              409,
+            );
+          }
+        }
       } else {
         return reply.fail(
           "log_unreadable",
@@ -177,6 +205,21 @@ export async function runsLogsRoute(app: FastifyInstance) {
       if (closed || reading) return "ok";
       reading = true;
       try {
+        if (archived) {
+          const uncompressed = await gunzipAsync(await readFile(filePath));
+          if (pos > uncompressed.length) pos = 0;
+          let lineStart = pos;
+          for (let index = pos; index < uncompressed.length; index += 1) {
+            if (uncompressed[index] !== 0x0a) continue;
+            await emitLine(uncompressed.subarray(lineStart, index), index + 1);
+            lineStart = index + 1;
+          }
+          pos = uncompressed.length;
+          if (lineStart < uncompressed.length) {
+            await emitLine(uncompressed.subarray(lineStart), pos);
+          }
+          return "ok";
+        }
         let fileStat;
         try {
           fileStat = await stat(filePath);
@@ -269,6 +312,14 @@ export async function runsLogsRoute(app: FastifyInstance) {
       close();
       return reply;
     }
+    if (archived) {
+      await writeFrame(
+        sseFrame("info", "(archived log loaded; live follow is unavailable)"),
+      );
+      await writeFrame(sseFrame("end", "ok", String(pos)));
+      close();
+      return reply;
+    }
 
     poll = setInterval(() => {
       void pump().catch(failStream);
@@ -287,4 +338,77 @@ export async function runsLogsRoute(app: FastifyInstance) {
     raw.on("error", close);
     return reply;
   });
+
+  // Full-fidelity download. Unlike the browser log viewer this never applies
+  // a line-window cap, and transparently decompresses a rotated .log.gz file.
+  app.get<{ Params: { id: string } }>(
+    "/runs/:id/logs/raw",
+    async (req, reply) => {
+      const auth = requirePermission(req, "runs.read");
+      const run = await getRun(auth.tenantSlug, req.params.id);
+      if (!run) return reply.fail("not_found", "run not found", 404);
+      const startedAt = run.startedAt ?? new Date();
+      const fallback = path.resolve(
+        process.env.AGENTIC_LOGS_DIR ?? "./logs",
+        auth.tenantSlug,
+        "runs",
+        dateDir(startedAt),
+        `${run.id}.log`,
+      );
+      let filePath: string;
+      try {
+        filePath = authorizedRunLogPath(
+          auth.tenantSlug,
+          run.logPath || fallback,
+        );
+      } catch {
+        return reply.fail("invalid_log_path", "invalid run log path", 409);
+      }
+      let archived = false;
+      try {
+        await stat(filePath);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        filePath = `${filePath}.gz`;
+        archived = true;
+        try {
+          await stat(filePath);
+        } catch (archiveError) {
+          if ((archiveError as NodeJS.ErrnoException).code === "ENOENT") {
+            return reply.fail(
+              "log_not_found",
+              "run log file is not present",
+              404,
+            );
+          }
+          throw archiveError;
+        }
+      }
+      const tenantLogRoot = path.resolve(
+        process.env.AGENTIC_LOGS_DIR ?? "./logs",
+        auth.tenantSlug,
+        "runs",
+      );
+      try {
+        const [root, directory] = await Promise.all([
+          realpath(tenantLogRoot),
+          realpath(path.dirname(filePath)),
+        ]);
+        if (!isInside(root, directory)) throw new Error("path escape");
+      } catch {
+        return reply.fail("log_unreadable", "run log path is not safe", 409);
+      }
+      reply.header("Content-Type", "text/plain; charset=utf-8");
+      reply.header(
+        "Content-Disposition",
+        `attachment; filename="${run.id.replace(/[^A-Za-z0-9_-]/g, "_")}.log"`,
+      );
+      const handle = await open(
+        filePath,
+        constants.O_RDONLY | constants.O_NOFOLLOW,
+      );
+      const stream = handle.createReadStream();
+      return reply.send(archived ? stream.pipe(createGunzip()) : stream);
+    },
+  );
 }

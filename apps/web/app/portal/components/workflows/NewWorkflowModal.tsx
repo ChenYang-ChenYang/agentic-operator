@@ -15,6 +15,7 @@ import {
   ModalOverlay,
   type IconName,
 } from "@/app/portal/components";
+import { defaultFleetModelKey } from "@/app/portal/components/workflows/fleet-selection";
 import { useTenant } from "@/app/portal/lib/use-tenant";
 import { useI18n } from "@/app/portal/lib/preferences-context";
 import { workflowStatusLabel } from "@/app/portal/lib/protocol-labels";
@@ -139,11 +140,10 @@ export function NewWorkflowModal({
     }
   }, [cloneDetailQuery.data, cloneVersionId]);
   useEffect(() => {
-    if (!modelKey && fleet[0]) {
-      const primary =
-        fleet.find((entry) => entry.role === "primary") ?? fleet[0];
-      setModelKey(`${primary.provider}::${primary.modelName}`);
-    }
+    // An empty key is a valid outcome: it means "no fleet entry can serve
+    // this", and generation then falls back to the workspace default model
+    // rather than failing on an unconfigured provider.
+    if (!modelKey) setModelKey(defaultFleetModelKey(fleet));
   }, [fleet, modelKey]);
 
   const model = useMemo(() => {
@@ -415,17 +415,19 @@ export function NewWorkflowModal({
                       onChange={(event) => setModelKey(event.target.value)}
                       style={controlStyle}
                     >
-                      {!fleet.length && (
-                        <option value="">
-                          {t("newWorkflowModal.workspaceDefault")}
-                        </option>
-                      )}
+                      <option value="">
+                        {t("newWorkflowModal.workspaceDefault")}
+                      </option>
                       {fleet.map((entry) => (
                         <option
                           key={entry.id}
                           value={`${entry.provider}::${entry.modelName}`}
+                          disabled={entry.providerConfigured === false}
                         >
                           {entry.alias} · {entry.provider}
+                          {entry.providerConfigured === false
+                            ? ` · ${t("newWorkflowModal.providerNotConfigured")}`
+                            : ""}
                         </option>
                       ))}
                     </select>

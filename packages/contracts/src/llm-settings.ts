@@ -454,6 +454,16 @@ export const CORE_LLM_TASK_TAXONOMY: TaskTaxonomy = TaskTaxonomySchema.parse([
     parent: "generation",
     aliases: ["agent-authoring", "studio.instruction-authoring"],
   },
+  {
+    /**
+     * The Agent Factory brain. It shares the generation routing family, but
+     * not the identity: billing it as `agent.author` made every usage view
+     * report Factory reasoning as portal agent-authoring traffic.
+     */
+    id: "factory.brain",
+    label: "Agent Factory reasoning",
+    parent: "generation",
+  },
   { id: "research", label: "Research", parent: "default" },
   { id: "classify", label: "Classification", parent: "evaluation" },
   {
@@ -696,10 +706,28 @@ export const LlmSettingsSchema = LlmSettingsV1Schema;
 export type LlmSettings = LlmSettingsV1;
 export type LlmSettingsInput = LlmSettingsV1Input;
 
+/**
+ * An ordered, caller-supplied model preference (strongest wish first).
+ *
+ * This is a RANKING HINT, never an authorization: entries are matched against
+ * the model ids the routing policy already allows, so a preference can only
+ * reorder that set — it can never introduce a model the workspace/tenant did
+ * not enable. Callers that route by task difficulty (the Agent Factory's
+ * fast/default/hard/review tiers) express difficulty here; the policy remains
+ * the boundary. Each entry is matched case-insensitively as a regular
+ * expression, falling back to a literal substring when it is not valid regex,
+ * so both pinned model ids and family patterns work.
+ */
+export const ModelPreferenceSchema = z
+  .array(z.string().trim().min(1).max(200))
+  .max(16);
+export type ModelPreference = z.infer<typeof ModelPreferenceSchema>;
+
 export const RoutingResolutionRequestSchema = z
   .object({
     taskClass: TaskClassIdSchema.default(TaskClassIdSchema.parse("default")),
     explicitRoute: ModelRouteIdSchema.optional(),
+    modelPreference: ModelPreferenceSchema.optional(),
   })
   .strict();
 export type RoutingResolutionRequest = z.infer<
@@ -744,6 +772,24 @@ export const RoutingTraceStepSchema = z
   .strict();
 export type RoutingTraceStep = z.infer<typeof RoutingTraceStepSchema>;
 
+/**
+ * What became of a caller's model preference. Present only when one was
+ * expressed; `satisfied:false` is a first-class, explained outcome — the
+ * caller asked for a stronger/cheaper class of model than the policy allows
+ * and must be told, not quietly served something else.
+ */
+export const ModelPreferenceOutcomeSchema = z
+  .object({
+    requested: ModelPreferenceSchema,
+    satisfied: z.boolean(),
+    matchedRoute: ModelRouteIdSchema.nullable(),
+    reason: z.string().min(1).max(500),
+  })
+  .strict();
+export type ModelPreferenceOutcome = z.infer<
+  typeof ModelPreferenceOutcomeSchema
+>;
+
 export const ResolvedLlmRoutingSchema = z
   .object({
     settingsRevision: z.number().int().nonnegative(),
@@ -752,6 +798,7 @@ export const ResolvedLlmRoutingSchema = z
     matchType: RoutingMatchTypeSchema,
     selectedCandidate: TaskRouteCandidateSchema,
     candidates: z.array(TaskRouteCandidateSchema).min(1),
+    modelPreference: ModelPreferenceOutcomeSchema.nullable().default(null),
     effectiveParameters: TaskModelParametersSchema,
     workload: TaskWorkloadProfileSchema,
     requirements: TaskCapabilityRequirementsSchema.nullable(),
@@ -1089,13 +1136,80 @@ function tryProfile(
   };
 }
 
+/**
+ * Rank the ALREADY-ELIGIBLE candidates by the caller's model preference.
+ *
+ * The eligible set is the policy boundary and is never changed here: no
+ * candidate is added, none is removed. Matches are hoisted in preference order
+ * (stably, so equally-ranked candidates keep their configured order) and the
+ * unmatched remainder stays behind as fallbacks. When nothing matches, the
+ * configured order is returned untouched and the outcome says so — the caller
+ * is told its difficulty preference could not be met rather than being handed
+ * a different model as if it were the one requested.
+ */
+function preferenceMatcher(entry: string): (modelId: string) => boolean {
+  let expression: RegExp | null = null;
+  try {
+    expression = new RegExp(entry, "i");
+  } catch {
+    expression = null; // Not valid regex — fall back to a literal contains.
+  }
+  const literal = entry.toLowerCase();
+  return (modelId) =>
+    expression
+      ? expression.test(modelId)
+      : modelId.toLowerCase().includes(literal);
+}
+
+function applyModelPreference(
+  candidates: TaskRouteCandidate[],
+  preference: ModelPreference,
+  trace: RoutingTraceStep[],
+): { candidates: TaskRouteCandidate[]; outcome: ModelPreferenceOutcome } {
+  const ranked = candidates.map((candidate, index) => {
+    const modelId = String(parseModelRouteId(candidate.route).modelId);
+    const rank = preference.findIndex((entry) =>
+      preferenceMatcher(entry)(modelId),
+    );
+    return { candidate, index, rank: rank < 0 ? Number.MAX_SAFE_INTEGER : rank };
+  });
+  const ordered = [...ranked].sort(
+    (left, right) => left.rank - right.rank || left.index - right.index,
+  );
+  const best = ordered[0]!;
+  const satisfied = best.rank !== Number.MAX_SAFE_INTEGER;
+  const reason = satisfied
+    ? `Model preference entry ${preference[best.rank]} matched allowed route ${best.candidate.route}.`
+    : `No allowed candidate matched the model preference (${preference.join(", ")}); kept the configured order and selected ${best.candidate.route}.`;
+  trace.push({
+    stage: "candidate",
+    outcome: satisfied ? "selected" : "skipped",
+    route: best.candidate.route,
+    message: reason,
+  });
+  return {
+    candidates: ordered.map((entry) => entry.candidate),
+    outcome: ModelPreferenceOutcomeSchema.parse({
+      requested: preference,
+      satisfied,
+      matchedRoute: satisfied ? best.candidate.route : null,
+      reason,
+    }),
+  };
+}
+
 function finalizeResolution(
   settings: LlmSettings,
   requestedTaskClass: TaskClassId,
   selection: ProfileSelection,
   trace: RoutingTraceStep[],
+  preference: ModelPreference | undefined,
 ): ResolvedLlmRouting {
-  const selectedCandidate = selection.candidates[0]!;
+  const preferred = preference?.length
+    ? applyModelPreference(selection.candidates, preference, trace)
+    : null;
+  const candidates = preferred?.candidates ?? selection.candidates;
+  const selectedCandidate = candidates[0]!;
   const matched = selection.matchedTaskClass;
   const explanation =
     selection.matchType === "exact"
@@ -1105,20 +1219,22 @@ function finalizeResolution(
         : selection.matchType === "parent"
           ? `Task ${requestedTaskClass} used nearest parent profile ${matched} and selected ${selectedCandidate.route}.`
           : `Task ${requestedTaskClass} used the default routing profile and selected ${selectedCandidate.route}.`;
+  const preferenceNote = preferred ? ` ${preferred.outcome.reason}` : "";
   return ResolvedLlmRoutingSchema.parse({
     settingsRevision: settings.revision,
     requestedTaskClass,
     matchedTaskClass: matched,
     matchType: selection.matchType,
     selectedCandidate,
-    candidates: selection.candidates,
+    candidates,
+    modelPreference: preferred?.outcome ?? null,
     effectiveParameters: mergeTaskModelParameters(
       selection.profile.parameters,
       selectedCandidate.parameters,
     ),
     workload: selection.profile.workload,
     requirements: selection.profile.requirements ?? null,
-    explanation,
+    explanation: `${explanation}${preferenceNote}`,
     trace,
   });
 }
@@ -1203,6 +1319,16 @@ export function resolveLlmRouting(
       matchType: "explicit",
       selectedCandidate,
       candidates: [selectedCandidate],
+      // An operator pinning one route outranks any caller ranking hint, but the
+      // caller is still told its preference was not what decided this call.
+      modelPreference: request.modelPreference?.length
+        ? ModelPreferenceOutcomeSchema.parse({
+            requested: request.modelPreference,
+            satisfied: false,
+            matchedRoute: null,
+            reason: `An explicit model route (${route.id}) overrides the requested model preference.`,
+          })
+        : null,
       effectiveParameters: {},
       workload: "balanced",
       requirements: null,
@@ -1223,7 +1349,13 @@ export function resolveLlmRouting(
     trace,
   );
   if (exact) {
-    return finalizeResolution(settings, request.taskClass, exact, trace);
+    return finalizeResolution(
+      settings,
+      request.taskClass,
+      exact,
+      trace,
+      request.modelPreference,
+    );
   }
 
   const aliasTarget = settings.taxonomy.find((definition) =>
@@ -1239,7 +1371,13 @@ export function resolveLlmRouting(
       trace,
     );
     if (aliased) {
-      return finalizeResolution(settings, request.taskClass, aliased, trace);
+      return finalizeResolution(
+        settings,
+        request.taskClass,
+        aliased,
+        trace,
+        request.modelPreference,
+      );
     }
   } else {
     trace.push({
@@ -1264,7 +1402,13 @@ export function resolveLlmRouting(
       trace,
     );
     if (nearest) {
-      return finalizeResolution(settings, request.taskClass, nearest, trace);
+      return finalizeResolution(
+        settings,
+        request.taskClass,
+        nearest,
+        trace,
+        request.modelPreference,
+      );
     }
   }
 
@@ -1301,5 +1445,6 @@ export function resolveLlmRouting(
       candidates: defaultCandidates,
     },
     trace,
+    request.modelPreference,
   );
 }

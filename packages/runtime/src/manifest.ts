@@ -11,6 +11,7 @@ import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { validateErrorPredicateSyntax } from "./error-policy";
 import { validateConditionSyntax } from "./action-plan";
+import { RuleGateDeclarationSchema } from "./rule-guard";
 import type { DecisionTable } from "@agentic/shared";
 import {
   ProviderIdSchema,
@@ -629,6 +630,38 @@ export const ToolExecutionPolicySchema = z
     }
   });
 
+/**
+ * #EFFECT-READBACK (D6) — manifest form of a tool's read-back declaration.
+ *
+ * Kept structurally identical to `ToolEffectVerificationContract` in
+ * `@agentic/tools/registry` (the catalog form) so there is ONE contract shape
+ * whichever surface authored it. Paths are constrained here for authoring
+ * feedback at boot; `isToolEffectVerificationContract` re-checks them at
+ * dispatch because the value also arrives from the DB, where a Zod type is no
+ * longer protecting it.
+ */
+export const ToolEffectVerificationSchema = z
+  .object({
+    readTool: z.string().min(1),
+    readArgs: z
+      .record(
+        z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/),
+        z.string().regex(/^(input|output)\.[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$/),
+      )
+      .optional(),
+    match: z
+      .array(
+        z
+          .object({
+            claim: z.string().min(1),
+            observed: z.string().min(1),
+          })
+          .strict(),
+      )
+      .min(1),
+  })
+  .strict();
+
 export const ToolUseEntrySchema = z
   .object({
     name: z.string(),
@@ -657,6 +690,34 @@ export const ToolUseEntrySchema = z
      * documents the keys it honours. The runtime never inspects this map.
      */
     config: z.record(z.string(), z.unknown()).optional(),
+    /**
+     * #RULE-GATE — declarative ontology rule obligations for this tool call.
+     *
+     * The declaration says only WHICH rules guard the call and WHERE the
+     * verdict evidence lives; it can never say how severe a rule is. Severity
+     * is read from the server-authored rule row itself (`failurePolicy` /
+     * `enforcementLevel`), so a manifest cannot downgrade a `block` rule.
+     * See `rule-guard.ts` for the full trust split and why the mode defaults
+     * to `report`. A malformed declaration fails the boot, not the run.
+     */
+    rule_gate: RuleGateDeclarationSchema.optional(),
+    /**
+     * #EFFECT-READBACK (D6) — how a claimed write by THIS tool is confirmed.
+     *
+     * A tool's own `is_error: false` is the tool's word for it; a read-back is
+     * somebody else's. The declaration names a read tool (which must also be in
+     * this agent's `tool_use[]` — a read-back never widens the trust boundary),
+     * how to build its arguments from this call's own `input.*` / `output.*`,
+     * and which claimed fields must match what is actually there.
+     *
+     * Per-tenant on purpose: the confirming endpoint is routinely tenant-bound,
+     * which is exactly why it cannot live only in the shipped catalog. Absence
+     * is never a pass — an undeclared write reconciles as `not_verified` and
+     * qualifies the run's completion. Validated structurally at dispatch by
+     * `isToolEffectVerificationContract`, so a malformed declaration is
+     * REPORTED rather than silently ignored.
+     */
+    effect_verification: ToolEffectVerificationSchema.optional(),
   })
   .passthrough();
 

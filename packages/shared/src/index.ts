@@ -7,3 +7,5 @@ export * from "./tool-config-contract";
 export * from "./write-probe-safety";
 export * from "./invoke-contract";
 export * from "./canonical-json";
+export * from "./risk-tier";
+export * from "./probe-disposition";

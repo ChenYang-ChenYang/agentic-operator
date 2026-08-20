@@ -5,12 +5,12 @@
  *                                       MERGED with persisted declarative 造工具 tools (origin:"created").
  *   POST   /v1/tools/generate-from-doc→ Tool-Smith: fetch a public API doc (or take pasted text) and
  *                                       LLM-extract a draft HTTP-tool contract (no save — returns a draft).
- *   POST   /v1/tools                  → save a declarative tool to the shared library (collision-guarded).
- *   DELETE /v1/tools/:name            → remove a created tool (built-in globals are never deletable).
+ *   POST   /v1/tools                  → persist a tenant/domain immutable draft revision.
+ *   DELETE /v1/tools/:name            → CAS-deactivate the active revision; history remains.
  *
- * Created tools persist in `factory_tools` and are made runtime-executable by the step-engine's
- * declarative-tool resolver (see services/agent-factory/declarative-tool.ts) — so a tool authored
- * here is browsable in the library, bindable by the factory, AND really callable at runtime.
+ * Only an exact HMAC-attested, human-activated revision is projected into
+ * `factory_tools` and made runtime-executable by the step-engine resolver.
+ * Draft/rejected/retired revisions never enter executable discovery.
  */
 
 import type { FastifyInstance } from "fastify";
@@ -28,13 +28,14 @@ import {
   persistedToolAsRealTool,
   realToolExecutionPolicy,
   isGeneratedToolExecutionPolicy,
+  parseDeclarativeHttpContract,
   validateDeclarativeToolPolicy,
   validateIntegrationToolConfig,
   isIntegrationProfileEnvironment,
   type DeclarativeTool,
   type RealTool,
 } from "@agentic/agent-factory";
-import { listDeclarativeTools, saveDeclarativeTool, deleteDeclarativeTool } from "../../services/agent-factory/declarative-tool";
+import { listDeclarativeTools } from "../../services/agent-factory/declarative-tool";
 import { DrizzleToolStatsStore, DrizzleToolStore } from "../../services/agent-factory/stores";
 import { getFactoryDomainBinding } from "../../services/agent-factory/domain-binding";
 import {
@@ -48,10 +49,17 @@ import {
   listIntegrationProfiles,
   saveIntegrationProfile,
 } from "../../services/agent-factory/integration-profile-store";
+import { hasFactoryActiveWork } from "../../services/agent-factory/active-work";
 import {
-  hasAnyFactoryActiveWork,
-  hasFactoryActiveWork,
-} from "../../services/agent-factory/active-work";
+  activateToolRevision,
+  createToolDraft,
+  deactivateToolRevision,
+  getToolRevision,
+  listToolRevisionPage,
+  listToolRevisions,
+  rejectToolRevision,
+  ToolRevisionError,
+} from "../../services/agent-factory/tool-revision-store";
 
 interface FieldSchema { type: string; required?: boolean; description?: string; default?: unknown }
 
@@ -72,7 +80,10 @@ function toFieldSchema(blob: Record<string, unknown> | undefined): Record<string
 }
 
 /** Map a persisted DeclarativeTool into the same ToolCatalogEntry shape the UI renders. */
-function declToCatalogEntry(dt: DeclarativeTool): Record<string, unknown> {
+function declToCatalogEntry(
+  dt: DeclarativeTool,
+  activeRevision?: { id: string; domainId: string | null },
+): Record<string, unknown> {
   const category = dt.name.includes(".") ? dt.name.slice(0, dt.name.indexOf(".")) : "created";
   const evidenceMode = dt.probeEvidence?.evidenceMode;
   const productionProbeVerified = dt.probeStatus === "verified"
@@ -90,12 +101,12 @@ function declToCatalogEntry(dt: DeclarativeTool): Record<string, unknown> {
     name: dt.name,
     category,
     summary: dt.description || `${dt.method} ${dt.urlTemplate}`,
-    description: `${dt.method} ${dt.urlTemplate}（造工具 · 副作用:${dt.sideEffect}${dt.domain ? ` · 域:${dt.domain}` : " · 共享"}）`,
+    description: `${dt.method} ${dt.urlTemplate}（造工具 · 副作用:${dt.sideEffect}${dt.domain ? ` · 域:${dt.domain}` : " · tenant-wide"}）`,
     argsSchema: toFieldSchema(dt.paramsSchema),
     returnsSchema: toFieldSchema(dt.returnsSchema),
     configSchema: undefined,
     aliases: [],
-    sourcePath: "factory_tools（造工具，可删除）",
+    sourcePath: "factory_tools（active projection；通过 revision lifecycle 管理）",
     origin: "created",
     probeEvidenceMode: evidenceMode,
     productionProbeVerified,
@@ -118,6 +129,17 @@ function declToCatalogEntry(dt: DeclarativeTool): Record<string, unknown> {
     definitionHash: dt.definitionHash,
     probeEvidence: dt.probeEvidence,
     verifiedAt: dt.verifiedAt,
+    activeRevisionId: activeRevision?.id,
+    activeRevisionDomainId: activeRevision?.domainId,
+    managedLifecycle: Boolean(activeRevision),
+    deactivationBlocker: activeRevision
+      ? undefined
+      : {
+          code: "legacy_tool_revision_migration_required",
+          message:
+            "这个 active projection 没有对应的 managed revision。系统不会伪造 probe/审核历史或直接删除；请先完成显式 lifecycle migration。",
+          next: "migrate_legacy_tool_revision",
+        },
   };
 }
 
@@ -155,7 +177,61 @@ function globalCatalogAsRealTool(catalog: ReturnType<typeof listGlobalTools>[num
 
 const EXTRACT_SYS =
   "你是 API 契约提炼器。给你一个工具意图和一段 API 文档文本，提炼出【最贴合该意图的单个 HTTP 端点】的可用契约。" +
-  '只输出 JSON：{"name":string(带命名空间如 acme.getJob),"method":"GET|POST|PUT|DELETE","url_template":string(可含{placeholder}),"headers":object,"body_template":string,"side_effect":"read|write|dual","operation":"read|compute|write|read_write","effect_scope":"external","sandbox_policy":"live_external|requires_attempt_grant","params_schema":object(JSON Schema或字段map),"returns_schema":object(JSON Schema或字段map),"capabilities":[{"systems":string[],"kinds":string[],"roles":string[],"operations":string[],"objectTypes":string[],"probeRequired":boolean}],"auth_hint":string(鉴权方式与所需凭证),"confidence":number(0-1),"notes":string}。operation/effect_scope/sandbox_policy 是执行安全契约：只有确定不改变外部状态时才可用 live_external，任何可能修改外部状态的操作必须用 requires_attempt_grant。文档没有足够证据时不要从 HTTP method、side_effect 或工具名推断这三个字段，应将它们留空并在 notes 里用人话说明需要人确认。不要任何其它文字。';
+  '只输出 JSON：{"name":string(带命名空间如 acme.getJob),"description":string(1..2000字符，描述真实端点用途),"method":"GET|POST|PUT|DELETE","url_template":string(可含{placeholder}),"headers":object,"body_template":string(与request_spec互斥),"request_spec":object(可选，json或multipart编码),"response_spec":object(可选，unwrap/mappings/assertions),"examples":array(可选，仅脱敏request/response样例),"side_effect":"read|write|dual","operation":"read|compute|write|read_write","effect_scope":"external","sandbox_policy":"live_external|requires_attempt_grant","params_schema":object(JSON Schema或字段map),"returns_schema":object(JSON Schema或字段map),"capabilities":[{"systems":string[],"kinds":string[],"roles":string[],"operations":string[],"objectTypes":string[],"probeRequired":boolean}],"auth_hint":string(鉴权方式与所需凭证),"confidence":number(0-1),"notes":string}。只在文档或脱敏样例明确支持时输出 request_spec/response_spec/examples；不得输出源码、handler 或可执行脚本。operation/effect_scope/sandbox_policy 是执行安全契约：只有确定不改变外部状态时才可用 live_external，任何可能修改外部状态的操作必须用 requires_attempt_grant。文档没有足够证据时不要从 HTTP method、side_effect 或工具名推断这三个字段，应将它们留空并在 notes 里用人话说明需要人确认。不要任何其它文字。';
+
+const GENERATED_TOOL_DRAFT_FIELDS = new Set([
+  "name",
+  "description",
+  "method",
+  "url_template",
+  "headers",
+  "body_template",
+  "request_spec",
+  "response_spec",
+  "examples",
+  "side_effect",
+  "operation",
+  "effect_scope",
+  "sandbox_policy",
+  "params_schema",
+  "returns_schema",
+  "capabilities",
+  "auth_hint",
+  "confidence",
+  "notes",
+]);
+
+/** Keep model output a declarative review artifact. In particular, source,
+ * handler and script fields can never be reflected into the UI or persistence
+ * request as if Tool-Smith had authority to install executable code. */
+export function selectGeneratedToolDraftFields(
+  candidate: Record<string, unknown>,
+): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(candidate).filter(([key]) =>
+      GENERATED_TOOL_DRAFT_FIELDS.has(key),
+    ),
+  );
+}
+
+const managedRevisionDomainId = (
+  binding: ReturnType<typeof getFactoryDomainBinding>,
+): string => binding?.ontologyDomainId ?? "__unbound__";
+
+function requestedManagedRevisionDomainId(
+  binding: ReturnType<typeof getFactoryDomainBinding>,
+  requested?: unknown,
+): string {
+  const current = managedRevisionDomainId(binding);
+  const value = typeof requested === "string" ? requested.trim() : "";
+  if (!value) return current;
+  if (value === "__unbound__" || value === current) return value;
+  throw new ToolRevisionError(
+    "TOOL_REVISION_NOT_FOUND",
+    "revision domain 不属于当前 ontology 绑定；如需管理绑定前的 tenant-wide 草稿，请显式使用 __unbound__",
+    404,
+  );
+}
 
 export async function toolsRoutes(app: FastifyInstance): Promise<void> {
   // ── GET: the unified catalog (global + created) ──────────────────────────────
@@ -205,7 +281,38 @@ export async function toolsRoutes(app: FastifyInstance): Promise<void> {
     });
     // Object.assign (not spread) so declToCatalogEntry's Record<string, unknown> index signature —
     // which carries `category` — survives the enrichment (object-spread would drop it → no category).
-    const created = listDeclarativeTools(req.auth?.tenantId, binding?.ontologyDomainId ?? null).map(declToCatalogEntry).map((t) => Object.assign(t, rate(String(t.name))));
+    const revisionScopes = [
+      managedRevisionDomainId(binding),
+      ...(binding ? ["__unbound__"] : []),
+    ];
+    const activeRevisionByName = new Map<
+      string,
+      { id: string; domainId: string | null }
+    >();
+    for (const domainId of revisionScopes) {
+      for (const revision of listToolRevisions({
+        tenantId: auth.tenantId,
+        domainId,
+      })) {
+        if (
+          revision.status === "active" &&
+          !activeRevisionByName.has(revision.name)
+        ) {
+          activeRevisionByName.set(revision.name, {
+            id: revision.id,
+            domainId: revision.domainId,
+          });
+        }
+      }
+    }
+    const created = listDeclarativeTools(
+      req.auth?.tenantId,
+      binding?.ontologyDomainId ?? null,
+    )
+      .map((tool) =>
+        declToCatalogEntry(tool, activeRevisionByName.get(tool.name)),
+      )
+      .map((tool) => Object.assign(tool, rate(String(tool.name))));
     // Tenant-effective overlay: tenant packages can shadow a global tool, and
     // MCP/Skills expansion contributes "<server>.<tool>" entries that exist
     // nowhere in the global catalog. Surface both so the library reflects what
@@ -247,6 +354,296 @@ export async function toolsRoutes(app: FastifyInstance): Promise<void> {
       createdCount: created.length,
       categories: Array.from(new Set(tools.map((t) => t.category as string))).sort(),
     });
+  });
+
+  // ── Managed generated-tool revision lifecycle ─────────────────────────────
+  // Drafts are intentionally separate from GET /tools: that endpoint is the
+  // executable catalog. Surfacing a draft there would make discovery look like
+  // authorization and recreate the direct-to-runtime bug this ledger prevents.
+  app.get<{
+    Querystring: {
+      name?: string;
+      status?: string;
+      limit?: string;
+      cursor?: string;
+      domain_id?: string;
+    };
+  }>("/tools/revisions", async (req, reply) => {
+    const auth = requirePermission(req, "tools.read");
+    const binding = getFactoryDomainBinding(auth.tenantId);
+    const status = String(req.query.status ?? "").trim();
+    if (
+      status &&
+      !new Set(["draft", "active", "retired", "rejected"]).has(status)
+    ) {
+      return reply.fail(
+        "INVALID_TOOL_REVISION_STATUS",
+        "status 只能是 draft/active/retired/rejected",
+        400,
+      );
+    }
+    const rawLimit = Number(req.query.limit ?? 25);
+    if (!Number.isSafeInteger(rawLimit) || rawLimit < 1 || rawLimit > 100) {
+      return reply.fail(
+        "INVALID_PAGINATION",
+        "limit 必须是正整数（最大 100）",
+        400,
+      );
+    }
+    try {
+      const page = listToolRevisionPage({
+        tenantId: auth.tenantId,
+        domainId: requestedManagedRevisionDomainId(
+          binding,
+          req.query.domain_id,
+        ),
+        name: String(req.query.name ?? "").trim() || undefined,
+        status: status
+          ? (status as "draft" | "active" | "retired" | "rejected")
+          : undefined,
+        limit: rawLimit,
+        cursor: String(req.query.cursor ?? "").trim() || undefined,
+      });
+      return reply.ok(page);
+    } catch (error) {
+      if (error instanceof ToolRevisionError) {
+        return reply.fail(error.code, error.message, error.statusCode);
+      }
+      throw error;
+    }
+  });
+
+  app.get<{
+    Params: { name: string };
+    Querystring: {
+      status?: string;
+      limit?: string;
+      cursor?: string;
+      domain_id?: string;
+    };
+  }>("/tools/:name/revisions", async (req, reply) => {
+    const auth = requirePermission(req, "tools.read");
+    const binding = getFactoryDomainBinding(auth.tenantId);
+    const name = decodeURIComponent(req.params.name);
+    const status = String(req.query.status ?? "").trim();
+    if (
+      status &&
+      !new Set(["draft", "active", "retired", "rejected"]).has(status)
+    ) {
+      return reply.fail(
+        "INVALID_TOOL_REVISION_STATUS",
+        "status 只能是 draft/active/retired/rejected",
+        400,
+      );
+    }
+    const limit = Number(req.query.limit ?? 25);
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+      return reply.fail(
+        "INVALID_PAGINATION",
+        "limit 必须是 1..100 的整数",
+        400,
+      );
+    }
+    try {
+      return reply.ok(listToolRevisionPage({
+        tenantId: auth.tenantId,
+        domainId: requestedManagedRevisionDomainId(
+          binding,
+          req.query.domain_id,
+        ),
+        name,
+        status: status
+          ? (status as "draft" | "active" | "retired" | "rejected")
+          : undefined,
+        limit,
+        cursor: String(req.query.cursor ?? "").trim() || undefined,
+      }));
+    } catch (error) {
+      if (error instanceof ToolRevisionError) {
+        return reply.fail(error.code, error.message, error.statusCode);
+      }
+      throw error;
+    }
+  });
+
+  app.post<{
+    Params: { name: string; revisionId: string };
+    Body: {
+      expectedActiveRevisionId?: string | null;
+      revisionDomainId?: string;
+    };
+  }>("/tools/:name/revisions/:revisionId/activate", async (req, reply) => {
+    const auth = requirePermission(req, "agents.write");
+    const actor = auth.userId ?? auth.email;
+    if (!actor) {
+      return reply.fail(
+        "AUTH_ACTOR_REQUIRED",
+        "激活工具需要可审计的登录用户身份",
+        403,
+      );
+    }
+    const name = decodeURIComponent(req.params.name);
+    const revisionId = decodeURIComponent(req.params.revisionId);
+    const binding = getFactoryDomainBinding(auth.tenantId);
+    let revisionDomainId: string | undefined;
+    if (
+      !req.body ||
+      !Object.prototype.hasOwnProperty.call(
+        req.body,
+        "expectedActiveRevisionId",
+      ) ||
+      (req.body.expectedActiveRevisionId !== null &&
+        (typeof req.body.expectedActiveRevisionId !== "string" ||
+          !req.body.expectedActiveRevisionId.trim()))
+    ) {
+      return reply.fail(
+        "EXPECTED_ACTIVE_REVISION_REQUIRED",
+        "激活/回滚必须带 expectedActiveRevisionId；首次激活传 null，防止并发覆盖",
+        400,
+      );
+    }
+    try {
+      revisionDomainId = requestedManagedRevisionDomainId(
+        binding,
+        req.body.revisionDomainId,
+      );
+      const current = getToolRevision({
+        tenantId: auth.tenantId,
+        domainId: revisionDomainId,
+        revisionId,
+        name,
+      });
+      if (!current) {
+        throw new ToolRevisionError(
+          "TOOL_REVISION_NOT_FOUND",
+          "revision 不属于这个工具名",
+          404,
+        );
+      }
+      const revision = await activateToolRevision({
+        tenantId: auth.tenantId,
+        domainId: revisionDomainId,
+        revisionId,
+        actor,
+        expectedActiveRevisionId:
+          req.body.expectedActiveRevisionId === null
+            ? null
+            : req.body.expectedActiveRevisionId.trim(),
+      });
+      writeAudit({
+        tenantId: auth.tenantId,
+        actorUserId: auth.userId ?? undefined,
+        action: current.status === "retired"
+          ? "tool.revision.rollback"
+          : "tool.revision.activate",
+        targetType: "tool_revision",
+        targetId: revision.id,
+        meta: {
+          name: revision.name,
+          version: revision.version,
+          definitionHash: revision.definitionHash,
+          activationProbeHash: revision.activationProbeHash,
+          revisionDomainId,
+        },
+      });
+      return reply.ok({ activated: true, revision });
+    } catch (error) {
+      if (error instanceof ToolRevisionError) {
+        writeAudit({
+          tenantId: auth.tenantId,
+          actorUserId: auth.userId ?? undefined,
+          action: "tool.revision.activate",
+          targetType: "tool_revision",
+          targetId: revisionId,
+          meta: {
+            decision: "deny",
+            outcome: "failed",
+            errorCode: error.code,
+            name,
+            revisionDomainId: revisionDomainId ?? null,
+          },
+        });
+        return reply.fail(error.code, error.message, error.statusCode);
+      }
+      throw error;
+    }
+  });
+
+  app.post<{
+    Params: { name: string; revisionId: string };
+    Body: { revisionDomainId?: string };
+  }>("/tools/:name/revisions/:revisionId/reject", async (req, reply) => {
+    const auth = requirePermission(req, "agents.write");
+    const actor = auth.userId ?? auth.email;
+    if (!actor) {
+      return reply.fail(
+        "AUTH_ACTOR_REQUIRED",
+        "拒绝工具草稿需要可审计的登录用户身份",
+        403,
+      );
+    }
+    const name = decodeURIComponent(req.params.name);
+    const revisionId = decodeURIComponent(req.params.revisionId);
+    const binding = getFactoryDomainBinding(auth.tenantId);
+    let revisionDomainId: string | undefined;
+    try {
+      revisionDomainId = requestedManagedRevisionDomainId(
+        binding,
+        req.body?.revisionDomainId,
+      );
+      const current = getToolRevision({
+        tenantId: auth.tenantId,
+        domainId: revisionDomainId,
+        revisionId,
+        name,
+      });
+      if (!current) {
+        throw new ToolRevisionError(
+          "TOOL_REVISION_NOT_FOUND",
+          "revision 不属于这个工具名",
+          404,
+        );
+      }
+      const revision = rejectToolRevision({
+        tenantId: auth.tenantId,
+        domainId: revisionDomainId,
+        revisionId,
+        actor,
+      });
+      writeAudit({
+        tenantId: auth.tenantId,
+        actorUserId: auth.userId ?? undefined,
+        action: "tool.revision.reject",
+        targetType: "tool_revision",
+        targetId: revision.id,
+        meta: {
+          name: revision.name,
+          version: revision.version,
+          definitionHash: revision.definitionHash,
+          revisionDomainId,
+        },
+      });
+      return reply.ok({ rejected: true, revision });
+    } catch (error) {
+      if (error instanceof ToolRevisionError) {
+        writeAudit({
+          tenantId: auth.tenantId,
+          actorUserId: auth.userId ?? undefined,
+          action: "tool.revision.reject",
+          targetType: "tool_revision",
+          targetId: revisionId,
+          meta: {
+            decision: "deny",
+            outcome: "failed",
+            errorCode: error.code,
+            name,
+            revisionDomainId: revisionDomainId ?? null,
+          },
+        });
+        return reply.fail(error.code, error.message, error.statusCode);
+      }
+      throw error;
+    }
   });
 
   // ── Human-confirmed, non-secret integration profiles ───────────────────────
@@ -361,7 +758,7 @@ export async function toolsRoutes(app: FastifyInstance): Promise<void> {
 
   // ── POST generate-from-doc: fetch + LLM-extract a draft contract (no save) ────
   app.post<{ Body: { url?: string; text?: string; intent?: string } }>("/tools/generate-from-doc", async (req, reply) => {
-    requirePermission(req, "agents.invoke");
+    const auth = requirePermission(req, "agents.invoke");
     if (!isGatewayConfigured()) return reply.fail("LLM_UNCONFIGURED", "未配置 LLM 网关，无法自动提炼；可直接手填工具契约。", 400);
     const intent = String(req.body?.intent ?? "").trim();
     if (!intent) return reply.fail("BAD_REQUEST", "请提供 tool_intent（这个工具要干嘛）。", 400);
@@ -381,25 +778,39 @@ export async function toolsRoutes(app: FastifyInstance): Promise<void> {
         temperature: 0.2,
         maxTokens: 1200,
         models: modelChain("review"),
+        purpose: "tool-contract.extract",
+        context: {
+          tenantId: auth.tenantId,
+          tenantSlug: auth.tenantSlug,
+          domain: getFactoryDomainBinding(auth.tenantId)?.ontologyDomainId,
+        },
       });
       const m = text.match(/\{[\s\S]*\}/);
-      const draft = m ? (JSON.parse(m[0]) as Record<string, unknown>) : null;
-      if (!draft || !draft.name) return reply.fail("EXTRACT_FAILED", "没能从文档提炼出契约；换个更具体的 intent，或直接手填。", 422);
-      return reply.ok({ draft });
+      const rawDraft = m
+        ? (JSON.parse(m[0]) as Record<string, unknown>)
+        : null;
+      if (!rawDraft || !rawDraft.name) return reply.fail("EXTRACT_FAILED", "没能从文档提炼出契约；换个更具体的 intent，或直接手填。", 422);
+      return reply.ok({
+        draft: selectGeneratedToolDraftFields(rawDraft),
+      });
     } catch (e) {
       return reply.fail("EXTRACT_FAILED", `提炼失败：${(e as Error).message}`, 422);
     }
   });
 
-  // ── POST: save a declarative tool to the library ─────────────────────────────
+  // ── POST: persist a governed non-executable revision draft ───────────────────
   app.post<{
     Body: {
       name?: string; description?: string; method?: string; url_template?: string;
       headers?: Record<string, string>; body_template?: string; side_effect?: string;
+      request_spec?: unknown; response_spec?: unknown; examples?: unknown;
       operation?: string; effect_scope?: string; sandbox_policy?: string;
       params_schema?: Record<string, unknown>; returns_schema?: Record<string, unknown>;
       capabilities?: DeclarativeTool["capabilities"];
-      shared?: boolean; // shared=true → domain:null (any tenant); else scoped to this tenant
+      /** Retained only so old clients receive a structured rejection. There is
+       * no direct-to-projection publication path. */
+      shared?: boolean;
+      trusted_manual_publish?: boolean;
     };
   }>("/tools", async (req, reply) => {
     requirePermission(req, "agents.write");
@@ -408,11 +819,14 @@ export async function toolsRoutes(app: FastifyInstance): Promise<void> {
     if (!name) return reply.fail("BAD_REQUEST", "工具名不能为空（建议带命名空间，如 acme.createTicket）。", 400);
     if (!String(b.url_template ?? "").trim()) return reply.fail("BAD_REQUEST", "url_template 不能为空。", 400);
     if (!req.auth) return reply.fail("UNAUTHORIZED", "需要租户上下文", 401);
-    const shared = b.shared === true;
-    if (shared && req.auth.platformRole !== "superadmin") {
-      return reply.fail("FORBIDDEN", "只有平台管理员可以发布全平台共享工具。", 403);
+    if (b.shared === true || b.trusted_manual_publish === true) {
+      return reply.fail(
+        "DIRECT_TOOL_PUBLISH_DISABLED",
+        "共享/直发 active projection 已禁用。请先创建 tenant/domain revision 草稿，完成 exact attested probe，再由登录用户激活。",
+        409,
+      );
     }
-    if (shared ? hasAnyFactoryActiveWork() : hasFactoryActiveWork(req.auth.tenantId)) {
+    if (hasFactoryActiveWork(req.auth.tenantId)) {
       return reply.fail(
         "FACTORY_EXECUTION_ACTIVE",
         "沙箱验证、报告或 promotion 正在使用当前工具快照。为避免运行中途换掉能力定义，请等本轮结束后再保存工具。",
@@ -443,10 +857,26 @@ export async function toolsRoutes(app: FastifyInstance): Promise<void> {
     if (b.body_template !== undefined && (typeof b.body_template !== "string" || !b.body_template)) {
       return reply.fail("INVALID_TOOL_CONTRACT", "body_template 必须是非空字符串。", 400);
     }
+    const httpContract = parseDeclarativeHttpContract({
+      method,
+      bodyTemplate:
+        typeof b.body_template === "string" ? b.body_template : undefined,
+      requestSpec: b.request_spec,
+      responseSpec: b.response_spec,
+      examples: b.examples,
+    });
+    if (!httpContract.ok) {
+      return reply.fail(
+        "INVALID_TOOL_CONTRACT",
+        httpContract.error,
+        400,
+      );
+    }
     const sensitiveDefinitionPath = findSensitiveInputPath({
       url_template: urlTemplate,
       headers: b.headers,
       body_template: b.body_template,
+      examples: b.examples,
     }, "tool");
     if (sensitiveDefinitionPath) {
       return reply.fail("SECRET_INPUT_REJECTED", `${sensitiveDefinitionPath} 含字面凭证；请使用 {config_key} 占位符。`, 400);
@@ -457,6 +887,7 @@ export async function toolsRoutes(app: FastifyInstance): Promise<void> {
       method,
       declaredSideEffect: b.side_effect,
       bodyTemplate: b.body_template ? String(b.body_template) : undefined,
+      requestSpec: httpContract.requestSpec,
       capabilities: parsedCapabilities.capabilities,
     });
     if (!sideEffectPolicy.ok) return reply.fail("INVALID_TOOL_CONTRACT", sideEffectPolicy.error, 400);
@@ -479,6 +910,9 @@ export async function toolsRoutes(app: FastifyInstance): Promise<void> {
       urlTemplate,
       headers: b.headers && typeof b.headers === "object" ? b.headers : undefined,
       bodyTemplate: b.body_template ? String(b.body_template) : undefined,
+      requestSpec: httpContract.requestSpec,
+      responseSpec: httpContract.responseSpec,
+      examples: httpContract.examples,
       sideEffect: sideEffectPolicy.sideEffect,
       ...executionPolicy,
       // Domain is descriptive/selection metadata; ownership is the tenant scope
@@ -487,20 +921,37 @@ export async function toolsRoutes(app: FastifyInstance): Promise<void> {
       // no longer means "shared" (scope_key does), it means the tool is not
       // restricted to one ontology id and will remain available after a later
       // explicit ontology connection.
-      domain: shared ? null : (binding?.ontologyDomainId ?? null),
+      domain: binding?.ontologyDomainId ?? null,
       paramsSchema: b.params_schema && typeof b.params_schema === "object" ? b.params_schema : undefined,
       returnsSchema: b.returns_schema && typeof b.returns_schema === "object" ? b.returns_schema : undefined,
       capabilities: parsedCapabilities.capabilities.length ? parsedCapabilities.capabilities : undefined,
       probeStatus: "required",
     };
-    const r = saveDeclarativeTool(dt, { tenantId: req.auth.tenantId, shared });
-    if (!r.ok) return reply.fail("SAVE_REJECTED", r.reason ?? "保存失败", 409);
+    const actor =
+      req.auth.userId ??
+      req.auth.email ??
+      `token:${req.auth.tenantId}`;
+    let revision: ReturnType<typeof createToolDraft>;
+    try {
+      revision = createToolDraft({
+        tenantId: req.auth.tenantId,
+        domainId: managedRevisionDomainId(binding),
+        tool: dt,
+        actor,
+        source: "manual",
+      });
+    } catch (error) {
+      if (error instanceof ToolRevisionError) {
+        return reply.fail(error.code, error.message, error.statusCode);
+      }
+      throw error;
+    }
     writeAudit({
       tenantId: req.auth.tenantId,
       actorUserId: req.auth.userId ?? undefined,
-      action: "tool.create",
-      targetType: "tool",
-      targetId: dt.name,
+      action: "tool.revision.create",
+      targetType: "tool_revision",
+      targetId: revision.id,
       meta: {
         method: dt.method,
         urlTemplate: dt.urlTemplate,
@@ -508,18 +959,31 @@ export async function toolsRoutes(app: FastifyInstance): Promise<void> {
         operation: dt.operation,
         effectScope: dt.effectScope,
         sandboxPolicy: dt.sandboxPolicy,
-        shared,
+        shared: false,
+        lifecycle: revision.status,
+        revisionId: revision.id,
+        version: revision.version,
+        definitionHash: revision.definitionHash,
         probeStatus: dt.probeStatus,
       },
     });
     return reply.ok({
+      // `saved` means durably persisted, not runtime-active. Older clients
+      // retain their success path while lifecycle/runtimeActive are explicit.
       saved: true,
+      draft: revision.status === "draft",
       name: dt.name,
+      revisionId: revision.id,
+      version: revision.version,
+      definitionHash: revision.definitionHash,
+      lifecycle: revision.status,
+      runtimeActive: revision.status === "active",
+      activation: revision.activation,
       sideEffect: dt.sideEffect,
       operation: dt.operation,
       effectScope: dt.effectScope,
       sandboxPolicy: dt.sandboxPolicy,
-      shared,
+      shared: false,
     });
   });
 
@@ -530,6 +994,8 @@ export async function toolsRoutes(app: FastifyInstance): Promise<void> {
       args?: Record<string, unknown>;
       config?: Record<string, unknown>;
       persist_cassette?: boolean;
+      revision_id?: string;
+      revision_domain_id?: string;
     };
   }>("/tools/:name/probe", async (req, reply) => {
     requirePermission(req, "agents.invoke");
@@ -543,6 +1009,7 @@ export async function toolsRoutes(app: FastifyInstance): Promise<void> {
     }
     const binding = getFactoryDomainBinding(req.auth.tenantId);
     const name = decodeURIComponent(req.params.name);
+    const revisionId = String(req.body?.revision_id ?? "").trim() || undefined;
     const args = req.body?.args && typeof req.body.args === "object" ? req.body.args : {};
     let config = req.body?.config && typeof req.body.config === "object" ? req.body.config : undefined;
     const secretArg = findSensitiveProbeInputPath(args);
@@ -554,7 +1021,58 @@ export async function toolsRoutes(app: FastifyInstance): Promise<void> {
     const badEnvRef = Object.entries(config ?? {}).find(([key, value]) => /_env$/i.test(key) && (typeof value !== "string" || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(value)));
     if (badEnvRef) return reply.fail("BAD_CONFIG_ENV_REF", `config.${badEnvRef[0]} 必须是合法环境变量名。`, 400);
     const actor = req.auth.userId ?? req.auth.email ?? `token:${req.auth.tenantId}`;
-    const persisted = listDeclarativeTools(req.auth.tenantId, binding?.ontologyDomainId ?? null).find((candidate) => candidate.name === name);
+    let revisionDomainId: string;
+    try {
+      revisionDomainId = requestedManagedRevisionDomainId(
+        binding,
+        req.body?.revision_domain_id,
+      );
+    } catch (error) {
+      if (error instanceof ToolRevisionError) {
+        return reply.fail(error.code, error.message, error.statusCode);
+      }
+      throw error;
+    }
+    const revision = revisionId
+      ? getToolRevision({
+          tenantId: req.auth.tenantId,
+          domainId: revisionDomainId,
+          revisionId,
+          name,
+        })
+      : undefined;
+    if (revisionId && !revision) {
+      return reply.fail(
+        "TOOL_REVISION_NOT_FOUND",
+        "没有这个 tenant/domain 下的工具 revision",
+        404,
+      );
+    }
+    if (
+      revision &&
+      revision.status !== "draft" &&
+      revision.status !== "retired"
+    ) {
+      return reply.fail(
+        "TOOL_REVISION_NOT_PROBEABLE",
+        `revision 状态 ${revision.status} 不能通过草稿 probe 路径执行`,
+        409,
+      );
+    }
+    if (revision && !revision.activation.eligible) {
+      return reply.code(409).send({
+        ok: false,
+        error: {
+          code: "PROBE_WRITE_LIFECYCLE_UNAVAILABLE",
+          message: revision.activation.blockers[0]!.message,
+        },
+        status: "blocked",
+        blockers: revision.activation.blockers,
+      });
+    }
+    const persisted = revision?.definition
+      ?? listDeclarativeTools(req.auth.tenantId, binding?.ontologyDomainId ?? null)
+        .find((candidate) => candidate.name === name);
     const globalCatalog = persisted ? undefined : listGlobalTools().find((candidate) => candidate.name === name);
     const globalDescriptor = globalCatalog ? globalToolRegistry.get(globalCatalog.name) : undefined;
     if (!persisted && (!globalCatalog || !globalDescriptor)) return reply.fail("NOT_FOUND", `没有可 probe 的工具「${name}」`, 404);
@@ -604,7 +1122,9 @@ export async function toolsRoutes(app: FastifyInstance): Promise<void> {
     // backwards-compatible request field but no longer creates a green,
     // unusable receipt.  The unbound sentinel keeps pre-ontology diagnostics
     // isolated; connecting a real domain necessarily requires a fresh probe.
-    const domainId = binding?.ontologyDomainId ?? "__unbound__";
+    const domainId = revision
+      ? revisionDomainId
+      : (binding?.ontologyDomainId ?? "__unbound__");
     const result = await new DrizzleToolStore(
       req.auth.tenantId,
       domainId,
@@ -612,6 +1132,7 @@ export async function toolsRoutes(app: FastifyInstance): Promise<void> {
     ).probe({
       domain: domainId,
       name,
+      revisionId,
       args,
       config,
       actor,
@@ -627,6 +1148,7 @@ export async function toolsRoutes(app: FastifyInstance): Promise<void> {
       targetId: name,
       meta: {
         origin: persisted ? "created" : "global",
+        revisionId: revisionId ?? null,
         verified: result.verified,
         classification: result.classification,
         status: result.status,
@@ -639,50 +1161,92 @@ export async function toolsRoutes(app: FastifyInstance): Promise<void> {
     return reply.code(result.verified ? 200 : 422).send({ ok: result.verified, data: result });
   });
 
-  // ── DELETE: remove a created tool (globals are immutable) ────────────────────
-  app.delete<{ Params: { name: string } }>("/tools/:name", async (req, reply) => {
+  // ── DELETE: controlled deactivate (immutable revisions are retained) ────────
+  app.delete<{
+    Params: { name: string };
+    Querystring: {
+      expectedActiveRevisionId?: string;
+      revisionDomainId?: string;
+    };
+  }>("/tools/:name", async (req, reply) => {
     const auth = requirePermission(req, "agents.write");
     const name = decodeURIComponent(req.params.name);
-    if (
-      auth.platformRole === "superadmin"
-        ? hasAnyFactoryActiveWork()
-        : hasFactoryActiveWork(auth.tenantId)
-    ) {
+    const expectedActiveRevisionId = String(
+      req.query.expectedActiveRevisionId ?? "",
+    ).trim();
+    if (!expectedActiveRevisionId) {
       return reply.fail(
-        "FACTORY_EXECUTION_ACTIVE",
-        "沙箱验证、报告或 promotion 正在使用当前工具快照。为避免运行中途移除能力，请等本轮结束后再删除工具。",
-        409,
+        "EXPECTED_ACTIVE_REVISION_REQUIRED",
+        "停用工具必须带 expectedActiveRevisionId，防止把审核期间刚切换的新版本删掉",
+        400,
       );
     }
     let binding: ReturnType<typeof getFactoryDomainBinding> = null;
+    let revisionDomainId: string | undefined;
     try {
       binding = getFactoryDomainBinding(auth.tenantId);
-      const removed = deleteDeclarativeTool(name, auth.tenantId, auth.platformRole === "superadmin", binding?.ontologyDomainId ?? null);
-      if (!removed) {
+      revisionDomainId = requestedManagedRevisionDomainId(
+        binding,
+        req.query.revisionDomainId,
+      );
+      const actor = auth.userId ?? auth.email;
+      if (!actor) {
+        return reply.fail(
+          "AUTH_ACTOR_REQUIRED",
+          "停用工具需要可审计的登录用户身份",
+          403,
+        );
+      }
+      const revision = deactivateToolRevision({
+        tenantId: auth.tenantId,
+        domainId: revisionDomainId,
+        name,
+        actor,
+        expectedActiveRevisionId,
+      });
+      writeAudit({
+        tenantId: auth.tenantId,
+        actorUserId: auth.userId ?? undefined,
+        action: "tool.revision.deactivate",
+        targetType: "tool_revision",
+        targetId: revision.id,
+        meta: {
+          decision: "allow",
+          outcome: "succeeded",
+          name,
+          version: revision.version,
+          definitionHash: revision.definitionHash,
+          revisionDomainId,
+        },
+      });
+      return reply.ok({
+        deactivated: true,
+        deleted: false,
+        name,
+        revision,
+        retainedHistory: true,
+      });
+    } catch (error) {
+      if (error instanceof ToolRevisionError) {
         writeAudit({
           tenantId: auth.tenantId,
           actorUserId: auth.userId ?? undefined,
-          action: "tool.delete",
+          action: "tool.revision.deactivate",
           targetType: "tool",
           targetId: name,
-          meta: { decision: "deny", outcome: "failed", errorCode: "NOT_FOUND", domain: binding?.ontologyDomainId ?? null },
+          meta: {
+            decision: "deny",
+            outcome: "failed",
+            errorCode: error.code,
+            revisionDomainId: revisionDomainId ?? null,
+          },
         });
-        return reply.fail("NOT_FOUND", `没有名为「${name}」的可删除工具（内置全局工具不可删，或不属于本租户）。`, 404);
+        return reply.fail(error.code, error.message, error.statusCode);
       }
       writeAudit({
         tenantId: auth.tenantId,
         actorUserId: auth.userId ?? undefined,
-        action: "tool.delete",
-        targetType: "tool",
-        targetId: name,
-        meta: { decision: "allow", outcome: "succeeded", domain: binding?.ontologyDomainId ?? null },
-      });
-      return reply.ok({ deleted: true, name });
-    } catch (error) {
-      writeAudit({
-        tenantId: auth.tenantId,
-        actorUserId: auth.userId ?? undefined,
-        action: "tool.delete",
+        action: "tool.revision.deactivate",
         targetType: "tool",
         targetId: name,
         meta: {
@@ -690,10 +1254,10 @@ export async function toolsRoutes(app: FastifyInstance): Promise<void> {
           outcome: "failed",
           errorCode: "DELETE_FAILED",
           error: String((error as Error).message ?? error).replace(/[\r\n\t]+/g, " ").slice(0, 240),
-          domain: binding?.ontologyDomainId ?? null,
+          revisionDomainId: revisionDomainId ?? null,
         },
       });
-      return reply.fail("DELETE_FAILED", "工具持久化删除失败", 503);
+      return reply.fail("DEACTIVATE_FAILED", "工具事务停用失败", 503);
     }
   });
 }
