@@ -74,6 +74,7 @@ import {
   type EventCatalogItem,
 } from "@/app/portal/components/workflows/inspectors";
 import { NewWorkflowModal } from "@/app/portal/components/workflows/NewWorkflowModal";
+import { ConfirmPublishOverwriteModal } from "@/app/portal/components/workflows/ConfirmPublishOverwriteModal";
 import { ImportManifestModal } from "@/app/portal/components/import-manifest/ImportManifestModal";
 import { AgentEditor } from "@/app/portal/components/workflows/AgentEditor";
 import { WorkflowHelp } from "@/app/portal/components/workflows/WorkflowHelp";
@@ -131,6 +132,7 @@ import { useEvents } from "@/lib/hooks/useEvents";
 import type { RunListRow } from "@/lib/hooks/useRuns";
 import { useWorkflowLiveState } from "@/lib/hooks/useWorkflowLiveState";
 import {
+  WorkflowPublishOverwriteRequiredError,
   formatWorkflowAuthoringError,
   useDeleteWorkflow,
   usePublishWorkflow,
@@ -288,6 +290,14 @@ export default function WorkflowsPage() {
   );
   const [zoom, setZoom] = useState(1);
   const [showNewModal, setShowNewModal] = useState(false);
+  // Set when the server refuses an unconfirmed publish that would drop or
+  // heavily rewrite live agents; carries the diff the operator must see.
+  const [pendingOverwrite, setPendingOverwrite] = useState<{
+    versionId: string;
+    reason: "removes_agents" | "modifies_threshold";
+    removed: string[];
+    modified: string[];
+  } | null>(null);
   const [showImport, setShowImport] = useState(false);
   const [importTarget, setImportTarget] = useState<{
     slug: string;
@@ -1142,10 +1152,27 @@ export default function WorkflowsPage() {
         });
         return;
       }
+      await runPublish(versionId, false);
+    } finally {
+      publishInFlight.current = false;
+      setPublishing(false);
+    }
+  }
+
+  /**
+   * The one place that talks to the publish endpoint. An unconfirmed publish
+   * that would drop live agents comes back as a typed conflict rather than a
+   * failure — surface the diff and let the operator decide instead of
+   * self-confirming on their behalf.
+   */
+  async function runPublish(versionId: string, confirmOverwrite: boolean) {
+    try {
       const result = await publishWorkflow.mutateAsync({
         versionId,
+        confirmOverwrite,
         note: `Published from the workflow canvas (${selectedWorkflow}).`,
       });
+      setPendingOverwrite(null);
       toast({
         tone: "green",
         title: t("workflowPage.toast.liveTitle"),
@@ -1158,15 +1185,22 @@ export default function WorkflowsPage() {
       setConnectFrom(null);
       setRestoredAt(null);
     } catch (err) {
+      if (err instanceof WorkflowPublishOverwriteRequiredError) {
+        setPendingOverwrite({
+          versionId,
+          reason: err.reason,
+          removed: err.removed,
+          modified: err.modified,
+        });
+        return;
+      }
+      setPendingOverwrite(null);
       toast({
         tone: "red",
         title: t("workflowPage.toast.publishFailed"),
         description:
           err instanceof Error ? err.message : t("common.unknownError"),
       });
-    } finally {
-      publishInFlight.current = false;
-      setPublishing(false);
     }
   }
 
@@ -2592,6 +2626,24 @@ export default function WorkflowsPage() {
           onImport={(target) => {
             setImportTarget(target);
             setShowImport(true);
+          }}
+        />
+      )}
+      {pendingOverwrite && (
+        <ConfirmPublishOverwriteModal
+          reason={pendingOverwrite.reason}
+          removed={pendingOverwrite.removed}
+          modified={pendingOverwrite.modified}
+          pending={publishing}
+          onClose={() => setPendingOverwrite(null)}
+          onConfirm={() => {
+            if (publishInFlight.current) return;
+            publishInFlight.current = true;
+            setPublishing(true);
+            void runPublish(pendingOverwrite.versionId, true).finally(() => {
+              publishInFlight.current = false;
+              setPublishing(false);
+            });
           }}
         />
       )}

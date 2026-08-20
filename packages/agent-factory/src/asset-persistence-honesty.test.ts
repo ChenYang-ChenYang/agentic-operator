@@ -60,10 +60,12 @@ describe("factory asset persistence honesty", () => {
   });
 
   it("does not claim a tool was persisted when the tenant store rejects it", async () => {
+    const events: Array<{ t: string }> = [];
     const c = ctx({
+      emit: (event) => events.push(event),
       ports: {
         tools: {
-          save: async () => { throw new Error("write unavailable"); },
+          saveDraft: async () => { throw new Error("write unavailable"); },
           list: async () => [],
         },
       } as unknown as BrainCtx["ports"],
@@ -80,17 +82,30 @@ describe("factory asset persistence honesty", () => {
     }, c);
 
     expect(result.ok).toBe(false);
-    expect(result.summary).toContain("持久化入库失败");
-    expect(result.output).toMatchObject({ inMemory: true, persisted: false });
-    expect(c.toolCatalog).toContain("acme.lookupCandidate");
+    expect(result.summary).toContain("未通过持久化草稿边界");
+    expect(result.output).toMatchObject({ inMemory: false, persisted: false });
+    expect(c.toolCatalog).not.toContain("acme.lookupCandidate");
+    expect(events).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ t: "tool.created" })]),
+    );
   });
 
   it("normalizes and persists a strict executable HTTP manifest", async () => {
     let saved: DeclarativeTool | undefined;
+    const events: Array<Record<string, unknown>> = [];
     const c = ctx({
+      emit: (event) => events.push(event as unknown as Record<string, unknown>),
       ports: {
         tools: {
-          save: async (tool: DeclarativeTool) => { saved = tool; },
+          saveDraft: async (tool: DeclarativeTool) => {
+            saved = tool;
+            return {
+              revisionId: "tvr-asset-honesty",
+              version: 1,
+              definitionHash: "a".repeat(64),
+              status: "draft" as const,
+            };
+          },
           list: async () => [],
         },
       } as unknown as BrainCtx["ports"],
@@ -118,6 +133,15 @@ describe("factory asset persistence honesty", () => {
     }, c);
 
     expect(result.ok).toBe(true);
+    expect(result.output).toMatchObject({
+      lifecycle: "draft",
+      runtimeActive: false,
+      availableInCurrentRegistry: false,
+    });
+    expect(c.toolCatalog).not.toContain("acme.parseResume");
+    expect(c.realTools?.map((tool) => tool.name)).not.toContain(
+      "acme.parseResume",
+    );
     expect(saved).toMatchObject({
       requestSpec: {
         encoding: "multipart",
@@ -131,13 +155,34 @@ describe("factory asset persistence honesty", () => {
       examples: [{ source: "documentation" }],
       probeStatus: "required",
     });
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          t: "tool.created",
+          revisionId: "tvr-asset-honesty",
+          status: "draft",
+          runtimeActive: false,
+        }),
+      ]),
+    );
   });
 
   it("rejects ambiguous manifests and literal credentials before persistence", async () => {
     let saves = 0;
     const c = ctx({
       ports: {
-        tools: { save: async () => { saves++; }, list: async () => [] },
+        tools: {
+          saveDraft: async () => {
+            saves++;
+            return {
+              revisionId: "tvr-should-not-save",
+              version: 1,
+              definitionHash: "b".repeat(64),
+              status: "draft" as const,
+            };
+          },
+          list: async () => [],
+        },
       } as unknown as BrainCtx["ports"],
     });
     const ambiguous = await createTool.execute({

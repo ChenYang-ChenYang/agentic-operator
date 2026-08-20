@@ -124,6 +124,20 @@ describe("factory production setup contract", () => {
         FACTORY_SB_RUNNER_ID: "external-runner-v3",
         FACTORY_SB_ALLOWED_BUILD_IDS: JSON.stringify(["remote-build-v3"]),
         FACTORY_SB_ALLOWED_IMAGE_DIGESTS: JSON.stringify([remoteImage]),
+        // 证明校验所需的完整引用。少任何一项，主平面就整体拒绝远程沙箱配置
+        // （/health 报 sandbox_runner_unreachable_or_misconfigured），所以
+        // setup 必须要求运维显式提供，而不是发明一个身份。
+        FACTORY_SB_EXECUTION_PLANE_ID: "external-plane-v3",
+        FACTORY_SB_EXECUTION_PLANE_TRUST_DOMAIN: "external-trust-v3",
+        FACTORY_SB_PLATFORM_ATTESTOR_KEY_ID: "external-attestor-v3",
+        EXTERNAL_SANDBOX_ATTESTOR_PUBLIC_HOST_FILE: "/secure/attestor-public.pem",
+        FACTORY_PRIMARY_HOST_IDENTITY_HASH: image("a"),
+        FACTORY_PRIMARY_DOCKER_DAEMON_IDENTITY_HASH: image("b"),
+        FACTORY_SB_ALLOWED_CONTROL_HOST_IDENTITY_HASHES: JSON.stringify([image("c")]),
+        FACTORY_SB_ALLOWED_WORKLOAD_HOST_IDENTITY_HASHES: JSON.stringify([image("d")]),
+        FACTORY_SB_ALLOWED_DOCKER_DAEMON_IDENTITY_HASHES: JSON.stringify([image("e")]),
+        EXTERNAL_SANDBOX_VM_ADDRESS: "192.168.64.2",
+        EXTERNAL_SANDBOX_CA_HOST_FILE: "/secure/ca.crt",
       },
       previous: {},
       localBuildId: "local-build-1",
@@ -139,6 +153,19 @@ describe("factory production setup contract", () => {
       allowedBuildIds: JSON.stringify(["remote-build-v3"]),
       allowedImageDigests: JSON.stringify([remoteImage]),
       runtimeImageDigest: remoteImage,
+      executionPlaneId: "external-plane-v3",
+      executionPlaneTrustDomain: "external-trust-v3",
+      platformAttestorKeyId: "external-attestor-v3",
+      platformAttestorPublicKeyFile:
+        "/run/secrets/external-sandbox-attestor-public.pem",
+      platformAttestorPublicHostFile: "/secure/attestor-public.pem",
+      primaryHostIdentityHash: image("a"),
+      primaryDockerDaemonIdentityHash: image("b"),
+      allowedControlHostIdentityHashes: JSON.stringify([image("c")]),
+      allowedWorkloadHostIdentityHashes: JSON.stringify([image("d")]),
+      allowedDockerDaemonIdentityHashes: JSON.stringify([image("e")]),
+      vmAddress: "192.168.64.2",
+      caHostFile: "/secure/ca.crt",
     });
 
     expect(() => resolveProductionSandboxDeployment({

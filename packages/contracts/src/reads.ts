@@ -77,6 +77,9 @@ export const HealthReport = z.object({
     registrationOk: z.boolean().optional(),
     expectedApps: z.number().int().nonnegative().optional(),
     syncedApps: z.number().int().nonnegative().optional(),
+    /** Registered apps whose current function set is empty. They retain sync
+     * acceptance proof but require no broker dispatch session. */
+    emptyApps: z.array(z.string()).optional(),
     lastSyncAt: z.number().optional(),
   }),
   sqlite: z.object({
@@ -124,8 +127,11 @@ export const HealthReport = z.object({
        * #NOMOCK — true when the CONSTRUCTED gateway is the mock (echo) provider, so a mock runtime
        * can never masquerade as real. Ops/UI can surface a persistent "MOCK LLM ACTIVE" banner from
        * one curl instead of trusting the boot log.
-       */
+      */
       mock: z.boolean().optional(),
+      /** True only when API bootstrap installed the tenant-aware central
+       * gateway adapter for Agent Factory. */
+      factoryCentralRouting: z.boolean().optional(),
     })
     .optional(),
   /** Live MCP transport/tool-list readiness. Optional failures are explicit degradation. */
@@ -223,6 +229,13 @@ export const HealthReport = z.object({
       buildId: z.string().optional(),
       runtimeImageDigest: z.string().optional(),
       isolationTier: z.enum(["same_host_container", "remote_container", "remote_vm"]).optional(),
+      /** A same-host runner may be healthy for local development while its
+       * receipts remain permanently ineligible for release promotion. */
+      diagnosticOnly: z.boolean().optional(),
+      qualification: z.enum(["development_only", "promotable"]).optional(),
+      executionPlaneId: z.string().optional(),
+      trustDomain: z.string().optional(),
+      platformAttestationHash: z.string().optional(),
       broker: z.enum(["ready", "unreachable"]).optional(),
       storage: z.enum(["ready", "unwritable"]).optional(),
       jobs: z.record(z.string(), z.number().int().nonnegative()).optional(),

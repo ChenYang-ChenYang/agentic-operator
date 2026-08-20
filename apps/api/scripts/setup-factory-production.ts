@@ -1306,6 +1306,28 @@ export interface ProductionSandboxDeploymentConfig {
   /** Exact remote workload allowlist consumed by signed execution-receipt verification. */
   allowedImageDigests: string;
   runtimeImageDigest: string;
+  /*
+   * 执行面证明校验所需的完整引用。缺任何一项，
+   * loadRemoteSandboxConnectionConfig 就整体拒绝配置，/health 报
+   * sandbox_runner_unreachable_or_misconfigured —— 即使网络与 TLS 全都正常
+   * （2026-08-06 实测：8 项引用不足，必须 17 项齐备）。
+   *
+   * 身份哈希是【否定性】判据：用来证明执行面不共享主平面的主机/Docker 身份。
+   * 全部由运维在 operator .env 里显式提供；setup 不发明身份。
+   */
+  executionPlaneId?: string;
+  executionPlaneTrustDomain?: string;
+  platformAttestorKeyId?: string;
+  platformAttestorPublicKeyFile?: string;
+  platformAttestorPublicHostFile?: string;
+  primaryHostIdentityHash?: string;
+  primaryDockerDaemonIdentityHash?: string;
+  allowedControlHostIdentityHashes?: string;
+  allowedWorkloadHostIdentityHashes?: string;
+  allowedDockerDaemonIdentityHashes?: string;
+  /** 外部执行面的解析地址与私有 CA（容器靠它们连上并校验 TLS）。 */
+  vmAddress?: string;
+  caHostFile?: string;
 }
 
 function deploymentSetting(
@@ -1485,7 +1507,101 @@ export function resolveProductionSandboxDeployment(input: {
     allowedBuildIds: JSON.stringify([allowedBuild]),
     allowedImageDigests: JSON.stringify([allowedImage]),
     runtimeImageDigest: allowedImage,
+    executionPlaneId: exactDeploymentIdentity(
+      deploymentSetting("FACTORY_SB_EXECUTION_PLANE_ID", externalSources),
+      "FACTORY_SB_EXECUTION_PLANE_ID",
+    ),
+    executionPlaneTrustDomain: exactDeploymentIdentity(
+      deploymentSetting(
+        "FACTORY_SB_EXECUTION_PLANE_TRUST_DOMAIN",
+        externalSources,
+      ),
+      "FACTORY_SB_EXECUTION_PLANE_TRUST_DOMAIN",
+    ),
+    platformAttestorKeyId: exactDeploymentIdentity(
+      deploymentSetting("FACTORY_SB_PLATFORM_ATTESTOR_KEY_ID", externalSources),
+      "FACTORY_SB_PLATFORM_ATTESTOR_KEY_ID",
+    ),
+    platformAttestorPublicKeyFile:
+      "/run/secrets/external-sandbox-attestor-public.pem",
+    platformAttestorPublicHostFile: absoluteDeploymentPath(
+      deploymentSetting(
+        "EXTERNAL_SANDBOX_ATTESTOR_PUBLIC_HOST_FILE",
+        externalSources,
+      ),
+      "EXTERNAL_SANDBOX_ATTESTOR_PUBLIC_HOST_FILE",
+    ),
+    primaryHostIdentityHash: exactIdentityHash(
+      deploymentSetting("FACTORY_PRIMARY_HOST_IDENTITY_HASH", externalSources),
+      "FACTORY_PRIMARY_HOST_IDENTITY_HASH",
+    ),
+    primaryDockerDaemonIdentityHash: exactIdentityHash(
+      deploymentSetting(
+        "FACTORY_PRIMARY_DOCKER_DAEMON_IDENTITY_HASH",
+        externalSources,
+      ),
+      "FACTORY_PRIMARY_DOCKER_DAEMON_IDENTITY_HASH",
+    ),
+    allowedControlHostIdentityHashes: JSON.stringify([
+      exactSingletonSetting(
+      deploymentSetting(
+        "FACTORY_SB_ALLOWED_CONTROL_HOST_IDENTITY_HASHES",
+        externalSources,
+      ),
+      "FACTORY_SB_ALLOWED_CONTROL_HOST_IDENTITY_HASHES",
+      (value) => IDENTITY_HASH_PATTERN.test(value),
+      ),
+    ]),
+    allowedWorkloadHostIdentityHashes: JSON.stringify([
+      exactSingletonSetting(
+      deploymentSetting(
+        "FACTORY_SB_ALLOWED_WORKLOAD_HOST_IDENTITY_HASHES",
+        externalSources,
+      ),
+      "FACTORY_SB_ALLOWED_WORKLOAD_HOST_IDENTITY_HASHES",
+      (value) => IDENTITY_HASH_PATTERN.test(value),
+      ),
+    ]),
+    allowedDockerDaemonIdentityHashes: JSON.stringify([
+      exactSingletonSetting(
+      deploymentSetting(
+        "FACTORY_SB_ALLOWED_DOCKER_DAEMON_IDENTITY_HASHES",
+        externalSources,
+      ),
+      "FACTORY_SB_ALLOWED_DOCKER_DAEMON_IDENTITY_HASHES",
+      (value) => IDENTITY_HASH_PATTERN.test(value),
+      ),
+    ]),
+    vmAddress: exactDeploymentIdentity(
+      deploymentSetting("EXTERNAL_SANDBOX_VM_ADDRESS", externalSources),
+      "EXTERNAL_SANDBOX_VM_ADDRESS",
+    ),
+    caHostFile: absoluteDeploymentPath(
+      deploymentSetting("EXTERNAL_SANDBOX_CA_HOST_FILE", externalSources),
+      "EXTERNAL_SANDBOX_CA_HOST_FILE",
+    ),
   };
+}
+
+/** sha256:<64 hex> —— 执行面身份哈希的唯一合法形状。 */
+const IDENTITY_HASH_PATTERN = /^sha256:[a-f0-9]{64}$/;
+
+/** 单个身份哈希：形状必须精确，setup 不接受占位或截断值。 */
+function exactIdentityHash(raw: string, name: string): string {
+  const value = raw.trim();
+  if (!IDENTITY_HASH_PATTERN.test(value)) {
+    throw new Error(`${name} must be an exact sha256:<64 hex> identity hash`);
+  }
+  return value;
+}
+
+/** 宿主侧挂载源必须是绝对路径；setup 从不代运维猜一个位置。 */
+function absoluteDeploymentPath(raw: string, name: string): string {
+  const value = raw.trim();
+  if (!value || !path.isAbsolute(value)) {
+    throw new Error(`${name} must be an absolute host path`);
+  }
+  return value;
 }
 
 function envNameForTenant(slug: string): string {
@@ -1947,6 +2063,19 @@ async function runSetup(
     ["SANDBOX_RUNNER_ACTUAL_ISOLATION_TIER", "same_host_container"],
     ["FACTORY_SB_ALLOWED_BUILD_IDS", sandboxDeployment.allowedBuildIds],
     ["FACTORY_SB_ALLOWED_IMAGE_DIGESTS", sandboxDeployment.allowedImageDigests],
+    // 执行面证明校验的完整引用（见 ProductionSandboxDeploymentConfig 注释）。
+    ["FACTORY_SB_EXECUTION_PLANE_ID", sandboxDeployment.executionPlaneId ?? ""],
+    ["FACTORY_SB_EXECUTION_PLANE_TRUST_DOMAIN", sandboxDeployment.executionPlaneTrustDomain ?? ""],
+    ["FACTORY_SB_PLATFORM_ATTESTOR_KEY_ID", sandboxDeployment.platformAttestorKeyId ?? ""],
+    ["FACTORY_SB_PLATFORM_ATTESTOR_PUBLIC_KEY_FILE", sandboxDeployment.platformAttestorPublicKeyFile ?? ""],
+    ["EXTERNAL_SANDBOX_ATTESTOR_PUBLIC_HOST_FILE", sandboxDeployment.platformAttestorPublicHostFile ?? ""],
+    ["FACTORY_PRIMARY_HOST_IDENTITY_HASH", sandboxDeployment.primaryHostIdentityHash ?? ""],
+    ["FACTORY_PRIMARY_DOCKER_DAEMON_IDENTITY_HASH", sandboxDeployment.primaryDockerDaemonIdentityHash ?? ""],
+    ["FACTORY_SB_ALLOWED_CONTROL_HOST_IDENTITY_HASHES", sandboxDeployment.allowedControlHostIdentityHashes ?? ""],
+    ["FACTORY_SB_ALLOWED_WORKLOAD_HOST_IDENTITY_HASHES", sandboxDeployment.allowedWorkloadHostIdentityHashes ?? ""],
+    ["FACTORY_SB_ALLOWED_DOCKER_DAEMON_IDENTITY_HASHES", sandboxDeployment.allowedDockerDaemonIdentityHashes ?? ""],
+    ["EXTERNAL_SANDBOX_VM_ADDRESS", sandboxDeployment.vmAddress ?? ""],
+    ["EXTERNAL_SANDBOX_CA_HOST_FILE", sandboxDeployment.caHostFile ?? ""],
     ["FACTORY_PRODUCTION_IMAGE_ATTESTATION_FILE", "/app/data/factory-production-image-attestation.json"],
     ["FACTORY_PRODUCTION_IMAGE_ATTESTATION_TOPOLOGY", sandboxDeployment.topology],
     ["FACTORY_PRODUCTION_IMAGE_ATTESTATION_PUBLIC_KEY_FILE", "/run/secrets/factory-production-image-attestation-public.pem"],

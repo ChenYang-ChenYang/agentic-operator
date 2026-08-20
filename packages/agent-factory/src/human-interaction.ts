@@ -119,3 +119,17 @@ export function activeHumanInteraction(state: GateState): FactoryPendingHumanInt
   const interaction = state.humanInteractions?.[kind];
   return interaction?.kind === kind ? interaction : null;
 }
+
+/** Verify that a persisted interaction identity still belongs to the exact
+ * prompt/cases/boundary subject that opened it. Durable recovery must not rely
+ * on the gate kind alone: a stale `clarifyPrompt` paired with a newer clarify
+ * interaction is not an addressable human checkpoint. */
+export function humanInteractionMatchesSubject(
+  interaction: FactoryPendingHumanInteraction,
+  kind: FactoryHumanInteractionKind,
+  subject: unknown,
+): boolean {
+  return (
+    interaction.kind === kind && interaction.subjectDigest === digest(subject)
+  );
+}

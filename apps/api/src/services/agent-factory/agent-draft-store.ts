@@ -16,6 +16,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type {
   AgentDraft,
   AgentDraftRegressionEvidence,
+  AgentDraftSaveReceipt,
   AgentDraftStore,
   GeneratedAgentSpec,
 } from "@agentic/agent-factory";
@@ -24,6 +25,7 @@ import {
   isSecretShapedString,
   lintGeneratedToolCode,
   renderTsFunctionModule,
+  specsFingerprint,
   validateAgentCode,
   validateIntegrationToolConfig,
   validatePlan,
@@ -726,7 +728,21 @@ export class FsAgentDraftStore implements AgentDraftStore {
   }
 
   async save(domain: string, specs: GeneratedAgentSpec[], regression?: AgentDraftRegressionEvidence): Promise<number> {
-    return (await this.persistVersion(domain, specs, regression)).count;
+    return (await this.saveWithReceipt(domain, specs, regression)).persisted;
+  }
+
+  async saveWithReceipt(
+    domain: string,
+    specs: GeneratedAgentSpec[],
+    regression?: AgentDraftRegressionEvidence,
+  ): Promise<AgentDraftSaveReceipt> {
+    const persisted = await this.persistVersion(domain, specs, regression);
+    return {
+      schema: "agent-factory-draft-save/v1",
+      persisted: persisted.count,
+      versionId: persisted.versionId,
+      specsFingerprint: specsFingerprint(specs),
+    };
   }
 
   private async persistVersion(

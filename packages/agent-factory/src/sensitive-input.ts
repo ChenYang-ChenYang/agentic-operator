@@ -2,7 +2,7 @@ const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
 
 const SECRET_KEY = /^(?:api_key|access_key|private_key|secret_key|client_key|key|access_token|refresh_token|token|authorization|authorization_header|auth|auth_header|bearer|bearer_token|password|passwd|secret|cookie|credential|credentials|session|session_id)$/i;
 const SECRET_KEY_PART = /(?:^|_)(?:api_key|access_key|private_key|secret_key|client_key|access_token|refresh_token|authorization|auth|password|passwd|secret|cookie|credential|credentials|session_id|token)(?:$|_)/i;
-const SAFE_DIGEST_TOKEN = /^(?:authorize_(?:probe|integration_profile|sandbox_design_review):v\d:|decline_(?:integration_profile|sandbox_design_review):v\d:|(?:probe|integration_profile|sandbox_design_review)_authorization:v\d:|consumed_(?:probe|integration_profile|sandbox_design_review)_authorization:v\d:)[a-f0-9]{32,}$/i;
+const SAFE_DIGEST_TOKEN = /^(?:authorize_(?:probe|integration_profile|sandbox_evidence_plan|sandbox_design_review):v\d:|decline_(?:integration_profile|sandbox_evidence_plan|sandbox_design_review):v\d:|(?:probe|integration_profile|sandbox_evidence_plan|sandbox_design_review)_authorization:v\d:|consumed_(?:probe|integration_profile|sandbox_evidence_plan|sandbox_design_review)_authorization:v\d:)[a-f0-9]{32,}$/i;
 // Angle brackets are not a generic trust boundary: `<real-secret>` must not
 // bypass scanning merely because it looks placeholder-ish. Keep only the
 // small, explicit placeholder vocabulary produced by our own UI/templates.
@@ -55,6 +55,36 @@ export function isSecretShapedString(value: string): boolean {
   return SECRET_VALUE_PATTERNS.some((pattern) => pattern.test(text));
 }
 
+/**
+ * Strip every secret-shaped RUN out of free prose, keeping the surrounding
+ * words. `isSecretShapedString` answers "is this whole value a secret?", which
+ * is the right question for a field but the wrong one for a sentence: a chat
+ * turn is mostly intent with a credential embedded in the middle, and blanking
+ * the whole turn would destroy the request we still have to act on.
+ *
+ * There is deliberately ONE vocabulary of what a secret looks like. A caller
+ * that hand-rolls its own regexes ends up narrower than this list — which is
+ * exactly how PEM blocks, `Bearer` tokens, AWS key ids and `Password=…` came to
+ * be persisted verbatim while an `sk-` key next to them was masked.
+ */
+export function redactSecretRuns(value: string, marker = "[REDACTED]"): string {
+  // A PEM header is enough to DETECT a secret field, but removing only the
+  // header leaves the key body sitting in the text. As a run-redactor we take
+  // the whole armoured block — through its END line, or to the end of the input
+  // when the paste was cut off mid-key.
+  let out = value.replace(
+    /-----BEGIN (?:[A-Z ]+)?PRIVATE KEY-----[\s\S]*?(?:-----END (?:[A-Z ]+)?PRIVATE KEY-----|$)/gi,
+    marker,
+  );
+  for (const pattern of SECRET_VALUE_PATTERNS) {
+    out = out.replace(
+      new RegExp(pattern.source, `g${pattern.flags.replace("g", "")}`),
+      marker,
+    );
+  }
+  return out;
+}
+
 export interface SensitiveInputScan {
   sanitized: unknown;
   paths: string[];
@@ -105,13 +135,29 @@ export function sanitizeSensitiveInput(
     }
     if (seen.has(item)) return "[REDACTED_CIRCULAR]";
     seen.add(item);
+    // `seen` is the active recursion stack, not a global "ever visited" set.
+    // Readiness projections deliberately reuse immutable schema arrays in the
+    // detailed report and the compact receipt. That is a DAG, not a cycle; a
+    // global WeakSet replaced the second occurrence with
+    // `[REDACTED_CIRCULAR]` and erased exact configuration fields. Remove the
+    // node after visiting so only a genuine ancestor reference is redacted.
+    let sanitized: unknown;
     if (Array.isArray(item)) {
-      return item.map((entry, index) => visit(entry, `${path}[${index}]`, "", depth + 1));
+      sanitized = item.map((entry, index) =>
+        visit(entry, `${path}[${index}]`, "", depth + 1),
+      );
+    } else {
+      sanitized = Object.fromEntries(
+        Object.entries(item as Record<string, unknown>).map(
+          ([childKey, entry]) => [
+            childKey,
+            visit(entry, `${path}.${childKey}`, childKey, depth + 1),
+          ],
+        ),
+      );
     }
-    return Object.fromEntries(Object.entries(item as Record<string, unknown>).map(([childKey, entry]) => [
-      childKey,
-      visit(entry, `${path}.${childKey}`, childKey, depth + 1),
-    ]));
+    seen.delete(item);
+    return sanitized;
   };
   return { sanitized: visit(value, rootPath), paths: [...new Set(paths)] };
 }

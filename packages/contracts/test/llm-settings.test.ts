@@ -372,6 +372,133 @@ describe("deterministic task-to-model resolution", () => {
     ).toThrow(/older_than_365_days/);
   });
 
+  // A caller (the Agent Factory difficulty router) may express an ORDERED model
+  // preference for a hard task. The workspace/tenant routing policy stays the
+  // boundary: preference may only re-rank the candidates that policy already
+  // allows, never widen the set, and an unsatisfiable preference must be
+  // reported rather than silently ignored.
+  describe("caller model preference inside the tenant policy boundary", () => {
+    const preferenceSettings = LlmSettingsSchema.parse({
+      schemaVersion: 1,
+      revision: 4,
+      gatewayInstances: [
+        {
+          id: "newapi",
+          displayName: "NewAPI",
+          kind: "newapi",
+          baseUrl: "https://newapi.example.test/v1",
+        },
+      ],
+      defaultProfile: {
+        candidates: [
+          { route: "newapi/vendor/cheap-flash" },
+          { route: "newapi/vendor/strong-reasoner" },
+          { route: "newapi/vendor/mid-pro" },
+        ],
+      },
+      taskProfiles: [],
+    });
+
+    it("promotes the first allowed candidate that matches the preference", () => {
+      const result = resolveLlmRouting(preferenceSettings, {
+        taskClass: "agent.author",
+        modelPreference: ["strong-reasoner", "mid-pro"],
+      });
+
+      expect(result.selectedCandidate.route).toBe(
+        "newapi/vendor/strong-reasoner",
+      );
+      expect(result.modelPreference).toMatchObject({
+        requested: ["strong-reasoner", "mid-pro"],
+        satisfied: true,
+        matchedRoute: "newapi/vendor/strong-reasoner",
+      });
+      // The rest of the allowed set survives as fallbacks, re-ranked by the
+      // same preference — nothing is dropped and nothing is added.
+      expect(result.candidates.map((candidate) => candidate.route)).toEqual([
+        "newapi/vendor/strong-reasoner",
+        "newapi/vendor/mid-pro",
+        "newapi/vendor/cheap-flash",
+      ]);
+    });
+
+    it("never selects a model the policy does not allow", () => {
+      const result = resolveLlmRouting(preferenceSettings, {
+        taskClass: "agent.author",
+        modelPreference: ["frontier-model-the-tenant-did-not-enable"],
+      });
+
+      expect(result.candidates.map((candidate) => candidate.route)).toEqual([
+        "newapi/vendor/cheap-flash",
+        "newapi/vendor/strong-reasoner",
+        "newapi/vendor/mid-pro",
+      ]);
+      expect(result.selectedCandidate.route).toBe("newapi/vendor/cheap-flash");
+      expect(result.modelPreference).toMatchObject({
+        requested: ["frontier-model-the-tenant-did-not-enable"],
+        satisfied: false,
+        matchedRoute: null,
+      });
+      // Honest degradation: the receipt says what was asked for, what actually
+      // served, and why the preference could not be met.
+      expect(result.modelPreference?.reason).toMatch(
+        /newapi\/vendor\/cheap-flash/,
+      );
+      expect(result.explanation).toMatch(/preference/i);
+    });
+
+    it("reports an unmet preference when policy allows exactly one model", () => {
+      const singleCandidate = LlmSettingsSchema.parse({
+        schemaVersion: 1,
+        revision: 1,
+        gatewayInstances: [
+          {
+            id: "newapi",
+            displayName: "NewAPI",
+            kind: "newapi",
+            baseUrl: "https://newapi.example.test/v1",
+          },
+        ],
+        defaultProfile: {
+          candidates: [{ route: "newapi/vendor/cheap-flash" }],
+        },
+      });
+
+      const result = resolveLlmRouting(singleCandidate, {
+        taskClass: "agent.author",
+        modelPreference: ["strong-reasoner"],
+      });
+
+      expect(result.selectedCandidate.route).toBe("newapi/vendor/cheap-flash");
+      expect(result.modelPreference?.satisfied).toBe(false);
+    });
+
+    it("leaves resolution untouched when no preference is expressed", () => {
+      const result = resolveLlmRouting(preferenceSettings, {
+        taskClass: "agent.author",
+      });
+
+      expect(result.selectedCandidate.route).toBe("newapi/vendor/cheap-flash");
+      expect(result.modelPreference).toBeNull();
+    });
+
+    it("keeps an explicit route authoritative over a preference", () => {
+      const result = resolveLlmRouting(preferenceSettings, {
+        taskClass: "agent.author",
+        explicitRoute: "newapi/vendor/cheap-flash",
+        modelPreference: ["strong-reasoner"],
+      });
+
+      expect(result.matchType).toBe("explicit");
+      expect(result.selectedCandidate.route).toBe("newapi/vendor/cheap-flash");
+      expect(result.modelPreference).toMatchObject({
+        satisfied: false,
+        matchedRoute: null,
+      });
+      expect(result.modelPreference?.reason).toMatch(/explicit/i);
+    });
+  });
+
   it("rejects settings that reference an unconfigured gateway instance", () => {
     expect(() =>
       LlmSettingsSchema.parse({

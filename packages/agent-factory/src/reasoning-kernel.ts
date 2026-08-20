@@ -69,6 +69,22 @@ export function kernelTokenCharge(): number {
 
 export type KernelLlm = (system: string, user: string, opts?: { maxTokens?: number; temperature?: number; purpose?: string }) => Promise<string>;
 
+// #KERNEL-WINDOW — the kernel's prompt windows were bare literals inside baseUser()/reflection(), so a
+// caller had no way to know how much of what it handed over the model would actually SEE. They are named
+// here and overridable PER CALL (ReasoningInput.limits) so a caller that needs a wider window can ask for
+// one AND can compute what was dropped. Defaults are the historical literals — untouched behaviour for
+// every caller that does not opt in.
+export const KERNEL_CONTEXT_CHARS_DEFAULT = 12_000;
+export const KERNEL_DRAFT_CHARS_DEFAULT = 8_000;
+export const KERNEL_CRITIQUE_CHARS_DEFAULT = 4_000;
+
+/** Prompt windows for ONE reasoning run. Omitted fields keep the module defaults. */
+export interface ReasoningLimits {
+  contextChars?: number;
+  draftChars?: number;
+  critiqueChars?: number;
+}
+
 export interface ReasoningInput {
   /** the question / decision to reason about (one line). */
   subproblem: string;
@@ -76,7 +92,16 @@ export interface ReasoningInput {
   context?: string;
   /** optional seed / prior output — combo threading feeds the previous step's output in here. */
   draft?: string;
+  /** #KERNEL-WINDOW — how much of `context` / `draft` the model is allowed to see. */
+  limits?: ReasoningLimits;
 }
+
+const contextChars = (input: ReasoningInput): number =>
+  input.limits?.contextChars ?? KERNEL_CONTEXT_CHARS_DEFAULT;
+const draftChars = (input: ReasoningInput): number =>
+  input.limits?.draftChars ?? KERNEL_DRAFT_CHARS_DEFAULT;
+const critiqueChars = (input: ReasoningInput): number =>
+  input.limits?.critiqueChars ?? KERNEL_CRITIQUE_CHARS_DEFAULT;
 
 export interface ReasoningStepResult {
   strategy: string;
@@ -101,6 +126,33 @@ export interface KernelOpts {
   maxLlmCalls?: number;
   /** called once per real LLM call so a caller can charge the shared budget ledger. */
   onLlmCall?: () => void;
+  /**
+   * #KERNEL-SUBSTEP — called once per real INTERNAL call, the moment it RETURNS.
+   *
+   * `emit` only fires when a whole METHOD returns, and a method is not one call:
+   * reflection is draft→critique→rewrite (3 serial calls), debate/tot are a
+   * fan-out plus two serial rounds. A conversation surface that reports progress
+   * per method therefore shows nothing for the whole interior of a method — the
+   * measured symptom was a 3004ms gap with no frame in it. This is the hook that
+   * makes the interior reportable, and it fires AFTER the provider resolved, so
+   * a frame built from it still describes work that really finished. It is never
+   * a heartbeat: no call, no callback.
+   */
+  onSubStep?: (step: {
+    /** The method this internal call belongs to (cot / reflection / …). */
+    strategy: string;
+    /** Which internal role finished (draft / critique / rewrite / judge / …). */
+    phase: string;
+    /** 0-based position among the internal calls this run has completed —
+     *  same base as `reasoning.step.index`, so one renderer serves both. */
+    ordinal: number;
+    output: string;
+  }) => void;
+  /** #KERNEL-ATTRIBUTION — the model that actually SERVED a kernel call (post-fallback), reported per
+   *  call so a caller's receipt can attribute kernel spend the same way it attributes its own turns.
+   *  Only the DEFAULT transport can report this: an injected `llm` is the caller's own transport and the
+   *  kernel will not invent a model name for it. */
+  onServedModel?: (model: string) => void;
   /** #KERNEL-TIER-AI — AI 为【这一次】推理点的模型档位（它比任何静态规则更清楚这个子问题多难）。
    *  explore = tot 分叉 / debate 论证者（发散）；synth = merge / judge / rewrite / cot 结论（收敛）。
    *  不传 → 回落 env → 回落角色默认（fast/default）。刻意做成【一次性、不粘】：粘性档位正是
@@ -114,8 +166,8 @@ const clip = (s: string, n: number): string => (s.length > n ? `${s.slice(0, n)}
 function baseUser(input: ReasoningInput): string {
   return [
     `子问题：${input.subproblem}`,
-    input.context ? `\n【背景】\n${clip(input.context, 12_000)}` : "",
-    input.draft ? `\n【已有草稿/上一步产出】\n${clip(input.draft, 8_000)}` : "",
+    input.context ? `\n【背景】\n${clip(input.context, contextChars(input))}` : "",
+    input.draft ? `\n【已有草稿/上一步产出】\n${clip(input.draft, draftChars(input))}` : "",
   ].filter(Boolean).join("\n");
 }
 
@@ -172,12 +224,12 @@ async function reflection(input: ReasoningInput, call: KernelLlm): Promise<Reaso
     : (await call("先给出这个子问题的一版直接答案/方案（简洁，可被批评）。", baseUser(input), { maxTokens: kernelTokens(0.8), temperature: 0.3, purpose: "kernel:reflection.draft" })).trim();
   const critique = (await call(
     "你是严格的自评者。只列出下面这版产出的【具体缺陷/风险/遗漏/未满足的约束】——逐条、可定位；确实没问题就写「无重大问题」。不要重写，只批评。",
-    `${baseUser({ ...input, draft: undefined })}\n\n【待评产出】\n${clip(draft, 8_000)}`,
+    `${baseUser({ ...input, draft: undefined })}\n\n【待评产出】\n${clip(draft, draftChars(input))}`,
     { maxTokens: kernelTokens(0.65), temperature: 0.2, purpose: "kernel:reflection.critique" },
   )).trim();
   const rewrite = (await call(
     "根据自评做【定点重写】：只修被批评到的地方，保留其余；产出最终版（完整、可直接使用）。",
-    `${baseUser({ ...input, draft: undefined })}\n\n【原产出】\n${clip(draft, 8_000)}\n\n【自评】\n${clip(critique, 4_000)}`,
+    `${baseUser({ ...input, draft: undefined })}\n\n【原产出】\n${clip(draft, draftChars(input))}\n\n【自评】\n${clip(critique, critiqueChars(input))}`,
     { maxTokens: kernelTokens(1), temperature: 0.2, purpose: "kernel:reflection.rewrite" },
   )).trim();
   return { strategy: "reflection", output: rewrite, meta: { critique } };
@@ -254,13 +306,30 @@ export async function runReasoning(input: ReasoningInput, plan: StrategyPlan, op
   const maxCalls = Math.max(1, opts.maxLlmCalls ?? 12);
   let calls = 0;
   const requestedTiers = { explore: opts.exploreTier, synth: opts.synthTier };
-  const baseLlm: KernelLlm = opts.llm ?? ((s, u, o) => chatOnce(s, u, { maxTokens: o?.maxTokens ?? kernelTokens(0.8), temperature: o?.temperature, purpose: o?.purpose, signal: opts.signal, models: kernelModelsFor(o?.purpose, requestedTiers) }));
+  const baseLlm: KernelLlm = opts.llm ?? ((s, u, o) => chatOnce(s, u, { maxTokens: o?.maxTokens ?? kernelTokens(0.8), temperature: o?.temperature, purpose: o?.purpose, signal: opts.signal, models: kernelModelsFor(o?.purpose, requestedTiers), ...(opts.onServedModel ? { onModel: opts.onServedModel } : {}) }));
+  // #KERNEL-SUBSTEP — one interception point covers EVERY primitive, because every
+  // primitive gets its provider access through this one wrapper. `purpose` is already
+  // "kernel:<method>.<role>" at each call site, so the sub-step's identity is read from
+  // the call itself rather than re-declared (and re-desynchronised) per primitive.
+  let subStepOrdinal = 0;
   const call: KernelLlm = async (s, u, o) => {
     if (opts.signal?.aborted) throw new Error("aborted");
     if (calls >= maxCalls) throw new Error(`reasoning kernel 调用已达上限 ${maxCalls}`);
     calls += 1;
     opts.onLlmCall?.();
-    return baseLlm(s, u, o);
+    const output = await baseLlm(s, u, o);
+    if (opts.onSubStep) {
+      const purpose = (o?.purpose ?? "").replace(/^kernel:/, "");
+      const [strategy, phase] = purpose.split(".");
+      opts.onSubStep({
+        strategy: strategy || "?",
+        phase: phase || strategy || "?",
+        ordinal: subStepOrdinal,
+        output: clip(output.trim(), 4000),
+      });
+      subStepOrdinal += 1;
+    }
+    return output;
   };
 
   const executable = plan.steps.map((s) => String(s.strategy).toLowerCase());

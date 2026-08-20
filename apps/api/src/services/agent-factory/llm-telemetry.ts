@@ -22,9 +22,10 @@ import {
   writeSync,
 } from "node:fs";
 import { setLlmCallSink, type LlmCallRecord } from "@agentic/agent-factory";
-import { getDb, llmCallTelemetry } from "@agentic/db";
+import { getDb, llmCallTelemetry, runs } from "@agentic/db";
 import { makeId } from "@agentic/shared";
 import { publishStreamEvent } from "@agentic/runtime";
+import { and, eq } from "drizzle-orm";
 
 const OUTBOX_VERSION = 1 as const;
 const STALE_LOCK_MS = 30_000;
@@ -46,6 +47,14 @@ export interface LlmTelemetryStatus {
   consecutiveFailures: number;
   /** Times neither SQLite nor the outbox could make a record durable. */
   durabilityFailures: number;
+  /**
+   * Fan-out attempts skipped because the record carried no tenant. The row is
+   * still persisted — a tenant is never invented to make it publishable — but
+   * no live subscriber can be addressed, so the count is the observable signal
+   * that some caller is producing unattributable spend. Counted per attempt: a
+   * spool replay of the same record legitimately skips again.
+   */
+  unattributedFanoutSkips: number;
   spooledRecords: number;
   replayedRecords: number;
   pendingSpoolRecords: number;
@@ -81,6 +90,7 @@ const telemetryStatus: Omit<LlmTelemetryStatus, "spoolPath"> = {
   totalFailures: 0,
   consecutiveFailures: 0,
   durabilityFailures: 0,
+  unattributedFanoutSkips: 0,
   spooledRecords: 0,
   replayedRecords: 0,
   pendingSpoolRecords: 0,
@@ -108,6 +118,7 @@ export function _resetLlmTelemetryStatusForTests(): void {
     totalFailures: 0,
     consecutiveFailures: 0,
     durabilityFailures: 0,
+    unattributedFanoutSkips: 0,
     spooledRecords: 0,
     replayedRecords: 0,
     pendingSpoolRecords: 0,
@@ -137,12 +148,29 @@ export function getLlmTelemetryStatus(): LlmTelemetryStatus {
   return { ...telemetryStatus, spoolPath: outboxPath() };
 }
 
+/**
+ * `llm_call_telemetry.run_id` belongs exclusively to the canonical runtime
+ * `runs` table. Factory executions use `factory_runs` and are correlated by
+ * their conversation/correlation attribution instead. Validate the reference
+ * before both initial persistence and spool replay so a stale or cross-tenant
+ * id cannot poison the durable outbox forever.
+ */
+function canonicalRuntimeRunId(rec: LlmCallRecord): string | null {
+  if (!rec.runId || !rec.tenantId) return null;
+  const row = getDb()
+    .select({ id: runs.id })
+    .from(runs)
+    .where(and(eq(runs.id, rec.runId), eq(runs.tenantId, rec.tenantId)))
+    .all()[0];
+  return row?.id ?? null;
+}
+
 function envelopeValues(envelope: LlmTelemetryEnvelope) {
   const rec = envelope.record;
   return {
     id: envelope.id,
     tenantId: rec.tenantId ?? null,
-    runId: rec.runId ?? null,
+    runId: canonicalRuntimeRunId(rec),
     domain: rec.domain ?? null,
     conversationId: rec.conversationId ?? null,
     purpose: rec.purpose ?? null,
@@ -150,6 +178,10 @@ function envelopeValues(envelope: LlmTelemetryEnvelope) {
     servedModel: rec.servedModel ?? null,
     provider: rec.provider ?? null,
     fallback: rec.fallback ?? null,
+    requestedTier: rec.requestedTier ?? null,
+    modelPreference: rec.modelPreference ?? null,
+    preferenceSatisfied: rec.preferenceSatisfied ?? null,
+    preferenceReason: rec.preferenceReason ?? null,
     promptChars: rec.promptChars,
     completionChars: rec.completionChars,
     approxTokensIn: rec.approxTokensIn,
@@ -176,14 +208,21 @@ function persistEnvelope(envelope: LlmTelemetryEnvelope): void {
 
 function publishEnvelope(envelope: LlmTelemetryEnvelope): void {
   const rec = envelope.record;
-  if (!rec.tenantId) return;
+  // An SSE/Redis frame is addressed to a tenant; there is nothing to address
+  // here. Count the skip instead of returning silently — 78% of the historic
+  // telemetry table was unattributed and this guard was why nobody saw it.
+  if (!rec.tenantId) {
+    telemetryStatus.unattributedFanoutSkips += 1;
+    return;
+  }
+  const runtimeRunId = canonicalRuntimeRunId(rec);
   try {
     publishStreamEvent({
       type: "llm.call.completed",
       tenantId: rec.tenantId,
       at: envelope.createdAt,
       callId: envelope.id,
-      runId: rec.runId ?? null,
+      runId: runtimeRunId,
       purpose: rec.purpose ?? null,
       provider: rec.provider ?? null,
       requestedModel: rec.requestedModel ?? null,

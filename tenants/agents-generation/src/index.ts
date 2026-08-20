@@ -41,3 +41,14 @@ const registry: TenantRegistry = {
 };
 
 export default registry;
+export {
+  AGENTS_GENERATION_ACTIONS,
+  AGENTS_GENERATION_DOMAIN_ID,
+  AGENTS_GENERATION_INTEGRATION_PROFILES,
+  AGENTS_GENERATION_TENANT_SLUG,
+  AGENTS_GENERATION_UNRESOLVED_EXTERNAL_SYSTEMS,
+  agentsGenerationEnvironmentInspectionConfig,
+  type AgentsGenerationAction,
+  type AgentsGenerationIntegrationProfileContract,
+  type AgentsGenerationIntegrationProfileId,
+} from "./integration-contract";

@@ -13,10 +13,21 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
-  schedule:
-    # Production promotions do not change the Git SHA. Re-run the fresh signed
-    # inventory/replay gate hourly so newly committed artifacts are covered.
-    - cron: "17 * * * *"
+  # NO `schedule:` TRIGGER. It used to be `cron: "17 * * * *"`, added so the
+  # fresh signed inventory/replay gate would re-run hourly (production
+  # promotions do not change the Git SHA, so push alone never re-covers newly
+  # promoted artifacts). It was removed because it re-ran the whole matrix
+  # hourly while delivering none of that: the only job it existed for,
+  # `factory-regression`, is gated on `vars.ENABLE_FACTORY_REGRESSION == 'true'`
+  # and that variable is unset, so the gate was skipped in every single
+  # scheduled run. The hourly firing therefore only produced a failed run — and
+  # a failure notification e-mail to whoever last edited this cron — 24x a day
+  # per repo, for as long as `main` stays red.
+  #
+  # Re-arm it TOGETHER WITH the gate, never alone: register the
+  # `[self-hosted, agentic-production-evidence]` runner, set
+  # `ENABLE_FACTORY_REGRESSION=true`, and only then restore the cron. Until
+  # then use `workflow_dispatch` for an on-demand freshness check.
   workflow_dispatch:
 
 # Cancel in-flight runs of the same workflow on the same ref to save

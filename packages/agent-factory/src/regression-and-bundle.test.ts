@@ -107,7 +107,26 @@ describe("ask_user_batch — one park for a batch of decisions", () => {
     expect(c.clarifyPrompt?.question).toContain("**2. CRM_KEY 用哪个环境变量？**");
     expect(c.clarifyPrompt?.question).toContain("（自由回答）");
     const events = (c as unknown as { __events: BrainEvent[] }).__events;
-    expect(events.find((e): e is Extract<BrainEvent, { t: "clarify" }> => e.t === "clarify")?.awaitingAnswer).toBe(true);
+    const clarification = events.find(
+      (e): e is Extract<BrainEvent, { t: "clarify" }> => e.t === "clarify",
+    );
+    expect(clarification?.awaitingAnswer).toBe(true);
+    expect(clarification?.items).toHaveLength(2);
+    expect(clarification?.items?.[0]).toMatchObject({
+      question: "assessRisk 接哪个集成？",
+      options: [
+        {
+          label: "接 rulehub",
+          value: "rulehub",
+          recommended: true,
+        },
+        { label: "先跳过", value: "skip" },
+      ],
+    });
+    expect(clarification?.items?.[1]).toMatchObject({
+      question: "CRM_KEY 用哪个环境变量？",
+      context: "draftReply 需要真实凭证",
+    });
   });
 
   it("guards: <2 items refused; authorization tokens firewalled; duplicate batch replayed", async () => {

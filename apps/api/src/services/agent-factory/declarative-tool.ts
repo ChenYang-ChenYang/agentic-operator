@@ -14,7 +14,13 @@ import {
 } from "@agentic/agent-factory";
 import { randomUUID } from "node:crypto";
 import { globalToolRegistry } from "@agentic/tools";
-import { getDb, factoryTools, eq } from "@agentic/db";
+import {
+  and,
+  eq,
+  factoryToolRevisions,
+  factoryTools,
+  getDb,
+} from "@agentic/db";
 import {
   hasAnyFactoryActiveWork,
   hasFactoryActiveWork,
@@ -194,6 +200,30 @@ export function deleteDeclarativeTool(name: string, tenantId?: string, allowShar
     if (domainId === undefined && owned.length > 1) return false;
     const row = owned[0];
     if (!row) return false;
+    const managedActive = getDb()
+      .select({
+        id: factoryToolRevisions.id,
+        domainKey: factoryToolRevisions.domainKey,
+      })
+      .from(factoryToolRevisions)
+      .where(
+        and(
+          eq(factoryToolRevisions.tenantId, row.scopeKey),
+          eq(factoryToolRevisions.name, row.name),
+          eq(factoryToolRevisions.status, "active"),
+        ),
+      )
+      .all()
+      .find(
+        (revision) =>
+          revision.domainKey === row.domainKey ||
+          (row.domainKey === "" && revision.domainKey === "__unbound__"),
+      );
+    if (managedActive) {
+      throw new Error(
+        `MANAGED_TOOL_REQUIRES_DEACTIVATION：active revision ${managedActive.id} 必须通过事务 deactivate 退役；legacy delete 不会破坏 ledger/projection 一致性。`,
+      );
+    }
     if (
       row.scopeKey === "shared"
         ? hasAnyFactoryActiveWork()

@@ -10,6 +10,7 @@ export const FACTORY_AUTHORIZATION_PROTOCOL_VERSION = 2;
 export type FactoryAuthorizationChallengeKind =
   | "integration_profile"
   | "probe"
+  | "sandbox_evidence_plan"
   | "sandbox_design_review";
 
 /** Current Factory execution identity. The API deliberately uses one durable

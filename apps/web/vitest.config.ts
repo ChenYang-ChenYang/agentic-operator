@@ -26,6 +26,10 @@ export default defineConfig({
       "@": path.resolve(__dirname, "."),
     },
   },
+  // Next.js compiles JSX with the automatic runtime (no `import React`
+  // needed). Align Vitest's esbuild transform so shared components like
+  // app/portal/components/markdown.tsx render identically under SSR tests.
+  esbuild: { jsx: "automatic" },
   test: {
     include: [
       "lib/**/*.test.ts",

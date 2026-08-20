@@ -23,9 +23,13 @@ export const gohireHealthApi = defineTool({
   async handler(ctx) {
     const res = await ghFetch<Record<string, unknown>>(ctx, "GET", "/health");
     if (!res.ok) {
-      throw new Error(
+      const err = new Error(
         `gohireHealthApi: ${res.message} — body=${JSON.stringify(res.errorBody)}`,
       );
+      // Structured props so probe callers can classify (e.g. "reachable but
+      // this deployment has no /health route") without parsing the message.
+      Object.assign(err, { status: res.status, errorBody: res.errorBody });
+      throw err;
     }
     return {
       data: res.data,

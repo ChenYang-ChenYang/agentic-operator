@@ -33,11 +33,17 @@ function spec(overrides: Partial<GeneratedAgentSpec>): GeneratedAgentSpec {
   } as GeneratedAgentSpec;
 }
 
-type CodeRun = (input: Record<string, unknown>, ctx: Record<string, unknown>) => Promise<unknown>;
+type CodeRun = (
+  input: Record<string, unknown>,
+  ctx: Record<string, unknown>,
+) => Promise<unknown>;
 
 function loadCodeAct(code: string): CodeRun {
   const js = ts.transpileModule(code, {
-    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+    compilerOptions: {
+      module: ts.ModuleKind.CommonJS,
+      target: ts.ScriptTarget.ES2022,
+    },
   }).outputText;
   let handler: CodeRun | undefined;
   const defineAgent = (definition: { handler?: CodeRun }) => {
@@ -46,27 +52,45 @@ function loadCodeAct(code: string): CodeRun {
   };
   const moduleObject = { exports: {} as Record<string, unknown> };
   // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
-  new Function("require", "exports", "module", "defineAgent", js)(() => ({}), moduleObject.exports, moduleObject, defineAgent);
+  new Function("require", "exports", "module", "defineAgent", js)(
+    () => ({}),
+    moduleObject.exports,
+    moduleObject,
+    defineAgent,
+  );
   if (!handler) throw new Error("rendered CodeAct handler missing");
   return handler;
 }
 
 type FunctionRun = (
   event: unknown,
-  options: { tool?: (name: string, args: unknown) => Promise<unknown>; invoke?: (ref: string, args: unknown, meta?: unknown) => Promise<unknown>; reason?: () => Promise<Record<string, unknown>> },
+  options: {
+    tool?: (name: string, args: unknown) => Promise<unknown>;
+    invoke?: (ref: string, args: unknown, meta?: unknown) => Promise<unknown>;
+    reason?: () => Promise<Record<string, unknown>>;
+  },
 ) => Promise<{ ran: boolean; error?: string; emitNames: string[] }>;
 
 function loadFunction(code: string): FunctionRun {
   const js = ts.transpileModule(harnessTsModuleForTest(code), {
-    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+    compilerOptions: {
+      module: ts.ModuleKind.CommonJS,
+      target: ts.ScriptTarget.ES2022,
+    },
   }).outputText;
   const moduleObject = { exports: {} as Record<string, unknown> };
   // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
-  new Function("require", "exports", "module", js)(() => ({}), moduleObject.exports, moduleObject);
+  new Function("require", "exports", "module", js)(
+    () => ({}),
+    moduleObject.exports,
+    moduleObject,
+  );
   return moduleObject.exports.__run as FunctionRun;
 }
 
-function codeCtx(tool: (name: string, args: Record<string, unknown>) => Promise<unknown>) {
+function codeCtx(
+  tool: (name: string, args: Record<string, unknown>) => Promise<unknown>,
+) {
   const emitNames: string[] = [];
   return {
     emitNames,
@@ -74,72 +98,263 @@ function codeCtx(tool: (name: string, args: Record<string, unknown>) => Promise<
       tools: { run: tool },
       invoke: async () => ({}),
       reason: async () => ({ ok: true, pass: true }),
-      emit: async (event: string) => { emitNames.push(event); },
+      emit: async (event: string) => {
+        emitNames.push(event);
+      },
       log: () => undefined,
-      memory: { get: async () => null, put: async () => undefined, delete: async () => undefined, search: async () => [] },
+      memory: {
+        get: async () => null,
+        put: async () => undefined,
+        delete: async () => undefined,
+        search: async () => [],
+      },
     },
   };
 }
 
 describe("same-spec renderer parity", () => {
+  it("gates mutually exclusive top-level emits in both renderers", async () => {
+    const plan: PlanStep[] = [
+      {
+        stepId: "emit-passed",
+        kind: "emit",
+        emitEvent: "WORK_DONE",
+        condition: 'input.selected_event == "WORK_DONE"',
+        emitPayloadFrom: "input",
+      },
+      {
+        stepId: "emit-failed",
+        kind: "emit",
+        emitEvent: "WORK_FAILED",
+        condition: 'input.selected_event == "WORK_FAILED"',
+        emitPayloadFrom: "input",
+      },
+    ];
+    const shared = spec({
+      plan,
+      emit: ["WORK_DONE", "WORK_FAILED"],
+    });
+
+    const code = codeCtx(async () => ({}));
+    await loadCodeAct(specToAgentCode(shared))(
+      { selected_event: "WORK_DONE" },
+      code.ctx,
+    );
+    const fn = await loadFunction(renderTsFunctionModule(shared))(
+      { data: { selected_event: "WORK_DONE" } },
+      { reason: async () => ({ ok: true, pass: true }) },
+    );
+
+    expect(code.emitNames).toEqual(["WORK_DONE"]);
+    expect(fn.emitNames).toEqual(code.emitNames);
+    expect(projectPlanToActions(shared)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "emit",
+          condition: 'input.selected_event == "WORK_DONE"',
+        }),
+      ]),
+    );
+  });
+
+  it("fails closed when no authoritative conditional emit matches", async () => {
+    const plan: PlanStep[] = [
+      {
+        stepId: "emit-passed",
+        kind: "emit",
+        emitEvent: "WORK_DONE",
+        condition: 'input.selected_event == "WORK_DONE"',
+      },
+      {
+        stepId: "emit-failed",
+        kind: "emit",
+        emitEvent: "WORK_FAILED",
+        condition: 'input.selected_event == "WORK_FAILED"',
+      },
+    ];
+    const shared = spec({
+      plan,
+      emit: ["WORK_DONE", "WORK_FAILED"],
+    });
+    const code = codeCtx(async () => ({}));
+
+    await expect(
+      loadCodeAct(specToAgentCode(shared))(
+        { selected_event: "UNKNOWN" },
+        code.ctx,
+      ),
+    ).rejects.toThrow(/no authoritative conditional emit guard matched/);
+    const fn = await loadFunction(renderTsFunctionModule(shared))(
+      { data: { selected_event: "UNKNOWN" } },
+      { reason: async () => ({ ok: true, pass: true }) },
+    );
+    expect(fn).toMatchObject({ ran: false, emitNames: [] });
+    expect(fn.error).toMatch(/no authoritative conditional emit guard matched/);
+    expect(code.emitNames).toEqual([]);
+  });
+
+  it("gates one authoritative emit per foreach item in both renderers", async () => {
+    const plan: PlanStep[] = [
+      {
+        stepId: "each-row",
+        kind: "foreach",
+        itemsFrom: "input.rows",
+        itemAs: "row",
+        itemKeyFrom: "row.id",
+        body: [
+          {
+            stepId: "emit-passed",
+            kind: "emit",
+            emitEvent: "WORK_DONE",
+            condition: 'locals.row.selected_event == "WORK_DONE"',
+            emitPayloadFrom: "locals.row",
+          },
+          {
+            stepId: "emit-failed",
+            kind: "emit",
+            emitEvent: "WORK_FAILED",
+            condition: 'locals.row.selected_event == "WORK_FAILED"',
+            emitPayloadFrom: "locals.row",
+          },
+        ],
+      },
+    ];
+    const shared = spec({
+      plan,
+      emit: ["WORK_DONE", "WORK_FAILED"],
+    });
+    const rows = [
+      { id: "A", selected_event: "WORK_DONE" },
+      { id: "B", selected_event: "WORK_FAILED" },
+    ];
+
+    const code = codeCtx(async () => ({}));
+    await loadCodeAct(specToAgentCode(shared))({ rows }, code.ctx);
+    const fn = await loadFunction(renderTsFunctionModule(shared))(
+      { data: { rows } },
+      { reason: async () => ({ ok: true, pass: true }) },
+    );
+
+    expect(code.emitNames).toEqual(["WORK_DONE", "WORK_FAILED"]);
+    expect(fn.emitNames).toEqual(code.emitNames);
+  });
+
   it("executes foreach + repeated explicit emits in both renderers without an extra implicit emit", async () => {
-    const plan: PlanStep[] = [{
-      stepId: "each-row",
-      kind: "foreach",
-      itemsFrom: "input.rows",
-      itemAs: "row",
-      itemKeyFrom: "row.id",
-      body: [
-        { stepId: "copy", kind: "tool", tool: "row.copy", onError: "terminal" },
-        { stepId: "emit-row", kind: "emit", emitEvent: "ROW_DONE", emitPayloadFrom: "results.copy" },
-      ],
-    }];
-    const shared = spec({ plan, tools: ["row.copy"], emit: ["WORK_DONE", "ROW_DONE"] });
-    const tool = async (_name: string, args: Record<string, unknown>) => ({ copied: (args.row as { id: string }).id });
+    const plan: PlanStep[] = [
+      {
+        stepId: "each-row",
+        kind: "foreach",
+        itemsFrom: "input.rows",
+        itemAs: "row",
+        itemKeyFrom: "row.id",
+        body: [
+          {
+            stepId: "copy",
+            kind: "tool",
+            tool: "row.copy",
+            onError: "terminal",
+          },
+          {
+            stepId: "emit-row",
+            kind: "emit",
+            emitEvent: "ROW_DONE",
+            emitPayloadFrom: "results.copy",
+          },
+        ],
+      },
+    ];
+    const shared = spec({
+      plan,
+      tools: ["row.copy"],
+      emit: ["WORK_DONE", "ROW_DONE"],
+    });
+    const tool = async (_name: string, args: Record<string, unknown>) => ({
+      copied: (args.row as { id: string }).id,
+    });
 
     const renderedCode = specToAgentCode(shared);
     const code = codeCtx(tool);
-    await loadCodeAct(renderedCode)({ rows: [{ id: "A" }, { id: "B" }] }, code.ctx);
+    await loadCodeAct(renderedCode)(
+      { rows: [{ id: "A" }, { id: "B" }] },
+      code.ctx,
+    );
     const fn = await loadFunction(renderTsFunctionModule(shared))(
       { data: { rows: [{ id: "A" }, { id: "B" }] } },
-      { tool: async (name, args) => tool(name, args as Record<string, unknown>), reason: async () => ({ ok: true, pass: true }) },
+      {
+        tool: async (name, args) => tool(name, args as Record<string, unknown>),
+        reason: async () => ({ ok: true, pass: true }),
+      },
     );
 
     expect(code.emitNames).toEqual(["ROW_DONE", "ROW_DONE"]);
     expect(fn.emitNames).toEqual(code.emitNames);
-    expect(await probeAgentModule(renderedCode)).toMatchObject({ loads: false });
-    expect(projectPlanToActions(shared)[0]).toMatchObject({ type: "foreach", items_from: "input.rows" });
+    expect(await probeAgentModule(renderedCode)).toMatchObject({
+      loads: false,
+    });
+    expect(projectPlanToActions(shared)[0]).toMatchObject({
+      type: "foreach",
+      items_from: "input.rows",
+    });
   });
 
   it("renders nested foreach + invoke in both review artifacts while manifest remains execution owner", async () => {
-    const plan: PlanStep[] = [{
-      stepId: "jobs",
-      kind: "foreach",
-      itemsFrom: "input.jobs",
-      itemAs: "job",
-      itemKeyFrom: "job.id",
-      body: [{
-        stepId: "candidates",
+    const plan: PlanStep[] = [
+      {
+        stepId: "jobs",
         kind: "foreach",
-        itemsFrom: "locals.job.candidates",
-        itemAs: "candidate",
-        itemKeyFrom: "candidate.id",
-        body: [{ stepId: "check", kind: "invoke", invoke: "candidate-checker", timeoutS: 3, onError: "terminal" },
-          { stepId: "done", kind: "emit", emitEvent: "ROW_DONE", emitPayloadFrom: "results.check" }],
-      }],
-    }];
+        itemsFrom: "input.jobs",
+        itemAs: "job",
+        itemKeyFrom: "job.id",
+        body: [
+          {
+            stepId: "candidates",
+            kind: "foreach",
+            itemsFrom: "locals.job.candidates",
+            itemAs: "candidate",
+            itemKeyFrom: "candidate.id",
+            body: [
+              {
+                stepId: "check",
+                kind: "invoke",
+                invoke: "candidate-checker",
+                timeoutS: 3,
+                onError: "terminal",
+              },
+              {
+                stepId: "done",
+                kind: "emit",
+                emitEvent: "ROW_DONE",
+                emitPayloadFrom: "results.check",
+              },
+            ],
+          },
+        ],
+      },
+    ];
     const shared = spec({ plan, emit: ["WORK_DONE", "ROW_DONE"] });
     const code = codeCtx(async () => ({}));
-    await loadCodeAct(specToAgentCode(shared))({
-      jobs: [{ id: "J-1", candidates: [{ id: "C-1" }, { id: "C-2" }] }],
-    }, code.ctx);
+    await loadCodeAct(specToAgentCode(shared))(
+      {
+        jobs: [{ id: "J-1", candidates: [{ id: "C-1" }, { id: "C-2" }] }],
+      },
+      code.ctx,
+    );
     const fn = await loadFunction(renderTsFunctionModule(shared))(
-      { data: { jobs: [{ id: "J-1", candidates: [{ id: "C-1" }, { id: "C-2" }] }] } },
-      { invoke: async () => ({ accepted: true }), reason: async () => ({ ok: true }) },
+      {
+        data: {
+          jobs: [{ id: "J-1", candidates: [{ id: "C-1" }, { id: "C-2" }] }],
+        },
+      },
+      {
+        invoke: async () => ({ accepted: true }),
+        reason: async () => ({ ok: true }),
+      },
     );
     expect(code.emitNames).toEqual(["ROW_DONE", "ROW_DONE"]);
     expect(fn.emitNames).toEqual(code.emitNames);
-    expect(await probeAgentModule(specToAgentCode(shared))).toMatchObject({ loads: false });
+    expect(await probeAgentModule(specToAgentCode(shared))).toMatchObject({
+      loads: false,
+    });
     expect(projectPlanToActions(shared)[0]).toMatchObject({
       type: "foreach",
       foreach_actions: [expect.objectContaining({ type: "foreach" })],
@@ -218,32 +433,62 @@ describe("same-spec renderer parity", () => {
   );
 
   it("classifies ordered park/retry/terminal/continue+emit/drop identically and preserves the manifest ladder", async () => {
-    const plan: PlanStep[] = [{
-      stepId: "vendor-call",
-      kind: "tool",
-      tool: "vendor.call",
-      idempotencyKeyFrom: "work_id",
-      errorPolicy: [
-        { when: "status==429", do: "park", suppressEmit: true },
-        { when: "status>=500", do: "retry", suppressEmit: true },
-        { when: "kind==schema_mismatch", do: "terminal", suppressEmit: true },
-        { when: "status==400", do: "continue", defaultResult: { accepted: false }, emitEvent: "WORK_REJECTED" },
-        { when: "code==DROP", do: "continue", defaultResult: null, suppressEmit: true },
-        { default: "terminal", suppressEmit: true },
-      ],
-    }];
-    const shared = spec({ plan, tools: ["vendor.call"], emit: ["WORK_DONE", "WORK_REJECTED"] });
+    const plan: PlanStep[] = [
+      {
+        stepId: "vendor-call",
+        kind: "tool",
+        tool: "vendor.call",
+        idempotencyKeyFrom: "work_id",
+        errorPolicy: [
+          { when: "status==429", do: "park", suppressEmit: true },
+          { when: "status>=500", do: "retry", suppressEmit: true },
+          { when: "kind==schema_mismatch", do: "terminal", suppressEmit: true },
+          // #G16 —— 终态 + 声明失败事件。这条向量是本文件此前缺的那一半：原有 ladder 里唯一带
+          // emitEvent 的规则落在 continue 上，于是「先抛后发」这个缺陷在两个渲染器里都看不见。
+          { when: "status==418", do: "terminal", emitEvent: "WORK_REJECTED" },
+          {
+            when: "status==400",
+            do: "continue",
+            defaultResult: { accepted: false },
+            emitEvent: "WORK_REJECTED",
+          },
+          {
+            when: "code==DROP",
+            do: "continue",
+            defaultResult: null,
+            suppressEmit: true,
+          },
+          { default: "terminal", suppressEmit: true },
+        ],
+      },
+    ];
+    const shared = spec({
+      plan,
+      tools: ["vendor.call"],
+      emit: ["WORK_DONE", "WORK_REJECTED"],
+    });
     const renderedCode = specToAgentCode(shared);
     const runCode = loadCodeAct(renderedCode);
     const runFunction = loadFunction(renderTsFunctionModule(shared));
 
     const outcome = async (failure: unknown) => {
-      const code = codeCtx(async () => { throw failure; });
+      const code = codeCtx(async () => {
+        throw failure;
+      });
       let codeError = "";
-      try { await runCode({ work_id: "W-1" }, code.ctx); } catch (error) { codeError = String((error as Error).message); }
+      try {
+        await runCode({ work_id: "W-1" }, code.ctx);
+      } catch (error) {
+        codeError = String((error as Error).message);
+      }
       const fn = await runFunction(
         { data: { work_id: "W-1" } },
-        { tool: async () => { throw failure; }, reason: async () => ({ ok: true, pass: true }) },
+        {
+          tool: async () => {
+            throw failure;
+          },
+          reason: async () => ({ ok: true, pass: true }),
+        },
       );
       return { codeError, codeEmits: code.emitNames, fn };
     };
@@ -266,30 +511,87 @@ describe("same-spec renderer parity", () => {
     expect(dropped.codeEmits).toEqual([]);
     expect(dropped.fn.emitNames).toEqual([]);
 
+    // #G16 —— 终态路径上声明的失败事件必须真的发得出去。放在 throw 之后它是死代码，
+    // 运行悄无声息地退休，唯一能升级给人的消费方永远收不到。两个渲染器都要满足。
+    const terminalEmit = await outcome({ status: 418 });
+    expect(terminalEmit.codeError).toMatch(/^\[terminal\]/);
+    expect(terminalEmit.codeEmits).toEqual(["WORK_REJECTED"]);
+    expect(terminalEmit.fn.error).toMatch(/terminal action failure/);
+    expect(terminalEmit.fn.emitNames).toEqual(["WORK_REJECTED"]);
+
     expect(projectPlanToActions(shared)[0]!.on_error).toEqual([
       { when: "status==429", do: "park", suppress_emit: true },
       { when: "status>=500", do: "retry", suppress_emit: true },
       { when: "kind==schema_mismatch", do: "terminal", suppress_emit: true },
-      { when: "status==400", do: "continue", default_result: { accepted: false }, emit_event: "WORK_REJECTED" },
-      { when: "code==DROP", do: "continue", default_result: null, suppress_emit: true },
+      { when: "status==418", do: "terminal", emit_event: "WORK_REJECTED" },
+      {
+        when: "status==400",
+        do: "continue",
+        default_result: { accepted: false },
+        emit_event: "WORK_REJECTED",
+      },
+      {
+        when: "code==DROP",
+        do: "continue",
+        default_result: null,
+        suppress_emit: true,
+      },
       { default: "terminal", suppress_emit: true },
     ]);
-    expect(await probeAgentModule(renderedCode)).toMatchObject({ loads: false });
+    expect(await probeAgentModule(renderedCode)).toMatchObject({
+      loads: false,
+    });
+  });
+
+  // #G1 —— 终态事件由计算出的判定决定。两个渲染器都不能让 LLM 的自由文本 decision.emit
+  // 改写它：一个候选人是被拒绝还是被推进，不能取决于一次生成的措辞。
+  it("ignores an LLM-chosen emit in both renderers", async () => {
+    const shared = spec({
+      plan: [],
+      tools: [],
+      emit: ["WORK_DONE", "WORK_REJECTED"],
+    });
+    const code = codeCtx(async () => ({}));
+    await loadCodeAct(specToAgentCode(shared))(
+      { work_id: "W-1" },
+      {
+        ...code.ctx,
+        reason: async () => ({ ok: true, emit: "WORK_REJECTED" }),
+      },
+    );
+    const fn = await loadFunction(renderTsFunctionModule(shared))(
+      { data: { work_id: "W-1" } },
+      {
+        tool: async () => ({}),
+        reason: async () => ({ ok: true, emit: "WORK_REJECTED" }),
+      },
+    );
+    expect(code.emitNames).toEqual(["WORK_DONE"]);
+    expect(fn.emitNames).toEqual(code.emitNames);
   });
 
   it("gives a codeExecuted spec exactly one logic execution owner", () => {
     const generated = spec({
       codeExecuted: true,
       plan: [
-        { stepId: "reason", kind: "logic", description: "pure reasoning with no child side effects" },
+        {
+          stepId: "reason",
+          kind: "logic",
+          description: "pure reasoning with no child side effects",
+        },
       ],
     });
     const actions = projectPlanToActions(generated);
     expect(actions).toHaveLength(1);
     expect(actions[0]).toMatchObject({ type: "logic", name: "work" });
-    expect(actions[0]!.on_error).toEqual(expect.arrayContaining([
-      expect.objectContaining({ when: expect.stringContaining("[terminal]"), do: "terminal" }),
-      expect.objectContaining({ default: "retry" }),
-    ]));
+    expect(actions[0]!.on_error).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          when: expect.stringContaining("[terminal]"),
+          do: "terminal",
+        }),
+        expect.objectContaining({ default: "retry" }),
+      ]),
+    );
   });
 });

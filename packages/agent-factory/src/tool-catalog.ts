@@ -128,6 +128,10 @@ export interface ToolCapabilityDescriptor {
   kinds: string[];
   roles: string[];
   operations?: string[];
+  /** This capability is intentionally unusable when the Ontology omits an
+   * exact operation coordinate. Useful for narrow graph/database SDK
+   * surfaces that would otherwise look like an arbitrary instance reader. */
+  requiresOperation?: boolean;
   objectTypes?: string[];
   /** External side effects commonly require a live or signed-fixture probe. */
   probeRequired?: boolean;

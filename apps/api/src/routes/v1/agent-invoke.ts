@@ -238,10 +238,12 @@ export async function agentInvokeRoutes(app: FastifyInstance): Promise<void> {
           400,
         );
       }
-      // Policy refusal first: the answer for mock outside a test process is
-      // always the explicit 409, never a generic "not registered" 400 — in
-      // real-runtime builds the mock adapter is deliberately unregistered, so
-      // the registration check below would otherwise shadow this guard.
+      // Reject the mock/non-runtime provider BEFORE probing the gateway
+      // registry: a portal "Test run" flag must never opt real inference down
+      // to the canned mock adapter. This also has to run ahead of
+      // gateway.hasProvider(), which resolves the concrete gateway and throws
+      // when no real default provider is configured outside a test process —
+      // ordering the guard first keeps the honest 409 instead of a 500.
       if (body.provider === "mock" && process.env.NODE_ENV !== "test") {
         return reply.fail(
           "mock_provider_forbidden",

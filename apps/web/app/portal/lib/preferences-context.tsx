@@ -16,7 +16,7 @@
  * `preferences.ts`; translation lookup lives in `lib/i18n`.
  */
 
-import {
+import React, {
   createContext,
   useCallback,
   useContext,
@@ -102,12 +102,12 @@ function applyAccentVars(
 
 export function PreferencesProvider({ children }: { children: ReactNode }) {
   const [prefs, setPrefs] = useState<Preferences>(DEFAULT_PREFERENCES);
-  // `loaded` gates the apply-effect so we never paint the DEFAULT theme over
-  // the correct value the inline FOUC script already set (would flash).
+  // `loaded` keeps SSR deterministic and only applies browser preferences
+  // after localStorage is available.
   const [loaded, setLoaded] = useState(false);
 
-  // Hydrate from localStorage after mount (SSR renders DEFAULT; the inline
-  // <head> script has already set the real <html> attributes pre-paint).
+  // Hydrate from localStorage after mount. Keeping this in React avoids a raw
+  // head script being rendered as a component by the Next.js dev runtime.
   useEffect(() => {
     setPrefs(readStored());
     setLoaded(true);
@@ -123,8 +123,8 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
   }, []);
 
   // Apply preferences to <html>, and (in system mode) re-resolve when the
-  // OS color scheme flips. Gated on `loaded` to avoid a DEFAULT-over-FOUC
-  // flash on first paint.
+  // OS color scheme flips. Gated on `loaded` so the persisted value wins over
+  // the server default as soon as hydration completes.
   useEffect(() => {
     if (!loaded || typeof document === "undefined") return;
     const html = document.documentElement;

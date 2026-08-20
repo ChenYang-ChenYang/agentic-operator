@@ -1,6 +1,10 @@
 import { createHash } from "node:crypto";
 
 import { canonicalEvidenceJson } from "./evidence-fingerprint";
+import {
+  sandboxExecutionPlaneAttestationIssues,
+  type SandboxExecutionPlaneAttestation,
+} from "./sandbox-platform-attestation";
 
 export const SANDBOX_EXECUTION_RECEIPT_SCHEMA =
   "agent-factory-sandbox-execution/v2" as const;
@@ -8,7 +12,24 @@ export const SANDBOX_EXECUTION_RECEIPT_SCHEMA =
 export const SANDBOX_INFRASTRUCTURE_CLEANUP_SCHEMA =
   "agent-factory-sandbox-infrastructure-cleanup/v1" as const;
 
+export const SANDBOX_CANDIDATE_BUNDLE_VERIFICATION_SCHEMA =
+  "agent-factory-sandbox-candidate-bundle-verification/v1" as const;
+
 const OCI_SHA256_DIGEST = /^sha256:[a-f0-9]{64}$/;
+
+export interface SandboxCandidateBundleVerificationEvidence {
+  schema: typeof SANDBOX_CANDIDATE_BUNDLE_VERIFICATION_SCHEMA;
+  candidateBundleSchema: "agent-factory-sandbox-candidate-bundle/v2";
+  sandboxAttemptId: string;
+  candidateFingerprint: string;
+  bundleHash: string;
+  specsFingerprint: string;
+  manifestHash: string;
+  testSuiteHash: string;
+  toolSnapshotHash: string;
+  verifiedAt: string;
+  evidenceHash: string;
+}
 
 export interface SandboxInfrastructureCleanupEvidence {
   schema: typeof SANDBOX_INFRASTRUCTURE_CLEANUP_SCHEMA;
@@ -83,6 +104,12 @@ export interface SandboxExecutionPlaneReceipt {
   runnerId: string;
   runnerBuildId: string;
   runtimeImageDigest: string;
+  /** Distinct deployment-attestor document. The runner owns neither the
+   * attestor private key nor the API's primary-host comparison values. */
+  platformAttestation?: SandboxExecutionPlaneAttestation;
+  /** Recomputed by the signer from the exact bundle bytes received by the
+   * workload. This is separate from the submit-envelope hash. */
+  candidateBundleVerification?: SandboxCandidateBundleVerificationEvidence;
   brokerOriginHash: string;
   serveOriginHash: string;
   policyHash: string;
@@ -125,6 +152,77 @@ export function sandboxInfrastructureCleanupEvidenceHash(
 ): string {
   const { evidenceHash: _evidenceHash, ...body } = evidence as SandboxInfrastructureCleanupEvidence;
   return `sandbox-infrastructure-cleanup:v1:${digest(body)}`;
+}
+
+export function sandboxCandidateBundleVerificationEvidenceHash(
+  evidence:
+    | SandboxCandidateBundleVerificationEvidence
+    | Omit<SandboxCandidateBundleVerificationEvidence, "evidenceHash">,
+): string {
+  const { evidenceHash: _evidenceHash, ...body } =
+    evidence as SandboxCandidateBundleVerificationEvidence;
+  return `sandbox-candidate-bundle-verification:v1:${digest(body)}`;
+}
+
+export function sandboxCandidateBundleVerificationEvidenceIssues(
+  evidence: SandboxCandidateBundleVerificationEvidence | null | undefined,
+  expected: {
+    candidateFingerprint?: string;
+    sandboxAttemptId?: string;
+    bundleHash?: string;
+  } = {},
+): string[] {
+  if (!evidence) return ["missing exact candidate bundle verification evidence"];
+  const issues: string[] = [];
+  if (evidence.schema !== SANDBOX_CANDIDATE_BUNDLE_VERIFICATION_SCHEMA) {
+    issues.push("unsupported candidate bundle verification schema");
+  }
+  if (
+    evidence.candidateBundleSchema
+    !== "agent-factory-sandbox-candidate-bundle/v2"
+  ) {
+    issues.push("unsupported verified candidate bundle schema");
+  }
+  for (const [label, value, pattern] of [
+    ["bundle hash", evidence.bundleHash, /^sandbox-bundle:v2:[a-f0-9]{64}$/],
+    ["specs fingerprint", evidence.specsFingerprint, /^specs:v2:[a-f0-9]{64}$/],
+    ["manifest hash", evidence.manifestHash, /^manifest:v1:[a-f0-9]{64}$/],
+    ["test suite hash", evidence.testSuiteHash, /^test-suite:v1:[a-f0-9]{64}$/],
+    ["tool snapshot hash", evidence.toolSnapshotHash, /^tool-snapshot:v1:[a-f0-9]{64}$/],
+  ] as const) {
+    if (!pattern.test(value ?? "")) issues.push(`invalid ${label}`);
+  }
+  if (!evidence.sandboxAttemptId?.trim()) {
+    issues.push("missing verified sandbox attempt");
+  }
+  if (!evidence.candidateFingerprint?.trim()) {
+    issues.push("missing verified candidate fingerprint");
+  }
+  if (!evidence.verifiedAt || Number.isNaN(Date.parse(evidence.verifiedAt))) {
+    issues.push("invalid candidate bundle verification timestamp");
+  }
+  if (
+    evidence.evidenceHash
+    !== sandboxCandidateBundleVerificationEvidenceHash(evidence)
+  ) {
+    issues.push("candidate bundle verification hash mismatch");
+  }
+  if (
+    expected.candidateFingerprint
+    && evidence.candidateFingerprint !== expected.candidateFingerprint
+  ) {
+    issues.push("verified candidate fingerprint mismatch");
+  }
+  if (
+    expected.sandboxAttemptId
+    && evidence.sandboxAttemptId !== expected.sandboxAttemptId
+  ) {
+    issues.push("verified sandbox attempt mismatch");
+  }
+  if (expected.bundleHash && evidence.bundleHash !== expected.bundleHash) {
+    issues.push("verified candidate bundle hash mismatch");
+  }
+  return issues;
 }
 
 export function sandboxInfrastructureCleanupEvidenceIssues(
@@ -266,6 +364,27 @@ export function sandboxExecutionReceiptIssues(
     receipt.sandboxAttemptId,
   ).length) {
     issues.push("sandbox infrastructure cleanup is incomplete");
+  }
+  if (sandboxExecutionPlaneAttestationIssues(receipt.platformAttestation).length) {
+    issues.push("sandbox execution-plane platform attestation is incomplete");
+  } else if (
+    receipt.platformAttestation?.runnerId !== receipt.runnerId
+    || receipt.platformAttestation.runnerBuildId !== receipt.runnerBuildId
+    || receipt.platformAttestation.runtimeImageDigest
+      !== receipt.runtimeImageDigest
+    || receipt.platformAttestation.isolationTier !== receipt.isolationTier
+  ) {
+    issues.push("sandbox execution-plane platform identity mismatch");
+  }
+  if (sandboxCandidateBundleVerificationEvidenceIssues(
+    receipt.candidateBundleVerification,
+    {
+      candidateFingerprint: receipt.candidateFingerprint,
+      sandboxAttemptId: receipt.sandboxAttemptId,
+      bundleHash: receipt.bundleHash,
+    },
+  ).length) {
+    issues.push("sandbox exact candidate bundle verification is incomplete");
   }
   if (receipt.signatureAlgorithm !== "hmac-sha256" || !receipt.signature?.trim()) {
     issues.push("sandbox execution signature is missing or unsupported");

@@ -87,6 +87,10 @@ const relTime = (t: Translate, iso: string, locale: string): string => {
   return new Date(timestamp).toLocaleDateString(locale, { month: "numeric", day: "numeric" });
 };
 
+export function shouldShowHistoryAgentCount(goal: string | null | undefined): boolean {
+  return Boolean(goal?.trim());
+}
+
 export function HistoryList({ runs, viewingRunId, onOpen, onDelete, onClear, deletedRuns = [], showTrash = false, onToggleTrash, onRestore }: { runs: RunRow[]; viewingRunId: string | null; onOpen: (id: string) => void; onDelete: (id: string) => void; onClear: () => void; deletedRuns?: RunRow[]; showTrash?: boolean; onToggleTrash?: () => void; onRestore?: (id: string) => void }) {
   const { language, t } = useI18n();
   const locale = language === "zh" ? "zh-CN" : "en-US";
@@ -113,7 +117,9 @@ export function HistoryList({ runs, viewingRunId, onOpen, onDelete, onClear, del
               <span style={{ fontSize: 10, color: "var(--text-3)", paddingLeft: 12 }}>
                 <span style={{ color: statusColor(displayStatus) }}>{humanStatus(t, displayStatus)}</span>
                 {r.createdAt && relTime(t, r.createdAt, locale) ? ` · ${relTime(t, r.createdAt, locale)}` : ""}
-                {r.agentsCount ? ` · ${t("factory.leftRail.history.agentCount", { count: r.agentsCount })}` : ""}
+                {r.agentsCount && shouldShowHistoryAgentCount(r.goal)
+                  ? ` · ${t("factory.leftRail.history.agentCount", { count: r.agentsCount })}`
+                  : ""}
               </span>
             </button>
             {r.status !== "running" && (

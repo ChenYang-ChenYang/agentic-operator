@@ -7,7 +7,9 @@
 # before releasing the lease.
 #
 # Retention is handled by trimming files older than the configured
-# window. Default 14 days; override via `BACKUP_RETENTION_DAYS`.
+# window. Default 90 days; override via `BACKUP_RETENTION_DAYS`. Every
+# snapshot includes the append-only logs and step artifacts in a matching
+# `agentic-<timestamp>-evidence/` directory.
 #
 # Suitable for `cron` (any timezone) or a Kubernetes CronJob. Exits
 # non-zero on any failure so the orchestrator can alert.

@@ -47,6 +47,19 @@ export interface HealthReport {
     disabledAgents: string[];
     unconfiguredAgents: string[];
   };
+  llmGateway?: {
+    ok: boolean;
+    defaultProvider?: string;
+    defaultModel?: string;
+    providers?: number;
+    reachable?: boolean;
+    lastCheckedAt?: number;
+    latencyMs?: number;
+    statusCode?: number | null;
+    note?: string;
+    mock?: boolean;
+    factoryCentralRouting?: boolean;
+  };
 }
 
 export const HEALTH_KEYS = {
@@ -135,7 +148,7 @@ function isHealthReport(value: unknown): value is HealthReport {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const report = value as Record<string, unknown>;
   if (typeof report.ok !== "boolean") return false;
-  return ["inngest", "sqlite", "disk"].every((key) => {
+  const coreValid = ["inngest", "sqlite", "disk"].every((key) => {
     const subsystem = report[key];
     return (
       subsystem !== null &&
@@ -144,6 +157,15 @@ function isHealthReport(value: unknown): value is HealthReport {
       typeof (subsystem as Record<string, unknown>).ok === "boolean"
     );
   });
+  if (!coreValid) return false;
+  const llmGateway = report.llmGateway;
+  return (
+    llmGateway === undefined ||
+    (llmGateway !== null &&
+      typeof llmGateway === "object" &&
+      !Array.isArray(llmGateway) &&
+      typeof (llmGateway as Record<string, unknown>).ok === "boolean")
+  );
 }
 
 export function useHealth(): UseQueryResult<HealthReport> {

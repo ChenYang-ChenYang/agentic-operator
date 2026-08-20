@@ -128,7 +128,8 @@ export interface PersistedRegressionArtifact {
   externalLiveCalls: 0;
   sandboxReplayEvidenceComplete: true;
   replayReceipts: SandboxToolDispatchReceipt[];
-  sandboxDesignReview: NonNullable<AgentDraftRegressionEvidence["sandboxDesignReview"]>;
+  sandboxDesignReview?: NonNullable<AgentDraftRegressionEvidence["sandboxDesignReview"]>;
+  sandboxAutopilotReview?: NonNullable<AgentDraftRegressionEvidence["sandboxAutopilotReview"]>;
   cassetteRefs: NonNullable<AgentDraftRegressionEvidence["cassetteRefs"]>;
   /** Server-derived qualification sealed into suiteFingerprint. `candidate`
    * means only that this immutable, API-attested sandbox replay may enter the
@@ -457,12 +458,54 @@ const SHA256_HEX_RE = /^[a-f0-9]{64}$/i;
  * candidate. The challenge was already atomically consumed before sandbox
  * creation, so replay deliberately does not require `expiresAt` to still be in
  * the future. It does require consumption to have occurred before expiry. */
-function sandboxDesignReviewEvidenceIssues(
-  evidence: Pick<AgentDraftRegressionEvidence, "evidenceFingerprint" | "sandboxDesignReview">,
+function sandboxReviewEvidenceIssues(
+  evidence: Pick<
+    AgentDraftRegressionEvidence,
+    "evidenceFingerprint" | "sandboxDesignReview" | "sandboxAutopilotReview"
+  >,
   expectedSubjectDigest?: string,
 ): string[] {
   const review = evidence.sandboxDesignReview;
-  if (!review) return ["sandbox design review receipt is missing"];
+  const autopilot = evidence.sandboxAutopilotReview;
+  if (review && autopilot) {
+    return ["sandbox review contains both human and autopilot evidence"];
+  }
+  if (autopilot) {
+    const issues: string[] = [];
+    if (
+      autopilot.schema !==
+      "agent-factory-autopilot-sandbox-review/v1"
+    ) {
+      issues.push("autopilot sandbox review schema is invalid");
+    }
+    if (autopilot.policy !== "autopilot_safe") {
+      issues.push("autopilot sandbox review policy is invalid");
+    }
+    if (autopilot.fingerprint !== evidence.evidenceFingerprint) {
+      issues.push(
+        "autopilot sandbox review fingerprint does not match the candidate evidence fingerprint",
+      );
+    }
+    if (!SHA256_HEX_RE.test(autopilot.subjectDigest)) {
+      issues.push("autopilot sandbox review subject digest is invalid");
+    }
+    if (
+      expectedSubjectDigest &&
+      autopilot.subjectDigest !== expectedSubjectDigest
+    ) {
+      issues.push(
+        "autopilot sandbox review subject digest is not bound to the candidate domain/fingerprint/build",
+      );
+    }
+    if (!autopilot.assumptionId?.trim()) {
+      issues.push("autopilot sandbox review assumption id is missing");
+    }
+    if (!Number.isFinite(autopilot.appliedAt) || autopilot.appliedAt <= 0) {
+      issues.push("autopilot sandbox review appliedAt is invalid");
+    }
+    return issues;
+  }
+  if (!review) return ["sandbox review evidence is missing"];
   const issues: string[] = [];
   if (review.fingerprint !== evidence.evidenceFingerprint) {
     issues.push("sandbox design review fingerprint does not match the candidate evidence fingerprint");
@@ -643,13 +686,41 @@ export function buildRegressionArtifact(args: {
       args.evidence.cassetteRefs ?? [],
     ),
   );
-  const designReviewIssues = sandboxDesignReviewEvidenceIssues(
+  const designReviewIssues = sandboxReviewEvidenceIssues(
     args.evidence,
     sandboxDesignReviewSubjectDigest({
       domain: args.domain,
       fingerprint: args.evidence.evidenceFingerprint,
     }),
   );
+  if (args.evidence.sandboxAutopilotReview) {
+    if (
+      (args.evidence.testCoverage?.uncoveredNeedingData.length ?? 0) > 0
+      || args.evidence.testCoverageWaiver
+    ) {
+      designReviewIssues.push(
+        "autopilot sandbox review cannot approve incomplete or waived coverage",
+      );
+    }
+    const externalWrite = args.specs.some((spec) =>
+      Object.values(spec.toolSideEffects ?? {}).some(
+        (effect) => effect === "write" || effect === "dual",
+      )
+      || Object.values(spec.toolPolicies ?? {}).some(
+        (policy) =>
+          policy.effectScope === "external"
+          && (
+            policy.operation === "write"
+            || policy.operation === "read_write"
+            || policy.sandboxPolicy === "requires_attempt_grant"
+          ),
+      ));
+    if (externalWrite) {
+      designReviewIssues.push(
+        "autopilot sandbox review cannot approve an external-write fleet",
+      );
+    }
+  }
   if (designReviewIssues.length) {
     throw new Error(`sandbox design review evidence is not promotable: ${designReviewIssues.join("; ")}`);
   }
@@ -686,7 +757,12 @@ export function buildRegressionArtifact(args: {
     externalLiveCalls: 0,
     sandboxReplayEvidenceComplete: true,
     replayReceipts: args.evidence.replayReceipts ?? [],
-    sandboxDesignReview: args.evidence.sandboxDesignReview!,
+    ...(args.evidence.sandboxDesignReview
+      ? { sandboxDesignReview: args.evidence.sandboxDesignReview }
+      : {}),
+    ...(args.evidence.sandboxAutopilotReview
+      ? { sandboxAutopilotReview: args.evidence.sandboxAutopilotReview }
+      : {}),
     cassetteRefs: (args.evidence.cassetteRefs ?? []).map((ref) => ({
       ...ref,
       // FsAgentDraftStore snapshots cassettes beside regression.json and
@@ -1172,10 +1248,11 @@ export async function replayRegressionArtifact(
     cleanupReceipt: artifact.sandboxCleanupReceipt,
     cassetteRefs: artifact.cassetteRefs,
   }).map((issue) => `sandbox dispatch evidence: ${issue}`));
-  result.errors.push(...sandboxDesignReviewEvidenceIssues({
+  result.errors.push(...sandboxReviewEvidenceIssues({
     evidenceFingerprint: artifact.evidenceFingerprint,
     sandboxDesignReview: artifact.sandboxDesignReview,
-  }).map((issue) => `sandbox design review evidence: ${issue}`));
+    sandboxAutopilotReview: artifact.sandboxAutopilotReview,
+  }).map((issue) => `sandbox review evidence: ${issue}`));
   if (regressionSuiteFingerprint(artifact) !== artifact.suiteFingerprint) result.errors.push("regression suite fingerprint mismatch");
   const cassetteEvidence = await loadCassetteEvidence(
     artifact,
@@ -1300,7 +1377,9 @@ export async function replayRegressionArtifact(
           if (!replayCase.approvedTestCaseId) {
             throw new Error("binary fixture replay case is not bound to an approved test-case id");
           }
-          const conversationId = artifact.sandboxDesignReview?.receipt?.conversationId;
+          const conversationId =
+            artifact.sandboxDesignReview?.receipt?.conversationId
+            ?? artifact.sandboxAutopilotReview?.conversationId;
           if (!conversationId?.trim()) {
             throw new Error("binary fixture replay has no approved conversation scope");
           }

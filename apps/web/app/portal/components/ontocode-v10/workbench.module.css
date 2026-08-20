@@ -1,0 +1,2883 @@
+/* OntoCode v10 · 浅色三栏工作台（token 从 v10 mockup 移植；仅本组件树使用） */
+/* Tokens 必须挂在每个「渲染根」上——含 position:fixed 的浮层与独立首屏，
+ * 它们是 .root 的 DOM 兄弟，CSS 变量按 DOM 祖先级联，不挂就 var() 回退透明。 */
+.root,
+.overlayBackdrop,
+.createStandalone {
+  --oc-bg: #f4f6f8;
+  --oc-panel: #ffffff;
+  --oc-panel2: #fafbfc;
+  --oc-border: #e5e8ec;
+  --oc-border2: #d7dce2;
+  --oc-t1: #17212b;
+  --oc-t2: #5c6a78;
+  --oc-t3: #63717f;
+  --oc-green: #0f9d63;
+  --oc-green-d: #0b7a4d;
+  --oc-green-bg: #e9f7f0;
+  --oc-green-bd: #bfe6d4;
+  --oc-amber: #8f4700;
+  --oc-amber-btn: #e8891d;
+  --oc-amber-bg: #fdf4e5;
+  --oc-amber-bd: #f2ddb8;
+  --oc-red: #b42318;
+  --oc-red-bg: #fdefee;
+  --oc-red-bd: #f3c9c5;
+  --oc-blue: #2f6fd6;
+  --oc-blue-bg: #eef4fd;
+  --oc-blue-bd: #c9dbf5;
+  --oc-purple: #7a5af5;
+  --oc-purple-bg: #f2eefe;
+  --oc-code-bg: #f8fafc;
+  --oc-code-bd: #e6ebf0;
+  /* 代码着色：沿用上面的语义色相，另配足够对比度的深色前景。 */
+  --oc-code-comment: #7b8794;
+  --oc-code-string: #0b7a4d;
+  --oc-code-number: #8f4700;
+  --oc-code-keyword: #7a5af5;
+  --oc-code-type: #2f6fd6;
+  --oc-code-prop: #1f5199;
+  /* 表格与限幅的数值旋钮集中在这里，规则里不再出现裸数字。 */
+  --oc-analyst-col-min: 132px;
+  --oc-analyst-col-max: 280px;
+  --oc-analyst-rowhead-min: 150px;
+  --oc-analyst-rowhead-max: 240px;
+  --oc-analyst-table-h: min(62vh, 560px);
+  --oc-analyst-table-h-full: min(78vh, 900px);
+  /* 地图画布的高度上限。两种模式都由画布自己滚，滚动宿主不随全屏切换而变。 */
+  --oc-map-canvas-h: min(62vh, 560px);
+  --oc-map-canvas-h-full: min(82vh, 1000px);
+  --oc-agstat-max: 190px;
+  --oc-shadow:
+    0 1px 2px rgba(23, 33, 43, 0.04), 0 4px 14px rgba(23, 33, 43, 0.05);
+  --oc-mono:
+    "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+
+.root {
+  display: flex;
+  height: calc(100vh - 0px);
+  min-height: 0;
+  background: var(--oc-bg);
+  color: var(--oc-t1);
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+/* ---------- 左栏 ---------- */
+/* 宽度走自定义属性而不是内联 width：内联样式会压过下面的窄屏 media query，
+ * 那正是「拖过宽后窄屏布局崩掉」的成因。变量由 WorkbenchShell 写入。 */
+.rail {
+  width: var(--oc-rail-w, 272px);
+  flex: none;
+  background: var(--oc-panel);
+  border-right: 1px solid var(--oc-border);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+/* 收起 = 隐藏而非卸载：面板内的搜索框/已打开产物不该被收起动作丢掉。 */
+.railHidden {
+  display: none;
+}
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 16px 16px 12px;
+  font-size: 16px;
+  font-weight: 700;
+}
+.brand b {
+  color: var(--oc-green);
+  font-weight: 700;
+}
+.newBtn {
+  margin: 2px 14px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  height: 36px;
+  border: 1.5px solid var(--oc-green-bd);
+  color: var(--oc-green-d);
+  border-radius: 10px;
+  font-weight: 600;
+  background: var(--oc-green-bg);
+  cursor: pointer;
+}
+.newBtn:hover {
+  border-color: var(--oc-green);
+}
+.selCard {
+  margin: 0 14px 8px;
+  border: 1px solid var(--oc-border);
+  border-radius: 10px;
+  padding: 9px 12px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.selLabel {
+  font-size: 10.5px;
+  color: var(--oc-t3);
+  letter-spacing: 0.4px;
+}
+.selValue {
+  font-size: 13px;
+  font-weight: 600;
+}
+.selValue small {
+  font-family: var(--oc-mono);
+  font-size: 10.5px;
+  color: var(--oc-t3);
+  font-weight: 400;
+}
+/* 本体来源/新鲜度芯片：常驻但极简——只放短词，解释走 HelpTip。 */
+.ontoChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  vertical-align: middle;
+  border: 1px solid var(--oc-border2);
+  border-radius: 999px;
+  padding: 1px 7px;
+  font-size: 10.5px;
+  font-weight: 500;
+  line-height: 1.7;
+  white-space: nowrap;
+  background: var(--oc-panel2);
+  color: var(--oc-t2);
+}
+button.ontoChip {
+  cursor: pointer;
+  font-family: inherit;
+}
+.ontoChipOk {
+  background: var(--oc-green-bg);
+  border-color: var(--oc-green-bd);
+  color: var(--oc-green-d);
+}
+.ontoChipWarn {
+  background: var(--oc-amber-bg);
+  border-color: var(--oc-amber-bd);
+  color: var(--oc-amber);
+}
+.ontoChipBad {
+  background: var(--oc-red-bg);
+  border-color: var(--oc-red-bd);
+  color: var(--oc-red);
+}
+.railSec {
+  padding: 14px 16px 6px;
+  font-size: 11px;
+  color: var(--oc-t3);
+  letter-spacing: 0.6px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.railSearch {
+  margin: 0 14px 8px;
+  height: 30px;
+  border: 1px solid var(--oc-border);
+  border-radius: 8px;
+  padding: 0 10px;
+  font-size: 12.5px;
+  color: var(--oc-t1);
+  background: var(--oc-panel2);
+}
+.sList {
+  flex: 1;
+  overflow: auto;
+  padding: 0 10px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 0;
+}
+.sItemWrap {
+  position: relative;
+}
+.sItemWrap:hover .sItemDelete {
+  opacity: 1;
+}
+.sItemDelete {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--oc-t3);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.sItemDelete:hover {
+  background: var(--oc-red-bg);
+  color: var(--oc-red);
+}
+.sItemDelete:focus-visible {
+  opacity: 1;
+  outline: 2px solid var(--oc-red-bd);
+}
+.sItemDelete:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.sItem {
+  position: relative;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  padding: 9px 12px 9px 14px;
+  cursor: pointer;
+  text-align: left;
+  background: none;
+  width: 100%;
+}
+.sItem:hover {
+  background: var(--oc-panel2);
+}
+.sItemOn {
+  border-color: var(--oc-green-bd);
+  background: var(--oc-green-bg);
+}
+.sItem h4 {
+  font-size: 13px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0;
+  color: var(--oc-t1);
+}
+.sItemSub {
+  font-size: 11.5px;
+  color: var(--oc-t2);
+  margin-top: 2px;
+}
+.dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
+}
+.dotOk {
+  background: var(--oc-green);
+}
+.dotRun {
+  background: var(--oc-blue);
+  box-shadow: 0 0 0 3px rgba(47, 111, 214, 0.14);
+  animation: ocBlink 1.6s infinite;
+}
+.dotWarn {
+  background: var(--oc-amber-btn);
+}
+.dotBad {
+  background: var(--oc-red);
+}
+.dotIdle {
+  background: #c3ccd4;
+}
+@keyframes ocBlink {
+  50% {
+    opacity: 0.45;
+  }
+}
+.sBadge {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  min-width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  background: var(--oc-amber-btn);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 4px;
+}
+.railEmpty {
+  padding: 18px 16px;
+  font-size: 12.5px;
+  color: var(--oc-t3);
+}
+.railFoot {
+  border-top: 1px solid var(--oc-border);
+  padding: 10px 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--oc-t2);
+  font-size: 12.5px;
+  cursor: pointer;
+  background: none;
+  width: 100%;
+  text-align: left;
+}
+.railFoot:hover {
+  color: var(--oc-t1);
+}
+
+/* ---------- 中栏 ---------- */
+.flow {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.crumb {
+  height: 52px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 20px;
+  border-bottom: 1px solid var(--oc-border);
+  background: var(--oc-panel);
+}
+.crumbSeg {
+  color: var(--oc-t2);
+  font-size: 13px;
+}
+.crumbSep {
+  color: var(--oc-t3);
+}
+.crumbHere {
+  color: var(--oc-t1);
+  font-weight: 600;
+  font-size: 13px;
+}
+.liveChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: var(--oc-green-bg);
+  color: var(--oc-green-d);
+  font-size: 12px;
+  font-weight: 600;
+}
+.liveChipWarn {
+  background: var(--oc-amber-bg);
+  color: var(--oc-amber);
+}
+.liveChipRun {
+  background: var(--oc-blue-bg);
+  color: var(--oc-blue);
+}
+.liveChipBad {
+  background: var(--oc-red-bg);
+  color: var(--oc-red);
+}
+.crumbSpacer {
+  flex: 1;
+}
+
+.scroll {
+  flex: 1;
+  overflow: auto;
+  padding: 20px 24px 8px;
+  min-height: 0;
+}
+.col {
+  max-width: 720px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.goal {
+  background: var(--oc-panel);
+  border: 1px solid var(--oc-border);
+  border-radius: 14px;
+  padding: 14px 18px;
+  box-shadow: var(--oc-shadow);
+}
+.goalLabel {
+  font-size: 11px;
+  color: var(--oc-t3);
+  letter-spacing: 0.5px;
+  margin-bottom: 4px;
+}
+.goalTitle {
+  font-size: 16.5px;
+  font-weight: 700;
+  margin: 0 0 9px;
+}
+.gChips {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.gChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--oc-border);
+  font-size: 12px;
+  color: var(--oc-t2);
+  background: var(--oc-panel2);
+}
+
+.userMsg {
+  align-self: flex-end;
+  max-width: 82%;
+  background: var(--oc-green-bg);
+  border: 1px solid var(--oc-green-bd);
+  border-radius: 14px 14px 4px 14px;
+  padding: 10px 14px;
+  font-size: 14px;
+}
+.aiMsg {
+  display: flex;
+  gap: 10px;
+  padding: 2px 4px;
+}
+.aiAvatar {
+  width: 24px;
+  height: 24px;
+  flex: none;
+  border-radius: 8px;
+  background: var(--oc-green-bg);
+  color: var(--oc-green-d);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 700;
+}
+.aiBody {
+  font-size: 13.5px;
+  min-width: 0;
+}
+
+/* #ASSISTANT-CITE — the evidence row under an answer. Quiet by default so it
+   never competes with the answer itself, but always openable. */
+.citeRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+.citeLabel {
+  font-size: 11px;
+  color: var(--oc-text-3);
+}
+
+.citeChip {
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--oc-border);
+  background: transparent;
+  color: var(--oc-text-2);
+  cursor: pointer;
+}
+
+.citeChip:hover:not(:disabled) {
+  border-color: var(--oc-signal);
+  color: var(--oc-text);
+}
+
+.citeChip:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+
+.execGroup {
+  border: 1px solid var(--oc-border);
+  border-radius: 12px;
+  background: var(--oc-panel);
+  overflow: hidden;
+}
+.execHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 14px;
+  font-size: 12.5px;
+  color: var(--oc-t2);
+  cursor: pointer;
+  width: 100%;
+  background: none;
+  text-align: left;
+}
+.execHead:hover {
+  color: var(--oc-t1);
+}
+.execMeter {
+  margin-left: auto;
+  color: var(--oc-t3);
+  font-size: 12px;
+}
+.execBody {
+  border-top: 1px solid var(--oc-border);
+  padding: 8px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.execRow {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--oc-t2);
+}
+.execTick {
+  color: var(--oc-green);
+  flex: none;
+}
+
+.statusLine {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--oc-panel);
+  border: 1px solid var(--oc-blue-bd);
+  border-radius: 12px;
+  padding: 9px 14px;
+  font-size: 13px;
+  color: var(--oc-blue);
+}
+.spin {
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  border: 2px solid rgba(47, 111, 214, 0.2);
+  border-top-color: var(--oc-blue);
+  animation: ocRot 0.8s linear infinite;
+  flex: none;
+}
+@keyframes ocRot {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.statusMeta {
+  margin-left: auto;
+  color: var(--oc-t3);
+  font-size: 12px;
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+.stopBtn {
+  color: var(--oc-red);
+  background: none;
+  cursor: pointer;
+  font-size: 12.5px;
+}
+
+/*
+ * 等待行。刻意与 .statusLine 长得不一样，也刻意没有转圈：
+ * 作业状态行说的是「有东西在跑」，这一行说的是「什么都还没到」。
+ * 唯一会变的是秒数，而那是真实经过的时间——没有 animation，没有 transition。
+ */
+.waitLine {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  border: 1px dashed var(--oc-border2);
+  border-radius: 12px;
+  padding: 9px 14px;
+  font-size: 13px;
+  color: var(--oc-t2);
+}
+.waitClock {
+  flex: none;
+}
+.waitFact {
+  color: var(--oc-t3);
+  font-size: 12.5px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.receipt {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--oc-t3);
+  padding: 0 4px;
+}
+.receiptOk {
+  color: var(--oc-green-d);
+}
+
+/* 行动卡 */
+.card {
+  background: var(--oc-panel);
+  border: 1px solid var(--oc-border);
+  border-radius: 14px;
+  padding: 14px 16px;
+  box-shadow: var(--oc-shadow);
+}
+.cardConfig {
+  border-color: var(--oc-amber-bd);
+  background: #fffdf9;
+}
+.cardAuth {
+  border-color: var(--oc-red-bd);
+}
+.cardDeploy {
+  border-color: var(--oc-green-bd);
+}
+.cardHead {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 13.5px;
+  font-weight: 700;
+  flex-wrap: wrap;
+}
+.cardTitle {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.cardTag {
+  font-size: 10.5px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  letter-spacing: 0.4px;
+  flex: none;
+  font-weight: 600;
+}
+.tagReq {
+  background: var(--oc-red-bg);
+  color: var(--oc-red);
+}
+.tagRec {
+  background: var(--oc-green-bg);
+  color: var(--oc-green-d);
+}
+.tagCfg {
+  background: var(--oc-amber-bg);
+  color: var(--oc-amber);
+}
+.tagSys {
+  background: var(--oc-amber-bg);
+  color: var(--oc-amber);
+}
+/* 生命周期 chip：一张卡到底跑没跑过，一眼看完，不写句子。 */
+.lifeRun {
+  background: var(--oc-blue-bg);
+  color: var(--oc-blue);
+}
+.lifeDone {
+  background: var(--oc-green-bg);
+  color: var(--oc-green-d);
+}
+.lifeBad {
+  background: var(--oc-red-bg);
+  color: var(--oc-red);
+}
+.lifeGone {
+  background: var(--oc-panel2);
+  color: var(--oc-t3);
+}
+.cardWhy {
+  font-size: 12px;
+  color: var(--oc-t3);
+  margin-top: 6px;
+}
+.cardImpact {
+  font-size: 12px;
+  color: var(--oc-t2);
+  margin-top: 6px;
+}
+.cardBtns {
+  display: flex;
+  gap: 9px;
+  margin-top: 11px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.btn {
+  height: 31px;
+  padding: 0 14px;
+  border-radius: 8px;
+  font-weight: 600;
+  font-size: 12.5px;
+  border: 1px solid var(--oc-border);
+  color: var(--oc-t2);
+  background: var(--oc-panel);
+  cursor: pointer;
+}
+.btn:hover {
+  color: var(--oc-t1);
+  border-color: var(--oc-border2);
+}
+/* 行内小按钮（探针 / 去配置 / 显示全部 / 查看产物）。四个组件一直在引用
+ * `styles.mini`，但这条规则从来不存在——CSS module 取到 undefined，React 把
+ * className 整个省掉，按钮渲染出来却一点样式都没有。 */
+.mini {
+  height: 25px;
+  padding: 0 10px;
+  border-radius: 7px;
+  font-size: 11.5px;
+  font-weight: 600;
+  border: 1px solid var(--oc-border);
+  color: var(--oc-t2);
+  background: var(--oc-panel);
+  cursor: pointer;
+  white-space: nowrap;
+  flex: none;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mini:hover {
+  color: var(--oc-t1);
+  border-color: var(--oc-border2);
+}
+.btnAmber {
+  background: var(--oc-amber-btn);
+  border-color: var(--oc-amber-btn);
+  color: #fff;
+}
+.btnGreen {
+  background: var(--oc-green);
+  border-color: var(--oc-green);
+  color: #fff;
+}
+.btnGreen:hover,
+.btnAmber:hover {
+  color: #fff;
+  filter: brightness(1.05);
+}
+.btnRec {
+  border-color: var(--oc-green-bd);
+  color: var(--oc-green-d);
+  background: var(--oc-green-bg);
+}
+.otherInput {
+  height: 31px;
+  border: 1px solid var(--oc-border);
+  border-radius: 8px;
+  padding: 0 10px;
+  font-size: 12.5px;
+  min-width: 180px;
+}
+.cardError {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--oc-red);
+  background: var(--oc-red-bg);
+  border-radius: 8px;
+  padding: 7px 10px;
+}
+.configIntro {
+  margin-top: 9px;
+  color: var(--oc-t2);
+  font-size: 12px;
+}
+.configDecisionList {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 12px;
+}
+.configDecision {
+  min-width: 0;
+  margin: 0;
+  padding: 12px;
+  border: 1px solid var(--oc-border);
+  border-radius: 11px;
+  background: var(--oc-panel);
+}
+.configDecisionHead {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  color: var(--oc-t1);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.45;
+}
+.configOrdinal {
+  width: 22px;
+  height: 22px;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 7px;
+  color: var(--oc-amber);
+  background: var(--oc-amber-bg);
+  font-size: 11px;
+}
+.configSystem {
+  margin-left: auto;
+  color: var(--oc-t3);
+  font-family: var(--oc-mono);
+  font-size: 10.5px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.configContext {
+  margin: 5px 0 0 30px;
+  color: var(--oc-t3);
+  font-size: 11.5px;
+  line-height: 1.55;
+}
+.configOptions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 7px;
+  margin-top: 10px;
+}
+.configOption {
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--oc-border);
+  border-radius: 9px;
+  color: var(--oc-t2);
+  background: var(--oc-panel2);
+  font: inherit;
+  font-size: 11.5px;
+  line-height: 1.4;
+  text-align: left;
+  cursor: pointer;
+}
+.configOption:hover {
+  color: var(--oc-t1);
+  border-color: var(--oc-green-bd);
+}
+.configOptionSelected {
+  color: var(--oc-green-d);
+  border-color: var(--oc-green-bd);
+  background: var(--oc-green-bg);
+}
+.configRadio {
+  width: 13px;
+  height: 13px;
+  flex: none;
+  border: 1px solid var(--oc-border2);
+  border-radius: 50%;
+  background: var(--oc-panel);
+}
+.configOptionSelected .configRadio {
+  border: 4px solid var(--oc-green);
+}
+.configOptionText {
+  flex: 1;
+  min-width: 0;
+}
+.configRecommended {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: 999px;
+  color: var(--oc-green-d);
+  background: var(--oc-green-bg);
+  font-size: 10px;
+  font-weight: 700;
+}
+.configOther {
+  width: 100%;
+  height: 32px;
+  margin-top: 8px;
+  padding: 0 10px;
+  border: 1px solid var(--oc-border);
+  border-radius: 8px;
+  color: var(--oc-t1);
+  background: var(--oc-panel);
+  font: inherit;
+  font-size: 11.5px;
+}
+.configOther:focus {
+  border-color: var(--oc-green-bd);
+  outline: 2px solid var(--oc-green-bg);
+}
+.secretNotice {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  color: var(--oc-t2);
+  background: var(--oc-panel2);
+  font-size: 11.5px;
+}
+.configSubmitRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 11px;
+}
+.configProgress {
+  color: var(--oc-t3);
+  font-size: 11.5px;
+}
+.configConnections,
+.secondaryActions {
+  margin-top: 10px;
+  color: var(--oc-t2);
+  font-size: 11.5px;
+}
+.configConnections > summary,
+.secondaryActions > summary {
+  width: fit-content;
+  color: var(--oc-t2);
+  cursor: pointer;
+  font-weight: 600;
+}
+.configConnections .sysLinks {
+  margin-top: 8px;
+}
+
+/* composer */
+.composerWrap {
+  flex: none;
+  padding: 10px 24px 14px;
+}
+.composer {
+  max-width: 720px;
+  margin: 0 auto;
+  background: var(--oc-panel);
+  border: 1px solid var(--oc-border);
+  border-radius: 14px;
+  box-shadow: var(--oc-shadow);
+  padding: 10px 12px;
+}
+.composerInput {
+  width: 100%;
+  border: none;
+  outline: none;
+  resize: none;
+  font-size: 13.5px;
+  font-family: inherit;
+  color: var(--oc-t1);
+  background: transparent;
+  padding: 2px 4px 8px;
+  min-height: 40px;
+}
+.composerRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.atToken {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  border-radius: 8px;
+  background: var(--oc-blue-bg);
+  color: var(--oc-blue);
+  font-family: var(--oc-mono);
+  font-size: 12px;
+  border: 1px solid var(--oc-blue-bd);
+}
+.modeSel {
+  margin-left: auto;
+  height: 30px;
+  border: 1px solid var(--oc-border);
+  border-radius: 999px;
+  color: var(--oc-t2);
+  font-size: 12.5px;
+  padding: 0 10px;
+  background: var(--oc-panel);
+}
+.sendBtn {
+  height: 31px;
+  padding: 0 16px;
+  border-radius: 9px;
+  background: var(--oc-green);
+  color: #fff;
+  font-weight: 600;
+  border: none;
+  cursor: pointer;
+}
+.sendBtn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.autonomyBoundary {
+  margin-top: 7px;
+  color: var(--oc-t3);
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+
+/* ---------- 侧栏边缘：拖拽条 + 收起按钮 ---------- */
+/* gutter 是两者的容器：separator 铺满做拖拽热区，收起按钮浮在中间。
+ * 按钮不能塞进 role="separator" 里面（语义冲突），所以做兄弟节点。 */
+.gutter {
+  width: 10px;
+  flex: none;
+  position: relative;
+  align-self: stretch;
+}
+.handle {
+  position: absolute;
+  inset: 0;
+  cursor: col-resize;
+  touch-action: none;
+  background: transparent;
+  border: none;
+  padding: 0;
+}
+.handle::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  transform: translateX(-50%);
+  background: transparent;
+  transition: background 0.12s;
+}
+.handle:hover::after,
+.handle:focus-visible::after {
+  background: var(--oc-green);
+}
+.handle:focus-visible {
+  outline: 2px solid var(--oc-green);
+  outline-offset: -1px;
+}
+
+/* 收起/展开按钮：骑在栏与栏的接缝上，垂直居中——避开 .iHead / brand 区，
+ * 不会盖住任何面板内容。 */
+.edgeBtn {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 18px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--oc-border2);
+  border-radius: 6px;
+  background: var(--oc-panel);
+  color: var(--oc-t3);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  z-index: 2;
+  box-shadow: var(--oc-shadow);
+}
+.edgeBtn:hover {
+  color: var(--oc-t1);
+  border-color: var(--oc-green);
+}
+.edgeBtn:focus-visible {
+  outline: 2px solid var(--oc-green);
+  outline-offset: 1px;
+}
+
+/* 收起后留下的细条——收起绝不能是一扇单向门。 */
+.railStrip,
+.inspectorStrip {
+  width: 36px;
+  flex: none;
+  position: relative;
+  background: var(--oc-panel);
+  min-height: 0;
+}
+.railStrip {
+  border-right: 1px solid var(--oc-border);
+}
+.inspectorStrip {
+  border-left: 1px solid var(--oc-border);
+}
+
+/* ---------- 右栏 ---------- */
+.inspector {
+  width: var(--oc-inspector-w, 432px);
+  min-width: 360px;
+  max-width: min(68vw, 860px);
+  flex: none;
+  background: var(--oc-panel);
+  border-left: 1px solid var(--oc-border);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.inspectorClosed {
+  display: none;
+}
+.inspectorFullscreen {
+  position: fixed;
+  inset: 12px;
+  width: auto !important;
+  min-width: 0;
+  max-width: none;
+  z-index: 300;
+  border: 1px solid var(--oc-border);
+  border-radius: 14px;
+  box-shadow: 0 24px 80px rgba(23, 33, 43, 0.22);
+  overflow: hidden;
+}
+.rootDragging,
+.rootDragging * {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+.iHead {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 13px 16px;
+  border-bottom: 1px solid var(--oc-border);
+}
+.iHeadLabel {
+  font-size: 11px;
+  color: var(--oc-t3);
+  letter-spacing: 0.5px;
+}
+.iHeadTitle {
+  font-size: 15px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+}
+.vChip {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: var(--oc-green-bg);
+  color: var(--oc-green-d);
+  font-size: 11.5px;
+  font-weight: 600;
+  border: 1px solid var(--oc-green-bd);
+}
+.iBody {
+  flex: 1;
+  overflow: auto;
+  min-height: 0;
+}
+.ovSum {
+  display: flex;
+  gap: 8px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--oc-border);
+  flex-wrap: wrap;
+}
+.ovChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 11px;
+  border-radius: 999px;
+  font-size: 12px;
+  border: 1px solid var(--oc-border);
+  color: var(--oc-t2);
+  background: var(--oc-panel2);
+}
+.ovChipOk {
+  background: var(--oc-green-bg);
+  border-color: var(--oc-green-bd);
+  color: var(--oc-green-d);
+}
+.ovChipWarn {
+  background: var(--oc-amber-bg);
+  border-color: var(--oc-amber-bd);
+  color: var(--oc-amber);
+}
+.agRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 16px;
+  border-bottom: 1px solid var(--oc-border);
+  cursor: pointer;
+  width: 100%;
+  background: none;
+  text-align: left;
+}
+.agRow:hover {
+  background: var(--oc-panel2);
+}
+/* 逻辑名是 agents/<x>/<y>.ts 这种不带空格的串：min-width 会挡住收缩，
+ * 没有 anywhere 就会从这一格漏到右边的 .agWire 上。 */
+.agName {
+  font-family: var(--oc-mono);
+  font-size: 12.5px;
+  font-weight: 600;
+  min-width: 130px;
+  color: var(--oc-t1);
+  overflow-wrap: anywhere;
+}
+.agWire {
+  flex: 1;
+  font-family: var(--oc-mono);
+  font-size: 10.5px;
+  color: var(--oc-t3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.agStat {
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+/* 行内限幅：省略号是看得见的截断，完整值挂在 title 上，随时可读。 */
+.agStatClamp {
+  max-width: var(--oc-agstat-max);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.agStatOk {
+  color: var(--oc-green-d);
+}
+.agStatBad {
+  color: var(--oc-red);
+}
+.agStatRun {
+  color: var(--oc-blue);
+}
+.agStatOff {
+  color: var(--oc-t3);
+}
+.iEmpty {
+  padding: 26px 20px;
+  font-size: 12.5px;
+  color: var(--oc-t3);
+  text-align: center;
+}
+
+/* 检查器外壳的 tab 栏：全屏按钮挂在这里而不是某个 tab 的头上，
+ * 所以八个 tab（含别人拥有的地图视图）自动都有全屏，不用各自接线。 */
+.iTabBar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  min-width: 0;
+  padding-right: 12px;
+  border-bottom: 1px solid var(--oc-border);
+}
+.iTabBar .tabs {
+  flex: 1;
+  min-width: 0;
+  border-bottom: none;
+}
+.iTabBarAction {
+  flex: none;
+}
+/* tab 内容的滚动容器：纵向自己滚，滚到头不把外层页面一起带着滚。 */
+.iTabBody {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.tabs {
+  display: flex;
+  gap: 2px;
+  padding: 8px 12px 0;
+  border-bottom: 1px solid var(--oc-border);
+  flex: none;
+  overflow-x: auto;
+}
+.tab {
+  padding: 7px 14px;
+  font-size: 13px;
+  color: var(--oc-t2);
+  border: none;
+  border-bottom: 2px solid transparent;
+  font-weight: 600;
+  background: none;
+  cursor: pointer;
+  flex: none;
+  white-space: nowrap;
+}
+.tabOn {
+  color: var(--oc-t1);
+  border-bottom-color: var(--oc-green);
+}
+.fileRow {
+  display: flex;
+  gap: 6px;
+  padding: 10px 14px;
+  flex-wrap: wrap;
+}
+.filePill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid var(--oc-border);
+  border-radius: 8px;
+  font-family: var(--oc-mono);
+  font-size: 11px;
+  color: var(--oc-t2);
+  cursor: pointer;
+  background: none;
+}
+.filePillOn {
+  border-color: var(--oc-green-bd);
+  background: var(--oc-green-bg);
+  color: var(--oc-green-d);
+}
+.codeBox {
+  margin: 0 14px 14px;
+  background: var(--oc-code-bg);
+  border: 1px solid var(--oc-code-bd);
+  border-radius: 10px;
+  padding: 12px 14px;
+  font-family: var(--oc-mono);
+  font-size: 11.5px;
+  line-height: 1.66;
+  /* 走 token：硬编码的深色字在暗色主题下会掉到近乎不可读。 */
+  color: var(--oc-t1);
+  overflow-x: auto;
+  white-space: pre;
+}
+
+/* --- 代码查看器（CodeViewer.tsx） --- */
+.cvWrap {
+  display: flex;
+  flex-direction: column;
+  /* 高度由 CodeViewer 依据外层滚动视口算出后传给编辑器（见该组件注释）。这里
+     不设 flex:1 / min-height：父级 .iBody 是块级滚动容器，任何“撑满”写法都会
+     让编辑器把自己的容器越撑越高。 */
+  margin: 0 14px 14px;
+}
+.cvBar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 0 8px;
+  flex-wrap: wrap;
+}
+.cvMeta {
+  font-family: var(--oc-mono);
+  font-size: 10.5px;
+  color: var(--oc-t3);
+  padding: 2px 7px;
+  border: 1px solid var(--oc-border);
+  border-radius: 999px;
+  white-space: nowrap;
+}
+.cvEditor {
+  border: 1px solid var(--oc-code-bd);
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--oc-code-bg);
+}
+/* 代码块本体：纵向由内容撑开（外层 .iBody 负责滚动），横向自己滚。 */
+.cvCode {
+  margin: 0;
+  padding: 10px 0;
+  overflow-x: auto;
+  font-family: var(--oc-mono);
+  font-size: 11.5px;
+  line-height: 1.7;
+  color: var(--oc-t1);
+  white-space: pre;
+  tab-size: 2;
+}
+.cvLine {
+  display: block;
+}
+/* 行号不可选中，复制整段时不会把行号一起带走。 */
+.cvGutter {
+  display: inline-block;
+  width: 46px;
+  padding-right: 12px;
+  text-align: right;
+  color: var(--oc-t3);
+  opacity: 0.65;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.cvLineText {
+  white-space: pre;
+}
+.cvComment {
+  color: var(--oc-code-comment);
+  font-style: italic;
+}
+.cvString {
+  color: var(--oc-code-string);
+}
+.cvNumber {
+  color: var(--oc-code-number);
+}
+.cvKeyword {
+  color: var(--oc-code-keyword);
+  font-weight: 600;
+}
+.cvType {
+  color: var(--oc-code-type);
+}
+.cvProperty {
+  color: var(--oc-code-prop);
+}
+/* 编辑器就绪前的纯文本降级：外框已由 .cvEditor 提供，这里不再重复边距/边框。 */
+.codeBoxFlush {
+  margin: 0;
+  height: 100%;
+  overflow: auto;
+  background: var(--oc-code-bg);
+  padding: 12px 14px;
+  font-family: var(--oc-mono);
+  font-size: 11.5px;
+  line-height: 1.66;
+  color: var(--oc-t1);
+  white-space: pre;
+}
+.evRow {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 16px;
+  border-bottom: 1px solid var(--oc-border);
+  font-size: 12.5px;
+}
+/* 两行的证据/作业行：主行 + 出处行。整行不横向溢出——长文本要么省略号，
+ * 要么在自己的容器里换行。 */
+.evRowStack {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 9px 16px;
+  border-bottom: 1px solid var(--oc-border);
+  font-size: 12.5px;
+  min-width: 0;
+}
+.evRowLine {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
+.evMeta {
+  font-size: 10.5px;
+  color: var(--oc-t3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 60%;
+}
+/* 失败原因：服务端原文可能很长，限高自滚，全文挂 title。 */
+.rowReason {
+  font-size: 11px;
+  color: var(--oc-red);
+  line-height: 1.5;
+  max-height: 66px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  overflow-wrap: anywhere;
+}
+.iFoot {
+  flex: none;
+  border-top: 1px solid var(--oc-border);
+  padding: 11px 16px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.iFootOk {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12.5px;
+  color: var(--oc-green-d);
+  font-weight: 600;
+}
+.iFootSub {
+  font-size: 11px;
+  color: var(--oc-t3);
+}
+
+.quickRow {
+  display: flex;
+  gap: 7px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+.quickChip {
+  height: 26px;
+  padding: 0 11px;
+  border-radius: 999px;
+  border: 1px solid var(--oc-border);
+  background: var(--oc-panel2);
+  color: var(--oc-t2);
+  font-size: 12px;
+  cursor: pointer;
+}
+.quickChip:hover {
+  color: var(--oc-t1);
+  border-color: var(--oc-border2);
+}
+.quickChip:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* 日志 */
+.logMsg {
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--oc-border);
+}
+.logHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.logWho {
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--oc-green-d);
+}
+.logWhoAi {
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--oc-blue);
+}
+.logTime {
+  font-family: var(--oc-mono);
+  font-size: 10.5px;
+  color: var(--oc-t3);
+}
+.logBody {
+  font-size: 12.5px;
+  color: var(--oc-t1);
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+.logEvent {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 5px 16px;
+  font-size: 11.5px;
+  color: var(--oc-t3);
+  border-bottom: 1px solid rgba(229, 232, 236, 0.5);
+}
+.logEventType {
+  color: var(--oc-t2);
+  white-space: nowrap;
+}
+.logEventDetail {
+  color: var(--oc-t3);
+  overflow-wrap: anywhere;
+}
+
+/* 推理流程 */
+.flowWrap {
+  padding: 14px 16px 20px;
+}
+.flowSummary {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+/* 失败原因是服务端原文，可能很长且不带空格（provider 报错常是一整串 JSON）。
+ * 限高 + 自身滚动，绝不把右栏撑出横向溢出；全文挂在 title 上随时可读。 */
+.flowError {
+  margin-top: 6px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: var(--oc-red-bg);
+  color: var(--oc-red);
+  font-size: 11.5px;
+  line-height: 1.5;
+  max-height: 88px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  overflow-wrap: anywhere;
+}
+.llmStatusCard {
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--oc-border);
+  border-left-width: 3px;
+  border-radius: 10px;
+  background: var(--oc-panel2);
+}
+.llmStatusOk {
+  border-left-color: var(--oc-green);
+}
+.llmStatusBad {
+  border-left-color: var(--oc-red);
+}
+.llmStatusHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+.llmStatusHead span {
+  flex: 1;
+  font-weight: 700;
+}
+.llmStatusHead strong {
+  color: var(--oc-green-d);
+  font-size: 11px;
+}
+.llmStatusBad .llmStatusHead strong {
+  color: var(--oc-red);
+}
+.llmStatusMeta {
+  margin-top: 4px;
+  color: var(--oc-t2);
+  font-family: var(--oc-mono);
+  font-size: 10.5px;
+  overflow-wrap: anywhere;
+}
+.llmStatusNote {
+  margin-top: 4px;
+  color: var(--oc-t3);
+  font-size: 10.5px;
+}
+.modelRuns {
+  margin-bottom: 12px;
+  border: 1px solid var(--oc-border);
+  border-radius: 10px;
+  background: var(--oc-panel);
+  overflow: hidden;
+}
+.modelRunsTitle {
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--oc-border);
+  color: var(--oc-t2);
+  font-size: 11px;
+  font-weight: 700;
+}
+.modelRun {
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--oc-border);
+  font-size: 10.5px;
+}
+.modelRun:last-child {
+  border-bottom: none;
+}
+.modelRunOk,
+.modelRunBad,
+.modelRunIdle {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--oc-green);
+}
+.modelRunBad {
+  background: var(--oc-red);
+}
+.modelRunIdle {
+  background: var(--oc-amber-btn);
+}
+.modelRunName {
+  min-width: 0;
+  color: var(--oc-t2);
+  font-family: var(--oc-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.modelRunMeta {
+  color: var(--oc-t3);
+  white-space: nowrap;
+}
+.flowNodeWrap {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+}
+.flowConnector {
+  width: 2px;
+  height: 14px;
+  margin-left: 18px;
+  background: var(--oc-border2);
+}
+.flowNode {
+  border: 1px solid var(--oc-border);
+  border-left-width: 3px;
+  border-radius: 10px;
+  padding: 9px 12px;
+  background: var(--oc-panel2);
+}
+.flowNodeHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.flowNodeTitle {
+  font-size: 12.5px;
+  font-weight: 700;
+  flex: 1;
+}
+.flowNodeStatus {
+  font-size: 11px;
+  color: var(--oc-t2);
+  white-space: nowrap;
+}
+.flowMethod {
+  width: fit-content;
+  margin-top: 5px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  color: var(--oc-t2);
+  background: var(--oc-panel);
+  font-size: 10.5px;
+}
+.flowSteps {
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.flowStep {
+  font-size: 11.5px;
+  color: var(--oc-t2);
+  padding-left: 10px;
+  border-left: 1px dashed var(--oc-border2);
+  overflow-wrap: anywhere;
+}
+.flowEmptyStep {
+  margin-top: 6px;
+  color: var(--oc-t3);
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+.flowOk {
+  border-left-color: var(--oc-green);
+}
+.flowBad {
+  border-left-color: var(--oc-red);
+}
+.flowWarn {
+  border-left-color: var(--oc-amber-btn);
+}
+.flowRun {
+  border-left-color: var(--oc-blue);
+}
+.flowIdle {
+  border-left-color: var(--oc-border2);
+}
+.flowOff {
+  border-left-color: var(--oc-t3);
+}
+/* 对话泳道（非 Harness 作业）：虚线边 + 白底，一眼和作业节点区分开；
+   左边框仍按助手运行状态取色，状态语义与作业节点保持一致。 */
+.flowAssistant {
+  border-style: dashed;
+  border-left-style: solid;
+  background: var(--oc-panel);
+}
+.flowConv {
+  border-left-color: var(--oc-purple);
+}
+.flowLaneTag {
+  padding: 1px 6px;
+  border-radius: 999px;
+  color: var(--oc-purple);
+  background: var(--oc-purple-bg);
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.execResultButton {
+  width: fit-content;
+  margin: 7px 12px 10px;
+  padding: 0;
+  border: none;
+  color: var(--oc-green-d);
+  background: transparent;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.execResultButton:hover {
+  color: var(--oc-green);
+}
+
+/* 连接面板 */
+.connRow {
+  padding: 11px 16px;
+  border-bottom: 1px solid var(--oc-border);
+}
+.connProfileGuide {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--oc-border);
+  background: var(--oc-panel2);
+  color: var(--oc-t3);
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+.connProfileGuide strong,
+.connProfileGuide span {
+  display: block;
+}
+.connProfileGuide strong {
+  margin-bottom: 2px;
+  color: var(--oc-t2);
+}
+.connProfileGuide button {
+  flex: none;
+}
+.connHead {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.connName {
+  font-family: var(--oc-mono);
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--oc-t1);
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.connMeta {
+  font-size: 11.5px;
+  color: var(--oc-t3);
+  margin-top: 3px;
+}
+.connBtns {
+  display: flex;
+  gap: 7px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+/* 阶段产物（范围/蓝图）表格视图 */
+.secTitle {
+  padding: 12px 16px 6px;
+  font-size: 12px;
+  color: var(--oc-t3);
+  letter-spacing: 0.5px;
+}
+.docWrap {
+  padding: 4px 4px 16px;
+}
+.docSummary {
+  margin: 8px 16px 12px;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--oc-t2);
+}
+.docTableWrap {
+  overflow-x: auto;
+  padding: 0 12px;
+}
+.docTable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+.docTable th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--oc-t3);
+  font-size: 12px;
+  letter-spacing: 0.3px;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--oc-border);
+  white-space: nowrap;
+}
+.docTable td {
+  padding: 9px 10px;
+  border-bottom: 1px solid var(--oc-border);
+  color: var(--oc-t1);
+  line-height: 1.65;
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+.docTable tr:last-child td {
+  border-bottom: none;
+}
+/* 这里装的是 action 名、实体 id、整条事件链——不带空格且可以很长。
+ * 以前 nowrap，于是要么把表撑到必须横向滚一屏，要么直接越出单元格。 */
+.docMono {
+  font-family: var(--oc-mono);
+  font-size: 12px;
+  color: var(--oc-green-d);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.docSub {
+  font-family: inherit;
+  font-weight: 400;
+  font-size: 12px;
+  color: var(--oc-t3);
+  margin-top: 3px;
+  overflow-wrap: anywhere;
+}
+.blueprintSteps {
+  margin: 8px 0 0;
+  padding-left: 20px;
+}
+.blueprintStep {
+  margin: 0 0 7px;
+}
+.blueprintStep:last-child {
+  margin-bottom: 0;
+}
+.docMeta {
+  padding: 10px 16px 0;
+  font-size: 12px;
+  color: var(--oc-t3);
+}
+
+/* Analyst：服务端选择视图，客户端只渲染受限协议。 */
+.analystWrap {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+}
+.analystHero {
+  padding: 14px 15px;
+  border: 1px solid var(--oc-green-bd);
+  border-radius: 13px;
+  background: linear-gradient(135deg, var(--oc-green-bg), var(--oc-panel));
+}
+.analystHero h3 {
+  margin: 7px 0 0;
+  color: var(--oc-t1);
+  font-size: 15px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.analystHero p {
+  margin: 7px 0 0;
+  color: var(--oc-t2);
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.analystBadge {
+  display: inline-flex;
+  padding: 2px 7px;
+  border-radius: 999px;
+  color: var(--oc-green-d);
+  background: var(--oc-panel);
+  font: 700 12px/1.4 var(--oc-mono);
+  letter-spacing: 0.8px;
+}
+.analystFocus,
+.analystEvidence,
+.analystTags,
+.analystRefs {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+.analystFocus {
+  margin-top: 9px;
+}
+/* 药丸里装的是本体 id，可能是一长串不带空格的 token：必须能在药丸内换行，
+ * 否则会顶穿 .analystBlock 的 overflow:hidden，变成看不见的静默截断。 */
+.analystFocus span,
+.analystEvidence span,
+.analystTag,
+.analystRefs span {
+  max-width: 100%;
+  min-width: 0;
+  padding: 2px 6px;
+  border-radius: 999px;
+  color: var(--oc-t3);
+  background: var(--oc-panel2);
+  font-size: 12px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.analystBlock {
+  overflow: hidden;
+  border: 1px solid var(--oc-border);
+  border-radius: 12px;
+  background: var(--oc-panel);
+}
+.analystBlockHead {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 11px 13px 9px;
+  border-bottom: 1px solid var(--oc-border);
+}
+.analystBlockTitle {
+  margin: 0;
+  color: var(--oc-t1);
+  font-size: 12.5px;
+}
+.analystBlockDesc {
+  margin: 4px 0 0;
+  max-width: 620px;
+  color: var(--oc-t3);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.analystEvidence {
+  align-self: flex-start;
+  justify-content: flex-end;
+  flex: none;
+}
+.analystEvidence span {
+  color: var(--oc-green-d);
+  background: var(--oc-green-bg);
+}
+.analystMetrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 8px;
+  padding: 11px;
+}
+.analystMetric {
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--oc-border);
+  border-radius: 9px;
+  background: var(--oc-panel2);
+}
+.analystMetricPositive {
+  border-color: var(--oc-green-bd);
+  background: var(--oc-green-bg);
+}
+.analystMetricWarning {
+  border-color: var(--oc-amber-bd);
+  background: var(--oc-amber-bg);
+}
+.analystMetricCritical {
+  border-color: var(--oc-red-bd);
+  background: var(--oc-red-bg);
+}
+.analystMetricLabel {
+  color: var(--oc-t3);
+  font-size: 12px;
+}
+.analystMetricValue {
+  margin-top: 2px;
+  color: var(--oc-t1);
+  font: 700 20px/1.2 var(--oc-mono);
+  overflow-wrap: anywhere;
+}
+.analystMetricValue small {
+  margin-left: 2px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.analystMetricDetail {
+  margin-top: 5px;
+  color: var(--oc-t3);
+  font-size: 12px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+/* 状态列的值可以是任意长的标识符——宁可在药丸里换行，也不能越出单元格。 */
+.analystStatus {
+  display: inline-flex;
+  max-width: 100%;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.analystStatusOk {
+  color: var(--oc-green-d);
+  background: var(--oc-green-bg);
+}
+.analystStatusWarn {
+  color: var(--oc-amber);
+  background: var(--oc-amber-bg);
+}
+.analystStatusBad {
+  color: var(--oc-red);
+  background: var(--oc-red-bg);
+}
+.analystStatusNeutral {
+  color: var(--oc-t2);
+  background: var(--oc-panel2);
+}
+.analystEmpty {
+  color: var(--oc-t3);
+}
+.analystBlockEmpty,
+.analystTruncated {
+  padding: 8px 13px;
+  color: var(--oc-t3);
+  font-size: 12px;
+}
+.analystList {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.analystListItem {
+  padding: 10px 13px;
+  border-bottom: 1px solid var(--oc-border);
+  border-left: 3px solid transparent;
+}
+.analystListItem:last-child {
+  border-bottom: none;
+}
+.analystListWarning {
+  border-left-color: var(--oc-amber);
+}
+.analystListCritical {
+  border-left-color: var(--oc-red);
+}
+.analystListTitleRow {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.analystListTitle {
+  flex: 1;
+  min-width: 0;
+  color: var(--oc-t1);
+  font-size: 13px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+.analystListDetail {
+  margin-top: 3px;
+  color: var(--oc-t2);
+  font-size: 12px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+.analystSeverity {
+  flex: none;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+.analystSeverityInfo {
+  color: var(--oc-t2);
+  background: var(--oc-panel2);
+}
+.analystSeverityWarning {
+  color: var(--oc-amber);
+  background: var(--oc-amber-bg);
+}
+.analystSeverityCritical {
+  color: var(--oc-red);
+  background: var(--oc-red-bg);
+}
+.analystRefs {
+  margin-top: 6px;
+}
+.analystRefs span {
+  font-family: var(--oc-mono);
+}
+.analystNodeCloud {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--oc-border);
+  margin: 0;
+  list-style: none;
+}
+.analystNode {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  padding: 5px 8px;
+  border: 1px solid var(--oc-green-bd);
+  border-radius: 8px;
+  color: var(--oc-t1);
+  background: var(--oc-green-bg);
+  font: 600 12px/1.3 var(--oc-mono);
+}
+.analystNode small {
+  color: var(--oc-t3);
+  font: 500 12px/1.3 var(--oc-mono);
+}
+.analystEdges {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 6px 12px;
+  list-style: none;
+}
+.analystEdge {
+  display: grid;
+  grid-template-columns: minmax(90px, 1fr) minmax(80px, auto) minmax(90px, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px dashed var(--oc-border);
+  color: var(--oc-t2);
+  font: 500 12px/1.4 var(--oc-mono);
+  overflow-wrap: anywhere;
+}
+.analystEdge > span {
+  min-width: 0;
+}
+.analystEdge:last-child {
+  border-bottom: none;
+}
+.analystEdgeLink {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  color: var(--oc-green-d);
+  text-align: center;
+}
+.analystEdgeLink small {
+  max-width: 130px;
+  overflow-wrap: anywhere;
+}
+.analystEdgeLink i {
+  font-style: normal;
+  font-size: 14px;
+}
+.analystSrOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+.analystTableWrap {
+  max-height: var(--oc-analyst-table-h);
+  overflow: auto;
+  /* 表格自己是滚动容器：滚到头别把外层检查器一起带着滚。 */
+  overscroll-behavior: contain;
+}
+/* 全屏时右栏拿到整个视口，表格的高度上限跟着放开。 */
+.inspectorFullscreen .analystTableWrap {
+  max-height: var(--oc-analyst-table-h-full);
+}
+.analystTableWrap:focus-visible {
+  outline: 2px solid var(--oc-green) !important;
+  outline-offset: -2px !important;
+}
+.analystTable {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+.analystTable th,
+.analystTable td {
+  min-width: var(--oc-analyst-col-min);
+  max-width: var(--oc-analyst-col-max);
+  overflow-wrap: anywhere;
+  background: var(--oc-panel);
+}
+.analystTable thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  box-shadow: 0 1px 0 var(--oc-border);
+}
+/* 首列是 sticky。sticky 盒不裁剪自己的溢出，而且画在普通单元格之上——
+ * 只要内容超出列宽就会盖到第二列上面（实拍到的重叠就是这么来的）。
+ * 两道防线：内层 .analystRowHead 把 max-content 贡献钉在上限内并强制换行，
+ * 单元格的 overflow:hidden 只是保险；正常内容永远换行，不会被裁到字。 */
+.analystTable tr > :first-child {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  min-width: var(--oc-analyst-rowhead-min);
+  max-width: var(--oc-analyst-rowhead-max);
+  overflow: hidden;
+  box-shadow: 1px 0 0 var(--oc-border);
+}
+.analystRowHead {
+  display: block;
+  max-width: var(--oc-analyst-rowhead-max);
+  overflow-wrap: anywhere;
+}
+.analystTable thead th:first-child {
+  z-index: 3;
+}
+.analystTable tbody th {
+  padding: 9px 10px;
+  border-bottom: 1px solid var(--oc-border);
+  color: var(--oc-t1);
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.65;
+  text-align: left;
+  vertical-align: top;
+}
+
+@media (max-width: 760px) {
+  .analystBlockHead {
+    flex-direction: column;
+  }
+  .analystEvidence {
+    justify-content: flex-start;
+  }
+  .analystEdge {
+    grid-template-columns: 1fr;
+    gap: 3px;
+  }
+  .analystEdgeLink {
+    justify-content: flex-start;
+  }
+}
+
+/* 配置卡：每系统连接成熟度行 */
+.sysLinks {
+  margin-top: 10px;
+  border: 1px solid var(--oc-border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.sysLinkRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  font-size: 12.5px;
+  border-bottom: 1px solid var(--oc-border);
+  flex-wrap: wrap;
+}
+.sysLinkRow:last-child {
+  border-bottom: none;
+}
+.sysLinkRow > :first-child {
+  flex: 1;
+  min-width: 140px;
+}
+
+/* 新建 Session 面板 */
+.overlayBackdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(23, 33, 43, 0.38);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 12vh;
+  z-index: 320;
+}
+.createPanel {
+  width: min(560px, 92vw);
+  background: var(--oc-panel);
+  border: 1px solid var(--oc-border);
+  border-radius: 16px;
+  box-shadow: 0 24px 80px rgba(23, 33, 43, 0.22);
+  padding: 20px 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.createStandalone {
+  display: flex;
+  justify-content: center;
+  padding: 9vh 24px 24px;
+  background: var(--oc-bg);
+  min-height: 100vh;
+}
+.createLabel {
+  font-size: 11.5px;
+  color: var(--oc-t3);
+  letter-spacing: 0.4px;
+  margin-top: 4px;
+}
+.createSelect {
+  height: 34px;
+  border: 1px solid var(--oc-border);
+  border-radius: 9px;
+  padding: 0 10px;
+  font-size: 13px;
+  background: var(--oc-panel2);
+  color: var(--oc-t1);
+}
+.createGoal {
+  min-height: 84px;
+  border: 1px solid var(--oc-border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 13.5px;
+  font-family: inherit;
+  resize: vertical;
+  color: var(--oc-t1);
+}
+.createHint {
+  font-size: 11.5px;
+  color: var(--oc-t3);
+}
+
+/* 窄屏：右栏转覆盖抽屉 */
+@media (max-width: 1199px) {
+  .inspector {
+    position: fixed;
+    right: 0;
+    top: 0;
+    height: 100vh;
+    min-width: 0;
+    max-width: 100vw;
+    z-index: 60;
+    box-shadow: -12px 0 34px rgba(23, 33, 43, 0.14);
+  }
+  /* 右栏此时是浮层，不再占据行内空间——把接缝收窄，只留收起按钮。 */
+  .inspectorStrip {
+    width: 24px;
+  }
+  /* 左栏宽度不再在这里钉死：钳制函数已经按视口把它压到 200px 一线
+   * （窄屏 railMaxWidth 触底到 OC_RAIL_MIN_WIDTH），钉死反而会和拖拽打架。 */
+}
+
+/* ---------------- 分析回答直播气泡 + 服务端聚合图表 ---------------- */
+
+/* 直播气泡内的工具活动行：AI 推理时最近一次 tool_call / tool_result。 */
+.liveActivity {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  font-size: 12.5px;
+  color: var(--oc-t3);
+}
+/* 分片达上限 / 分片无法解析的如实提示——直播预览不冒充完整答案。 */
+.liveNote {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--oc-amber);
+  background: var(--oc-amber-bg);
+  border: 1px solid var(--oc-amber-bd);
+  border-radius: 8px;
+  padding: 6px 10px;
+}
+
+.chartCard {
+  margin-top: 10px;
+  border: 1px solid var(--oc-border2);
+  border-radius: 12px;
+  background: var(--oc-panel);
+  padding: 12px 14px;
+}
+.chartTitle {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--oc-t1);
+}
+.chartUnit {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--oc-t3);
+}
+.chartSvg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin-top: 8px;
+}
+.chartDonutWrap {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.chartLegend {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12.5px;
+  color: var(--oc-t2);
+  min-width: 0;
+}
+.chartLegendRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.chartLegendValue {
+  color: var(--oc-t3);
+  white-space: nowrap;
+}
+.chartSwatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  flex: none;
+}
+.chartNote {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--oc-t3);
+}
+.chartTruncated {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--oc-amber);
+}
+.chartSource {
+  margin-top: 6px;
+  font-size: 11.5px;
+  color: var(--oc-t3);
+}
+.chartInvalid {
+  font-size: 12.5px;
+  color: var(--oc-red);
+  background: var(--oc-red-bg);
+  border: 1px solid var(--oc-red-bd);
+  border-radius: 8px;
+  padding: 6px 10px;
+}
+.chartFallbackTable {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+  font-size: 12.5px;
+  color: var(--oc-t2);
+}
+.chartFallbackRow {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px dashed var(--oc-border);
+  padding: 2px 0;
+}
+
+/* ---------- 地图：Ontology 流程结构图 ---------- */
+/* 颜色一律走本树自己的 --oc-* token；未定义的 var() 会退成透明，
+ * 那正是「看不见的图」的成因，所以这里不出现任何字面色值。
+ * 形状与纹理是颜色之外的冗余编码——灰度打印与色觉障碍下同样读得出道的分别。 */
+.mapWrap {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding-bottom: 12px;
+}
+/* 全屏：右栏整块由 .inspectorFullscreen 铺开，画布在里面接着占满并自己滚。 */
+.mapWrapFull {
+  height: 100%;
+}
+
+/* AI 调过视图才出现这一条：谁替你决定看什么，必须一眼看得见。 */
+.mapViewBar {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--oc-border);
+  background: var(--oc-purple-bg);
+}
+.mapViewLine {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.mapViewMark {
+  font-size: 12px;
+  color: var(--oc-purple);
+}
+.mapViewNote {
+  font-size: 12.5px;
+  color: var(--oc-t2);
+}
+.mapViewKnobs {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+/* 只读旋钮：显示模型到底动了哪几个，不是可点的控件。 */
+.mapKnob {
+  font-size: 11px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--oc-border2);
+  color: var(--oc-t3);
+  background: var(--oc-panel);
+}
+
+/* 互不相连的流程是本体的真实缺口，不是渲染问题——所以它是一条硬横幅。 */
+.mapBanner {
+  margin: 10px 16px 0;
+  padding: 8px 11px;
+  border-radius: 8px;
+  font-size: 12.5px;
+  background: var(--oc-amber-bg);
+  border: 1px solid var(--oc-amber-bd);
+  color: var(--oc-amber);
+}
+
+.mapLegend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  padding: 10px 16px;
+  font-size: 11.5px;
+  color: var(--oc-t2);
+}
+.mapLegendItem {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.mapSwatch {
+  width: 20px;
+  height: 11px;
+  border: 1px solid var(--oc-border2);
+  background: var(--oc-panel);
+}
+.mapSwatchCard {
+  border-radius: 3px;
+}
+.mapSwatchPill {
+  border-radius: 999px;
+  background: var(--oc-panel2);
+}
+.mapSwatchBack {
+  height: 0;
+  border: none;
+  border-top: 2px dashed var(--oc-amber);
+  background: none;
+}
+
+/* 画布容器：宽图在这里横向滚，绝不把页面推宽。
+ * 高度也封在这里——非全屏时若让画布无限长高，滚动宿主会变成外层 .iTabBody，
+ * 于是两种模式的滚动宿主不一致（这是旧实现的既有毛病）。两处都由它自己滚。 */
+.mapCanvasWrap {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  max-height: var(--oc-map-canvas-h);
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 0 16px 10px;
+}
+.mapWrapFull .mapCanvasWrap {
+  max-height: var(--oc-map-canvas-h-full);
+}
+.mapSvg {
+  display: block;
+}
+
+/* 道：执行方边界占真实空间，一条道一列。 */
+.mapLaneBand {
+  fill: var(--oc-panel);
+}
+.mapLaneBandAlt {
+  fill: var(--oc-panel2);
+}
+.mapLaneHead {
+  fill: var(--oc-t2);
+  font-size: 11.5px;
+}
+.mapLaneStripe {
+  stroke: var(--oc-border2);
+  stroke-width: 2;
+}
+
+/* 环节卡与结果胶囊：形状本身就是区分，不靠颜色。 */
+.mapCard {
+  fill: var(--oc-panel);
+  stroke: var(--oc-border2);
+  stroke-width: 1;
+}
+.mapPill {
+  fill: var(--oc-panel2);
+  stroke: var(--oc-border2);
+  stroke-width: 1;
+}
+.mapFoldCard {
+  fill: var(--oc-panel2);
+  stroke-dasharray: 4 3;
+}
+.mapCardHit {
+  stroke: var(--oc-purple);
+  stroke-width: 2;
+}
+.mapCardText {
+  fill: var(--oc-t1);
+  font-family: var(--oc-mono);
+  font-size: 11.5px;
+}
+.mapPillText {
+  fill: var(--oc-t2);
+  font-family: var(--oc-mono);
+  font-size: 11px;
+}
+.mapCardLane {
+  fill: var(--oc-t3);
+  font-size: 10px;
+}
+.mapPort {
+  fill: var(--oc-t3);
+  font-family: var(--oc-mono);
+  font-size: 10px;
+}
+
+/* 连线。回流线用告警色 + 虚线，与普通连线明确分开。 */
+.mapEdge {
+  color: var(--oc-t3);
+}
+.mapEdgeBack {
+  color: var(--oc-amber);
+}
+.mapEdgeLine {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+}
+.mapEdgeBack .mapEdgeLine {
+  stroke-dasharray: 5 4;
+}
+.mapArrow {
+  fill: currentColor;
+}
+.mapEdgeNote {
+  fill: var(--oc-amber);
+  font-size: 10px;
+}
+.mapEdgeChip {
+  fill: var(--oc-t3);
+  font-family: var(--oc-mono);
+  font-size: 10px;
+}
+.mapHandoffTag {
+  fill: var(--oc-blue);
+  font-size: 10px;
+}
+
+/* 汇合冠与结果条：每条来源/每种结果落在自己的锚点上。 */
+.mapCrownBar,
+.mapForkBar {
+  stroke: var(--oc-t2);
+  stroke-width: 2;
+}
+.mapAnchor {
+  fill: var(--oc-panel);
+  stroke: var(--oc-t2);
+  stroke-width: 1.5;
+}
+.mapCrownCount,
+.mapForkCount {
+  fill: var(--oc-t3);
+  font-size: 10px;
+}
+
+/* 往返框：成员各自留在自己的道上，框把它们围起来。 */
+.mapLoopFrame {
+  fill: none;
+  stroke: var(--oc-amber-bd);
+  stroke-width: 1.5;
+  stroke-dasharray: 6 4;
+}
+.mapLoopText {
+  fill: var(--oc-amber);
+  font-size: 10.5px;
+}
+
+/* 互不相连的两段流程之间的分隔。不编号——遍历产物不冒充业务概念。 */
+.mapSeparator {
+  stroke: var(--oc-border2);
+  stroke-width: 1;
+  stroke-dasharray: 3 4;
+}
+.mapSeparatorText {
+  fill: var(--oc-t3);
+  font-size: 11px;
+}
+
+/* 与画布同源的结构清单：画布给眼睛（aria-hidden），这份给读屏与键盘。 */
+.mapList {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  list-style: none;
+}
+
+/* ---------- 地图取景：缩放 / 适应视口 / 缩略条 ---------- */
+/* 一条带子上摆不下的图靠这三件事读：缩放决定看多细，缩略条决定看哪一段。
+ * 三者都只改呈现，坐标一个都不动——布局是本体结构的纯函数。 */
+.mapTools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 8px 16px 0;
+}
+.mapZoomReadout {
+  font-size: 11.5px;
+  color: var(--oc-t3);
+  font-variant-numeric: tabular-nums;
+  min-width: 40px;
+}
+/* 缩略条：整张图等比铺开，取景框跟着滚动位置走，点一下就跳过去。 */
+.mapMini {
+  margin-left: auto;
+  border: 1px solid var(--oc-border);
+  border-radius: 6px;
+  background: var(--oc-panel2);
+  cursor: crosshair;
+}
+.mapMiniCard {
+  fill: var(--oc-border2);
+}
+.mapMiniPill {
+  fill: var(--oc-blue-bd);
+}
+.mapMiniFold {
+  fill: var(--oc-amber-bd);
+}
+.mapMiniViewport {
+  fill: none;
+  stroke: var(--oc-blue);
+  stroke-width: 1.5;
+}
+/* 合并卡：点一下就展开成成员。指针形状本身就是「这里能点」。 */
+.mapFoldHit {
+  cursor: pointer;
+}

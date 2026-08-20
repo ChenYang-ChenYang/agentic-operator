@@ -4,6 +4,7 @@ import {
   defaultModelFor,
   PROVIDER_MODEL_CATALOG,
   PROVIDER_PRESETS,
+  selectableModelsForProvider,
 } from "@agentic/contracts";
 
 function usage(
@@ -176,9 +177,25 @@ describe("model catalog pricing", () => {
   });
 
   it("selects current general-purpose defaults while retaining specialist models", () => {
-    expect(defaultModelFor("openrouter")).toBe("openai/gpt-5.6-sol");
-    expect(defaultModelFor("moonshot")).toBe("kimi-k3");
-    expect(defaultModelFor("zai")).toBe("glm-5.2");
-    expect(defaultModelFor("deepseek")).toBe("deepseek-v4-pro");
+    // Do NOT assert bare model names here. A catalog entry stops being
+    // selectable CURRENT_MODEL_MAX_AGE_DAYS (365) after its releaseDate, so a
+    // hard-coded name is a time bomb rather than a test: this assertion went
+    // red on 2026-08-05 with NO code change at all, when openai/gpt-oss-120b
+    // (released 2025-08-05) aged out and the openrouter default moved on to
+    // the next selectable entry. The invariant that actually matters — and
+    // that the test name claims — is that every provider default is a model
+    // which is CURRENTLY selectable.
+    for (const provider of [
+      "openrouter",
+      "moonshot",
+      "zai",
+      "deepseek",
+    ] as const) {
+      const selectable = selectableModelsForProvider(provider);
+      expect(selectable.length).toBeGreaterThan(0);
+      const chosen = defaultModelFor(provider);
+      expect(chosen).not.toBeNull();
+      expect(selectable.map((m) => m.name)).toContain(chosen);
+    }
   });
 });

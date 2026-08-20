@@ -5,18 +5,24 @@
 // survive a server restart); the reflection writer makes each run start wiser.
 // better-sqlite3 is synchronous — no `await` on the drizzle calls.
 
-import { getDb, factoryDomainBindings, factoryConversations, factoryDomainInsights, factoryReflections, factoryRuns, factorySkills, factoryTools, acceptanceScores, toolStats, eq, and, or, desc, sql } from "@agentic/db";
-import { isNull, isNotNull } from "drizzle-orm";
+import { getDb, businessOntologyDomains, runtimeProfiles, runtimeProfileVersions, factoryDomainBindings, factoryConversations, factoryDomainInsights, factoryReflections, factoryRuns, factorySkills, factoryTools, factoryToolProbes, factoryIntegrationProfiles, acceptanceScores, toolStats, eq, and, or, desc, sql } from "@agentic/db";
+import { inArray, isNull, isNotNull } from "drizzle-orm";
 import { makeId } from "@agentic/shared";
 import { createHash, randomUUID } from "node:crypto";
-import type { ConversationStore, ReflectionWriter, SkillStore, LibrarySkill, ToolStore, DeclarativeTool, AcceptanceRecorder, DomainInsightPack, DomainInsightStore, FactoryHumanMessage, FactorySignedFixtureRequest, FactorySignedFixturePreparation } from "@agentic/agent-factory";
+import { promises as fs } from "node:fs";
+import type { ConversationStore, ReflectionWriter, SkillStore, LibrarySkill, ToolStore, DeclarativeTool, AcceptanceRecorder, DomainInsightPack, DomainInsightStore, FactoryHumanMessage, FactorySignedFixtureRequest, FactorySignedFixturePreparation, SandboxEvidencePlanRequest, SandboxEvidencePlanPreparation, SandboxEvidencePlanReceipt } from "@agentic/agent-factory";
 import {
+  INTEGRATION_PROFILE_AUTHORIZATION_PROTOCOL_VERSION,
   catalogToolDefinitionHash,
   createProbeAuthorizationBinding,
   declarativeToolDefinitionHash,
   findSensitiveInputPath,
+  integrationProfileConfigDigest,
+  integrationProfileScopeIssues,
+  integrationProfileToolDefinitionDigest,
   isGeneratedToolExecutionPolicy,
   realToolExecutionPolicy,
+  sandboxEvidencePlanSubject,
   writeProbeCanarySeed,
   persistedToolAsRealTool,
   validateIntegrationToolConfig,
@@ -30,15 +36,17 @@ import {
 import { inspectWriteProbeSafety } from "@agentic/shared";
 import { makeToolCassetteEntry, stableJson, type CanonicalCassetteEntry } from "@agentic/shared/cassette";
 import { globalToolRegistry, listGlobalTools, validateToolSchema } from "@agentic/tools";
-import { integrationProbeScope, persistCassette, probeDeclarativeIntegration, probeGlobalIntegration } from "./integration-probe";
+import { integrationProbeScope, persistCassette, persistCassetteTracked, probeDeclarativeIntegration, probeGlobalIntegration } from "./integration-probe";
 import {
   attestLiveProbeCassette,
   cassetteConfigHash,
+  createAuthorizedSandboxEvidencePlanCassette,
   createAuthorizedSignedFixtureCassette,
   signedFixtureAuthorizationSubject,
 } from "./cassette-evidence-attestation";
 import {
   listGlobalToolProbeReceipts,
+  isProductionLiveToolProbeReceipt,
   saveGlobalToolProbeReceipt,
   summarizeGlobalToolProbeReceiptsByTool,
   type GlobalToolProbeSummary,
@@ -48,10 +56,19 @@ import {
   hasAnyFactoryActiveWork,
   hasFactoryActiveWork,
 } from "./active-work";
-import { resolveTenantNativeFactoryTool } from "./tenant-native-tool-provider";
+import { listIntegrationProfiles } from "./integration-profile-store";
+import {
+  resolveTenantNativeFactoryTool,
+  resolveTenantNativeFactoryToolFromSnapshot,
+  type RuntimeTenantRegistrySnapshot,
+} from "./tenant-native-tool-provider";
 import {
   registryWriteProbeLifecycleProvider,
 } from "./write-probe-lifecycle-provider";
+import {
+  createToolDraft,
+  getToolRevision,
+} from "./tool-revision-store";
 
 type ScopedFactoryAsset = { id: string; scopeKey: string; domainKey: string };
 
@@ -163,7 +180,22 @@ export class DrizzleToolStore implements ToolStore {
     private readonly tenantId?: string,
     private readonly expectedDomain?: string,
     private readonly tenantSlug?: string,
+    private readonly runtimeAdapterSnapshot?: RuntimeTenantRegistrySnapshot,
+    private readonly authorActor?: string,
   ) {}
+
+  private resolveTenantNative(name: string) {
+    if (this.runtimeAdapterSnapshot) {
+      return resolveTenantNativeFactoryToolFromSnapshot({
+        snapshot: this.runtimeAdapterSnapshot,
+        name,
+        expectedVersion: this.runtimeAdapterSnapshot.selectedVersion,
+      });
+    }
+    return this.tenantSlug
+      ? resolveTenantNativeFactoryTool({ tenantSlug: this.tenantSlug, name })
+      : undefined;
+  }
 
   private visibleRows(domain: string): Array<typeof factoryTools.$inferSelect> {
     if (this.expectedDomain && domain !== this.expectedDomain) return [];
@@ -188,13 +220,49 @@ export class DrizzleToolStore implements ToolStore {
           listGlobalToolProbeReceipts(this.tenantId, domain),
         )
       : new Map<string, GlobalToolProbeSummary>();
+    const profilesByTool = new Map<string, ReturnType<typeof listIntegrationProfiles>>();
+    for (const profile of this.tenantId
+      ? listIntegrationProfiles(this.tenantId, domain)
+      : []) {
+      const current = profilesByTool.get(profile.toolName) ?? [];
+      current.push(profile);
+      profilesByTool.set(profile.toolName, current);
+    }
     return preferredFactoryAssets(this.visibleRows(domain), (r) => r.name, this.tenantId, domain)
       .map((row) => {
         const tool = persistedFactoryTool(row);
-        return receiptBackedFactoryTool(tool, probeSummaries.get(tool.name));
+        return {
+          ...receiptBackedFactoryTool(tool, probeSummaries.get(tool.name)),
+          integrationProfiles: profilesByTool.get(tool.name) ?? [],
+        };
       });
   }
 
+  async saveDraft(tool: DeclarativeTool) {
+    if (!this.tenantId) {
+      throw new Error(
+        "AI-authored tool drafts require an explicit tenant; they are never written to the shared/global library",
+      );
+    }
+    const revision = createToolDraft({
+      tenantId: this.tenantId,
+      domainId: this.expectedDomain ?? tool.domain,
+      tool,
+      actor: this.authorActor ?? "ontocode",
+      source: "ontocode",
+    });
+    return {
+      revisionId: revision.id,
+      version: revision.version,
+      definitionHash: revision.definitionHash,
+      status: revision.status,
+      activation: revision.activation,
+    };
+  }
+
+  /** Trusted migration/test seam for pre-governance active projections.
+   * Deliberately absent from the model-facing ToolStore interface: OntoCode
+   * can only call saveDraft and can never select this path through wiring. */
   async save(tool: DeclarativeTool): Promise<void> {
     if (this.expectedDomain && tool.domain && tool.domain !== this.expectedDomain) {
       throw new Error(`tool domain mismatch: expected ${this.expectedDomain}, got ${tool.domain}`);
@@ -226,7 +294,10 @@ export class DrizzleToolStore implements ToolStore {
    * definition/schema hashes supplied by the caller. The same routine is run
    * again after human confirmation, so registry/config drift changes the
    * subject and invalidates the one-shot receipt. */
-  private resolveSignedFixtureProposal(request: FactorySignedFixtureRequest) {
+  private resolveSignedFixtureProposal(
+    request: FactorySignedFixtureRequest,
+    options: { allowSandboxLocal?: boolean } = {},
+  ) {
     if (this.expectedDomain && request.domain !== this.expectedDomain) {
       throw new Error(`signed fixture domain mismatch: expected ${this.expectedDomain}, got ${request.domain}`);
     }
@@ -275,7 +346,7 @@ export class DrizzleToolStore implements ToolStore {
     )[0];
     const persisted = persistedRow ? persistedFactoryTool(persistedRow) : undefined;
     const tenantNative = !persisted
-      ? resolveTenantNativeFactoryTool({ tenantSlug: this.tenantSlug, name })
+      ? this.resolveTenantNative(name)
       : undefined;
     const globalCatalog = persisted || tenantNative
       ? undefined
@@ -319,8 +390,14 @@ export class DrizzleToolStore implements ToolStore {
           : undefined;
     if (!realTool) throw new Error(`unknown signed fixture tool ${name}`);
     const executionPolicy = realToolExecutionPolicy(realTool);
-    if (!executionPolicy || executionPolicy.effectScope !== "external") {
-      throw new Error(`signed fixture tool ${name} must declare an external execution policy`);
+    if (
+      !executionPolicy
+      || (
+        executionPolicy.effectScope !== "external"
+        && !(options.allowSandboxLocal && executionPolicy.effectScope === "sandbox_local")
+      )
+    ) {
+      throw new Error(`signed fixture tool ${name} must declare an external${options.allowSandboxLocal ? " or sandbox_local" : ""} execution policy`);
     }
     const configValidation = validateIntegrationToolConfig(realTool, config, {
       rejectUnknownKeys: true,
@@ -420,6 +497,7 @@ export class DrizzleToolStore implements ToolStore {
       normalizedConfig,
       persistedRow,
       persisted,
+      realTool,
       toolName: name,
     };
   }
@@ -428,6 +506,330 @@ export class DrizzleToolStore implements ToolStore {
     request: FactorySignedFixtureRequest,
   ): Promise<FactorySignedFixturePreparation> {
     return this.resolveSignedFixtureProposal(request).preparation;
+  }
+
+  private resolveSandboxEvidencePlan(request: SandboxEvidencePlanRequest) {
+    if (this.expectedDomain && request.domain !== this.expectedDomain) {
+      throw new Error(`sandbox evidence plan domain mismatch: expected ${this.expectedDomain}, got ${request.domain}`);
+    }
+    if (!this.tenantId || !this.tenantSlug) {
+      throw new Error("sandbox evidence plan requires an explicit tenant id and tenant slug");
+    }
+    if (!request.execution?.runId?.trim() || !request.execution?.conversationId?.trim()) {
+      throw new Error("sandbox evidence plan requires the current run and conversation identity");
+    }
+    if (!Array.isArray(request.bindings) || request.bindings.length < 1 || request.bindings.length > 50) {
+      throw new Error("sandbox evidence plan requires between 1 and 50 bindings");
+    }
+    const totalExchanges = request.bindings.reduce(
+      (sum, binding) => sum + (Array.isArray(binding?.exchanges) ? binding.exchanges.length : 0),
+      0,
+    );
+    if (totalExchanges > 200) {
+      throw new Error("sandbox evidence plan cannot contain more than 200 total exchanges");
+    }
+    if (stableJson(request.bindings).length > 512_000) {
+      throw new Error("sandbox evidence plan is too large");
+    }
+    const proposals = request.bindings.map((binding, index) => {
+      if (!binding || typeof binding !== "object" || Array.isArray(binding)) {
+        throw new Error(`sandbox evidence plan binding ${index + 1} is invalid`);
+      }
+      const uses = [...(binding.uses ?? [])].map((use, useIndex) => {
+        const actionName = use?.actionName?.trim();
+        if (!actionName) throw new Error(`sandbox evidence plan binding ${index + 1} use ${useIndex + 1} requires actionName`);
+        return {
+          actionName,
+          ...(use.requiredObjects?.length
+            ? { requiredObjects: [...new Set(use.requiredObjects.map((value) => value.trim()).filter(Boolean))].sort() }
+            : {}),
+        };
+      }).sort((left, right) =>
+        left.actionName.localeCompare(right.actionName)
+        || stableJson(left.requiredObjects ?? []).localeCompare(stableJson(right.requiredObjects ?? [])));
+      if (uses.length === 0) throw new Error(`sandbox evidence plan binding ${index + 1} requires at least one exact Action use`);
+      const proposal = this.resolveSignedFixtureProposal({
+        domain: request.domain,
+        name: binding.toolName,
+        config: binding.config,
+        exchanges: binding.exchanges,
+        recordedAt: request.recordedAt,
+        expiresAt: request.expiresAt,
+      }, { allowSandboxLocal: true });
+      const profileKey = binding.profileKey?.trim();
+      const configRequired = Object.keys(proposal.normalizedConfig).length > 0
+        || (proposal.realTool.configKeys?.length ?? 0) > 0
+        || Boolean(proposal.realTool.catalogDefinition?.profileScope);
+      if (configRequired && !profileKey) {
+        throw new Error(`sandbox evidence plan binding ${proposal.toolName} requires a sandbox profileKey`);
+      }
+      if (profileKey && !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(profileKey)) {
+        throw new Error(`sandbox evidence plan profileKey for ${proposal.toolName} is invalid`);
+      }
+      if (profileKey) {
+        const now = new Date().toISOString();
+        const profile = {
+          id: "sandbox-evidence-plan-preview",
+          tenantId: this.tenantId!,
+          profileKey,
+          toolName: proposal.toolName,
+          domainId: request.domain,
+          environment: "sandbox" as const,
+          config: proposal.normalizedConfig,
+          confirmedBy: "pending-human-confirmation",
+          toolDefinitionDigest: integrationProfileToolDefinitionDigest(proposal.realTool),
+          configDigest: integrationProfileConfigDigest(proposal.normalizedConfig),
+          authorizationProtocolVersion: INTEGRATION_PROFILE_AUTHORIZATION_PROTOCOL_VERSION,
+          confirmedAt: now,
+          createdAt: now,
+          updatedAt: now,
+        };
+        const scopeIssues = uses.flatMap((use) => integrationProfileScopeIssues(
+          profile,
+          proposal.realTool,
+          {
+            tenantId: this.tenantId,
+            tenantSlug: this.tenantSlug,
+            domainId: request.domain,
+            environment: "sandbox",
+            actionName: use.actionName,
+            requiredObjects: use.requiredObjects,
+          },
+        ));
+        if (scopeIssues.length) {
+          throw new Error(`sandbox evidence plan profile ${profileKey} is out of scope: ${[...new Set(scopeIssues)].join("; ")}`);
+        }
+      }
+      return { proposal, profileKey, uses };
+    });
+    const duplicateKeys = proposals.map(({ proposal }) =>
+      `${proposal.toolName}\u0000${proposal.preparation.configHash}`);
+    if (new Set(duplicateKeys).size !== duplicateKeys.length) {
+      throw new Error("sandbox evidence plan contains duplicate tool/config bindings");
+    }
+    proposals.sort((left, right) =>
+      left.proposal.toolName.localeCompare(right.proposal.toolName)
+      || left.proposal.preparation.configHash.localeCompare(right.proposal.preparation.configHash));
+    const preparedBindings = proposals.map(({ proposal, profileKey, uses }) => ({
+      toolName: proposal.toolName,
+      ...(profileKey ? { profileKey } : {}),
+      definitionHash: proposal.preparation.definitionHash,
+      schemaHash: proposal.preparation.schemaHash,
+      configHash: proposal.preparation.configHash,
+      uses,
+      fixtureSubjectDigest: proposal.preparation.subjectDigest,
+      review: proposal.preparation.review,
+    }));
+    const preparationBase = {
+      schema: "agent-factory-sandbox-evidence-plan/v1" as const,
+      domain: request.domain,
+      runId: request.execution.runId,
+      conversationId: request.execution.conversationId,
+      recordedAt: proposals[0]!.proposal.preparation.recordedAt,
+      expiresAt: proposals[0]!.proposal.preparation.expiresAt,
+      bindings: preparedBindings,
+      sandboxOnly: true as const,
+      promotionAllowed: false as const,
+    };
+    const subjectDigest = sandboxEvidencePlanSubject({
+      tenantId: this.tenantId,
+      tenantSlug: this.tenantSlug,
+      preparation: preparationBase,
+    });
+    const preparation: SandboxEvidencePlanPreparation = {
+      ...preparationBase,
+      subjectDigest,
+      review: preparedBindings.flatMap((binding) => [
+        `${binding.toolName}${binding.profileKey ? ` / ${binding.profileKey}` : ""}: ${binding.uses.map((use) => use.actionName).join(", ")}`,
+        ...binding.review.map((line) => `  ${line}`),
+      ]),
+    };
+    return { preparation, proposals };
+  }
+
+  async prepareSandboxEvidencePlan(
+    request: SandboxEvidencePlanRequest,
+  ): Promise<SandboxEvidencePlanPreparation> {
+    return this.resolveSandboxEvidencePlan(request).preparation;
+  }
+
+  async commitSandboxEvidencePlan(
+    request: SandboxEvidencePlanRequest & {
+      expectedSubjectDigest: string;
+      authorization: FactoryHumanAuthorizationReceipt;
+    },
+  ): Promise<SandboxEvidencePlanReceipt> {
+    const resolved = this.resolveSandboxEvidencePlan(request);
+    if (resolved.preparation.subjectDigest !== request.expectedSubjectDigest) {
+      throw new Error(`sandbox evidence plan content changed after human review (${request.expectedSubjectDigest.slice(0, 12)} != ${resolved.preparation.subjectDigest.slice(0, 12)})`);
+    }
+    if (
+      request.authorization.runId !== request.execution.runId
+      || request.authorization.conversationId !== request.execution.conversationId
+    ) {
+      throw new Error("sandbox evidence plan authorization does not belong to the current execution");
+    }
+    const fixtures: Array<{
+      item: (typeof resolved.proposals)[number];
+      cassettePath: string;
+      cassetteCreated: boolean;
+      attestationKeyId: string;
+      attestationExpiresAt: string;
+    }> = [];
+    try {
+      for (const item of resolved.proposals) {
+      const cassette = createAuthorizedSandboxEvidencePlanCassette({
+        tenantId: this.tenantId!,
+        tenantSlug: this.tenantSlug!,
+        domainId: request.domain,
+        toolName: item.proposal.toolName,
+        definitionHash: item.proposal.preparation.definitionHash,
+        schemaHash: item.proposal.preparation.schemaHash,
+        config: item.proposal.normalizedConfig,
+        entries: item.proposal.entries,
+        recordedAt: item.proposal.preparation.recordedAt,
+        expiresAt: item.proposal.preparation.expiresAt,
+        authorization: request.authorization,
+        execution: request.execution,
+        planSubjectDigest: resolved.preparation.subjectDigest,
+      });
+      const persistedCassette = await persistCassetteTracked(
+        cassette,
+        process.env.AGENTIC_DATA_ROOT?.trim() || "./data",
+        integrationProbeScope({ tenantId: this.tenantId!, domainId: request.domain }),
+        item.proposal.toolName,
+      );
+        fixtures.push({
+        item,
+        cassettePath: persistedCassette.path,
+        cassetteCreated: persistedCassette.created,
+        attestationKeyId: cassette.evidence!.attestation!.keyId,
+        attestationExpiresAt: cassette.evidence!.attestation!.expiresAt,
+        });
+      }
+      const now = new Date();
+      getDb().transaction((tx) => {
+        for (const fixture of fixtures) {
+          const { item } = fixture;
+          if (item.profileKey) {
+          tx.insert(factoryIntegrationProfiles).values({
+            id: `ipr-${randomUUID()}`,
+            tenantId: this.tenantId!,
+            domainKey: request.domain,
+            toolName: item.proposal.toolName,
+            profileKey: item.profileKey,
+            environment: "sandbox",
+            configJson: item.proposal.normalizedConfig,
+            confirmedBy: request.authorization.actor,
+            toolDefinitionDigest: integrationProfileToolDefinitionDigest(item.proposal.realTool),
+            configDigest: integrationProfileConfigDigest(item.proposal.normalizedConfig),
+            authorizationProtocolVersion: INTEGRATION_PROFILE_AUTHORIZATION_PROTOCOL_VERSION,
+            confirmedAt: now,
+            updatedAt: now,
+          }).onConflictDoUpdate({
+            target: [
+              factoryIntegrationProfiles.tenantId,
+              factoryIntegrationProfiles.domainKey,
+              factoryIntegrationProfiles.toolName,
+              factoryIntegrationProfiles.profileKey,
+              factoryIntegrationProfiles.environment,
+            ],
+            set: {
+              configJson: item.proposal.normalizedConfig,
+              confirmedBy: request.authorization.actor,
+              toolDefinitionDigest: integrationProfileToolDefinitionDigest(item.proposal.realTool),
+              configDigest: integrationProfileConfigDigest(item.proposal.normalizedConfig),
+              authorizationProtocolVersion: INTEGRATION_PROFILE_AUTHORIZATION_PROTOCOL_VERSION,
+              confirmedAt: now,
+              updatedAt: now,
+            },
+          }).run();
+          }
+          const evidence = {
+          classification: "verified",
+          durationMs: 0,
+          schemaHash: item.proposal.preparation.schemaHash,
+          cassettePath: fixture.cassettePath,
+          evidenceMode: "signed-fixture",
+          attestationKeyId: fixture.attestationKeyId,
+          attestationExpiresAt: fixture.attestationExpiresAt,
+          actor: request.authorization.actor,
+          at: now.toISOString(),
+          sandboxOnly: true,
+          promotionAllowed: false,
+          sandboxEvidencePlanSubject: resolved.preparation.subjectDigest,
+        };
+          const existing = tx.select().from(factoryToolProbes).where(and(
+          eq(factoryToolProbes.tenantId, this.tenantId!),
+          eq(factoryToolProbes.domainKey, request.domain),
+          eq(factoryToolProbes.toolName, item.proposal.toolName),
+          eq(factoryToolProbes.definitionHash, item.proposal.preparation.definitionHash),
+        )).get();
+          const existingLive = existing ? isProductionLiveToolProbeReceipt({
+          toolName: existing.toolName,
+          status: existing.status === "verified" || existing.status === "failed"
+            ? existing.status
+            : "required",
+          definitionHash: existing.definitionHash,
+          schemaHash: existing.schemaHash ?? undefined,
+          evidence: (existing.evidence as Record<string, unknown>) ?? undefined,
+          verifiedAt: existing.verifiedAt?.toISOString(),
+        }, now.getTime()) : false;
+          if (!existingLive) {
+            tx.insert(factoryToolProbes).values({
+            id: `tpr-${randomUUID()}`,
+            tenantId: this.tenantId!,
+            domainKey: request.domain,
+            toolName: item.proposal.toolName,
+            status: "verified",
+            definitionHash: item.proposal.preparation.definitionHash,
+            schemaHash: item.proposal.preparation.schemaHash,
+            evidence,
+            verifiedAt: now,
+            updatedAt: now,
+          }).onConflictDoUpdate({
+            target: [
+              factoryToolProbes.tenantId,
+              factoryToolProbes.domainKey,
+              factoryToolProbes.toolName,
+              factoryToolProbes.definitionHash,
+            ],
+            set: {
+              status: "verified",
+              schemaHash: item.proposal.preparation.schemaHash,
+              evidence,
+              verifiedAt: now,
+              updatedAt: now,
+            },
+            }).run();
+          }
+        }
+      });
+    } catch (error) {
+      await Promise.all(fixtures
+        .filter((fixture) => fixture.cassetteCreated)
+        .map((fixture) => fs.unlink(fixture.cassettePath).catch(() => undefined)));
+      throw error;
+    }
+    return {
+      ...resolved.preparation,
+      status: "ready",
+      confirmedBy: request.authorization.actor,
+      profiles: resolved.proposals.flatMap(({ proposal, profileKey }) => profileKey ? [{
+        profileKey,
+        toolName: proposal.toolName,
+        configHash: proposal.preparation.configHash,
+        environment: "sandbox" as const,
+      }] : []),
+      fixtures: fixtures.map(({ item, cassettePath, attestationKeyId, attestationExpiresAt }) => ({
+        toolName: item.proposal.toolName,
+        definitionHash: item.proposal.preparation.definitionHash,
+        configHash: item.proposal.preparation.configHash,
+        cassettePath,
+        attestationKeyId,
+        attestationExpiresAt,
+      })),
+    };
   }
 
   async createSignedFixture(request: FactorySignedFixtureRequest & {
@@ -522,6 +924,7 @@ export class DrizzleToolStore implements ToolStore {
   async probe(request: {
     domain: string;
     name: string;
+    revisionId?: string;
     args: Record<string, unknown>;
     config?: Record<string, unknown>;
     actor?: string;
@@ -532,18 +935,40 @@ export class DrizzleToolStore implements ToolStore {
     if (this.expectedDomain && request.domain !== this.expectedDomain) {
       throw new Error(`tool probe domain mismatch: expected ${this.expectedDomain}, got ${request.domain}`);
     }
-    const persistedRow = preferredFactoryAssets(
-      this.visibleRows(request.domain).filter((row) => row.name === request.name),
-      (row) => row.name,
-      this.tenantId,
-      request.domain,
-    )[0];
-    const persisted = persistedRow ? persistedFactoryTool(persistedRow) : undefined;
-    const tenantNative = !persisted && this.tenantSlug
-      ? resolveTenantNativeFactoryTool({
-          tenantSlug: this.tenantSlug,
+    const draftRevision = request.revisionId && this.tenantId
+      ? getToolRevision({
+          tenantId: this.tenantId,
+          domainId: request.domain,
+          revisionId: request.revisionId,
           name: request.name,
         })
+      : undefined;
+    if (request.revisionId && !draftRevision) {
+      throw new Error(
+        `unknown tenant/domain tool revision ${request.revisionId}`,
+      );
+    }
+    if (
+      draftRevision &&
+      draftRevision.status !== "draft" &&
+      draftRevision.status !== "retired"
+    ) {
+      throw new Error(
+        `tool revision ${draftRevision.id} is ${draftRevision.status}; probe only draft/retired revisions through the revision path`,
+      );
+    }
+    const persistedRow = draftRevision
+      ? undefined
+      : preferredFactoryAssets(
+          this.visibleRows(request.domain).filter((row) => row.name === request.name),
+          (row) => row.name,
+          this.tenantId,
+          request.domain,
+        )[0];
+    const persisted = draftRevision?.definition
+      ?? (persistedRow ? persistedFactoryTool(persistedRow) : undefined);
+    const tenantNative = !persisted
+      ? this.resolveTenantNative(request.name)
       : undefined;
     const globalCatalog = persisted || tenantNative
       ? undefined
@@ -604,6 +1029,19 @@ export class DrizzleToolStore implements ToolStore {
       );
     }
     const writeCapable = executionPolicy.sandboxPolicy === "requires_attempt_grant";
+    if (draftRevision && writeCapable) {
+      return {
+        verified: false,
+        classification: "write_lifecycle_unavailable",
+        definitionHash: currentDefinitionHash ?? "",
+        schemaHash: "",
+        status: undefined,
+        durationMs: 0,
+        error: draftRevision.activation.blockers[0]!.message,
+        blockerCode: "managed_write_probe_lifecycle_unavailable" as const,
+        blockers: draftRevision.activation.blockers,
+      };
+    }
     const safety = inspectWriteProbeSafety(
       realTool.sideEffect,
       realTool.catalogDefinition?.probeSafety ?? realTool.declarativeDefinition?.probeSafety,
@@ -707,7 +1145,21 @@ export class DrizzleToolStore implements ToolStore {
       if (!this.tenantId) {
         throw new Error("probe cassette cannot become evidence without a tenant scope");
       }
-      const attestedCassette = attestLiveProbeCassette(result.cassette, {
+      // Revision identity must be inside the HMAC-covered cassette. Database
+      // receipt JSON is only an index and can never authorize activation.
+      const cassetteForAttestation = draftRevision
+        ? {
+            ...result.cassette,
+            evidence: {
+              ...result.cassette.evidence!,
+              toolRevision: {
+                id: draftRevision.id,
+                definitionHash: draftRevision.definitionHash,
+              },
+            },
+          }
+        : result.cassette;
+      const attestedCassette = attestLiveProbeCassette(cassetteForAttestation, {
         tenantId: this.tenantId,
         tenantSlug: this.tenantSlug ?? this.tenantId,
         domainId: request.domain,
@@ -743,6 +1195,12 @@ export class DrizzleToolStore implements ToolStore {
       attestationExpiresAt: result.cassette?.evidence?.attestation?.expiresAt,
       actor,
       at,
+      ...(draftRevision
+        ? {
+            revisionId: draftRevision.id,
+            revisionDefinitionHash: draftRevision.definitionHash,
+          }
+        : {}),
     };
     if (persisted && persistedRow) {
       // Evidence is mutable, the adapter definition is not. Bind the receipt
@@ -1056,6 +1514,14 @@ export interface RunRecord {
   domain: string;
   goal: string;
   status: string;
+  /**
+   * Immutable execution bindings. They are intentionally returned by getRun
+   * so a parked HITL conversation can resume under the exact registration and
+   * Runtime Profile that created it instead of falling back to the mutable
+   * tenant default.
+   */
+  ontologyDomainRegistrationId: string | null;
+  runtimeProfileVersionId: string | null;
   tokensUsed: number;
   turns: number;
   agentsCount: number;
@@ -1135,31 +1601,136 @@ export function factoryRunEvidenceStatus(
  *  run-registry uses the same id as the registry key + conversation id). tenant_id is
  *  NOT NULL (0021) — an unscoped run is never persisted (the stream route guarantees a
  *  tenant via requirePermission, so this only guards the degenerate no-auth path). */
-export function recordRunStart(domain: string, goal: string, tenantId: string | undefined, id: string = makeId("frn")): string {
+export function recordRunStart(
+  domain: string,
+  goal: string,
+  tenantId: string | undefined,
+  id: string = makeId("frn"),
+  ontologyDomainRegistrationId?: string | null,
+  runtimeProfileVersionId?: string | null,
+): string {
   if (!tenantId) {
     throw new Error(`cannot start factory run ${id}: tenantId is required for durable persistence`);
   }
   const now = new Date();
-  // Binding verification and run creation share one synchronous DB transaction.
-  // A concurrent rebind therefore cannot pass between a route guard and this
-  // insert: either the new binding is already visible (and we refuse), or the
-  // running row is inserted first and setFactoryDomainBinding refuses the rebind.
+  // Exact registration verification and run creation share one synchronous DB
+  // transaction. OntoCode therefore never falls back to the mutable legacy
+  // singleton between its route guard and durable run creation.
   getDb().transaction((tx) => {
-    const binding = tx
-      .select({ ontologyDomainId: factoryDomainBindings.ontologyDomainId })
-      .from(factoryDomainBindings)
-      .where(eq(factoryDomainBindings.tenantId, tenantId))
-      .all()[0];
-    if (!binding) throw new Error("factory domain is not bound for this tenant");
-    if (binding.ontologyDomainId !== domain) {
-      throw new Error(`factory domain mismatch: bound ${binding.ontologyDomainId}, got ${domain}`);
+    const requestedRegistrationId = ontologyDomainRegistrationId ?? null;
+    const requestedRuntimeProfileVersionId =
+      runtimeProfileVersionId ?? null;
+    if (requestedRegistrationId) {
+      const registration = tx
+        .select({
+          tenantId: businessOntologyDomains.tenantId,
+          ontologyDomainId: businessOntologyDomains.ontologyDomainId,
+          status: businessOntologyDomains.status,
+          archivedAt: businessOntologyDomains.archivedAt,
+        })
+        .from(businessOntologyDomains)
+        .where(eq(businessOntologyDomains.id, requestedRegistrationId))
+        .all()[0];
+      if (!registration || registration.tenantId !== tenantId) {
+        throw new Error(
+          `ontology domain registration ${requestedRegistrationId} does not belong to this tenant`,
+        );
+      }
+      if (
+        registration.status !== "active" ||
+        registration.archivedAt !== null
+      ) {
+        throw new Error(
+          `ontology domain registration ${requestedRegistrationId} is not active`,
+        );
+      }
+      if (registration.ontologyDomainId !== domain) {
+        throw new Error(
+          `ontology domain registration mismatch: registered ${registration.ontologyDomainId}, got ${domain}`,
+        );
+      }
+    } else {
+      // Compatibility path for the standalone Agent Factory UI. New OntoCode
+      // work always supplies an immutable registration id.
+      const binding = tx
+        .select({ ontologyDomainId: factoryDomainBindings.ontologyDomainId })
+        .from(factoryDomainBindings)
+        .where(eq(factoryDomainBindings.tenantId, tenantId))
+        .all()[0];
+      if (!binding) throw new Error("factory domain is not bound for this tenant");
+      if (binding.ontologyDomainId !== domain) {
+        throw new Error(`factory domain mismatch: bound ${binding.ontologyDomainId}, got ${domain}`);
+      }
+    }
+    if (requestedRuntimeProfileVersionId) {
+      const runtimeVersion = tx
+        .select({
+          tenantId: runtimeProfileVersions.tenantId,
+          profileStatus: runtimeProfiles.status,
+          profileArchivedAt: runtimeProfiles.archivedAt,
+        })
+        .from(runtimeProfileVersions)
+        .innerJoin(
+          runtimeProfiles,
+          and(
+            eq(runtimeProfiles.id, runtimeProfileVersions.profileId),
+            eq(
+              runtimeProfiles.tenantId,
+              runtimeProfileVersions.tenantId,
+            ),
+          ),
+        )
+        .where(
+          eq(
+            runtimeProfileVersions.id,
+            requestedRuntimeProfileVersionId,
+          ),
+        )
+        .get();
+      if (!runtimeVersion || runtimeVersion.tenantId !== tenantId) {
+        throw new Error(
+          `runtime profile version ${requestedRuntimeProfileVersionId} does not belong to this tenant`,
+        );
+      }
+      if (
+        runtimeVersion.profileStatus !== "active" ||
+        runtimeVersion.profileArchivedAt !== null
+      ) {
+        throw new Error(
+          `runtime profile version ${requestedRuntimeProfileVersionId} is archived`,
+        );
+      }
     }
     // A caller-controlled conversation id is also the run primary key. Refuse a
     // foreign (or old-domain) row before the UPSERT; swallowing this would let one
     // tenant reset another tenant's durable run to `running`.
-    const existing = tx.select({ tenantId: factoryRuns.tenantId, domain: factoryRuns.domain }).from(factoryRuns).where(eq(factoryRuns.id, id)).all()[0];
+    const existing = tx
+      .select({
+        tenantId: factoryRuns.tenantId,
+        domain: factoryRuns.domain,
+        ontologyDomainRegistrationId:
+          factoryRuns.ontologyDomainRegistrationId,
+        runtimeProfileVersionId: factoryRuns.runtimeProfileVersionId,
+      })
+      .from(factoryRuns)
+      .where(eq(factoryRuns.id, id))
+      .all()[0];
     if (existing && existing.tenantId !== tenantId) throw new Error("run belongs to another tenant");
     if (existing && existing.domain !== domain) throw new Error("run belongs to another ontology domain");
+    if (
+      existing &&
+      (existing.ontologyDomainRegistrationId ?? null) !==
+        requestedRegistrationId
+    ) {
+      throw new Error("run belongs to another ontology domain registration");
+    }
+    if (
+      existing &&
+      (existing.runtimeProfileVersionId ?? null) !==
+        requestedRuntimeProfileVersionId
+    ) {
+      throw new Error("run belongs to another runtime profile version");
+    }
     // #CRASH-CKPT — UPSERT, not insert-and-swallow: a FOLLOW-UP message reuses the conversation's
     // run id, and the old silent PK-conflict left the row on its previous terminal status ("done").
     // autoResumeCrashedRuns() only re-attaches rows stuck "running", so a follow-up killed mid-run
@@ -1167,12 +1738,24 @@ export function recordRunStart(domain: string, goal: string, tenantId: string | 
     // makes resume + UI truthful; recordRunFinish overwrites with the new verdict as before.
     tx
       .insert(factoryRuns)
-      .values({ id, tenantId, domain, goal, status: "running", createdAt: now, updatedAt: now })
+      .values({
+        id,
+        tenantId,
+        domain,
+        ontologyDomainRegistrationId: requestedRegistrationId,
+        runtimeProfileVersionId: requestedRuntimeProfileVersionId,
+        goal,
+        status: "running",
+        createdAt: now,
+        updatedAt: now,
+      })
       .onConflictDoUpdate({
         target: factoryRuns.id,
         set: {
           tenantId,
           domain,
+          ontologyDomainRegistrationId: requestedRegistrationId,
+          runtimeProfileVersionId: requestedRuntimeProfileVersionId,
           status: "running",
           goal,
           tokensUsed: 0,
@@ -1255,6 +1838,9 @@ export function listRuns(domain: string | null, tenantId?: string, limit = 30, o
       domain: r.domain,
       goal: r.goal,
       status: r.status,
+      ontologyDomainRegistrationId:
+        r.ontologyDomainRegistrationId ?? null,
+      runtimeProfileVersionId: r.runtimeProfileVersionId ?? null,
       tokensUsed: r.tokensUsed,
       turns: r.turns,
       agentsCount: r.agentsCount,
@@ -1274,7 +1860,7 @@ export function getRun(id: string, tenantId?: string): (RunRecord & { transcript
   if (tenantId) conds.push(eq(factoryRuns.tenantId, tenantId));
   const r = getDb().select().from(factoryRuns).where(and(...conds)).all()[0];
   if (!r) return null;
-  return { id: r.id, domain: r.domain, goal: r.goal, status: r.status, tokensUsed: r.tokensUsed, turns: r.turns, agentsCount: r.agentsCount, reachedTerminal: r.reachedTerminal, ...factoryRunExecutionEvidence(r.transcriptJson), completionKind: factoryRunCompletionKind(r.transcriptJson), createdAt: toISO(r.createdAt), deletedAt: r.deletedAt ? toISO(r.deletedAt) : null, transcript: (r.transcriptJson as unknown[]) ?? [] };
+  return { id: r.id, domain: r.domain, goal: r.goal, status: r.status, ontologyDomainRegistrationId: r.ontologyDomainRegistrationId ?? null, runtimeProfileVersionId: r.runtimeProfileVersionId ?? null, tokensUsed: r.tokensUsed, turns: r.turns, agentsCount: r.agentsCount, reachedTerminal: r.reachedTerminal, ...factoryRunExecutionEvidence(r.transcriptJson), completionKind: factoryRunCompletionKind(r.transcriptJson), createdAt: toISO(r.createdAt), deletedAt: r.deletedAt ? toISO(r.deletedAt) : null, transcript: (r.transcriptJson as unknown[]) ?? [] };
 }
 
 /** Soft-delete a run (历史运行 trash). Guards: tenant match, not already deleted, and never a
@@ -1308,10 +1894,18 @@ export function deleteRunsByDomain(domain: string, tenantId?: string): number {
   return res?.changes ?? 0;
 }
 
-/** Flip a single durable run row 'running' → 'aborted' (orphan cleanup / hard stop of a
- *  run no longer in the live registry). Returns true iff a running row was actually changed. */
+/** Flip a single unfinished durable run row to `aborted`.
+ *
+ * A `waiting_human` row has no live conductor after its terminal
+ * `waiting_human` receipt is persisted, but it is still unfinished work and
+ * blocks ontology rebinding. The explicit Stop action must therefore be able
+ * to close either state while preserving the complete run history.
+ */
 export function markRunAborted(id: string, errorMessage?: string, tenantId?: string): boolean {
-  const conds = [eq(factoryRuns.id, id), eq(factoryRuns.status, "running")];
+  const conds = [
+    eq(factoryRuns.id, id),
+    inArray(factoryRuns.status, ["running", "waiting_human"]),
+  ];
   if (tenantId) conds.push(eq(factoryRuns.tenantId, tenantId));
   const res = getDb()
     .update(factoryRuns)

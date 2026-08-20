@@ -2,7 +2,24 @@
 import { lookup } from "node:dns/promises";
 import { BlockList, isIP } from "node:net";
 
-const NON_PUBLIC_IPS = new BlockList();
+/*
+ * IPv4 与 IPv6 的判据必须分开持有。
+ *
+ * 下面 IPv6 表里的 `::ffff:0:0/96` 是 IPv4-mapped 段，它存在的意义是不让
+ * `::ffff:10.0.0.5` 这种写法绕过 IPv4 私网判定。但 Node 的 BlockList 会把这条
+ * 规则同样应用到 `check(addr, "ipv4")` 上——两张表放进同一个 BlockList 时，
+ * **每一个 IPv4 地址都命中**，`isNonPublicIp` 恒为真：
+ *
+ *   const b = new BlockList(); b.addSubnet("::ffff:0:0", 96, "ipv6");
+ *   b.check("8.8.8.8", "ipv4")  // → true
+ *
+ * 实测后果（2026-08-06）：生产模式下任何 IPv4 网关都被拒，连
+ * https://api.openai.com/v1 也要求列进 LLM_GATEWAY_ALLOWED_HOSTS。这道防线
+ * 一直是「全拒」，只是以前没人在 NODE_ENV=production 下走到这里。
+ * 契约见 apps/api/test/gateway-network-safety.test.ts。
+ */
+const NON_PUBLIC_IPV4 = new BlockList();
+const NON_PUBLIC_IPV6 = new BlockList();
 
 for (const [network, prefix] of [
   ["0.0.0.0", 8],
@@ -20,7 +37,7 @@ for (const [network, prefix] of [
   ["203.0.113.0", 24],
   ["224.0.0.0", 3],
 ] as const) {
-  NON_PUBLIC_IPS.addSubnet(network, prefix, "ipv4");
+  NON_PUBLIC_IPV4.addSubnet(network, prefix, "ipv4");
 }
 
 for (const [network, prefix] of [
@@ -41,7 +58,7 @@ for (const [network, prefix] of [
   ["fec0::", 10],
   ["ff00::", 8],
 ] as const) {
-  NON_PUBLIC_IPS.addSubnet(network, prefix, "ipv6");
+  NON_PUBLIC_IPV6.addSubnet(network, prefix, "ipv6");
 }
 
 function withoutIpv6Brackets(address: string): string {
@@ -53,8 +70,14 @@ function withoutIpv6Brackets(address: string): string {
 function isNonPublicIp(address: string): boolean {
   const normalized = withoutIpv6Brackets(address).toLowerCase();
   const family = isIP(normalized);
-  if (family === 4) return NON_PUBLIC_IPS.check(normalized, "ipv4");
-  if (family === 6) return NON_PUBLIC_IPS.check(normalized, "ipv6");
+  if (family === 4) return NON_PUBLIC_IPV4.check(normalized, "ipv4");
+  if (family === 6) {
+    // IPv4-mapped（::ffff:a.b.c.d）先按它真正代表的 IPv4 判一次，否则
+    // `::ffff:10.0.0.5` 会绕过 IPv4 私网表。
+    const mapped = normalized.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/u)?.[1];
+    if (mapped && NON_PUBLIC_IPV4.check(mapped, "ipv4")) return true;
+    return NON_PUBLIC_IPV6.check(normalized, "ipv6");
+  }
   return true;
 }
 

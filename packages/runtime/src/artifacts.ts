@@ -12,7 +12,10 @@
 
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, open, rename, stat, unlink } from "node:fs/promises";
+import { mkdir, open, readFile, rename, stat, unlink } from "node:fs/promises";
+import { and, eq } from "drizzle-orm";
+import { artifacts, getDb } from "@agentic/db";
+import { makeId } from "@agentic/shared";
 import {
   AgentRunRecordSchema,
   type AgentRunRecord,
@@ -97,6 +100,87 @@ export interface RuntimePersistedArtifact {
   metadata?: Record<string, unknown>;
   redacted: boolean;
   retentionUntil?: Date;
+}
+
+/**
+ * Catalog an already-written step sidecar in the durable `artifacts` table.
+ * Idempotent for `(tenant, run, step, role, logicalName)` so Inngest retries
+ * update evidence instead of producing duplicate cards.
+ */
+export async function registerStepArtifactEvidence(args: {
+  tenantId: string;
+  runId: string;
+  stepId: string;
+  role: "step_input" | "step_output" | "trace";
+  filePath: string;
+  logicalName?: string;
+  contentType?: string;
+  metadata?: Record<string, unknown>;
+  redacted?: boolean;
+  retentionUntil?: Date;
+}): Promise<RuntimePersistedArtifact & { id: string; path: string }> {
+  const logicalName = args.logicalName ?? path.basename(args.filePath);
+  const contentType = args.contentType ?? "application/json";
+  const [body, bytes] = await Promise.all([
+    readFile(args.filePath),
+    stat(args.filePath),
+  ]);
+  const db = getDb();
+  const existing = db
+    .select({ id: artifacts.id })
+    .from(artifacts)
+    .where(
+      and(
+        eq(artifacts.tenantId, args.tenantId),
+        eq(artifacts.runId, args.runId),
+        eq(artifacts.stepId, args.stepId),
+        eq(artifacts.role, args.role),
+        eq(artifacts.logicalName, logicalName),
+      ),
+    )
+    .limit(1)
+    .all()[0];
+  const id = existing?.id ?? makeId("art");
+  const values = {
+    kind: contentType,
+    role: args.role,
+    logicalName,
+    contentType,
+    sha256: createHash("sha256").update(body).digest("hex"),
+    metadataJson: (args.metadata ?? {
+      source: "runtime_step_sidecar",
+    }) as never,
+    redacted: args.redacted ?? false,
+    retentionUntil: args.retentionUntil ?? null,
+    path: args.filePath,
+    size: bytes.size,
+  };
+  if (existing) {
+    db.update(artifacts).set(values).where(eq(artifacts.id, existing.id)).run();
+  } else {
+    db.insert(artifacts)
+      .values({
+        id,
+        tenantId: args.tenantId,
+        runId: args.runId,
+        stepId: args.stepId,
+        ...values,
+      })
+      .run();
+  }
+  return {
+    id,
+    role: args.role,
+    logicalName,
+    contentType,
+    path: args.filePath,
+    size: bytes.size,
+    sha256: values.sha256,
+    stepId: args.stepId,
+    metadata: args.metadata ?? { source: "runtime_step_sidecar" },
+    redacted: args.redacted ?? false,
+    ...(args.retentionUntil ? { retentionUntil: args.retentionUntil } : {}),
+  };
 }
 
 /** A sink is bound to an authorized tenant/run by the caller. */

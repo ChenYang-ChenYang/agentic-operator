@@ -249,6 +249,9 @@ importers:
 
   packages/agent-factory:
     dependencies:
+      '@agentic/contracts':
+        specifier: workspace:*
+        version: link:../contracts
       '@agentic/shared':
         specifier: workspace:*
         version: link:../shared
@@ -419,6 +422,9 @@ importers:
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
+      vitest:
+        specifier: ^4.1.6
+        version: 4.1.6(@opentelemetry/api@1.9.1)(@types/node@26.1.1)(@vitest/coverage-v8@4.1.10)(vite@7.3.3(@types/node@26.1.1)(tsx@4.22.0)(yaml@2.9.0))
 
   packages/ontology-compiler:
     devDependencies:

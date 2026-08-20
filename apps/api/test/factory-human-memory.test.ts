@@ -7,6 +7,7 @@ import { DrizzleHumanMemoryStore, humanMemoryFromInjectedMessage, redactHumanMem
 import { buildTestEnv, type TestEnv } from "./harness";
 import { FsUploadedOntologyStore } from "../src/services/agent-factory/uploaded-ontology-store";
 import { clearFactoryDomainBinding, setFactoryDomainBinding } from "../src/services/agent-factory/domain-binding";
+import { isFactoryAuthorizationChallengeContext } from "../src/routes/v1/agent-factory";
 
 const suffix = Date.now().toString(36);
 const tenantA = { id: `ten-hmem-a-${suffix}`, slug: `hmema${suffix}`.slice(0, 60) };
@@ -250,6 +251,15 @@ describe("factory human memory store + API", () => {
         context: `sandbox_design_review_authorization:v1:${"a".repeat(64)}`,
       },
     }, "批准进入沙箱")).toBeNull();
+    const planContext = `sandbox_evidence_plan_authorization:v1:${"b".repeat(64)}`;
+    expect(isFactoryAuthorizationChallengeContext(planContext)).toBe(true);
+    expect(humanMemoryFromInjectedMessage({
+      awaitingClarify: true,
+      clarifyPrompt: {
+        question: "是否一次确认整包 sandbox evidence plan？",
+        context: planContext,
+      },
+    }, "确认整包仅用于沙箱")).toBeNull();
   });
 
   it("exposes rework as a seed-only route and fails honestly when no promoted draft exists", async () => {

@@ -310,7 +310,7 @@ export const AgentObservabilityV2Schema = z
     trace_level: z.enum(["minimal", "standard", "debug"]).default("standard"),
     reasoning_summary: z.boolean().default(true),
     persist_rendered_prompts: z.boolean().default(false),
-    retention_days: z.number().int().positive().max(3_650).default(30),
+    retention_days: z.number().int().positive().max(3_650).default(3_650),
   })
   .passthrough();
 export type AgentObservabilityV2 = z.infer<typeof AgentObservabilityV2Schema>;

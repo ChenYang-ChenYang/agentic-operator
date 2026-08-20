@@ -19,7 +19,9 @@ import {
   canonicalEvidenceJson,
   SandboxLifecycleBlockedError,
   sandboxCleanupReceiptIssues,
+  sandboxExecutionPlaneAttestationIssues,
   type SandboxDeployResult,
+  type SandboxExecutionPlaneAttestation,
 } from "@agentic/agent-factory";
 
 // Type-only: the CONTROL image's curated static closure must not include the bundle builder's
@@ -163,6 +165,75 @@ function exactOrigin(value: string, label: string): string {
   return parsed.origin;
 }
 
+function executionPlaneAttestation(
+  env: Record<string, string | undefined>,
+  expected: {
+    runnerId: string;
+    runnerBuildId: string;
+    runtimeImageDigest: string;
+    isolationTier: "remote_container" | "remote_vm";
+  },
+): SandboxExecutionPlaneAttestation {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(
+      valueOrFile("SANDBOX_RUNNER_PLATFORM_ATTESTATION", env),
+    );
+  } catch (error) {
+    throw new Error(
+      `SANDBOX_RUNNER_PLATFORM_ATTESTATION is invalid: ${String(
+        (error as Error)?.message ?? error,
+      ).slice(0, 160)}`,
+    );
+  }
+  const attestation = parsed as SandboxExecutionPlaneAttestation;
+  const primaryHostIdentityHash = valueOrFile(
+    "SANDBOX_PRIMARY_HOST_IDENTITY_HASH",
+    env,
+  );
+  const primaryDockerDaemonIdentityHash = valueOrFile(
+    "SANDBOX_PRIMARY_DOCKER_DAEMON_IDENTITY_HASH",
+    env,
+  );
+  const issues = sandboxExecutionPlaneAttestationIssues(attestation, {
+    planeId: attestation?.planeId,
+    trustDomain: attestation?.trustDomain,
+    runnerId: expected.runnerId,
+    allowedRunnerBuildIds: new Set([expected.runnerBuildId]),
+    allowedRuntimeImageDigests: new Set([expected.runtimeImageDigest]),
+    allowedControlHostIdentityHashes: new Set([
+      attestation?.controlHostIdentityHash,
+    ]),
+    allowedWorkloadHostIdentityHashes: new Set([
+      attestation?.workloadHostIdentityHash,
+    ]),
+    allowedDockerDaemonIdentityHashes: new Set([
+      attestation?.dockerDaemonIdentityHash,
+    ]),
+    primaryHostIdentityHash,
+    primaryDockerDaemonIdentityHash,
+    attestorKeyId: valueOrFile(
+      "SANDBOX_RUNNER_PLATFORM_ATTESTOR_KEY_ID",
+      env,
+    ),
+    attestorPublicKey: valueOrFile(
+      "SANDBOX_RUNNER_PLATFORM_ATTESTOR_PUBLIC_KEY",
+      env,
+    ),
+  });
+  if (
+    attestation?.isolationTier !== expected.isolationTier
+    || issues.length
+  ) {
+    throw new Error(
+      `SANDBOX_RUNNER_PLATFORM_ATTESTATION failed verification: ${
+        issues.join("; ") || "isolation tier mismatch"
+      }`,
+    );
+  }
+  return attestation;
+}
+
 /**
  * Prove the workload can reach the exact authenticated delete-control route
  * before it opens its durable orphan ledger. Compose also orders the services,
@@ -284,6 +355,19 @@ export function loadSandboxRunnerConfig(
       "remote sandbox request, result, and receipt HMAC keys must be explicitly configured and distinct",
     );
   }
+  const runnerId = valueOrFile("SANDBOX_RUNNER_ID", env);
+  const runnerBuildId = valueOrFile("SANDBOX_RUNNER_BUILD_ID", env);
+  const platformAttestation =
+    actualIsolationTier === "same_host_container"
+      ? undefined
+      : executionPlaneAttestation(env, {
+          runnerId,
+          runnerBuildId,
+          runtimeImageDigest,
+          isolationTier: actualIsolationTier as
+            | "remote_container"
+            | "remote_vm",
+        });
   const jobTtlMs = positiveInt(
     "SANDBOX_RUNNER_JOB_TTL_MS",
     env.SANDBOX_RUNNER_JOB_TTL_MS,
@@ -301,13 +385,14 @@ export function loadSandboxRunnerConfig(
     requestSigningKey,
     resultSigningKey,
     identity: {
-      runnerId: valueOrFile("SANDBOX_RUNNER_ID", env),
-      runnerBuildId: valueOrFile("SANDBOX_RUNNER_BUILD_ID", env),
+      runnerId,
+      runnerBuildId,
       runtimeImageDigest,
       receiptSigningKey,
       brokerOrigin,
       serveOrigin: workloadUrl,
       actualIsolationTier: actualIsolationTier as "same_host_container" | "remote_container" | "remote_vm",
+      ...(platformAttestation ? { platformAttestation } : {}),
     },
     deleteToken: valueOrFile("SANDBOX_INNGEST_DELETE_TOKEN", env, 16),
     brokerOrigin,
@@ -1588,6 +1673,8 @@ export async function buildSandboxRunnerControl(input: {
       runnerBuildId: input.config.identity.runnerBuildId,
       runtimeImageDigest: input.config.identity.runtimeImageDigest,
       isolationTier: input.config.identity.actualIsolationTier,
+      platformAttestation:
+        input.config.identity.platformAttestation ?? null,
       checkedAt: now().toISOString(),
       ...health,
       // The API only needs the failure bit. Never expose a Docker error,

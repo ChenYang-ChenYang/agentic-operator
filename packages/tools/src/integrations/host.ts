@@ -24,6 +24,12 @@ export interface IntegrationCreds {
   base_url?: string;
   /** Plaintext API key, decrypted from the integration store. */
   api_key?: string;
+  /**
+   * Dynamic field values beyond the two first-class ones, keyed by the System
+   * Profile's ConfigFieldSpec keys (region, client_secret…). Plain config and
+   * decrypted extra secrets are merged; a tool reads the keys its docs declare.
+   */
+  fields?: Record<string, string>;
 }
 
 export type IntegrationResolver = (

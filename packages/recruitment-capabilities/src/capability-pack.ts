@@ -12,6 +12,7 @@ import { loadRaasRuleContext } from "./tools/raas-rule-context";
 import { createEvaluateRulesWithReasoningAgent } from "./tools/reasoning-rule-engine";
 import { queryFacts } from "./tools/raas-facts";
 import { writeEntities } from "./tools/raas-write";
+import { inspectEnvironmentReferencesTool } from "@agentic/tools/config";
 import { routeInterviewInvitation } from "./tools/route-interview-invitation";
 import { routeMatchOutcome } from "./tools/route-match-outcome";
 import { routeResumeProcessed } from "./tools/route-resume-processed";
@@ -44,6 +45,9 @@ export const RECRUITMENT_ONTOLOGY_CAPABILITY_NAMES = [
   "facts.query",
   "entities.write",
   "reasoning.evaluateRules",
+  // Diagnostic only: it intentionally carries no business-system capability
+  // and therefore cannot satisfy an integration binding or production probe.
+  "config.inspectEnvironmentReferences",
 ] as const;
 
 type RecruitmentCapabilityName =
@@ -163,6 +167,7 @@ export function createRecruitmentOntologyCapabilityPack(
     queryFacts,
     writeEntities,
     createEvaluateRulesWithReasoningAgent(profile.reasoning),
+    inspectEnvironmentReferencesTool,
   ];
   return Object.fromEntries(
     descriptors.map((descriptor) => [

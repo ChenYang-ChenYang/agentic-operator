@@ -1,7 +1,7 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { createHmac } from "node:crypto";
+import { createHmac, generateKeyPairSync } from "node:crypto";
 
 import Fastify from "fastify";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -16,7 +16,12 @@ import {
   verifyRemoteSandboxRunnerHealth,
 } from "../src/services/agent-factory/sandbox-remote-protocol";
 import type { SandboxCandidateBundle } from "../src/services/agent-factory/sandbox-bundle-builder";
-import { canonicalEvidenceJson } from "@agentic/agent-factory";
+import {
+  SANDBOX_EXECUTION_PLANE_ATTESTATION_SCHEMA,
+  canonicalEvidenceJson,
+  sandboxExecutionPlaneCapabilities,
+  signSandboxExecutionPlaneAttestation,
+} from "@agentic/agent-factory";
 import { signSandboxCancelFenceAck } from "../src/services/agent-factory/sandbox-cancel-fence";
 
 const requestKey = "runner-control-request-key-at-least-32-bytes";
@@ -24,6 +29,45 @@ const resultKey = "runner-control-result-key-at-least-32-bytes";
 const token = "runner-control-workload-token-at-least-32-bytes";
 const cancelFenceKey = "runner-control-cancel-fence-key-at-least-32-bytes";
 const roots: string[] = [];
+const platformKeys = generateKeyPairSync("ed25519");
+const platformPublicKey = platformKeys.publicKey.export({
+  type: "spki",
+  format: "pem",
+}).toString();
+
+function platformEnvironment() {
+  const attestation = signSandboxExecutionPlaneAttestation(
+    {
+      schema: SANDBOX_EXECUTION_PLANE_ATTESTATION_SCHEMA,
+      planeId: "runner-control-plane",
+      trustDomain: "test.agentic.internal",
+      runnerId: "runner-1",
+      runnerBuildId: "build-1",
+      runtimeImageDigest: `sha256:${"a".repeat(64)}`,
+      isolationTier: "remote_vm",
+      controlHostIdentityHash: `sha256:${"1".repeat(64)}`,
+      workloadHostIdentityHash: `sha256:${"2".repeat(64)}`,
+      dockerDaemonIdentityHash: `sha256:${"3".repeat(64)}`,
+      capabilities: sandboxExecutionPlaneCapabilities(),
+      issuedAt: new Date(Date.now() - 1_000).toISOString(),
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      attestorKeyId: "platform-key-1",
+      signatureAlgorithm: "ed25519",
+    },
+    platformKeys.privateKey.export({
+      type: "pkcs8",
+      format: "pem",
+    }).toString(),
+  );
+  return {
+    SANDBOX_RUNNER_PLATFORM_ATTESTATION: JSON.stringify(attestation),
+    SANDBOX_RUNNER_PLATFORM_ATTESTOR_KEY_ID: "platform-key-1",
+    SANDBOX_RUNNER_PLATFORM_ATTESTOR_PUBLIC_KEY: platformPublicKey,
+    SANDBOX_PRIMARY_HOST_IDENTITY_HASH: `sha256:${"4".repeat(64)}`,
+    SANDBOX_PRIMARY_DOCKER_DAEMON_IDENTITY_HASH:
+      `sha256:${"5".repeat(64)}`,
+  };
+}
 
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
@@ -279,6 +323,7 @@ describe("sandbox runner control readiness", () => {
       ...base,
       SANDBOX_RUNNER_RECEIPT_HMAC:
         "runner-control-receipt-key-independent-and-at-least-32-bytes",
+      ...platformEnvironment(),
     }).identity.actualIsolationTier).toBe("remote_vm");
   });
 

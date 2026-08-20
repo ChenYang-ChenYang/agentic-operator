@@ -56,6 +56,8 @@ export interface FactoryFixtureAssetPutInput {
   mimeType?: string;
   filename?: string;
   sha256?: string;
+  /** Internal server provenance. HTTP uploads omit this and remain uploaded. */
+  provenance?: "uploaded" | "synthetic_resume_pdf";
 }
 
 /** The only metadata safe to return through the HTTP API. */
@@ -66,6 +68,7 @@ export interface FactoryFixtureAssetMetadata {
   mimeType: string;
   filename: string;
   expiresAt: string;
+  provenance?: "uploaded" | "synthetic_resume_pdf";
 }
 
 /** Internal-only read result used by the sandbox fixture resolver. */
@@ -321,6 +324,7 @@ function publicMetadata(
     mimeType: stored.mimeType,
     filename: stored.filename,
     expiresAt: stored.expiresAt,
+    ...(stored.provenance ? { provenance: stored.provenance } : {}),
   };
 }
 
@@ -434,6 +438,9 @@ export class FsFactoryFixtureAssetStore {
       typeof stored.filename !== "string" ||
       typeof stored.caseId !== "string" ||
       typeof stored.path !== "string" ||
+      (stored.provenance !== undefined
+        && stored.provenance !== "uploaded"
+        && stored.provenance !== "synthetic_resume_pdf") ||
       !Number.isFinite(Date.parse(stored.createdAt)) ||
       !Number.isFinite(Date.parse(stored.expiresAt))
     ) {
@@ -566,6 +573,9 @@ export class FsFactoryFixtureAssetStore {
       bytes: content.length,
       mimeType,
       filename,
+      ...(input.provenance === "synthetic_resume_pdf"
+        ? { provenance: "synthetic_resume_pdf" as const }
+        : {}),
       createdAt: now.toISOString(),
       expiresAt: new Date(
         now.getTime() + this.ttlSeconds * 1_000,

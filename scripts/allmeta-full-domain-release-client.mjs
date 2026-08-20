@@ -19,18 +19,19 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(SCRIPT_DIR, "..");
 const TARGET_DOMAIN = "Agents-generation";
-const TARGET_VERSION = "v0_4_000";
+const DEFAULT_REVIEWED_VERSION = "v0_4_001";
 const ZERO_HASH = `sha256:${"0".repeat(64)}`;
 const HASH_RE = /^sha256:[0-9a-f]{64}$/;
+const REVIEWED_VERSION_RE = /^v[0-9]+_[0-9]+_[0-9]+$/u;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const DEFAULT_BUNDLE = join(
   REPO_ROOT,
-  "artifacts/ontology/Agents-generation/v0_4_000/release_bundle_v0_4_000.json",
+  `artifacts/ontology/Agents-generation/${DEFAULT_REVIEWED_VERSION}/release_bundle_${DEFAULT_REVIEWED_VERSION}.json`,
 );
 const DEFAULT_ALLMETA_ENV = "/Users/yuhancheng/allmetaOntology/.env.local";
 const DEFAULT_AUDIT_DIR = join(
   REPO_ROOT,
-  "artifacts/ontology/Agents-generation/v0_4_000/release-audit",
+  `artifacts/ontology/Agents-generation/${DEFAULT_REVIEWED_VERSION}/release-audit`,
 );
 
 export const HELP_TEXT = `Usage:
@@ -44,7 +45,7 @@ Options:
   --execute                  Submit ready preview, one-time authorization, and execute
   --operator-id <identity>   Required with --execute (or ALLMETA_OPERATOR_ID)
   --confirmation-file <path> Reviewed domain-less ownership decisions, when required
-  --bundle <path>            ReleaseBundle JSON (default: v0_4_000 Agents-generation)
+  --bundle <path>            Reviewed ReleaseBundle JSON (default: ${DEFAULT_REVIEWED_VERSION} Agents-generation)
   --allmeta-env <path>       Allmeta env file (default: ${DEFAULT_ALLMETA_ENV})
   --base-url <url>           Allmeta origin (or ALLMETA_BASE_URL; localhost:3500 fallback)
   --audit-dir <path>         Private audit output directory
@@ -121,6 +122,39 @@ function stableEqual(left, right) {
   return JSON.stringify(canonicalValue(left)) === JSON.stringify(canonicalValue(right));
 }
 
+function allmetaStorageMetadataKey(container, key) {
+  if (key.startsWith("__allmeta_") || key === "source_file") return true;
+  if (!key.endsWith("_json")) return false;
+  return Object.hasOwn(container, key.slice(0, -"_json".length));
+}
+
+/**
+ * Release definitions are logical ontology data. Graph persistence metadata
+ * belongs exclusively to Allmeta and must never round-trip through a candidate:
+ * a candidate `__allmeta_definition_json` can otherwise overwrite the writer's
+ * newly generated exact definition and make independent graph readback diverge.
+ */
+export function assertNoAllmetaStorageMetadata(value, label = "ReleaseBundle definitions") {
+  const visit = (current, path) => {
+    if (Array.isArray(current)) {
+      current.forEach((item, index) => visit(item, `${path}[${index}]`));
+      return;
+    }
+    const source = record(current);
+    if (!source) return;
+    for (const [key, item] of Object.entries(source)) {
+      const nextPath = `${path}.${key}`;
+      if (allmetaStorageMetadataKey(source, key)) {
+        throw new Error(
+          `${label} contains server-owned Allmeta storage metadata at ${nextPath}.`,
+        );
+      }
+      visit(item, nextPath);
+    }
+  };
+  visit(value, "$");
+}
+
 function actionStepNameKey(actionId, stepName) {
   return JSON.stringify([text(actionId), text(stepName)]);
 }
@@ -175,8 +209,10 @@ export function validateReleaseBundle(raw, expectedDomain = TARGET_DOMAIN) {
   if (bundle.schemaVersion !== 1) {
     throw new Error("ReleaseBundle.schemaVersion must be 1.");
   }
-  if (bundle.version !== TARGET_VERSION) {
-    throw new Error(`This release client accepts only reviewed version '${TARGET_VERSION}'.`);
+  if (!REVIEWED_VERSION_RE.test(text(bundle.version))) {
+    throw new Error(
+      "ReleaseBundle.version must be the reviewed bundle's canonical v<major>_<minor>_<patch> identifier.",
+    );
   }
   if (!HASH_RE.test(text(bundle.payloadDigest))) {
     throw new Error("ReleaseBundle.payloadDigest must be a sha256 digest.");
@@ -205,6 +241,16 @@ export function validateReleaseBundle(raw, expectedDomain = TARGET_DOMAIN) {
   const policyScopes = requireArray(bundle.policyScopes, "ReleaseBundle.policyScopes");
   const links = requireArray(bundle.links, "ReleaseBundle.links");
   const steps = nestedSteps(actions);
+
+  assertNoAllmetaStorageMetadata({
+    objects,
+    rules,
+    actions,
+    actionSteps: bundle.actionSteps,
+    events,
+    policyScopes,
+    links,
+  });
 
   requireUnique(objects, (item) => item?.id, "DataObjects");
   requireUnique(rules, (item) => item?.id, "Rules");

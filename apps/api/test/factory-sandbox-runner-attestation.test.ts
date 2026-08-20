@@ -1,9 +1,12 @@
-import { createHash } from "node:crypto";
+import { createHash, generateKeyPairSync } from "node:crypto";
 
 import {
   SANDBOX_MODEL_USAGE_SCHEMA,
   sandboxModelUsageEvidenceHash,
   sandboxInfrastructureCleanupEvidenceHash,
+  SANDBOX_EXECUTION_PLANE_ATTESTATION_SCHEMA,
+  sandboxExecutionPlaneCapabilities,
+  signSandboxExecutionPlaneAttestation,
   type SandboxDeployResult,
   type SandboxInfrastructureCleanupEvidence,
 } from "@agentic/agent-factory";
@@ -11,26 +14,44 @@ import { describe, expect, it } from "vitest";
 
 import type { SandboxCandidateBundle } from "../src/services/agent-factory/sandbox-bundle-builder";
 import { attestSandboxCandidateResult } from "../src/services/agent-factory/sandbox-runner-attestation";
+import { canonicalSandboxSha256 } from "../src/services/agent-factory/sandbox-remote-protocol";
 
 const attemptId = "attempt-attestation-security";
 const sandboxTenantSlug = "agents-generation-sb-attestation";
 const generatedCode = "export const attested = defineAgent({ async handler() { return { ok: true }; } });";
 
-const bundle = {
-  policy: { requiredIsolation: "remote_container", maxModelCalls: 8, maxModelTotalTokens: 100_000 },
+const specs = [{
+  slug: "attested-agent",
+  short: "AttestedAgent",
+  nameZh: "Attested Agent",
+  domainId: "Agents-generation",
+  codeExecuted: true,
+  generatedCode,
+}];
+const manifest: unknown[] = [];
+const bundleBody = {
+  schema: "agent-factory-sandbox-candidate-bundle/v2" as const,
+  policy: {
+    requiredIsolation: "remote_container" as const,
+    maxModelCalls: 8,
+    maxModelTotalTokens: 100_000,
+  },
   candidateFingerprint: "candidate-attestation-security",
+  specsFingerprint: `specs:v2:${canonicalSandboxSha256(specs)}`,
   targetDomainId: "Agents-generation",
   targetTenant: { id: "tenant-agents-generation", slug: "agents-generation" },
   attemptId,
   sandboxTenantSlug,
-  bundleHash: `sandbox-bundle:v1:${"a".repeat(64)}`,
-  specs: [{
-    slug: "attested-agent",
-    short: "AttestedAgent",
-    nameZh: "Attested Agent",
-    codeExecuted: true,
-    generatedCode,
-  }],
+  specs,
+  manifest,
+  manifestHash: `manifest:v1:${canonicalSandboxSha256(manifest)}`,
+  testCases: [],
+  toolDefinitions: [],
+  toolEvidence: [],
+};
+const bundle = {
+  ...bundleBody,
+  bundleHash: `sandbox-bundle:v2:${canonicalSandboxSha256(bundleBody)}`,
 } as SandboxCandidateBundle;
 
 const modelUsageBody = {
@@ -73,6 +94,29 @@ const identity = {
   brokerOrigin: "http://sandbox-broker.invalid",
   serveOrigin: "http://sandbox-workload.invalid",
   actualIsolationTier: "remote_container" as const,
+  platformAttestation: (() => {
+    const keys = generateKeyPairSync("ed25519");
+    return signSandboxExecutionPlaneAttestation(
+      {
+        schema: SANDBOX_EXECUTION_PLANE_ATTESTATION_SCHEMA,
+        planeId: "test-plane",
+        trustDomain: "test.agentic.internal",
+        runnerId: "runner-security-test",
+        runnerBuildId: "build-security-test",
+        runtimeImageDigest: `sha256:${"b".repeat(64)}`,
+        isolationTier: "remote_container",
+        controlHostIdentityHash: `sha256:${"6".repeat(64)}`,
+        workloadHostIdentityHash: `sha256:${"7".repeat(64)}`,
+        dockerDaemonIdentityHash: `sha256:${"8".repeat(64)}`,
+        capabilities: sandboxExecutionPlaneCapabilities(),
+        issuedAt: new Date(0).toISOString(),
+        expiresAt: new Date(60_000).toISOString(),
+        attestorKeyId: "test-attestor",
+        signatureAlgorithm: "ed25519",
+      },
+      keys.privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
+    );
+  })(),
 };
 
 function cleanup(

@@ -3,7 +3,6 @@ import { AllmetaOntologySource } from "./allmeta-ontology-source";
 import {
   type FactoryDomainBinding,
   type OntologyDomainListItem,
-  catalogDomain,
 } from "./domain-binding";
 import { UploadedOntologySource } from "./uploaded-ontology-source";
 
@@ -51,7 +50,9 @@ export function makeFactoryDomainDiscoverySources(
   };
 }
 
-function persistedSource(source: FactoryDomainRequestedSource): FactoryDomainBinding["source"] {
+function persistedSource(
+  source: FactoryDomainRequestedSource,
+): FactoryDomainBinding["source"] {
   return source === "allmeta" ? "explicit" : "upload";
 }
 
@@ -74,20 +75,38 @@ export async function discoverFactoryDomainBindingCandidate(input: {
   }> = [
     { requestedSource: "upload", ontology: input.sources.upload },
     ...(input.sources.allmeta
-      ? [{ requestedSource: "allmeta" as const, ontology: input.sources.allmeta }]
+      ? [
+          {
+            requestedSource: "allmeta" as const,
+            ontology: input.sources.allmeta,
+          },
+        ]
       : []),
   ];
   const selectedSources = input.requestedSource
-    ? available.filter((candidate) => candidate.requestedSource === input.requestedSource)
+    ? available.filter(
+        (candidate) => candidate.requestedSource === input.requestedSource,
+      )
     : available;
 
   const matches = (
-    await Promise.all(selectedSources.map(async (candidate) => ({
-      ...candidate,
-      domain: catalogDomain(await candidate.ontology.listDomains(), input.requestedId),
-    })))
-  ).filter((candidate): candidate is typeof candidate & { domain: OntologyDomainListItem } =>
-    candidate.domain !== null,
+    await Promise.all(
+      selectedSources.map(async (candidate) => ({
+        ...candidate,
+        // The picker submits a catalog id, not free text. Case-folding or
+        // display-name matching here would turn a typo/stale UI value into a
+        // different persisted Ontology identity.
+        domain:
+          (await candidate.ontology.listDomains()).find(
+            (domain) => domain.id === input.requestedId,
+          ) ?? null,
+      })),
+    )
+  ).filter(
+    (
+      candidate,
+    ): candidate is typeof candidate & { domain: OntologyDomainListItem } =>
+      candidate.domain !== null,
   );
 
   if (matches.length === 0) {

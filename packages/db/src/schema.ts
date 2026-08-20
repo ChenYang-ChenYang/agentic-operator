@@ -522,7 +522,9 @@ export const runs = sqliteTable(
     /** Runtime receipt fields. Populated only from the structured CodeAct
      * isolation result, never from manifest `codeExecuted` configuration. */
     codeExecuted: integer("code_executed", { mode: "boolean" }),
-    codeIsolation: text("code_isolation", { enum: ["worker_thread", "isolated_subprocess", "isolated_container"] }),
+    codeIsolation: text("code_isolation", {
+      enum: ["worker_thread", "isolated_subprocess", "isolated_container"],
+    }),
     codeSha256: text("code_sha256"),
     codeAttestation: text("code_attestation_status", {
       enum: [
@@ -575,6 +577,19 @@ export const runs = sqliteTable(
     ),
     tenantQueuedIdx: index("runs_tenant_queued_idx").on(t.tenantId, t.queuedAt),
     tenantStatusIdx: index("runs_tenant_status_idx").on(t.tenantId, t.status),
+    tenantDeletedQueuedIdx: index("runs_tenant_deleted_queued_idx").on(
+      t.tenantId,
+      t.deletedAt,
+      t.queuedAt,
+    ),
+    tenantDeletedStatusQueuedIdx: index(
+      "runs_tenant_deleted_status_queued_idx",
+    ).on(t.tenantId, t.deletedAt, t.status, t.queuedAt),
+    tenantSourceQueuedIdx: index("runs_tenant_source_queued_idx").on(
+      t.tenantId,
+      t.invocationSource,
+      t.queuedAt,
+    ),
     agentIdx: index("runs_agent_idx").on(t.agentId),
     correlationIdx: index("runs_correlation_idx").on(t.correlationId),
     interactionIdx: index("runs_interaction_idx").on(t.interactionId),
@@ -630,7 +645,9 @@ export const steps = sqliteTable(
     /** Exact per-step CodeAct runtime receipt; null for declarative steps. */
     codeRan: integer("code_ran", { mode: "boolean" }),
     codeExecuted: integer("code_executed", { mode: "boolean" }),
-    codeIsolation: text("code_isolation", { enum: ["worker_thread", "isolated_subprocess", "isolated_container"] }),
+    codeIsolation: text("code_isolation", {
+      enum: ["worker_thread", "isolated_subprocess", "isolated_container"],
+    }),
     codeSha256: text("code_sha256"),
     codeAttestation: text("code_attestation_status", {
       enum: [
@@ -734,7 +751,6 @@ export const runSummaries = sqliteTable(
     tenantIdx: index("run_summaries_tenant_idx").on(t.tenantId, t.createdAt),
   }),
 );
-
 
 /**
  * One row per provider attempt, including retries and failover. Token and
@@ -985,7 +1001,6 @@ export const runMessages = sqliteTable(
     runIdx: index("run_messages_run_idx").on(t.runId),
   }),
 );
-
 
 // ─── Tasks ───────────────────────────────────────────────────────────────────
 
@@ -1607,11 +1622,22 @@ export const integrations = sqliteTable(
     keySalt: text("key_salt"),
     /** Display-safe masked key (e.g. "gh_ab…wxyz"); never the plaintext. */
     keyMasked: text("key_masked"),
+    /** Non-secret dynamic field values (JSON object, string→string) keyed by
+     *  the System Profile's ConfigFieldSpec keys (region, org id…). */
+    configJson: text("config_json"),
+    /** AES-256-GCM ciphertext of the JSON secrets bag — every secret field
+     *  beyond the first-class API key (client_secret, webhook secret…). Same
+     *  per-row scrypt-derived key scheme as the primary key columns. */
+    secretsCipher: text("secrets_cipher"),
+    secretsIv: text("secrets_iv"),
+    secretsTag: text("secrets_tag"),
+    secretsSalt: text("secrets_salt"),
     /** Last connection-test outcome: "unconfigured" | "ok" | "error". */
     status: text("status").notNull().default("unconfigured"),
     /** When the connection was last tested. */
     lastCheckedAt: integer("last_checked_at", { mode: "timestamp_ms" }),
-    /** Last connection-test error message (null when ok). */
+    /** Last connection-test message: the error when status="error", or an
+     *  advisory note when status="ok" (e.g. reachable-but-no-health-route). */
     lastError: text("last_error"),
     enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
     createdBy: text("created_by"),
@@ -1892,6 +1918,195 @@ export const factoryDomainBindings = sqliteTable(
   }),
 );
 
+/**
+ * Explicit product-visibility marker for historical execution namespaces.
+ *
+ * The referenced tenant keeps owning all of its historical rows. It is merely
+ * removed from the default Business Domain switcher after a platform operator
+ * deliberately attaches its reviewed adapter to a canonical Business Domain.
+ */
+export const tenantRuntimeNamespaces = sqliteTable(
+  "tenant_runtime_namespaces",
+  {
+    tenantId: text("tenant_id")
+      .primaryKey()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    businessDomainTenantId: text("business_domain_tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "restrict" }),
+    status: text("status", { enum: ["active", "archived"] })
+      .notNull()
+      .default("active"),
+    createdBy: text("created_by"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+    archivedAt: integer("archived_at", { mode: "timestamp_ms" }),
+  },
+  (t) => ({
+    ownerStatusIdx: index("tenant_runtime_namespaces_owner_status_idx").on(
+      t.businessDomainTenantId,
+      t.status,
+    ),
+  }),
+);
+
+/**
+ * Tenant-owned logical execution profile. Profile rows are mutable only for
+ * lifecycle; executable coordinates live in immutable version rows below.
+ */
+export const runtimeProfiles = sqliteTable(
+  "runtime_profiles",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    description: text("description"),
+    status: text("status", { enum: ["active", "archived"] })
+      .notNull()
+      .default("active"),
+    createdBy: text("created_by"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+    archivedAt: integer("archived_at", { mode: "timestamp_ms" }),
+  },
+  (t) => ({
+    tenantNameUq: uniqueIndex("runtime_profiles_tenant_name_uq").on(
+      t.tenantId,
+      t.name,
+    ),
+    tenantStatusIdx: index("runtime_profiles_tenant_status_idx").on(
+      t.tenantId,
+      t.status,
+      t.updatedAt,
+    ),
+  }),
+);
+
+/**
+ * Immutable, secret-free execution coordinates. `adapter_registry_slug`
+ * selects reviewed code only; tenant_id remains the sole authorization,
+ * Integration, credential, data, filesystem and audit owner.
+ */
+export const runtimeProfileVersions = sqliteTable(
+  "runtime_profile_versions",
+  {
+    id: text("id").primaryKey(),
+    profileId: text("profile_id")
+      .notNull()
+      .references(() => runtimeProfiles.id, { onDelete: "restrict" }),
+    tenantId: text("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    version: integer("version").notNull(),
+    adapterKind: text("adapter_kind", {
+      enum: ["native", "tenant_registry_compat"],
+    }).notNull(),
+    adapterRegistrySlug: text("adapter_registry_slug").notNull(),
+    adapterRegistryVersion: text("adapter_registry_version").notNull(),
+    eventNamespace: text("event_namespace").notNull(),
+    compatibilityTenantId: text("compatibility_tenant_id").references(
+      () => tenants.id,
+      { onDelete: "restrict" },
+    ),
+    createdBy: text("created_by"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+  },
+  (t) => ({
+    profileVersionUq: uniqueIndex(
+      "runtime_profile_versions_profile_version_uq",
+    ).on(t.profileId, t.version),
+    tenantIdx: index("runtime_profile_versions_tenant_idx").on(
+      t.tenantId,
+      t.createdAt,
+    ),
+    compatibilityTenantIdx: index(
+      "runtime_profile_versions_compat_tenant_idx",
+    ).on(t.compatibilityTenantId),
+  }),
+);
+
+/**
+ * Tenant = Business Domain; this registry contains the concrete Ontology
+ * Domains that the Business Domain is allowed to use. Unlike the legacy
+ * `factory_domain_bindings` default pointer, this is intentionally one-to-many.
+ */
+export const businessOntologyDomains = sqliteTable(
+  "business_ontology_domains",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    runtimeProfileVersionId: text("runtime_profile_version_id").references(
+      () => runtimeProfileVersions.id,
+      { onDelete: "restrict" },
+    ),
+    runtimeBindingMode: text("runtime_binding_mode", {
+      enum: ["legacy_native", "profile_pinned"],
+    })
+      .notNull()
+      .default("legacy_native"),
+    ontologyDomainId: text("ontology_domain_id").notNull(),
+    displayName: text("display_name").notNull(),
+    source: text("source", {
+      enum: ["allmeta", "upload", "manifest_legacy"],
+    }).notNull(),
+    status: text("status", {
+      enum: ["active", "unavailable", "archived"],
+    })
+      .notNull()
+      .default("active"),
+    isDefault: integer("is_default", { mode: "boolean" })
+      .notNull()
+      .default(false),
+    ontologySnapshotHash: text("ontology_snapshot_hash"),
+    catalogMetadataJson: text("catalog_metadata_json").notNull().default("{}"),
+    lastVerifiedAt: integer("last_verified_at", { mode: "timestamp_ms" }),
+    lastError: text("last_error"),
+    createdBy: text("created_by"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+    archivedAt: integer("archived_at", { mode: "timestamp_ms" }),
+  },
+  (t) => ({
+    tenantDomainUq: uniqueIndex(
+      "business_ontology_domains_tenant_source_domain_uq",
+    ).on(t.tenantId, t.source, t.ontologyDomainId),
+    oneDefaultPerTenantUq: uniqueIndex(
+      "business_ontology_domains_one_default_per_tenant_uq",
+    )
+      .on(t.tenantId)
+      .where(sql`${t.isDefault} = 1 AND ${t.archivedAt} IS NULL`),
+    tenantStatusIdx: index("business_ontology_domains_tenant_status_idx").on(
+      t.tenantId,
+      t.status,
+      t.updatedAt,
+    ),
+    domainIdx: index("business_ontology_domains_domain_idx").on(
+      t.ontologyDomainId,
+    ),
+    runtimeProfileVersionIdx: index(
+      "business_ontology_domains_runtime_profile_version_idx",
+    ).on(t.tenantId, t.runtimeProfileVersionId),
+  }),
+);
+
 export const factoryConversations = sqliteTable(
   "factory_conversations",
   {
@@ -2015,6 +2230,25 @@ export const llmCallTelemetry = sqliteTable(
     provider: text("provider"),
     /** true when the served model differs from the requested (a fallback occurred). */
     fallback: integer("fallback", { mode: "boolean" }),
+    /**
+     * Task-difficulty routing, recorded so "which model ran the hardest task"
+     * is answerable from this table alone. `requestedTier` is the caller's
+     * difficulty label (fast/default/hard/review for the Agent Factory);
+     * `modelPreference` is the ordered preference it asked for. Both are null
+     * for callers that express no preference.
+     */
+    requestedTier: text("requested_tier"),
+    modelPreference: text("model_preference", { mode: "json" }).$type<
+      string[]
+    >(),
+    /**
+     * Whether the tenant/workspace-allowed candidate set could satisfy that
+     * preference. False is a real, explained outcome — the run used an allowed
+     * model that was NOT the requested difficulty, and `preferenceReason` says
+     * so. Null means no preference was expressed.
+     */
+    preferenceSatisfied: integer("preference_satisfied", { mode: "boolean" }),
+    preferenceReason: text("preference_reason"),
     promptChars: integer("prompt_chars"),
     completionChars: integer("completion_chars"),
     /** approx token counts (chars/4) when exact usage isn't returned by the streaming path. */
@@ -2038,6 +2272,10 @@ export const llmCallTelemetry = sqliteTable(
     domainIdx: index("llm_call_telemetry_domain_idx").on(t.domain),
     convIdx: index("llm_call_telemetry_conversation_idx").on(t.conversationId),
     modelIdx: index("llm_call_telemetry_served_model_idx").on(t.servedModel),
+    preferenceIdx: index("llm_call_telemetry_preference_idx").on(
+      t.requestedTier,
+      t.preferenceSatisfied,
+    ),
   }),
 );
 
@@ -2186,6 +2424,18 @@ export const factoryRuns = sqliteTable(
       .notNull()
       .references(() => tenants.id, { onDelete: "cascade" }),
     domain: text("domain").notNull(),
+    /**
+     * Exact Business Domain → Ontology Domain registration used by this run.
+     * Legacy Agent Factory runs may remain null and continue to use the
+     * singleton factory_domain_bindings compatibility path.
+     */
+    ontologyDomainRegistrationId: text(
+      "ontology_domain_registration_id",
+    ).references(() => businessOntologyDomains.id, { onDelete: "cascade" }),
+    runtimeProfileVersionId: text("runtime_profile_version_id").references(
+      () => runtimeProfileVersions.id,
+      { onDelete: "restrict" },
+    ),
     goal: text("goal").notNull(),
     status: text("status").notNull(), // running | waiting_human | done | failed | error | aborted
     tokensUsed: integer("tokens_used").notNull().default(0),
@@ -2208,6 +2458,14 @@ export const factoryRuns = sqliteTable(
   },
   (t) => ({
     domainIdx: index("factory_runs_domain_idx").on(t.domain, t.createdAt),
+    registrationIdx: index("factory_runs_registration_idx").on(
+      t.tenantId,
+      t.ontologyDomainRegistrationId,
+      t.createdAt,
+    ),
+    runtimeProfileVersionIdx: index(
+      "factory_runs_runtime_profile_version_idx",
+    ).on(t.tenantId, t.runtimeProfileVersionId, t.createdAt),
     deletedAtIdx: index("factory_runs_deleted_at_idx").on(t.deletedAt),
   }),
 );
@@ -2288,15 +2546,65 @@ export const factoryDomainInsights = sqliteTable(
       .default(now),
   },
   (t) => ({
-    tenantDomainSigUq: uniqueIndex("factory_domain_insights_tenant_domain_sig_uq").on(
-      t.tenantId,
-      t.domain,
-      t.ontologySig,
-    ),
+    tenantDomainSigUq: uniqueIndex(
+      "factory_domain_insights_tenant_domain_sig_uq",
+    ).on(t.tenantId, t.domain, t.ontologySig),
     tenantDomainIdx: index("factory_domain_insights_tenant_domain_idx").on(
       t.tenantId,
       t.domain,
     ),
+  }),
+);
+
+/**
+ * #ONTOCODE-COMPREHEND — the OntoCode analysis lane's UNDERSTANDING layer.
+ *
+ * Deliberately NOT `factory_domain_insights`, whose design this borrows: that
+ * table is addressed by `(tenant_id, domain, ontology_sig)` and misses naturally
+ * when the ontology moves, which is exactly right — but its `digest` column holds
+ * one prose blob and its `mode` is a `shallow|deep` enum. Per-anchor annotations
+ * stuffed into those columns would make both names lie, and namespacing `domain`
+ * to dodge a collision would pollute the Build lane's query surface.
+ *
+ * A row is one ontology VERSION's understanding. It is inherited forward one
+ * anchor at a time, so a new version is usually a cheap delta rather than a
+ * re-read of the whole graph.
+ */
+export const ontocodeOntologyComprehension = sqliteTable(
+  "ontocode_ontology_comprehension",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    domain: text("domain").notNull(),
+    /** ontologyContentHash of the snapshot this understanding describes. */
+    ontologyHash: text("ontology_hash").notNull(),
+    /** The analysis job whose pass produced the NEW annotations in this row.
+     *  Individual carried-forward annotations keep their own older provenance. */
+    sourceJobId: text("source_job_id"),
+    producedAt: integer("produced_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+    schemaVersion: text("schema_version").notNull(),
+    /** AnchoredAnnotation[] verbatim. */
+    annotationsJson: text("annotations_json").notNull(),
+    /** Coverage + named refusals with their real counts. */
+    coverageJson: text("coverage_json").notNull(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+  },
+  (t) => ({
+    tenantDomainHashUq: uniqueIndex(
+      "ontocode_ontology_comprehension_tenant_domain_hash_uq",
+    ).on(t.tenantId, t.domain, t.ontologyHash),
+    tenantDomainIdx: index(
+      "ontocode_ontology_comprehension_tenant_domain_idx",
+    ).on(t.tenantId, t.domain),
   }),
 );
 
@@ -2364,6 +2672,84 @@ export const factoryTools = sqliteTable(
   }),
 );
 
+/**
+ * Immutable, tenant/domain-scoped revision ledger for AI-authored declarative
+ * tools. `factory_tools` remains the backwards-compatible ACTIVE projection
+ * consumed by the runtime; drafts in this table are never runtime-discoverable.
+ *
+ * Activation is a separate, human-attributed transaction which requires a
+ * current exact-definition probe receipt. Retired revisions remain available
+ * for an evidence-checked rollback instead of being overwritten in place.
+ */
+export const factoryToolRevisions = sqliteTable(
+  "factory_tool_revisions",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    domainKey: text("domain_key").notNull().default("__unbound__"),
+    name: text("name").notNull(),
+    version: integer("version").notNull(),
+    status: text("status", {
+      enum: ["draft", "active", "retired", "rejected"],
+    })
+      .notNull()
+      .default("draft"),
+    /** Full secret-free executable contract. */
+    definitionJson: text("definition_json", { mode: "json" }).notNull(),
+    /** Hash of the revision definition without runtime config. */
+    definitionHash: text("definition_hash").notNull(),
+    /** Deterministic static-validation receipt, not an execution receipt. */
+    validationJson: text("validation_json", { mode: "json" }).notNull(),
+    source: text("source", {
+      enum: ["ontocode", "manual", "api_import"],
+    })
+      .notNull()
+      .default("ontocode"),
+    createdBy: text("created_by").notNull(),
+    reviewedBy: text("reviewed_by"),
+    reviewedAt: integer("reviewed_at", { mode: "timestamp_ms" }),
+    activatedAt: integer("activated_at", { mode: "timestamp_ms" }),
+    retiredAt: integer("retired_at", { mode: "timestamp_ms" }),
+    /** Exact factory_tool_probes definition hash admitted at activation. */
+    activationProbeHash: text("activation_probe_hash"),
+    /** Secret-free receipt identity copied for audit/debugging. */
+    activationEvidenceJson: text("activation_evidence_json", { mode: "json" }),
+    supersedesRevisionId: text("supersedes_revision_id"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+  },
+  (t) => ({
+    scopeVersionUq: uniqueIndex("factory_tool_revisions_scope_version_uq").on(
+      t.tenantId,
+      t.domainKey,
+      t.name,
+      t.version,
+    ),
+    scopeHashUq: uniqueIndex("factory_tool_revisions_scope_hash_uq").on(
+      t.tenantId,
+      t.domainKey,
+      t.name,
+      t.definitionHash,
+    ),
+    scopeStatusIdx: index("factory_tool_revisions_scope_status_idx").on(
+      t.tenantId,
+      t.domainKey,
+      t.status,
+    ),
+    oneActivePerScopeUq: uniqueIndex(
+      "factory_tool_revisions_one_active_scope_uq",
+    )
+      .on(t.tenantId, t.domainKey, t.name)
+      .where(sql`${t.status} = 'active'`),
+  }),
+);
+
 /** Durable lifecycle ledger for one nonce-bearing Agent Factory sandbox app.
  * The row is inserted in the same local transaction as the ephemeral tenant,
  * before manifest commit can register anything remotely. Terminal rows remain
@@ -2403,16 +2789,24 @@ export const factorySandboxAttempts = sqliteTable(
     /** Monotonic fencing epoch. Cleanup claim increments this atomically, so
      * every earlier owner/token remains permanently unable to mutate state. */
     fenceGeneration: integer("fence_generation").notNull().default(1),
-    leaseExpiresAt: integer("lease_expires_at", { mode: "timestamp_ms" }).notNull(),
+    leaseExpiresAt: integer("lease_expires_at", {
+      mode: "timestamp_ms",
+    }).notNull(),
     cleanupReceipt: text("cleanup_receipt", { mode: "json" }),
     cleanupError: text("cleanup_error"),
     runDrainStatus: text("run_drain_status", {
       enum: ["not_started", "cancelling", "verified", "failed"],
-    }).notNull().default("not_started"),
+    })
+      .notNull()
+      .default("not_started"),
     runDrainReceipt: text("run_drain_receipt", { mode: "json" }),
     runDrainError: text("run_drain_error"),
-    runDrainStartedAt: integer("run_drain_started_at", { mode: "timestamp_ms" }),
-    runDrainCompletedAt: integer("run_drain_completed_at", { mode: "timestamp_ms" }),
+    runDrainStartedAt: integer("run_drain_started_at", {
+      mode: "timestamp_ms",
+    }),
+    runDrainCompletedAt: integer("run_drain_completed_at", {
+      mode: "timestamp_ms",
+    }),
     cleanupStartedAt: integer("cleanup_started_at", { mode: "timestamp_ms" }),
     cleanedAt: integer("cleaned_at", { mode: "timestamp_ms" }),
     createdAt: integer("created_at", { mode: "timestamp_ms" })
@@ -2424,15 +2818,23 @@ export const factorySandboxAttempts = sqliteTable(
   },
   (t) => ({
     appUq: uniqueIndex("factory_sandbox_attempts_app_uq").on(t.appId),
-    slugUq: uniqueIndex("factory_sandbox_attempts_slug_uq").on(t.sandboxTenantSlug),
-    statusLeaseIdx: index("factory_sandbox_attempts_status_lease_idx").on(t.status, t.leaseExpiresAt),
+    slugUq: uniqueIndex("factory_sandbox_attempts_slug_uq").on(
+      t.sandboxTenantSlug,
+    ),
+    statusLeaseIdx: index("factory_sandbox_attempts_status_lease_idx").on(
+      t.status,
+      t.leaseExpiresAt,
+    ),
     ownerFenceIdx: index("factory_sandbox_attempts_owner_fence_idx").on(
       t.id,
       t.leaseOwner,
       t.leaseToken,
       t.fenceGeneration,
     ),
-    ownerDomainIdx: index("factory_sandbox_attempts_owner_domain_idx").on(t.ownerTenantId, t.targetDomainId),
+    ownerDomainIdx: index("factory_sandbox_attempts_owner_domain_idx").on(
+      t.ownerTenantId,
+      t.targetDomainId,
+    ),
   }),
 );
 
@@ -2465,9 +2867,15 @@ export const factorySandboxToolSnapshots = sqliteTable(
       .default(now),
   },
   (t) => ({
-    attemptToolUq: uniqueIndex("factory_sandbox_tool_snapshots_attempt_tool_uq").on(t.attemptId, t.toolName),
-    sandboxToolUq: uniqueIndex("factory_sandbox_tool_snapshots_sandbox_tool_uq").on(t.sandboxToolId),
-    snapshotIdx: index("factory_sandbox_tool_snapshots_hash_idx").on(t.snapshotHash),
+    attemptToolUq: uniqueIndex(
+      "factory_sandbox_tool_snapshots_attempt_tool_uq",
+    ).on(t.attemptId, t.toolName),
+    sandboxToolUq: uniqueIndex(
+      "factory_sandbox_tool_snapshots_sandbox_tool_uq",
+    ).on(t.sandboxToolId),
+    snapshotIdx: index("factory_sandbox_tool_snapshots_hash_idx").on(
+      t.snapshotHash,
+    ),
   }),
 );
 
@@ -2483,7 +2891,9 @@ export const factorySandboxModelGrants = sqliteTable(
     bundleHash: text("bundle_hash").notNull(),
     tenantId: text("tenant_id").notNull(),
     tenantSlug: text("tenant_slug").notNull(),
-    status: text("status", { enum: ["active", "revoked"] }).notNull().default("active"),
+    status: text("status", { enum: ["active", "revoked"] })
+      .notNull()
+      .default("active"),
     maxCalls: integer("max_calls").notNull(),
     calls: integer("calls").notNull().default(0),
     /** Hard aggregate total-token envelope for this remote verification.
@@ -2495,15 +2905,29 @@ export const factorySandboxModelGrants = sqliteTable(
     /** Provider-reported usage, retained separately from the conservative
      * reservation envelope for audit/attribution. */
     measuredInputTokens: integer("measured_input_tokens").notNull().default(0),
-    measuredOutputTokens: integer("measured_output_tokens").notNull().default(0),
-    unmeasuredUsageCalls: integer("unmeasured_usage_calls").notNull().default(0),
+    measuredOutputTokens: integer("measured_output_tokens")
+      .notNull()
+      .default(0),
+    unmeasuredUsageCalls: integer("unmeasured_usage_calls")
+      .notNull()
+      .default(0),
     expiresAt: integer("expires_at", { mode: "timestamp_ms" }).notNull(),
-    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().default(now),
-    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull().default(now),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
   },
   (t) => ({
-    activeExpiryIdx: index("factory_sandbox_model_grants_active_expiry_idx").on(t.status, t.expiresAt),
-    tenantIdx: index("factory_sandbox_model_grants_tenant_idx").on(t.tenantId, t.tenantSlug),
+    activeExpiryIdx: index("factory_sandbox_model_grants_active_expiry_idx").on(
+      t.status,
+      t.expiresAt,
+    ),
+    tenantIdx: index("factory_sandbox_model_grants_tenant_idx").on(
+      t.tenantId,
+      t.tenantSlug,
+    ),
   }),
 );
 
@@ -2516,10 +2940,14 @@ export const factorySandboxModelCallUsage = sqliteTable(
     id: text("id").primaryKey(),
     attemptId: text("attempt_id")
       .notNull()
-      .references(() => factorySandboxModelGrants.attemptId, { onDelete: "cascade" }),
+      .references(() => factorySandboxModelGrants.attemptId, {
+        onDelete: "cascade",
+      }),
     bundleHash: text("bundle_hash").notNull(),
     callOrdinal: integer("call_ordinal"),
-    status: text("status", { enum: ["succeeded", "failed", "rejected"] }).notNull(),
+    status: text("status", {
+      enum: ["succeeded", "failed", "rejected"],
+    }).notNull(),
     agentRef: text("agent_ref").notNull(),
     reasonCode: text("reason_code"),
     provider: text("provider"),
@@ -2531,14 +2959,12 @@ export const factorySandboxModelCallUsage = sqliteTable(
     completedAt: integer("completed_at", { mode: "timestamp_ms" }).notNull(),
   },
   (t) => ({
-    attemptOrdinalUq: uniqueIndex("factory_sandbox_model_call_usage_attempt_ordinal_uq").on(
-      t.attemptId,
-      t.callOrdinal,
-    ),
-    attemptBundleIdx: index("factory_sandbox_model_call_usage_attempt_bundle_idx").on(
-      t.attemptId,
-      t.bundleHash,
-    ),
+    attemptOrdinalUq: uniqueIndex(
+      "factory_sandbox_model_call_usage_attempt_ordinal_uq",
+    ).on(t.attemptId, t.callOrdinal),
+    attemptBundleIdx: index(
+      "factory_sandbox_model_call_usage_attempt_bundle_idx",
+    ).on(t.attemptId, t.bundleHash),
   }),
 );
 
@@ -2565,12 +2991,9 @@ export const factoryToolProbes = sqliteTable(
       .default(now),
   },
   (t) => ({
-    scopeToolDefinitionUq: uniqueIndex("factory_tool_probes_scope_tool_definition_uq").on(
-      t.tenantId,
-      t.domainKey,
-      t.toolName,
-      t.definitionHash,
-    ),
+    scopeToolDefinitionUq: uniqueIndex(
+      "factory_tool_probes_scope_tool_definition_uq",
+    ).on(t.tenantId, t.domainKey, t.toolName, t.definitionHash),
     tenantDomainIdx: index("factory_tool_probes_tenant_domain_idx").on(
       t.tenantId,
       t.domainKey,
@@ -2590,12 +3013,16 @@ export const factoryIntegrationProfiles = sqliteTable(
     domainKey: text("domain_key").notNull().default(""),
     toolName: text("tool_name").notNull(),
     profileKey: text("profile_key").notNull(),
-    environment: text("environment", { enum: ["sandbox", "production"] }).notNull().default("production"),
+    environment: text("environment", { enum: ["sandbox", "production"] })
+      .notNull()
+      .default("production"),
     configJson: text("config_json", { mode: "json" }).notNull(),
     confirmedBy: text("confirmed_by").notNull(),
     toolDefinitionDigest: text("tool_definition_digest").notNull().default(""),
     configDigest: text("config_digest").notNull().default(""),
-    authorizationProtocolVersion: integer("authorization_protocol_version").notNull().default(0),
+    authorizationProtocolVersion: integer("authorization_protocol_version")
+      .notNull()
+      .default(0),
     confirmedAt: integer("confirmed_at", { mode: "timestamp_ms" }).notNull(),
     createdAt: integer("created_at", { mode: "timestamp_ms" })
       .notNull()
@@ -2644,20 +3071,17 @@ export const factoryAuthorizationChallenges = sqliteTable(
     answeredBy: text("answered_by"),
     answeredAt: integer("answered_at", { mode: "timestamp_ms" }),
     consumedAt: integer("consumed_at", { mode: "timestamp_ms" }),
-    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().default(now),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
   },
   (t) => ({
-    scopeDigestUq: uniqueIndex("factory_authorization_challenges_scope_digest_uq").on(
-      t.tenantId,
-      t.domainKey,
-      t.kind,
-      t.digest,
-    ),
-    conversationIdx: index("factory_authorization_challenges_conversation_idx").on(
-      t.tenantId,
-      t.domainKey,
-      t.conversationId,
-    ),
+    scopeDigestUq: uniqueIndex(
+      "factory_authorization_challenges_scope_digest_uq",
+    ).on(t.tenantId, t.domainKey, t.kind, t.digest),
+    conversationIdx: index(
+      "factory_authorization_challenges_conversation_idx",
+    ).on(t.tenantId, t.domainKey, t.conversationId),
   }),
 );
 
@@ -2712,15 +3136,1356 @@ export const factoryCodeActAuthorizations = sqliteTable(
   (t) => ({
     deploymentAgentUq: uniqueIndex(
       "factory_codeact_authorizations_deployment_agent_uq",
-    ).on(
-      t.deploymentId,
+    ).on(t.deploymentId, t.agentSlug),
+    tenantAgentIdx: index("factory_codeact_authorizations_tenant_agent_idx").on(
+      t.tenantId,
       t.agentSlug,
     ),
-    tenantAgentIdx: index(
-      "factory_codeact_authorizations_tenant_agent_idx",
-    ).on(t.tenantId, t.agentSlug),
     deploymentIdx: index("factory_codeact_authorizations_deployment_idx").on(
       t.deploymentId,
+    ),
+  }),
+);
+
+// ─── External system profiles (OntoCode 外部系统档案) ────────────────────────
+// One row per (tenant, external platform): the human-confirmed, machine-readable
+// declaration of a system's identity/aliases + api/events/data capabilities.
+// The profile JSON is the @agentic/contracts SystemProfileV1 document.
+
+export const systemProfiles = sqliteTable(
+  "system_profiles",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    profileId: text("profile_id").notNull(),
+    profileJson: text("profile_json").notNull(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+  },
+  (t) => ({
+    tenantProfileUq: uniqueIndex("system_profiles_tenant_profile_uq").on(
+      t.tenantId,
+      t.profileId,
+    ),
+    tenantIdx: index("system_profiles_tenant_idx").on(t.tenantId),
+  }),
+);
+
+// ─── OntoCode conversational engineering workspace ─────────────────────────
+// These tables deliberately separate the long-lived FDE + AI collaboration
+// session from individual Agent Factory / Harness executions. A session can
+// therefore carry many commands, jobs, evidence events, and future artifact
+// versions without reusing a runtime run id as product state.
+
+export const ontocodeProjects = sqliteTable(
+  "ontocode_projects",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    ontologyDomainRegistrationId: text(
+      "ontology_domain_registration_id",
+    ).references(() => businessOntologyDomains.id, { onDelete: "cascade" }),
+    runtimeProfileVersionId: text("runtime_profile_version_id").references(
+      () => runtimeProfileVersions.id,
+      { onDelete: "restrict" },
+    ),
+    domain: text("domain").notNull(),
+    name: text("name").notNull(),
+    description: text("description"),
+    activePackageVersionId: text("active_package_version_id"),
+    createdBy: text("created_by"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+  },
+  (t) => ({
+    tenantDomainIdx: index("ontocode_projects_tenant_domain_idx").on(
+      t.tenantId,
+      t.domain,
+    ),
+    tenantRegistrationLegacyUq: uniqueIndex(
+      "ontocode_projects_tenant_registration_legacy_uq",
+    )
+      .on(t.tenantId, t.ontologyDomainRegistrationId)
+      .where(sql`${t.runtimeProfileVersionId} IS NULL`),
+    tenantRegistrationRuntimeUq: uniqueIndex(
+      "ontocode_projects_tenant_registration_runtime_uq",
+    )
+      .on(t.tenantId, t.ontologyDomainRegistrationId, t.runtimeProfileVersionId)
+      .where(sql`${t.runtimeProfileVersionId} IS NOT NULL`),
+    tenantUpdatedIdx: index("ontocode_projects_tenant_updated_idx").on(
+      t.tenantId,
+      t.updatedAt,
+    ),
+  }),
+);
+
+export const ontocodeSessions = sqliteTable(
+  "ontocode_sessions",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => ontocodeProjects.id, { onDelete: "cascade" }),
+    runtimeProfileVersionId: text("runtime_profile_version_id").references(
+      () => runtimeProfileVersions.id,
+      { onDelete: "restrict" },
+    ),
+    title: text("title").notNull(),
+    goal: text("goal").notNull(),
+    phase: text("phase", {
+      enum: [
+        "intake",
+        "scope",
+        "configure",
+        "blueprint",
+        "build",
+        "verify",
+        "debug",
+        "review",
+        "release",
+        "observe",
+        "completed",
+      ],
+    })
+      .notNull()
+      .default("intake"),
+    activityState: text("activity_state", {
+      enum: [
+        "idle",
+        "ai_planning",
+        "queued",
+        "running",
+        "needs_user",
+        "blocked_external",
+        "review_required",
+        "failed_recoverable",
+        "paused",
+        "cancelled",
+      ],
+    })
+      .notNull()
+      .default("idle"),
+    autonomyMode: text("autonomy_mode", {
+      enum: ["guide", "copilot", "sandbox_autopilot"],
+    })
+      .notNull()
+      .default("copilot"),
+    revision: integer("revision").notNull().default(1),
+    ontologySnapshotHash: text("ontology_snapshot_hash"),
+    basePackageVersionId: text("base_package_version_id"),
+    environmentProfileVersionId: text("environment_profile_version_id"),
+    ownerUserId: text("owner_user_id"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+  },
+  (t) => ({
+    tenantProjectUpdatedIdx: index(
+      "ontocode_sessions_tenant_project_updated_idx",
+    ).on(t.tenantId, t.projectId, t.updatedAt),
+    tenantStateUpdatedIdx: index(
+      "ontocode_sessions_tenant_state_updated_idx",
+    ).on(t.tenantId, t.activityState, t.updatedAt),
+    runtimeProfileVersionIdx: index(
+      "ontocode_sessions_runtime_profile_version_idx",
+    ).on(t.tenantId, t.runtimeProfileVersionId, t.updatedAt),
+  }),
+);
+
+/**
+ * OntoCode-owned lifecycle for one code-generation execution.
+ *
+ * Harness Jobs are replaceable delivery attempts: an FDE answer may create a
+ * follow-up Job and an operator retry may re-lease the same Job.  This row is
+ * the stable identity across those attempts.  `engineRunId` is deliberately a
+ * private binding to the current implementation engine; Session APIs should
+ * expose this row's `id`, never the engine identifier.
+ *
+ * The large engine checkpoint remains in its native store.  OntoCode keeps
+ * only a digest/revision and the exact one-shot interaction/answer envelope so
+ * recovery can validate state without reconstructing it from Session events.
+ */
+export const ontocodeBuildExecutions = sqliteTable(
+  "ontocode_build_executions",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => ontocodeProjects.id, { onDelete: "cascade" }),
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => ontocodeSessions.id, { onDelete: "cascade" }),
+    state: text("state", {
+      enum: [
+        "new",
+        "running",
+        "resuming",
+        "waiting_user",
+        "generated_unverified",
+        "candidate_ready",
+        "failed_recoverable",
+        "failed_terminal",
+        "cancelled",
+      ],
+    })
+      .notNull()
+      .default("new"),
+    ontologyHash: text("ontology_hash").notNull(),
+    directiveJson: text("directive_json").notNull(),
+    directiveHash: text("directive_hash").notNull(),
+    runtimeProfileVersionId: text("runtime_profile_version_id").references(
+      () => runtimeProfileVersions.id,
+      { onDelete: "restrict" },
+    ),
+    engineKind: text("engine_kind").notNull().default("agent_factory"),
+    /** Private implementation handle; never a product-facing execution id. */
+    engineRunId: text("engine_run_id"),
+    checkpointDigest: text("checkpoint_digest"),
+    checkpointRevision: integer("checkpoint_revision").notNull().default(0),
+    pendingInteractionId: text("pending_interaction_id"),
+    pendingInteractionKind: text("pending_interaction_kind", {
+      enum: [
+        "clarify",
+        "test_approval",
+        "boundary",
+        "execution_readiness",
+        "legacy_answer",
+      ],
+    }),
+    pendingInteractionSubjectDigest: text("pending_interaction_subject_digest"),
+    pendingAnswerId: text("pending_answer_id"),
+    pendingAnswerDigest: text("pending_answer_digest"),
+    pendingAnswerStatus: text("pending_answer_status", {
+      enum: ["pending", "delivered", "consumed"],
+    }),
+    revision: integer("revision").notNull().default(1),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+  },
+  (t) => ({
+    tenantSessionStateIdx: index(
+      "ontocode_build_executions_tenant_session_state_idx",
+    ).on(t.tenantId, t.sessionId, t.state, t.updatedAt),
+    tenantProjectCreatedIdx: index(
+      "ontocode_build_executions_tenant_project_created_idx",
+    ).on(t.tenantId, t.projectId, t.createdAt),
+    runtimeProfileVersionIdx: index(
+      "ontocode_build_executions_runtime_profile_version_idx",
+    ).on(t.tenantId, t.runtimeProfileVersionId, t.updatedAt),
+    pendingInteractionIdx: index(
+      "ontocode_build_executions_pending_interaction_idx",
+    ).on(t.tenantId, t.sessionId, t.pendingInteractionId),
+    // A normal UNIQUE index is portable across the repository's SQLite
+    // environments and still permits multiple unbound NULL engine handles.
+    engineRunUq: uniqueIndex("ontocode_build_executions_engine_run_uq").on(
+      t.tenantId,
+      t.engineKind,
+      t.engineRunId,
+    ),
+  }),
+);
+
+export const ontocodeCommands = sqliteTable(
+  "ontocode_commands",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => ontocodeSessions.id, { onDelete: "cascade" }),
+    type: text("type").notNull(),
+    argumentsJson: text("arguments_json").notNull(),
+    expectedSessionRevision: integer("expected_session_revision").notNull(),
+    baseOntologyHash: text("base_ontology_hash"),
+    basePackageVersionId: text("base_package_version_id"),
+    affectedSemanticPathsJson: text("affected_semantic_paths_json")
+      .notNull()
+      .default("[]"),
+    requestedCapabilitiesJson: text("requested_capabilities_json")
+      .notNull()
+      .default("[]"),
+    riskClass: text("risk_class", {
+      enum: [
+        "read_only",
+        "draft_change",
+        "sandbox_effect",
+        "external_reversible",
+        "external_irreversible",
+        "production_deploy",
+      ],
+    })
+      .notNull()
+      .default("draft_change"),
+    status: text("status", {
+      enum: [
+        "proposed",
+        "awaiting_approval",
+        "approved",
+        "queued",
+        "running",
+        "succeeded",
+        "failed",
+        "cancelled",
+        "rejected",
+      ],
+    })
+      .notNull()
+      .default("proposed"),
+    requiresHuman: integer("requires_human", { mode: "boolean" })
+      .notNull()
+      .default(false),
+    rationaleSummary: text("rationale_summary").notNull(),
+    idempotencyKey: text("idempotency_key").notNull(),
+    createdBy: text("created_by"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+  },
+  (t) => ({
+    sessionIdempotencyUq: uniqueIndex(
+      "ontocode_commands_session_idempotency_uq",
+    ).on(t.tenantId, t.sessionId, t.idempotencyKey),
+    tenantSessionCreatedIdx: index(
+      "ontocode_commands_tenant_session_created_idx",
+    ).on(t.tenantId, t.sessionId, t.createdAt),
+    tenantStatusUpdatedIdx: index(
+      "ontocode_commands_tenant_status_updated_idx",
+    ).on(t.tenantId, t.status, t.updatedAt),
+  }),
+);
+
+export const ontocodeHarnessJobs = sqliteTable(
+  "ontocode_harness_jobs",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => ontocodeSessions.id, { onDelete: "cascade" }),
+    commandId: text("command_id").references(() => ontocodeCommands.id, {
+      onDelete: "set null",
+    }),
+    runtimeProfileVersionId: text("runtime_profile_version_id").references(
+      () => runtimeProfileVersions.id,
+      { onDelete: "restrict" },
+    ),
+    buildExecutionId: text("build_execution_id").references(
+      () => ontocodeBuildExecutions.id,
+      { onDelete: "set null" },
+    ),
+    /** Durable logical attempt; Session events are audit, not the counter. */
+    attemptNo: integer("attempt_no").notNull().default(0),
+    kind: text("kind").notNull(),
+    status: text("status", {
+      enum: [
+        "queued",
+        "leased",
+        "running",
+        "waiting_user",
+        "retry_scheduled",
+        "failed_recoverable",
+        "failed_terminal",
+        "cancelled",
+        "succeeded",
+      ],
+    })
+      .notNull()
+      .default("queued"),
+    idempotencyKey: text("idempotency_key").notNull(),
+    inputHash: text("input_hash"),
+    budgetJson: text("budget_json"),
+    candidatePackageVersionId: text("candidate_package_version_id"),
+    candidateDependencyRoot: text("candidate_dependency_root"),
+    candidateHeadId: text("candidate_head_id"),
+    candidateHeadRevision: integer("candidate_head_revision"),
+    testCasesJson: text("test_cases_json").notNull().default("[]"),
+    errorMessage: text("error_message"),
+    createdBy: text("created_by"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+    startedAt: integer("started_at", { mode: "timestamp_ms" }),
+    finishedAt: integer("finished_at", { mode: "timestamp_ms" }),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+  },
+  (t) => ({
+    tenantSessionCreatedIdx: index(
+      "ontocode_harness_jobs_tenant_session_created_idx",
+    ).on(t.tenantId, t.sessionId, t.createdAt),
+    tenantStatusUpdatedIdx: index(
+      "ontocode_harness_jobs_tenant_status_updated_idx",
+    ).on(t.tenantId, t.status, t.updatedAt),
+    commandIdx: index("ontocode_harness_jobs_command_idx").on(t.commandId),
+    candidatePackageIdx: index(
+      "ontocode_harness_jobs_candidate_package_idx",
+    ).on(t.tenantId, t.candidatePackageVersionId),
+    candidateHeadIdx: index("ontocode_harness_jobs_candidate_head_idx").on(
+      t.tenantId,
+      t.candidateHeadId,
+      t.candidateHeadRevision,
+    ),
+    runtimeProfileVersionIdx: index(
+      "ontocode_harness_jobs_runtime_profile_version_idx",
+    ).on(t.tenantId, t.runtimeProfileVersionId, t.createdAt),
+    buildExecutionIdx: index("ontocode_harness_jobs_build_execution_idx").on(
+      t.tenantId,
+      t.buildExecutionId,
+      t.createdAt,
+    ),
+    buildExecutionAttemptIdx: index(
+      "ontocode_harness_jobs_build_execution_attempt_idx",
+    ).on(t.buildExecutionId, t.attemptNo),
+    sessionIdempotencyUq: uniqueIndex(
+      "ontocode_harness_jobs_session_idempotency_uq",
+    ).on(t.tenantId, t.sessionId, t.idempotencyKey),
+  }),
+);
+
+/**
+ * Durable, secret-free continuation boundary between an OntoCode
+ * recommendation and a real configuration surface. The opaque id may appear
+ * in a URL, but authorization always comes from tenant/session scope.
+ *
+ * target/requirement/policy JSON contain identifiers and field SHAPES only.
+ * Credential values belong exclusively to their dedicated encrypted stores.
+ */
+export const ontocodeConfigurationTasks = sqliteTable(
+  "ontocode_configuration_tasks",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => ontocodeProjects.id, { onDelete: "cascade" }),
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => ontocodeSessions.id, { onDelete: "cascade" }),
+    sourceCommandId: text("source_command_id").references(
+      () => ontocodeCommands.id,
+      { onDelete: "set null" },
+    ),
+    waitingHarnessJobId: text("waiting_harness_job_id").references(
+      () => ontocodeHarnessJobs.id,
+      { onDelete: "set null" },
+    ),
+    sourceRequirementId: text("source_requirement_id"),
+    sourceActionName: text("source_action_name"),
+    sourceReceiptDigest: text("source_receipt_digest"),
+    blockerKey: text("blocker_key").notNull(),
+    title: text("title").notNull(),
+    targetKind: text("target_kind", {
+      enum: [
+        "integration",
+        "system_profile",
+        "tool",
+        "tool_profile",
+        "llm_gateway",
+        "environment",
+      ],
+    }).notNull(),
+    targetJson: text("target_json").notNull(),
+    requirementJson: text("requirement_json").notNull(),
+    verificationPolicyJson: text("verification_policy_json").notNull(),
+    resumeAction: text("resume_action"),
+    ontologyHash: text("ontology_hash").notNull(),
+    status: text("status", {
+      enum: ["open", "verifying", "satisfied", "cancelled", "superseded"],
+    })
+      .notNull()
+      .default("open"),
+    revision: integer("revision").notNull().default(1),
+    lastVerificationJson: text("last_verification_json"),
+    lastVerificationIdempotencyKey: text("last_verification_idempotency_key"),
+    resolutionNote: text("resolution_note"),
+    idempotencyKey: text("idempotency_key").notNull(),
+    createdBy: text("created_by"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+    verificationStartedAt: integer("verification_started_at", {
+      mode: "timestamp_ms",
+    }),
+    verifiedAt: integer("verified_at", { mode: "timestamp_ms" }),
+    cancelledAt: integer("cancelled_at", { mode: "timestamp_ms" }),
+  },
+  (t) => ({
+    sessionIdempotencyUq: uniqueIndex(
+      "ontocode_configuration_tasks_session_idempotency_uq",
+    ).on(t.tenantId, t.sessionId, t.idempotencyKey),
+    tenantSessionUpdatedIdx: index(
+      "ontocode_configuration_tasks_tenant_session_updated_idx",
+    ).on(t.tenantId, t.sessionId, t.updatedAt),
+    tenantStatusUpdatedIdx: index(
+      "ontocode_configuration_tasks_tenant_status_updated_idx",
+    ).on(t.tenantId, t.status, t.updatedAt),
+    tenantSessionBlockerIdx: index(
+      "ontocode_configuration_tasks_tenant_session_blocker_idx",
+    ).on(t.tenantId, t.sessionId, t.blockerKey),
+    sourceCommandIdx: index(
+      "ontocode_configuration_tasks_source_command_idx",
+    ).on(t.sourceCommandId),
+    waitingHarnessJobIdx: index(
+      "ontocode_configuration_tasks_waiting_job_idx",
+    ).on(t.waitingHarnessJobId),
+    waitingRequirementIdx: index(
+      "ontocode_configuration_tasks_waiting_requirement_idx",
+    ).on(t.tenantId, t.waitingHarnessJobId, t.sourceRequirementId),
+  }),
+);
+
+export const ontocodeSessionMessages = sqliteTable(
+  "ontocode_session_messages",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => ontocodeSessions.id, { onDelete: "cascade" }),
+    role: text("role", {
+      enum: ["user", "assistant", "system", "tool"],
+    }).notNull(),
+    type: text("type", {
+      enum: [
+        "text",
+        "recommendation",
+        "receipt",
+        "decision",
+        "configuration",
+        "error",
+      ],
+    })
+      .notNull()
+      .default("text"),
+    contentJson: text("content_json").notNull(),
+    idempotencyKey: text("idempotency_key"),
+    commandId: text("command_id").references(() => ontocodeCommands.id, {
+      onDelete: "set null",
+    }),
+    correlationId: text("correlation_id"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+  },
+  (t) => ({
+    tenantSessionCreatedIdx: index(
+      "ontocode_session_messages_tenant_session_created_idx",
+    ).on(t.tenantId, t.sessionId, t.createdAt),
+    commandIdx: index("ontocode_session_messages_command_idx").on(t.commandId),
+    sessionIdempotencyUq: uniqueIndex(
+      "ontocode_session_messages_session_idempotency_uq",
+    ).on(t.tenantId, t.sessionId, t.idempotencyKey),
+  }),
+);
+
+export const ontocodeSessionEvents = sqliteTable(
+  "ontocode_session_events",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => ontocodeProjects.id, { onDelete: "cascade" }),
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => ontocodeSessions.id, { onDelete: "cascade" }),
+    seq: integer("seq").notNull(),
+    type: text("type").notNull(),
+    visibility: text("visibility", {
+      enum: ["user", "debug", "audit"],
+    })
+      .notNull()
+      .default("user"),
+    payloadJson: text("payload_json").notNull(),
+    commandId: text("command_id").references(() => ontocodeCommands.id, {
+      onDelete: "set null",
+    }),
+    harnessJobId: text("harness_job_id").references(
+      () => ontocodeHarnessJobs.id,
+      { onDelete: "set null" },
+    ),
+    correlationId: text("correlation_id"),
+    causationId: text("causation_id"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+  },
+  (t) => ({
+    sessionSeqUq: uniqueIndex("ontocode_session_events_session_seq_uq").on(
+      t.tenantId,
+      t.sessionId,
+      t.seq,
+    ),
+    tenantSessionCreatedIdx: index(
+      "ontocode_session_events_tenant_session_created_idx",
+    ).on(t.tenantId, t.sessionId, t.createdAt),
+    correlationIdx: index("ontocode_session_events_correlation_idx").on(
+      t.correlationId,
+    ),
+  }),
+);
+
+export const ontocodeChangeSets = sqliteTable(
+  "ontocode_changesets",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => ontocodeProjects.id, { onDelete: "cascade" }),
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => ontocodeSessions.id, { onDelete: "cascade" }),
+    commandId: text("command_id").references(() => ontocodeCommands.id, {
+      onDelete: "set null",
+    }),
+    status: text("status", {
+      enum: ["proposed", "validated", "committed", "abandoned"],
+    })
+      .notNull()
+      .default("proposed"),
+    summary: text("summary").notNull(),
+    baseOntologyHash: text("base_ontology_hash"),
+    basePackageVersionId: text("base_package_version_id"),
+    expectedSessionRevision: integer("expected_session_revision").notNull(),
+    idempotencyKey: text("idempotency_key").notNull(),
+    createdBy: text("created_by"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+    committedAt: integer("committed_at", { mode: "timestamp_ms" }),
+  },
+  (t) => ({
+    sessionIdempotencyUq: uniqueIndex(
+      "ontocode_changesets_session_idempotency_uq",
+    ).on(t.tenantId, t.sessionId, t.idempotencyKey),
+    tenantSessionCreatedIdx: index(
+      "ontocode_changesets_tenant_session_created_idx",
+    ).on(t.tenantId, t.sessionId, t.createdAt),
+    tenantStatusUpdatedIdx: index(
+      "ontocode_changesets_tenant_status_updated_idx",
+    ).on(t.tenantId, t.status, t.updatedAt),
+    commandIdx: index("ontocode_changesets_command_idx").on(t.commandId),
+  }),
+);
+
+export const ontocodeChangeSetOperations = sqliteTable(
+  "ontocode_changeset_operations",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    changeSetId: text("changeset_id")
+      .notNull()
+      .references(() => ontocodeChangeSets.id, { onDelete: "cascade" }),
+    ordinal: integer("ordinal").notNull(),
+    operation: text("operation", {
+      enum: ["add", "replace", "remove", "move"],
+    }).notNull(),
+    semanticPath: text("semantic_path").notNull(),
+    fromSemanticPath: text("from_semantic_path"),
+    beforeJson: text("before_json").notNull(),
+    afterJson: text("after_json").notNull(),
+    sourceRefsJson: text("source_refs_json").notNull().default("[]"),
+    invalidatesJson: text("invalidates_json").notNull().default("[]"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+  },
+  (t) => ({
+    changeSetOrdinalUq: uniqueIndex(
+      "ontocode_changeset_operations_changeset_ordinal_uq",
+    ).on(t.tenantId, t.changeSetId, t.ordinal),
+    semanticPathIdx: index(
+      "ontocode_changeset_operations_semantic_path_idx",
+    ).on(t.tenantId, t.semanticPath),
+  }),
+);
+
+export const ontocodeArtifacts = sqliteTable(
+  "ontocode_artifacts",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => ontocodeProjects.id, { onDelete: "cascade" }),
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => ontocodeSessions.id, { onDelete: "cascade" }),
+    logicalName: text("logical_name").notNull(),
+    kind: text("kind").notNull(),
+    semanticPath: text("semantic_path"),
+    createdBy: text("created_by"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+  },
+  (t) => ({
+    sessionLogicalNameUq: uniqueIndex(
+      "ontocode_artifacts_session_logical_name_uq",
+    ).on(t.tenantId, t.sessionId, t.logicalName),
+    tenantSessionCreatedIdx: index(
+      "ontocode_artifacts_tenant_session_created_idx",
+    ).on(t.tenantId, t.sessionId, t.createdAt),
+    tenantKindIdx: index("ontocode_artifacts_tenant_kind_idx").on(
+      t.tenantId,
+      t.kind,
+    ),
+  }),
+);
+
+export const ontocodeArtifactBlobs = sqliteTable(
+  "ontocode_artifact_blobs",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    sha256: text("sha256").notNull(),
+    sizeBytes: integer("size_bytes").notNull(),
+    contentText: text("content_text").notNull(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+  },
+  (t) => ({
+    tenantShaUq: uniqueIndex("ontocode_artifact_blobs_tenant_sha_uq").on(
+      t.tenantId,
+      t.sha256,
+    ),
+  }),
+);
+
+export const ontocodeArtifactVersions = sqliteTable(
+  "ontocode_artifact_versions",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    artifactId: text("artifact_id")
+      .notNull()
+      .references(() => ontocodeArtifacts.id, { onDelete: "cascade" }),
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => ontocodeSessions.id, { onDelete: "cascade" }),
+    changeSetId: text("changeset_id").references(() => ontocodeChangeSets.id, {
+      onDelete: "set null",
+    }),
+    blobId: text("blob_id")
+      .notNull()
+      .references(() => ontocodeArtifactBlobs.id, {
+        onDelete: "restrict",
+      }),
+    version: integer("version").notNull(),
+    blobHash: text("blob_hash").notNull(),
+    contentType: text("content_type").notNull(),
+    sizeBytes: integer("size_bytes").notNull(),
+    metadataJson: text("metadata_json").notNull().default("{}"),
+    idempotencyKey: text("idempotency_key").notNull(),
+    createdBy: text("created_by"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+  },
+  (t) => ({
+    artifactVersionUq: uniqueIndex(
+      "ontocode_artifact_versions_artifact_version_uq",
+    ).on(t.tenantId, t.artifactId, t.version),
+    sessionIdempotencyUq: uniqueIndex(
+      "ontocode_artifact_versions_session_idempotency_uq",
+    ).on(t.tenantId, t.sessionId, t.idempotencyKey),
+    tenantSessionCreatedIdx: index(
+      "ontocode_artifact_versions_tenant_session_created_idx",
+    ).on(t.tenantId, t.sessionId, t.createdAt),
+    blobIdx: index("ontocode_artifact_versions_blob_idx").on(t.blobId),
+    changeSetIdx: index("ontocode_artifact_versions_changeset_idx").on(
+      t.changeSetId,
+    ),
+  }),
+);
+
+export const ontocodeEvidenceRecords = sqliteTable(
+  "ontocode_evidence_records",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => ontocodeProjects.id, { onDelete: "cascade" }),
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => ontocodeSessions.id, { onDelete: "cascade" }),
+    harnessJobId: text("harness_job_id").references(
+      () => ontocodeHarnessJobs.id,
+      { onDelete: "set null" },
+    ),
+    changeSetId: text("changeset_id").references(() => ontocodeChangeSets.id, {
+      onDelete: "set null",
+    }),
+    artifactVersionId: text("artifact_version_id").references(
+      () => ontocodeArtifactVersions.id,
+      { onDelete: "set null" },
+    ),
+    kind: text("kind").notNull(),
+    outcome: text("outcome", {
+      enum: ["passed", "failed", "inconclusive", "informational"],
+    }).notNull(),
+    state: text("state", { enum: ["valid", "stale"] })
+      .notNull()
+      .default("valid"),
+    staleReason: text("stale_reason"),
+    invalidatedByPackageVersionId: text("invalidated_by_package_version_id"),
+    invalidatedAt: integer("invalidated_at", { mode: "timestamp_ms" }),
+    subjectType: text("subject_type").notNull(),
+    subjectId: text("subject_id").notNull(),
+    subjectDigest: text("subject_digest").notNull(),
+    dependencySetJson: text("dependency_set_json").notNull(),
+    validityPredicateJson: text("validity_predicate_json").notNull(),
+    refsJson: text("refs_json").notNull().default("[]"),
+    summary: text("summary").notNull(),
+    producer: text("producer").notNull(),
+    idempotencyKey: text("idempotency_key").notNull(),
+    recordedBy: text("recorded_by"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+  },
+  (t) => ({
+    sessionIdempotencyUq: uniqueIndex(
+      "ontocode_evidence_records_session_idempotency_uq",
+    ).on(t.tenantId, t.sessionId, t.idempotencyKey),
+    tenantSessionCreatedIdx: index(
+      "ontocode_evidence_records_tenant_session_created_idx",
+    ).on(t.tenantId, t.sessionId, t.createdAt),
+    tenantKindOutcomeIdx: index(
+      "ontocode_evidence_records_tenant_kind_outcome_idx",
+    ).on(t.tenantId, t.kind, t.outcome),
+    tenantStateCreatedIdx: index(
+      "ontocode_evidence_records_tenant_state_created_idx",
+    ).on(t.tenantId, t.state, t.createdAt),
+    harnessJobIdx: index("ontocode_evidence_records_harness_job_idx").on(
+      t.harnessJobId,
+    ),
+    subjectIdx: index("ontocode_evidence_records_subject_idx").on(
+      t.tenantId,
+      t.subjectType,
+      t.subjectId,
+    ),
+  }),
+);
+
+export const ontocodePackageVersions = sqliteTable(
+  "ontocode_package_versions",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => ontocodeProjects.id, { onDelete: "cascade" }),
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => ontocodeSessions.id, { onDelete: "cascade" }),
+    parentVersionId: text("parent_version_id"),
+    sourceHarnessJobId: text("source_harness_job_id").references(
+      () => ontocodeHarnessJobs.id,
+      { onDelete: "set null" },
+    ),
+    ontologyHash: text("ontology_hash").notNull(),
+    dependencyRoot: text("dependency_root").notNull(),
+    artifactRefsJson: text("artifact_refs_json").notNull(),
+    executionOwnersJson: text("execution_owners_json").notNull(),
+    status: text("status", {
+      enum: [
+        "candidate_ready",
+        "verified_candidate",
+        "release_ready",
+        "released",
+      ],
+    })
+      .notNull()
+      .default("candidate_ready"),
+    validationJson: text("validation_json").notNull().default("{}"),
+    idempotencyKey: text("idempotency_key").notNull(),
+    createdBy: text("created_by"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+  },
+  (t) => ({
+    sessionIdempotencyUq: uniqueIndex(
+      "ontocode_package_versions_session_idempotency_uq",
+    ).on(t.tenantId, t.sessionId, t.idempotencyKey),
+    tenantSessionCreatedIdx: index(
+      "ontocode_package_versions_tenant_session_created_idx",
+    ).on(t.tenantId, t.sessionId, t.createdAt),
+    dependencyRootIdx: index(
+      "ontocode_package_versions_dependency_root_idx",
+    ).on(t.tenantId, t.dependencyRoot),
+    sourceHarnessJobIdx: index(
+      "ontocode_package_versions_source_harness_job_idx",
+    ).on(t.sourceHarnessJobId),
+  }),
+);
+
+export const ontocodeCandidateHeads = sqliteTable(
+  "ontocode_candidate_heads",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => ontocodeProjects.id, { onDelete: "cascade" }),
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => ontocodeSessions.id, { onDelete: "cascade" }),
+    packageVersionId: text("package_version_id")
+      .notNull()
+      .references(() => ontocodePackageVersions.id, {
+        onDelete: "restrict",
+      }),
+    revision: integer("revision").notNull().default(1),
+    updatedBy: text("updated_by"),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+  },
+  (t) => ({
+    tenantSessionUq: uniqueIndex(
+      "ontocode_candidate_heads_tenant_session_uq",
+    ).on(t.tenantId, t.sessionId),
+    packageVersionIdx: index("ontocode_candidate_heads_package_version_idx").on(
+      t.packageVersionId,
+    ),
+    tenantProjectUpdatedIdx: index(
+      "ontocode_candidate_heads_tenant_project_updated_idx",
+    ).on(t.tenantId, t.projectId, t.updatedAt),
+  }),
+);
+
+export const ontocodeEvidenceInvalidations = sqliteTable(
+  "ontocode_evidence_invalidations",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    evidenceId: text("evidence_id")
+      .notNull()
+      .references(() => ontocodeEvidenceRecords.id, { onDelete: "cascade" }),
+    causedByChangeSetId: text("caused_by_changeset_id")
+      .notNull()
+      .references(() => ontocodeChangeSets.id, { onDelete: "cascade" }),
+    causedByPackageVersionId: text("caused_by_package_version_id")
+      .notNull()
+      .references(() => ontocodePackageVersions.id, {
+        onDelete: "restrict",
+      }),
+    reason: text("reason").notNull(),
+    dependencyKeysJson: text("dependency_keys_json").notNull().default("[]"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+  },
+  (t) => ({
+    evidencePackageUq: uniqueIndex(
+      "ontocode_evidence_invalidations_evidence_package_uq",
+    ).on(t.tenantId, t.evidenceId, t.causedByPackageVersionId),
+    changeSetIdx: index("ontocode_evidence_invalidations_changeset_idx").on(
+      t.tenantId,
+      t.causedByChangeSetId,
+    ),
+  }),
+);
+
+/**
+ * OntoCode control-plane record for an exact Candidate Sandbox execution.
+ * A remote runner owns its own lifecycle ledger, so factorySandboxAttemptId is
+ * an attested identity rather than a cross-database foreign key.
+ */
+export const ontocodeSandboxAttempts = sqliteTable(
+  "ontocode_sandbox_attempts",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => ontocodeProjects.id, { onDelete: "cascade" }),
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => ontocodeSessions.id, { onDelete: "cascade" }),
+    harnessJobId: text("harness_job_id")
+      .notNull()
+      .references(() => ontocodeHarnessJobs.id, { onDelete: "cascade" }),
+    ordinal: integer("ordinal").notNull(),
+    packageVersionId: text("package_version_id")
+      .notNull()
+      .references(() => ontocodePackageVersions.id, {
+        onDelete: "restrict",
+      }),
+    dependencyRoot: text("dependency_root").notNull(),
+    ontologyHash: text("ontology_hash").notNull(),
+    testSuiteHash: text("test_suite_hash").notNull(),
+    environmentProfileVersionId: text("environment_profile_version_id"),
+    factorySandboxAttemptId: text("factory_sandbox_attempt_id"),
+    candidateFingerprint: text("candidate_fingerprint").notNull(),
+    bundleHash: text("bundle_hash"),
+    status: text("status", {
+      enum: [
+        "queued",
+        "running",
+        "succeeded",
+        "failed",
+        "blocked",
+        "cleanup_failed",
+      ],
+    })
+      .notNull()
+      .default("queued"),
+    qualification: text("qualification", {
+      enum: ["development_only", "promotable"],
+    })
+      .notNull()
+      .default("development_only"),
+    executionOrigin: text("execution_origin", {
+      enum: ["local", "remote"],
+    }),
+    isolationTier: text("isolation_tier"),
+    appId: text("app_id"),
+    sandboxTenantSlug: text("sandbox_tenant_slug"),
+    registrationReceiptJson: text("registration_receipt_json"),
+    executionReceiptJson: text("execution_receipt_json"),
+    testReceiptJson: text("test_receipt_json"),
+    runDrainReceiptJson: text("run_drain_receipt_json"),
+    cleanupReceiptJson: text("cleanup_receipt_json"),
+    errorCode: text("error_code"),
+    errorMessage: text("error_message"),
+    createdBy: text("created_by"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+    startedAt: integer("started_at", { mode: "timestamp_ms" }),
+    finishedAt: integer("finished_at", { mode: "timestamp_ms" }),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+  },
+  (t) => ({
+    harnessOrdinalUq: uniqueIndex(
+      "ontocode_sandbox_attempts_harness_ordinal_uq",
+    ).on(t.tenantId, t.harnessJobId, t.ordinal),
+    remoteAttemptUq: uniqueIndex(
+      "ontocode_sandbox_attempts_remote_attempt_uq",
+    ).on(t.tenantId, t.factorySandboxAttemptId),
+    tenantSessionCreatedIdx: index(
+      "ontocode_sandbox_attempts_tenant_session_created_idx",
+    ).on(t.tenantId, t.sessionId, t.createdAt),
+    candidatePackageIdx: index(
+      "ontocode_sandbox_attempts_candidate_package_idx",
+    ).on(t.tenantId, t.packageVersionId, t.createdAt),
+    statusIdx: index("ontocode_sandbox_attempts_status_idx").on(
+      t.tenantId,
+      t.status,
+      t.updatedAt,
+    ),
+  }),
+);
+
+/**
+ * Durable conversational orchestration state. Assistant runs are deliberately
+ * not Harness jobs: they preserve the accepted user turn, exact compiled
+ * context and planning/review observations even when no mutation is proposed
+ * or when the model/provider fails.
+ */
+export const ontocodeAssistantRuns = sqliteTable(
+  "ontocode_assistant_runs",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => ontocodeSessions.id, { onDelete: "cascade" }),
+    sourceMessageId: text("source_message_id")
+      .notNull()
+      .references(() => ontocodeSessionMessages.id, { onDelete: "cascade" }),
+    status: text("status", {
+      enum: ["accepted", "planning", "succeeded", "failed", "cancelled"],
+    })
+      .notNull()
+      .default("accepted"),
+    autonomyMode: text("autonomy_mode", {
+      enum: ["guide", "copilot", "sandbox_autopilot"],
+    }).notNull(),
+    policyJson: text("policy_json").notNull().default("{}"),
+    contextHash: text("context_hash"),
+    contextManifestJson: text("context_manifest_json").notNull().default("{}"),
+    budgetJson: text("budget_json").notNull().default("{}"),
+    model: text("model"),
+    terminalResponseJson: text("terminal_response_json"),
+    errorCode: text("error_code"),
+    errorMessage: text("error_message"),
+    idempotencyKey: text("idempotency_key").notNull(),
+    createdBy: text("created_by"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+    startedAt: integer("started_at", { mode: "timestamp_ms" }),
+    finishedAt: integer("finished_at", { mode: "timestamp_ms" }),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+  },
+  (t) => ({
+    sessionIdempotencyUq: uniqueIndex(
+      "ontocode_assistant_runs_session_idempotency_uq",
+    ).on(t.tenantId, t.sessionId, t.idempotencyKey),
+    sourceMessageUq: uniqueIndex(
+      "ontocode_assistant_runs_source_message_uq",
+    ).on(t.tenantId, t.sourceMessageId),
+    tenantSessionUpdatedIdx: index(
+      "ontocode_assistant_runs_tenant_session_updated_idx",
+    ).on(t.tenantId, t.sessionId, t.updatedAt),
+    tenantStatusUpdatedIdx: index(
+      "ontocode_assistant_runs_tenant_status_updated_idx",
+    ).on(t.tenantId, t.status, t.updatedAt),
+  }),
+);
+
+export const ontocodeAssistantSteps = sqliteTable(
+  "ontocode_assistant_steps",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => ontocodeSessions.id, { onDelete: "cascade" }),
+    assistantRunId: text("assistant_run_id")
+      .notNull()
+      .references(() => ontocodeAssistantRuns.id, { onDelete: "cascade" }),
+    ordinal: integer("ordinal").notNull(),
+    kind: text("kind", {
+      enum: ["context_compile", "model_plan", "policy_commit", "result_review"],
+    }).notNull(),
+    status: text("status", {
+      enum: ["running", "succeeded", "failed", "cancelled"],
+    })
+      .notNull()
+      .default("running"),
+    attempt: integer("attempt").notNull().default(1),
+    inputHash: text("input_hash"),
+    outputHash: text("output_hash"),
+    observationJson: text("observation_json").notNull().default("{}"),
+    errorCode: text("error_code"),
+    errorMessage: text("error_message"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+    startedAt: integer("started_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+    finishedAt: integer("finished_at", { mode: "timestamp_ms" }),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+  },
+  (t) => ({
+    runOrdinalUq: uniqueIndex("ontocode_assistant_steps_run_ordinal_uq").on(
+      t.tenantId,
+      t.assistantRunId,
+      t.ordinal,
+    ),
+    tenantRunUpdatedIdx: index(
+      "ontocode_assistant_steps_tenant_run_updated_idx",
+    ).on(t.tenantId, t.assistantRunId, t.updatedAt),
+    tenantSessionUpdatedIdx: index(
+      "ontocode_assistant_steps_tenant_session_updated_idx",
+    ).on(t.tenantId, t.sessionId, t.updatedAt),
+  }),
+);
+
+export const ontocodePinnedContextRefs = sqliteTable(
+  "ontocode_pinned_context_refs",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => ontocodeSessions.id, { onDelete: "cascade" }),
+    assistantRunId: text("assistant_run_id")
+      .notNull()
+      .references(() => ontocodeAssistantRuns.id, { onDelete: "cascade" }),
+    ordinal: integer("ordinal").notNull(),
+    kind: text("kind", {
+      enum: ["ontology", "artifact", "evidence", "changeset"],
+    }).notNull(),
+    requestedRef: text("requested_ref").notNull(),
+    canonicalRef: text("canonical_ref").notNull(),
+    artifactId: text("artifact_id").references(() => ontocodeArtifacts.id, {
+      onDelete: "set null",
+    }),
+    artifactVersionId: text("artifact_version_id").references(
+      () => ontocodeArtifactVersions.id,
+      { onDelete: "set null" },
+    ),
+    evidenceId: text("evidence_id").references(
+      () => ontocodeEvidenceRecords.id,
+      { onDelete: "set null" },
+    ),
+    changeSetId: text("changeset_id").references(() => ontocodeChangeSets.id, {
+      onDelete: "set null",
+    }),
+    contentHash: text("content_hash").notNull(),
+    metadataJson: text("metadata_json").notNull().default("{}"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+  },
+  (t) => ({
+    runOrdinalUq: uniqueIndex("ontocode_pinned_context_refs_run_ordinal_uq").on(
+      t.tenantId,
+      t.assistantRunId,
+      t.ordinal,
+    ),
+    canonicalRefIdx: index("ontocode_pinned_context_refs_canonical_ref_idx").on(
+      t.tenantId,
+      t.sessionId,
+      t.canonicalRef,
+    ),
+    artifactVersionIdx: index(
+      "ontocode_pinned_context_refs_artifact_version_idx",
+    ).on(t.artifactVersionId),
+    evidenceIdx: index("ontocode_pinned_context_refs_evidence_idx").on(
+      t.evidenceId,
+    ),
+  }),
+);
+
+/**
+ * #SESSION-PURGE — the durable record of a deleted OntoCode Session.
+ *
+ * A Session's footprint spans four stores and a row delete reaches exactly one:
+ * SQLite rows (cascade), the factory run NDJSON transcripts, the conversation
+ * archive that `recall_conversation` searches, and the generated agent drafts.
+ * Every one of those files is named by JOB id, and the job rows are the only
+ * thing that maps a file back to a Session — the cascade deletes them first, so
+ * anything not collected BEFORE the delete becomes permanently unattributable.
+ *
+ * This row is collected first and outlives the Session on purpose: it is both
+ * the record of what the Session was, and the worklist that lets a partial
+ * purge be finished later instead of quietly leaving orphans. It deliberately
+ * carries no FK to the session — the whole point is that the session is gone.
+ */
+export const ontocodeSessionPurges = sqliteTable(
+  "ontocode_session_purges",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    sessionId: text("session_id").notNull(),
+    sessionTitle: text("session_title").notNull(),
+    projectId: text("project_id").notNull(),
+    domain: text("domain").notNull(),
+    /** pending | completed | partial */
+    status: text("status", {
+      enum: ["pending", "completed", "partial"],
+    })
+      .notNull()
+      .default("pending"),
+    requestedBy: text("requested_by"),
+    /** What the Session was, captured before its rows disappeared. */
+    summaryJson: text("summary_json").notNull(),
+    /** External targets, collected while the job rows still existed. */
+    targetsJson: text("targets_json").notNull(),
+    removedJson: text("removed_json").notNull().default("[]"),
+    failuresJson: text("failures_json").notNull().default("[]"),
+    bytesRemoved: integer("bytes_removed").notNull().default(0),
+    attempts: integer("attempts").notNull().default(0),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+    completedAt: integer("completed_at", { mode: "timestamp_ms" }),
+  },
+  (t) => ({
+    tenantStatusIdx: index("ontocode_session_purges_tenant_status_idx").on(
+      t.tenantId,
+      t.status,
+      t.createdAt,
+    ),
+    sessionUq: uniqueIndex("ontocode_session_purges_session_uq").on(
+      t.tenantId,
+      t.sessionId,
     ),
   }),
 );
@@ -2770,6 +4535,7 @@ export const schema = {
   factoryRuns,
   factorySkills,
   factoryTools,
+  factoryToolRevisions,
   factorySandboxAttempts,
   factorySandboxToolSnapshots,
   factorySandboxModelGrants,
@@ -2797,4 +4563,26 @@ export const schema = {
   runEmittedEventsRelations,
   tasksRelations,
   eventsRelations,
+  systemProfiles,
+  ontocodeProjects,
+  ontocodeSessions,
+  ontocodeBuildExecutions,
+  ontocodeCommands,
+  ontocodeHarnessJobs,
+  ontocodeConfigurationTasks,
+  ontocodeSessionMessages,
+  ontocodeSessionEvents,
+  ontocodeChangeSets,
+  ontocodeChangeSetOperations,
+  ontocodeArtifacts,
+  ontocodeArtifactBlobs,
+  ontocodeArtifactVersions,
+  ontocodeEvidenceRecords,
+  ontocodePackageVersions,
+  ontocodeCandidateHeads,
+  ontocodeAssistantRuns,
+  ontocodeAssistantSteps,
+  ontocodePinnedContextRefs,
+  ontocodeSessionPurges,
+  ontocodeOntologyComprehension,
 };

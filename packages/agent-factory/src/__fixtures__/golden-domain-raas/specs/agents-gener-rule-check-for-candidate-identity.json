@@ -1,0 +1,585 @@
+{
+  "domain": "Agents-generation",
+  "slug": "agents-gener-rule-check-for-candidate-identity",
+  "spec": {
+    "key": "ruleCheckForCandidateIdentity",
+    "actionName": "ruleCheckForCandidateIdentity",
+    "slug": "agents-gener-rule-check-for-candidate-identity",
+    "short": "RuleCheckForCandidateIdentityAgent",
+    "domainId": "Agents-generation",
+    "nameZh": "身份查重员",
+    "kind": "llm",
+    "trigger": [
+      "CANDIDATE_IDENTITY_REQUESTED"
+    ],
+    "emit": [
+      "CANDIDATE_IDENTITY_CHECKED"
+    ],
+    "tools": [
+      "facts.query",
+      "entities.write",
+      "ontology.writeInstance",
+      "ontology.fetchActionRules",
+      "reasoning.evaluateRules"
+    ],
+    "unresolvedTools": [],
+    "objects": [
+      "Candidate",
+      "Resume",
+      "Candidate_Identity_Result"
+    ],
+    "systemPrompt": "你负责对已解析候选人的身份信息执行“同一候选人判定”，并产出可审计的身份核验结果。\n\n必须遵守：\n1. 你只做身份判定与审计记录，不负责创建/更新候选人主数据；那是 processResume 的职责。\n2. 规则绝不写死。每次运行都必须通过 ontology.fetchActionRules 动态读取 ruleCheckForCandidateIdentity 当前有效规则，再结合输入身份字段进行评估。\n3. 你先取规则，再查询候选人比对池，再用 reasoning.evaluateRules 对候选集和输入身份材料做逐条判定，输出 same_person / same_as_candidate_id / dedup_action / matched_rule / needs_human_review。\n4. 候选池查询失败可降级为“未命中”；但审计写入失败不得吞掉，必须抛错重试，禁止出现无审计结论的身份判定。\n5. 结论同时作为 invoke 返回值和 CANDIDATE_IDENTITY_CHECKED 事件 payload 输出。\n6. 工具只使用已授权传输：facts.query、entities.write、ontology.writeInstance、ontology.fetchActionRules、reasoning.evaluateRules。",
+    "userPrompt": "候选人身份去重检查(\"是不是同一个人\"): 按 9-15 三级规则对已有候选人池逐级比对,产出同人结论并强制落审计,发 CANDIDATE_IDENTITY_CHECKED 通知。正常链路由 processResume 在落库前 step.invoke 同步调用(不发触发事件),CANDIDATE_IDENTITY_REQUESTED 事件入口仅供人工/独立复核。本 action 只判定+落审计,不做任何 candidate/resume 存储操作(职责: 查重=判定,解析=操作)。外部时序: ①RAAS/租户库读候选人对比池 → ②LLM 模糊字段语义等价判定 → ③审计强制落库 → ④emit(并把结论作为 invoke 返回值交给调用方)。",
+    "designReasoning": "修正：按本体 5 个稳定 stepId 重提，把 fetch_identity_rules 拆为独立 tool 步骤，extract_identity_record 改为 logic 步骤，覆盖全部 stepId。",
+    "toolRationale": "",
+    "decisionLogic": "1. validate_identity_payload：parsed 不存在或无法提取基础身份字段 → terminal。\n2. fetch_identity_rules：动态抓取 ruleCheckForCandidateIdentity 规则；超时/5xx → park；无规则 → terminal。\n3. query_candidate_pool：按手机号/邮箱/姓名等可用字段查询候选池；查询失败 → 降级为空候选集继续。\n4. evaluate_identity_rules：用 reasoning.evaluateRules 基于规则和候选集产出身份判定；无命中 → dedup_action=new；弱命中 → needs_human_review=true；强命中 → same_person=true。\n5. persist_identity_audit：通过 entities.write 写 RAAS 审计结果，ontology.writeInstance 写镜像；RAAS 审计写失败 → park/terminal；镜像失败 → soft-fail。\n6. emit_identity_checked：发 CANDIDATE_IDENTITY_CHECKED，并把结论作为 invoke 返回值。",
+    "steps": [
+      {
+        "name": "step_1",
+        "description": "调用 facts.query",
+        "tool": "facts.query"
+      },
+      {
+        "name": "step_2",
+        "description": "调用 records.upsert",
+        "tool": "records.upsert"
+      },
+      {
+        "name": "step_3",
+        "description": "调用 ontology.fetchActionRules",
+        "tool": "ontology.fetchActionRules"
+      },
+      {
+        "name": "step_4",
+        "description": "调用 reasoning.evaluateRules",
+        "tool": "reasoning.evaluateRules"
+      }
+    ],
+    "ruleRefs": [
+      "9-15"
+    ],
+    "retries": 3,
+    "hitl": false,
+    "confidence": 0.8,
+    "promptSource": "llm",
+    "inputSchema": [
+      {
+        "field": "upload_id",
+        "type": "String",
+        "source": "Resume_Upload.upload_id",
+        "description": "事件 CANDIDATE_IDENTITY_REQUESTED 的 payload 字段",
+        "required": true
+      },
+      {
+        "field": "candidate_id",
+        "type": "String",
+        "source": "Candidate.candidate_id",
+        "description": "事件 CANDIDATE_IDENTITY_REQUESTED 的 payload 字段",
+        "required": false
+      },
+      {
+        "field": "resume_id",
+        "type": "String",
+        "source": "Resume.resume_id",
+        "description": "事件 CANDIDATE_IDENTITY_REQUESTED 的 payload 字段",
+        "required": false
+      },
+      {
+        "field": "parsed",
+        "type": "Object",
+        "source": "Resume.parsed",
+        "description": "事件 CANDIDATE_IDENTITY_REQUESTED 的 payload 字段",
+        "required": true
+      },
+      {
+        "field": "invoked_by",
+        "type": "String",
+        "description": "事件 CANDIDATE_IDENTITY_REQUESTED 的 payload 字段",
+        "required": false
+      },
+      {
+        "field": "trace_id",
+        "type": "String",
+        "description": "事件 CANDIDATE_IDENTITY_REQUESTED 的 payload 字段",
+        "required": false
+      }
+    ],
+    "inputBindings": [
+      {
+        "field": "upload_id",
+        "type": "String",
+        "required": true,
+        "kind": "event",
+        "eventPath": "upload_id",
+        "sourceEvents": [
+          "CANDIDATE_IDENTITY_REQUESTED"
+        ]
+      },
+      {
+        "field": "candidate_id",
+        "type": "String",
+        "required": false,
+        "kind": "event",
+        "eventPath": "candidate_id",
+        "sourceEvents": [
+          "CANDIDATE_IDENTITY_REQUESTED"
+        ]
+      },
+      {
+        "field": "resume_id",
+        "type": "String",
+        "required": false,
+        "kind": "event",
+        "eventPath": "resume_id",
+        "sourceEvents": [
+          "CANDIDATE_IDENTITY_REQUESTED"
+        ]
+      },
+      {
+        "field": "parsed",
+        "type": "Object",
+        "required": true,
+        "kind": "event",
+        "eventPath": "parsed",
+        "sourceEvents": [
+          "CANDIDATE_IDENTITY_REQUESTED"
+        ]
+      },
+      {
+        "field": "invoked_by",
+        "type": "String",
+        "required": false,
+        "kind": "event",
+        "eventPath": "invoked_by",
+        "sourceEvents": [
+          "CANDIDATE_IDENTITY_REQUESTED"
+        ]
+      }
+    ],
+    "outputSchema": [
+      {
+        "field": "upload_id",
+        "type": "String",
+        "source": "Resume_Upload.upload_id",
+        "description": "事件 CANDIDATE_IDENTITY_CHECKED 的 payload 字段",
+        "required": true
+      },
+      {
+        "field": "candidate_id",
+        "type": "String",
+        "source": "Candidate.candidate_id",
+        "description": "事件 CANDIDATE_IDENTITY_CHECKED 的 payload 字段",
+        "required": true
+      },
+      {
+        "field": "resume_id",
+        "type": "String",
+        "source": "Resume.resume_id",
+        "description": "事件 CANDIDATE_IDENTITY_CHECKED 的 payload 字段",
+        "required": false
+      },
+      {
+        "field": "same_person",
+        "type": "Boolean",
+        "description": "事件 CANDIDATE_IDENTITY_CHECKED 的 payload 字段",
+        "required": true
+      },
+      {
+        "field": "same_as_candidate_id",
+        "type": "String",
+        "source": "Candidate.same_as_candidate_id",
+        "description": "事件 CANDIDATE_IDENTITY_CHECKED 的 payload 字段",
+        "required": false
+      },
+      {
+        "field": "dedup_action",
+        "type": "String",
+        "description": "事件 CANDIDATE_IDENTITY_CHECKED 的 payload 字段",
+        "required": true
+      },
+      {
+        "field": "matched_rule",
+        "type": "String",
+        "description": "事件 CANDIDATE_IDENTITY_CHECKED 的 payload 字段",
+        "required": false
+      },
+      {
+        "field": "audit_id",
+        "type": "String",
+        "source": "Candidate_Identity_Result.audit_id",
+        "description": "事件 CANDIDATE_IDENTITY_CHECKED 的 payload 字段",
+        "required": true
+      },
+      {
+        "field": "parsed",
+        "type": "Object",
+        "source": "Resume.parsed",
+        "description": "事件 CANDIDATE_IDENTITY_CHECKED 的 payload 字段",
+        "required": true
+      },
+      {
+        "field": "needs_human_review",
+        "type": "Boolean",
+        "source": "event.needs_human_review",
+        "required": true
+      }
+    ],
+    "toolPolicies": {
+      "facts.query": {
+        "operation": "read",
+        "effectScope": "external",
+        "sandboxPolicy": "live_external"
+      },
+      "entities.write": {
+        "operation": "write",
+        "effectScope": "external",
+        "sandboxPolicy": "requires_attempt_grant"
+      },
+      "ontology.writeInstance": {
+        "operation": "write",
+        "effectScope": "external",
+        "sandboxPolicy": "requires_attempt_grant"
+      },
+      "ontology.fetchActionRules": {
+        "operation": "read",
+        "effectScope": "external",
+        "sandboxPolicy": "live_external"
+      },
+      "reasoning.evaluateRules": {
+        "operation": "compute",
+        "effectScope": "external",
+        "sandboxPolicy": "live_external"
+      }
+    },
+    "toolSideEffects": {
+      "facts.query": "read",
+      "entities.write": "write",
+      "ontology.writeInstance": "write",
+      "ontology.fetchActionRules": "read",
+      "reasoning.evaluateRules": "call"
+    },
+    "integrationRequirements": [
+      {
+        "id": "10-3:integration:1",
+        "actionName": "ruleCheckForCandidateIdentity",
+        "system": "RAAS_System",
+        "kind": "database",
+        "role": "read",
+        "capability": "candidate.pool_query — 读候选人对比池(手机号/姓名+邮箱/六字段分级查询;业务可降级)",
+        "operations": [],
+        "objectTypes": [
+          "Candidate",
+          "Resume"
+        ],
+        "eventNames": [],
+        "replayable": true
+      },
+      {
+        "id": "10-3:integration:2",
+        "actionName": "ruleCheckForCandidateIdentity",
+        "system": "LLM_Gateway",
+        "kind": "llm",
+        "role": "execute",
+        "capability": "field.semantic_equivalence — 模糊字段(姓名/学校/专业/学历)语义等价判定",
+        "operations": [],
+        "objectTypes": [
+          "Candidate"
+        ],
+        "eventNames": [],
+        "replayable": true
+      },
+      {
+        "id": "10-3:integration:3",
+        "actionName": "ruleCheckForCandidateIdentity",
+        "system": "Allmeta_Ontology_System",
+        "kind": "graph_db",
+        "role": "read",
+        "capability": "rules.fetch — 拉取身份/查重现行规则补充审计依据(末位软步,不阻断)",
+        "operations": [],
+        "objectTypes": [
+          "Candidate_Identity_Result"
+        ],
+        "eventNames": [],
+        "replayable": true
+      }
+    ],
+    "integrationBindings": [
+      {
+        "requirement": {
+          "id": "10-3:integration:1",
+          "actionName": "ruleCheckForCandidateIdentity",
+          "system": "RAAS_System",
+          "kind": "database",
+          "role": "read",
+          "capability": "candidate.pool_query — 读候选人对比池(手机号/姓名+邮箱/六字段分级查询;业务可降级)",
+          "operations": [],
+          "objectTypes": [
+            "Candidate",
+            "Resume"
+          ],
+          "eventNames": [],
+          "replayable": true
+        },
+        "bindingKind": "tool",
+        "bindingId": "facts.query",
+        "toolName": "facts.query",
+        "genericSystemBinding": true,
+        "status": "needs_config",
+        "next": "ask_user",
+        "reason": "通用工具 facts.query 只能通过当前 tenant/domain/environment 已确认的 integration profile 绑定到 RAAS_System，不能根据 systems:[\"*\"] 猜连接"
+      },
+      {
+        "requirement": {
+          "id": "10-3:integration:2",
+          "actionName": "ruleCheckForCandidateIdentity",
+          "system": "LLM_Gateway",
+          "kind": "llm",
+          "role": "execute",
+          "capability": "field.semantic_equivalence — 模糊字段(姓名/学校/专业/学历)语义等价判定",
+          "operations": [],
+          "objectTypes": [
+            "Candidate"
+          ],
+          "eventNames": [],
+          "replayable": true
+        },
+        "bindingKind": "runtime",
+        "bindingId": "agent-runtime.reason",
+        "status": "resolved",
+        "reason": "由运行时能力 agent-runtime.reason 提供",
+        "executionRef": {
+          "kind": "runtime",
+          "providerId": "agent-runtime.reason",
+          "planStepIds": [
+            "extract_identity_record"
+          ]
+        }
+      },
+      {
+        "requirement": {
+          "id": "10-3:integration:3",
+          "actionName": "ruleCheckForCandidateIdentity",
+          "system": "Allmeta_Ontology_System",
+          "kind": "graph_db",
+          "role": "read",
+          "capability": "rules.fetch — 拉取身份/查重现行规则补充审计依据(末位软步,不阻断)",
+          "operations": [],
+          "objectTypes": [
+            "Candidate_Identity_Result"
+          ],
+          "eventNames": [],
+          "replayable": true
+        },
+        "bindingKind": "tool",
+        "bindingId": "reasoning.evaluateRules",
+        "toolName": "reasoning.evaluateRules",
+        "status": "needs_config",
+        "next": "ask_user",
+        "missingCredentialEnv": [],
+        "missingConfigKeys": [
+          "action",
+          "domainId",
+          "failEvent",
+          "passEvent",
+          "tenant_slug"
+        ],
+        "invalidConfigKeys": [],
+        "reason": "工具 reasoning.evaluateRules 的集成配置未就绪：还需要填写 tenant_slug。；还需要填写 domainId。；还需要填写 action。；还需要填写 passEvent。；还需要填写 failEvent。"
+      }
+    ],
+    "plan": [
+      {
+        "stepId": "extract_identity_record",
+        "kind": "logic",
+        "errorPolicy": [
+          {
+            "default": "terminal"
+          }
+        ],
+        "description": "从 parsed.data 提取身份比对字段：姓名/手机号/邮筱/性别/学校/专业/学历/毕业时间，展开三级比对结构"
+      },
+      {
+        "stepId": "resolve_identity_match",
+        "kind": "tool",
+        "tool": "facts.query",
+        "toolArguments": {
+          "subject": {
+            "from": "input.upload_id",
+            "required": true
+          },
+          "objectTypes": {
+            "const": [
+              "Candidate"
+            ]
+          },
+          "identityFields": {
+            "from": "input.parsed",
+            "required": true
+          }
+        },
+        "resultMap": {
+          "fields": {
+            "samePerson": "result.same_person",
+            "sameAsCandidateId": "result.same_as_candidate_id",
+            "matchedRule": "result.matched_rule",
+            "dedupAction": "result.dedup_action",
+            "needsHumanReview": "result.needs_human_review"
+          },
+          "includeRaw": true
+        },
+        "idempotencyKeyFrom": "input.upload_id",
+        "errorPolicy": [
+          {
+            "default": "continue",
+            "defaultResult": {
+              "samePerson": false,
+              "sameAsCandidateId": null,
+              "matchedRule": null,
+              "dedupAction": "new",
+              "needsHumanReview": false
+            }
+          }
+        ],
+        "timeoutS": 30,
+        "description": "查询候选人对比池，按三级规则判定同人结论，命中即停"
+      },
+      {
+        "stepId": "persist_identity_audit",
+        "kind": "tool",
+        "tool": "records.upsert",
+        "toolArguments": {
+          "record_type": {
+            "const": "candidate_identity_result"
+          },
+          "upload_id": {
+            "from": "input.upload_id",
+            "required": true
+          },
+          "same_person": {
+            "from": "results.resolve_identity_match.result.samePerson",
+            "required": true
+          },
+          "same_as_candidate_id": {
+            "from": "results.resolve_identity_match.result.sameAsCandidateId",
+            "required": false
+          },
+          "matched_rule": {
+            "from": "results.resolve_identity_match.result.matchedRule",
+            "required": false
+          },
+          "dedup_action": {
+            "from": "results.resolve_identity_match.result.dedupAction",
+            "required": true
+          },
+          "needs_human_review": {
+            "from": "results.resolve_identity_match.result.needsHumanReview",
+            "required": true
+          }
+        },
+        "resultMap": {
+          "fields": {
+            "auditId": "result.audit_id"
+          }
+        },
+        "idempotencyKeyFrom": "input.upload_id",
+        "errorPolicy": [
+          {
+            "when": "status >= 500 || code == 'ETIMEDOUT' || code == 'WRITE_FAILED'",
+            "do": "park",
+            "suppressEmit": true
+          },
+          {
+            "default": "terminal"
+          }
+        ],
+        "timeoutS": 20,
+        "description": "强制写审计记录，写失败必须抛 RuleAuditPersistenceFailure"
+      },
+      {
+        "stepId": "fetch_identity_rules",
+        "kind": "tool",
+        "tool": "ontology.fetchActionRules",
+        "toolArguments": {
+          "action": {
+            "const": "ruleCheckForCandidateIdentity"
+          }
+        },
+        "resultMap": {
+          "fields": {
+            "rules": "result.rules"
+          }
+        },
+        "idempotencyKeyFrom": "input.upload_id",
+        "errorPolicy": [
+          {
+            "when": "status >= 500 || code == 'ETIMEDOUT'",
+            "do": "park",
+            "suppressEmit": true
+          },
+          {
+            "default": "terminal"
+          }
+        ],
+        "timeoutS": 15,
+        "description": "读取当前 ruleCheckForCandidateIdentity 规则补充审计依据，读取失败 fail-closed"
+      },
+      {
+        "stepId": "emit_identity_checked",
+        "kind": "emit",
+        "emitEvent": "CANDIDATE_IDENTITY_CHECKED",
+        "emitPayloadFrom": "results.persist_identity_audit.result",
+        "emitPayload": {
+          "upload_id": "{{input.upload_id}}"
+        },
+        "description": "发出 CANDIDATE_IDENTITY_CHECKED，携带全量判定结论与审计编号"
+      }
+    ],
+    "stateBindings": [
+      {
+        "object": "Candidate",
+        "reads": [
+          "candidate_id"
+        ],
+        "writes": []
+      },
+      {
+        "object": "Resume",
+        "reads": [
+          "resume_id",
+          "parsed"
+        ],
+        "writes": []
+      },
+      {
+        "object": "Candidate_Identity_Result",
+        "reads": [],
+        "writes": [
+          "candidate_identity_result_id",
+          "candidate_id",
+          "resume_id",
+          "matched_rule",
+          "same_person",
+          "same_as_candidate_id",
+          "dedup_action",
+          "needs_human_review",
+          "pool_size"
+        ]
+      },
+      {
+        "object": "Resume_Upload",
+        "reads": [
+          "upload_id"
+        ],
+        "writes": []
+      }
+    ],
+    "codeSource": "render",
+    "generatedCode": "// 身份查重员 — 由 Agent 工厂从本体动作 `ruleCheckForCandidateIdentity`(Agents-generation)生成。\n// trigger: CANDIDATE_IDENTITY_REQUESTED → emit: CANDIDATE_IDENTITY_CHECKED\n// 真实可审查代码：工具调用、条件、foreach、显式 emit 与错误策略均由结构化 spec 渲染。\n// CodeAct 只在执行语义可保真时过探针；需要逐步 durability/typed RPC policy 时 fail-close 到 manifest runtime。\n\n/** Input/Output schema — 依据本体 DataObjects 定义。 */\ninterface RuleCheckForCandidateIdentityAgentInput {\n  upload_id: string; // 事件 CANDIDATE_IDENTITY_REQUESTED 的 payload 字段 (源: Resume_Upload.upload_id)\n  candidate_id?: string; // 事件 CANDIDATE_IDENTITY_REQUESTED 的 payload 字段 (源: Candidate.candidate_id)\n  resume_id?: string; // 事件 CANDIDATE_IDENTITY_REQUESTED 的 payload 字段 (源: Resume.resume_id)\n  parsed: Record<string, unknown>; // 事件 CANDIDATE_IDENTITY_REQUESTED 的 payload 字段 (源: Resume.parsed)\n  invoked_by?: string; // 事件 CANDIDATE_IDENTITY_REQUESTED 的 payload 字段\n  trace_id?: string; // 事件 CANDIDATE_IDENTITY_REQUESTED 的 payload 字段\n}\n\ninterface RuleCheckForCandidateIdentityAgentOutput {\n  upload_id: string; // 事件 CANDIDATE_IDENTITY_CHECKED 的 payload 字段 (源: Resume_Upload.upload_id)\n  candidate_id: string; // 事件 CANDIDATE_IDENTITY_CHECKED 的 payload 字段 (源: Candidate.candidate_id)\n  resume_id?: string; // 事件 CANDIDATE_IDENTITY_CHECKED 的 payload 字段 (源: Resume.resume_id)\n  same_person: boolean; // 事件 CANDIDATE_IDENTITY_CHECKED 的 payload 字段\n  same_as_candidate_id?: string; // 事件 CANDIDATE_IDENTITY_CHECKED 的 payload 字段 (源: Candidate.same_as_candidate_id)\n  dedup_action: string; // 事件 CANDIDATE_IDENTITY_CHECKED 的 payload 字段\n  matched_rule?: string; // 事件 CANDIDATE_IDENTITY_CHECKED 的 payload 字段\n  audit_id: string; // 事件 CANDIDATE_IDENTITY_CHECKED 的 payload 字段 (源: Candidate_Identity_Result.audit_id)\n  parsed: Record<string, unknown>; // 事件 CANDIDATE_IDENTITY_CHECKED 的 payload 字段 (源: Resume.parsed)\n  needs_human_review: boolean; // 源: event.needs_human_review\n}\n\nfunction readPath(obj: unknown, path: string): unknown {\n  if (obj == null || !path) return undefined;\n  let cur: unknown = obj;\n  for (const part of path.split(\".\")) {\n    if (cur == null || typeof cur !== \"object\") return undefined;\n    cur = (cur as Record<string, unknown>)[part];\n  }\n  return cur;\n}\nfunction readConditionPath(scope: Record<string, unknown>, rawPath: string): unknown {\n  const path = rawPath.trim().replace(/\\?\\./g, \".\").replace(/\\[['\"]([^'\"]+)['\"]\\]/g, \".$1\");\n  const results = scope.results as Record<string, unknown> | undefined;\n  const explicit = path.startsWith(\"results.\") || path.startsWith(\"steps.\");\n  const rel = explicit ? path.replace(/^(results|steps)\\./, \"\") : path;\n  for (const key of Object.keys(results ?? {}).sort((a, b) => b.length - a.length)) {\n    if (rel !== key && !rel.startsWith(key + \".\")) continue;\n    let tail = rel === key ? \"\" : rel.slice(key.length + 1);\n    if (tail === \"result\" || tail === \"data\" || tail === \"value\") tail = \"\";\n    else tail = tail.replace(/^(result|data|value)\\./, \"\");\n    return tail ? readPath(results![key], tail) : results![key];\n  }\n  if (explicit) return undefined;\n  const direct = readPath(scope, path);\n  if (direct !== undefined) return direct;\n  const last = readPath(scope.lastResult, path);\n  if (last !== undefined) return last;\n  return readPath(scope.input ?? (scope.event as Record<string, unknown> | undefined)?.data, path);\n}\nfunction evalCondition(expr: string, scope: Record<string, unknown>): boolean {\n  const e = (expr || \"\").trim();\n  if (!e) return false;\n  const split = (s: string, op: string): string[] => {\n    const out: string[] = []; let depth = 0; let q = \"\"; let buf = \"\";\n    for (let i = 0; i < s.length; i++) {\n      const c = s[i]!;\n      if (q) { buf += c; if (c === q) q = \"\"; continue; }\n      if (c === \"'\" || c === '\"') { q = c; buf += c; continue; }\n      if (c === \"(\") depth++; else if (c === \")\") depth--;\n      if (depth === 0 && s.startsWith(op, i)) { out.push(buf); buf = \"\"; i += op.length - 1; continue; }\n      buf += c;\n    }\n    out.push(buf); return out;\n  };\n  try {\n    const ors = split(e, \"||\");\n    if (ors.length > 1) return ors.some((p) => evalCondition(p, scope));\n    const ands = split(e, \"&&\");\n    if (ands.length > 1) return ands.every((p) => evalCondition(p, scope));\n    if (/^true$/i.test(e)) return true;\n    if (/^false$/i.test(e)) return false;\n    const m = e.match(/^(.+?)\\s*(===|!==|==|!=|>=|<=|>|<)\\s*(.+)$/);\n    if (m) {\n      const lit = (t0: string): unknown => {\n        const t = t0.trim();\n        if ((t.startsWith(\"'\") && t.endsWith(\"'\")) || (t.startsWith('\"') && t.endsWith('\"'))) return t.slice(1, -1);\n        if (t === \"null\" || t === \"undefined\") return null; if (t === \"true\") return true; if (t === \"false\") return false;\n        if (/^-?\\d+(\\.\\d+)?$/.test(t)) return Number(t);\n        return t;\n      };\n      const l = readConditionPath(scope, m[1]!.trim()); const r = lit(m[3]!); const op = m[2]!;\n      if (r === null && (op === \"==\" || op === \"===\")) return l == null;\n      if (r === null && (op === \"!=\" || op === \"!==\")) return l != null;\n      if (op === \"===\") return l === r;\n      if (op === \"!==\") return l !== r;\n      if (op === \"==\") return l === r || (l != null && r != null && String(l) === String(r));\n      if (op === \"!=\") return !(l === r || (l != null && r != null && String(l) === String(r)));\n      if (op === \">\") return Number(l) > Number(r);\n      if (op === \"<\") return Number(l) < Number(r);\n      if (op === \">=\") return Number(l) >= Number(r);\n      return Number(l) <= Number(r);\n    }\n    if (e.startsWith(\"!!\")) return Boolean(readConditionPath(scope, e.slice(2).trim()));\n    if (e.startsWith(\"!\")) return !Boolean(readConditionPath(scope, e.slice(1).trim()));\n    return Boolean(readConditionPath(scope, e));\n  } catch { return false; }\n}\n\ntype _AfToolArgument = { from: string; required?: boolean } | { const: unknown };\ntype _AfResultMap = { fields: Record<string, string>; includeRaw?: boolean };\nfunction _afCloneJson(value: unknown, seen = new Set<object>()): unknown {\n  if (value === null || typeof value === \"string\" || typeof value === \"boolean\") return value;\n  if (typeof value === \"number\") { if (!Number.isFinite(value)) throw new Error(\"[terminal] tool argument is not finite JSON\"); return value; }\n  if (!value || typeof value !== \"object\" || seen.has(value)) throw new Error(\"[terminal] tool argument is not JSON\");\n  seen.add(value);\n  if (Array.isArray(value)) return value.map((entry) => _afCloneJson(entry, seen));\n  const out: Record<string, unknown> = Object.create(null) as Record<string, unknown>;\n  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) out[key] = _afCloneJson(entry, seen);\n  return out;\n}\nfunction _afToolArguments(template: Record<string, _AfToolArgument>, scope: Record<string, unknown>): Record<string, unknown> {\n  const out: Record<string, unknown> = Object.create(null) as Record<string, unknown>;\n  for (const [argument, source] of Object.entries(template)) {\n    const hasFrom = Object.prototype.hasOwnProperty.call(source, \"from\");\n    const hasConst = Object.prototype.hasOwnProperty.call(source, \"const\");\n    if (hasFrom === hasConst) throw new Error(\"[terminal] tool argument \" + argument + \" must choose exactly one of from/const\");\n    if (hasFrom) {\n      const path = String((source as { from: string }).from ?? \"\");\n      const value = readConditionPath(scope, path);\n      if (value === undefined) {\n        if ((source as { required?: boolean }).required === false) continue;\n        throw new Error(\"[terminal] required tool argument path did not resolve: \" + argument + \" <- \" + path);\n      }\n      out[argument] = _afCloneJson(value);\n    } else {\n      out[argument] = _afCloneJson((source as { const: unknown }).const);\n    }\n  }\n  return out;\n}\nfunction _afMapToolResult(raw: unknown, map: _AfResultMap): Record<string, unknown> {\n  const out: Record<string, unknown> = Object.create(null) as Record<string, unknown>;\n  for (const [field, path] of Object.entries(map.fields)) {\n    const value = path === \"result\" ? raw : readPath(raw, path.slice(\"result.\".length));\n    if (value === undefined) throw new Error(\"[terminal] tool result path did not resolve: \" + field + \" <- \" + path);\n    out[field] = value;\n  }\n  if (map.includeRaw === true) out._raw = raw;\n  return out;\n}\n\ntype _AfPolicyAction = \"park\" | \"retry\" | \"terminal\" | \"continue\";\ntype _AfPolicyRule = {\n  when?: string;\n  do?: _AfPolicyAction;\n  default?: _AfPolicyAction;\n  defaultResult?: unknown;\n  emitEvent?: string;\n  emitPayload?: Record<string, unknown>;\n  suppressEmit?: boolean;\n};\ntype _AfErrorFacts = {\n  kind?: string;\n  code?: string;\n  status?: number;\n  name: string;\n  message: string;\n  data?: Record<string, unknown>;\n  meta?: Record<string, unknown>;\n};\ntype _AfFailureResolution = {\n  disposition: \"retry\" | \"terminal\" | \"continue\";\n  policyAction: _AfPolicyAction | \"soft\";\n  facts: _AfErrorFacts;\n  defaultResult?: unknown;\n  emitEvent?: string;\n  emitPayload?: Record<string, unknown>;\n  suppressEmit: boolean;\n  policyError?: string;\n};\nfunction _afRecord(value: unknown): Record<string, unknown> | undefined {\n  return value && typeof value === \"object\" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;\n}\nfunction _afScalar(value: unknown): string | undefined {\n  if (typeof value === \"string\" && value.trim()) return value.trim();\n  if (typeof value === \"number\" && Number.isFinite(value)) return String(value);\n  return undefined;\n}\nfunction _afErrorFacts(value: unknown): _AfErrorFacts {\n  const root = value instanceof Error ? value : undefined;\n  let kind: string | undefined;\n  let code: string | undefined;\n  let status: number | undefined;\n  let name = root?.name || \"Error\";\n  let message = root?.message || _afScalar(value) || \"action failed\";\n  let data: Record<string, unknown> | undefined;\n  let meta: Record<string, unknown> | undefined;\n  const queue: unknown[] = [value];\n  const seen = new Set<unknown>();\n  for (let i = 0; i < queue.length && i < 24; i++) {\n    const current = queue[i];\n    if (current == null || seen.has(current)) continue;\n    seen.add(current);\n    if (current instanceof Error) {\n      if ((!message || message === \"action failed\") && current.message) message = current.message;\n      if (name === \"Error\" && current.name) name = current.name;\n      queue.push(current.cause);\n    }\n    const row = _afRecord(current);\n    if (!row) continue;\n    kind ??= _afScalar(row.kind) ?? _afScalar(row.failureKind) ?? _afScalar(row.failure_kind) ?? _afScalar(row.category);\n    code ??= _afScalar(row.code) ?? _afScalar(row.errorCode) ?? _afScalar(row.error_code);\n    const rawStatus = row.status ?? row.statusCode ?? row.status_code;\n    if (status === undefined && Number.isFinite(Number(rawStatus))) status = Number(rawStatus);\n    const nestedData = _afRecord(row.data);\n    const nestedMeta = _afRecord(row.meta);\n    data ??= nestedData;\n    meta ??= nestedMeta;\n    kind ??= _afScalar(nestedMeta?.error) ?? _afScalar(nestedData?.kind);\n    code ??= _afScalar(nestedMeta?.code) ?? _afScalar(nestedData?.code) ?? _afScalar(nestedData?.error_code);\n    const nestedStatus = nestedMeta?.status ?? nestedData?.status;\n    if (status === undefined && Number.isFinite(Number(nestedStatus))) status = Number(nestedStatus);\n    queue.push(row.cause, row.error, row.reason, row.output, row.result, row.data, row.meta);\n  }\n  if (!kind) {\n    const prefixed = message.match(/^([a-z][a-z0-9_-]{1,80})\\s*:/i);\n    if (prefixed) kind = prefixed[1];\n  }\n  if (status === undefined) {\n    const http = message.match(/\\bHTTP\\s+(\\d{3})\\b/i);\n    if (http) status = Number(http[1]);\n  }\n  return { ...(kind ? { kind } : {}), ...(code ? { code } : {}), ...(status !== undefined ? { status } : {}), name, message, ...(data ? { data } : {}), ...(meta ? { meta } : {}) };\n}\nfunction _afStripParens(source: string): string {\n  let out = source.trim();\n  while (out.startsWith(\"(\") && out.endsWith(\")\")) {\n    let depth = 0; let quote = \"\"; let wraps = true;\n    for (let i = 0; i < out.length; i++) {\n      const c = out[i]!;\n      if (quote) { if (c === \"\\\\\") i++; else if (c === quote) quote = \"\"; continue; }\n      if (c === \"'\" || c === '\"') { quote = c; continue; }\n      if (c === \"(\") depth++; else if (c === \")\") depth--;\n      if (depth === 0 && i < out.length - 1) { wraps = false; break; }\n    }\n    if (!wraps || depth !== 0) break;\n    out = out.slice(1, -1).trim();\n  }\n  return out;\n}\nfunction _afSplitTop(source: string, operator: \"&&\" | \"||\"): string[] {\n  const parts: string[] = []; let buffer = \"\"; let depth = 0; let quote = \"\";\n  for (let i = 0; i < source.length; i++) {\n    const c = source[i]!;\n    if (quote) { buffer += c; if (c === \"\\\\\" && i + 1 < source.length) buffer += source[++i]!; else if (c === quote) quote = \"\"; continue; }\n    if (c === \"'\" || c === '\"') { quote = c; buffer += c; continue; }\n    if (c === \"(\") depth++; else if (c === \")\") depth--;\n    if (depth === 0 && source.startsWith(operator, i)) { parts.push(buffer); buffer = \"\"; i++; continue; }\n    buffer += c;\n  }\n  parts.push(buffer);\n  return parts;\n}\nfunction _afRead(value: unknown, path: string): unknown {\n  let current = value;\n  for (const key of path.split(\".\")) {\n    if (current == null || typeof current !== \"object\") return undefined;\n    current = (current as Record<string, unknown>)[key];\n  }\n  return current;\n}\nfunction _afLiteral(source: string): unknown {\n  const value = source.trim();\n  if ((value.startsWith('\"') && value.endsWith('\"')) || (value.startsWith(\"'\") && value.endsWith(\"'\"))) return value.slice(1, -1);\n  if (/^-?\\d+(?:\\.\\d+)?$/.test(value)) return Number(value);\n  if (value === \"true\") return true;\n  if (value === \"false\") return false;\n  if (value === \"null\" || value === \"undefined\") return null;\n  return value;\n}\nfunction _afCompare(left: unknown, right: unknown, operator: string): boolean {\n  if (right === null) {\n    if (operator === \"==\" || operator === \"===\") return left == null;\n    if (operator === \"!=\" || operator === \"!==\") return left != null;\n  }\n  if (operator === \"===\") return left === right;\n  if (operator === \"!==\") return left !== right;\n  if (operator === \"==\") return left === right || (left != null && right != null && String(left) === String(right));\n  if (operator === \"!=\") return !(left === right || (left != null && right != null && String(left) === String(right)));\n  if (operator === \">\") return Number(left) > Number(right);\n  if (operator === \"<\") return Number(left) < Number(right);\n  if (operator === \">=\") return Number(left) >= Number(right);\n  return Number(left) <= Number(right);\n}\nfunction _afPredicateAtom(source: string, facts: _AfErrorFacts): boolean {\n  const atom = _afStripParens(source);\n  if (/^true$/i.test(atom)) return true;\n  if (/^false$/i.test(atom)) return false;\n  const path = \"(?:error\\\\.)?(?:kind|code|status|name|message|data(?:\\\\.[A-Za-z_$][A-Za-z0-9_$-]*)*|meta(?:\\\\.[A-Za-z_$][A-Za-z0-9_$-]*)*)\";\n  const literal = \"(?:'(?:\\\\\\\\.|[^'\\\\\\\\])*'|\\\"(?:\\\\\\\\.|[^\\\"\\\\\\\\])*\\\"|-?\\\\d+(?:\\\\.\\\\d+)?|true|false|null|undefined|[A-Za-z_$][A-Za-z0-9_$.-]*)\";\n  const includes = atom.match(new RegExp(\"^(\" + path + \")\\\\.includes\\\\(\\\\s*(\" + literal + \")\\\\s*\\\\)$\", \"i\"));\n  if (includes) {\n    const left = _afRead(facts, includes[1]!.replace(/^error\\./, \"\"));\n    const right = _afLiteral(includes[2]!);\n    return typeof left === \"string\" ? left.includes(String(right)) : Array.isArray(left) && left.includes(right);\n  }\n  const comparison = atom.match(new RegExp(\"^(\" + path + \")\\\\s*(===|!==|==|!=|>=|<=|>|<)\\\\s*(\" + literal + \")$\", \"i\"));\n  if (comparison) return _afCompare(_afRead(facts, comparison[1]!.replace(/^error\\./, \"\")), _afLiteral(comparison[3]!), comparison[2]!);\n  const presence = atom.match(new RegExp(\"^(!{0,2})(\" + path + \")$\", \"i\"));\n  if (!presence) return false;\n  const value = Boolean(_afRead(facts, presence[2]!.replace(/^error\\./, \"\")));\n  return presence[1] === \"!\" ? !value : value;\n}\nfunction _afErrorPredicate(predicate: string, facts: _AfErrorFacts): boolean {\n  const evaluate = (source: string): boolean => {\n    const normalized = _afStripParens(source);\n    const ors = _afSplitTop(normalized, \"||\");\n    if (ors.length > 1) return ors.some(evaluate);\n    const ands = _afSplitTop(normalized, \"&&\");\n    return ands.length > 1 ? ands.every(evaluate) : _afPredicateAtom(normalized, facts);\n  };\n  return evaluate(predicate);\n}\nfunction _afResolveFailure(policy: \"soft\" | \"terminal\" | \"park\" | _AfPolicyRule[] | undefined, failure: unknown, stepDefault?: unknown): _AfFailureResolution {\n  const facts = _afErrorFacts(failure);\n  if (policy === \"soft\") return { disposition: \"continue\", policyAction: \"soft\", facts, defaultResult: stepDefault, suppressEmit: false };\n  if (policy === \"terminal\") return { disposition: \"terminal\", policyAction: \"terminal\", facts, suppressEmit: true };\n  if (policy === \"park\") return { disposition: \"retry\", policyAction: \"park\", facts, suppressEmit: true };\n  if (!Array.isArray(policy)) return { disposition: \"retry\", policyAction: \"retry\", facts, suppressEmit: true };\n  for (const rule of policy) {\n    const action = typeof rule.when === \"string\" ? (_afErrorPredicate(rule.when, facts) ? rule.do : undefined) : rule.default;\n    if (!action) continue;\n    const ownDefault = Object.prototype.hasOwnProperty.call(rule, \"defaultResult\");\n    const defaultResult = ownDefault ? rule.defaultResult : stepDefault;\n    return {\n      disposition: action === \"park\" || action === \"retry\" ? \"retry\" : action,\n      policyAction: action,\n      facts,\n      ...(ownDefault || stepDefault !== undefined ? { defaultResult } : {}),\n      ...(rule.emitEvent ? { emitEvent: rule.emitEvent } : {}),\n      ...(rule.emitPayload ? { emitPayload: rule.emitPayload } : {}),\n      suppressEmit: rule.suppressEmit ?? false,\n    };\n  }\n  return { disposition: \"terminal\", policyAction: \"terminal\", facts, suppressEmit: true, policyError: \"error policy has no matching/default rule\" };\n}\nfunction _afFailurePayload(resolution: _AfFailureResolution): Record<string, unknown> {\n  const fallback = resolution.defaultResult && typeof resolution.defaultResult === \"object\" && !Array.isArray(resolution.defaultResult)\n    ? resolution.defaultResult as Record<string, unknown>\n    : { error: resolution.facts };\n  return { ...fallback, ...(resolution.emitPayload ?? {}) };\n}\n\n/** System prompt — 工厂为【这一个】agent 亲自推理出来的。 */\nconst SYSTEM_PROMPT = `你负责对已解析候选人的身份信息执行“同一候选人判定”，并产出可审计的身份核验结果。\n\n必须遵守：\n1. 你只做身份判定与审计记录，不负责创建/更新候选人主数据；那是 processResume 的职责。\n2. 规则绝不写死。每次运行都必须通过 ontology.fetchActionRules 动态读取 ruleCheckForCandidateIdentity 当前有效规则，再结合输入身份字段进行评估。\n3. 你先取规则，再查询候选人比对池，再用 reasoning.evaluateRules 对候选集和输入身份材料做逐条判定，输出 same_person / same_as_candidate_id / dedup_action / matched_rule / needs_human_review。\n4. 候选池查询失败可降级为“未命中”；但审计写入失败不得吞掉，必须抛错重试，禁止出现无审计结论的身份判定。\n5. 结论同时作为 invoke 返回值和 CANDIDATE_IDENTITY_CHECKED 事件 payload 输出。\n6. 工具只使用已授权传输：facts.query、entities.write、ontology.writeInstance、ontology.fetchActionRules、reasoning.evaluateRules。`;\n\nexport const ruleCheckForCandidateIdentityAgent = defineAgent({\n  id: \"agents-gener-rule-check-for-candidate-identity\",\n  name: \"RuleCheckForCandidateIdentityAgent\",\n  actor: [\"Agent\"],\n  trigger: [\"CANDIDATE_IDENTITY_REQUESTED\"],\n  emit: [\"CANDIDATE_IDENTITY_CHECKED\"],\n  tools: [\"facts.query\",\"entities.write\",\"ontology.writeInstance\",\"ontology.fetchActionRules\",\"reasoning.evaluateRules\"],\n  systemPrompt: SYSTEM_PROMPT,\n  // Fail-closed ownership marker: probeAgentModule keeps this code reviewable but does not\n  // claim CodeAct execution where the worker lacks durable/per-RPC policy semantics.\n  factoryExecutionMode: \"declarative_required\",\n  factoryExecutionReason: \"工具调用需要独立 durable step、幂等键与 typed failure policy；错误策略需要宿主的 typed retry/park/terminal 控制流；代码直接访问 reason、tools.run；当前协议不能把这些调用恢复为独立 durable step\",\n  async handler(input, ctx) {\n      const $in = (input ?? {}) as Record<string, unknown>;\n      let last: unknown = undefined;\n      const results: Record<string, unknown> = {};\n      const carry = (): Record<string, unknown> => ({ ...$in, ...(last && typeof last === \"object\" ? (last as Record<string, unknown>) : {}), results: { ...results } });\n      let _explicitEmitCount = 0;\n      let _suppressImplicitEmit = false;\n      // step extract_identity_record (logic) — 从 parsed.data 提取身份比对字段：姓名/手机号/邮筱/性别/学校/专业/学历/毕业时间，展开三级比对结构\n      try {\n        last = await ctx.reason(SYSTEM_PROMPT + \"\\n\\n【当前子步骤】extract_identity_record：从 parsed.data 提取身份比对字段：姓名/手机号/邮筱/性别/学校/专业/学历/毕业时间，展开三级比对结构\", carry());\n      } catch (e) {\n        const _resolution = _afResolveFailure([{\"default\":\"terminal\"}], e, undefined);\n        if (_resolution.disposition !== \"continue\") {\n          const _tag = _resolution.disposition === \"terminal\" ? \"terminal\" : (_resolution.policyAction === \"park\" ? \"park\" : \"retry\");\n          ctx.log?.(\"error\", \"步骤 extract_identity_record 按错误策略终止\", { action: _resolution.policyAction, facts: _resolution.facts });\n          throw new Error(\"[\" + _tag + \"] step extract_identity_record: \" + _resolution.facts.message);\n        }\n        if (_resolution.suppressEmit) _suppressImplicitEmit = true;\n        if (_resolution.emitEvent) { await ctx.emit(_resolution.emitEvent, _afFailurePayload(_resolution)); _explicitEmitCount++; }\n        last = _resolution.defaultResult;\n      }\n      results[\"extract_identity_record\"] = last;\n      // step resolve_identity_match (tool) — 查询候选人对比池，按三级规则判定同人结论，命中即停\n      try {\n        last = await (async () => { const _raw = await ctx.tools.run(\"facts.query\", _afToolArguments({\"subject\":{\"from\":\"input.upload_id\",\"required\":true},\"objectTypes\":{\"const\":[\"Candidate\"]},\"identityFields\":{\"from\":\"input.parsed\",\"required\":true}}, { event: { name: \"CANDIDATE_IDENTITY_REQUESTED\", data: $in }, lastResult: last, results, input: $in })); return _afMapToolResult(_raw, {\"fields\":{\"samePerson\":\"result.same_person\",\"sameAsCandidateId\":\"result.same_as_candidate_id\",\"matchedRule\":\"result.matched_rule\",\"dedupAction\":\"result.dedup_action\",\"needsHumanReview\":\"result.needs_human_review\"},\"includeRaw\":true}); })();\n      } catch (e) {\n        const _resolution = _afResolveFailure([{\"default\":\"continue\",\"defaultResult\":{\"samePerson\":false,\"sameAsCandidateId\":null,\"matchedRule\":null,\"dedupAction\":\"new\",\"needsHumanReview\":false}}], e, undefined);\n        if (_resolution.disposition !== \"continue\") {\n          const _tag = _resolution.disposition === \"terminal\" ? \"terminal\" : (_resolution.policyAction === \"park\" ? \"park\" : \"retry\");\n          ctx.log?.(\"error\", \"步骤 resolve_identity_match 按错误策略终止\", { action: _resolution.policyAction, facts: _resolution.facts });\n          throw new Error(\"[\" + _tag + \"] step resolve_identity_match: \" + _resolution.facts.message);\n        }\n        if (_resolution.suppressEmit) _suppressImplicitEmit = true;\n        if (_resolution.emitEvent) { await ctx.emit(_resolution.emitEvent, _afFailurePayload(_resolution)); _explicitEmitCount++; }\n        last = _resolution.defaultResult;\n      }\n      results[\"resolve_identity_match\"] = last;\n      // step persist_identity_audit (tool) — 强制写审计记录，写失败必须抛 RuleAuditPersistenceFailure\n      try {\n        last = await (async () => { const _raw = await ctx.tools.run(\"records.upsert\", _afToolArguments({\"record_type\":{\"const\":\"candidate_identity_result\"},\"upload_id\":{\"from\":\"input.upload_id\",\"required\":true},\"same_person\":{\"from\":\"results.resolve_identity_match.result.samePerson\",\"required\":true},\"same_as_candidate_id\":{\"from\":\"results.resolve_identity_match.result.sameAsCandidateId\",\"required\":false},\"matched_rule\":{\"from\":\"results.resolve_identity_match.result.matchedRule\",\"required\":false},\"dedup_action\":{\"from\":\"results.resolve_identity_match.result.dedupAction\",\"required\":true},\"needs_human_review\":{\"from\":\"results.resolve_identity_match.result.needsHumanReview\",\"required\":true}}, { event: { name: \"CANDIDATE_IDENTITY_REQUESTED\", data: $in }, lastResult: last, results, input: $in })); return _afMapToolResult(_raw, {\"fields\":{\"auditId\":\"result.audit_id\"}}); })();\n      } catch (e) {\n        const _resolution = _afResolveFailure([{\"when\":\"status >= 500 || code == 'ETIMEDOUT' || code == 'WRITE_FAILED'\",\"do\":\"park\",\"suppressEmit\":true},{\"default\":\"terminal\"}], e, undefined);\n        if (_resolution.disposition !== \"continue\") {\n          const _tag = _resolution.disposition === \"terminal\" ? \"terminal\" : (_resolution.policyAction === \"park\" ? \"park\" : \"retry\");\n          ctx.log?.(\"error\", \"步骤 persist_identity_audit 按错误策略终止\", { action: _resolution.policyAction, facts: _resolution.facts });\n          throw new Error(\"[\" + _tag + \"] step persist_identity_audit: \" + _resolution.facts.message);\n        }\n        if (_resolution.suppressEmit) _suppressImplicitEmit = true;\n        if (_resolution.emitEvent) { await ctx.emit(_resolution.emitEvent, _afFailurePayload(_resolution)); _explicitEmitCount++; }\n        last = _resolution.defaultResult;\n      }\n      results[\"persist_identity_audit\"] = last;\n      // step fetch_identity_rules (tool) — 读取当前 ruleCheckForCandidateIdentity 规则补充审计依据，读取失败 fail-closed\n      try {\n        last = await (async () => { const _raw = await ctx.tools.run(\"ontology.fetchActionRules\", _afToolArguments({\"action\":{\"const\":\"ruleCheckForCandidateIdentity\"}}, { event: { name: \"CANDIDATE_IDENTITY_REQUESTED\", data: $in }, lastResult: last, results, input: $in })); return _afMapToolResult(_raw, {\"fields\":{\"rules\":\"result.rules\"}}); })();\n      } catch (e) {\n        const _resolution = _afResolveFailure([{\"when\":\"status >= 500 || code == 'ETIMEDOUT'\",\"do\":\"park\",\"suppressEmit\":true},{\"default\":\"terminal\"}], e, undefined);\n        if (_resolution.disposition !== \"continue\") {\n          const _tag = _resolution.disposition === \"terminal\" ? \"terminal\" : (_resolution.policyAction === \"park\" ? \"park\" : \"retry\");\n          ctx.log?.(\"error\", \"步骤 fetch_identity_rules 按错误策略终止\", { action: _resolution.policyAction, facts: _resolution.facts });\n          throw new Error(\"[\" + _tag + \"] step fetch_identity_rules: \" + _resolution.facts.message);\n        }\n        if (_resolution.suppressEmit) _suppressImplicitEmit = true;\n        if (_resolution.emitEvent) { await ctx.emit(_resolution.emitEvent, _afFailurePayload(_resolution)); _explicitEmitCount++; }\n        last = _resolution.defaultResult;\n      }\n      results[\"fetch_identity_rules\"] = last;\n      // step emit_identity_checked (emit) — 发出 CANDIDATE_IDENTITY_CHECKED，携带全量判定结论与审计编号\n      try {\n        const _selected = readConditionPath({ event: { name: \"CANDIDATE_IDENTITY_REQUESTED\", data: $in }, lastResult: last, results, input: $in }, \"results.persist_identity_audit.result\");\n        if (_selected === undefined) throw new Error(\"[terminal] emit step emit_identity_checked: payload path results.persist_identity_audit.result did not resolve\");\n        const _payloadBase = _selected && typeof _selected === \"object\" && !Array.isArray(_selected) ? (_selected as Record<string, unknown>) : _selected === undefined ? {} : { value: _selected };\n        const _payload: Record<string, unknown> = { ..._payloadBase, ...{\"upload_id\":\"{{input.upload_id}}\"} };\n        await ctx.emit(\"CANDIDATE_IDENTITY_CHECKED\", _payload);\n        _explicitEmitCount++;\n        last = { ..._payload, _emit: \"CANDIDATE_IDENTITY_CHECKED\" };\n      } catch (e) {\n        const _resolution = _afResolveFailure(undefined, e, undefined);\n        if (_resolution.disposition !== \"continue\") {\n          const _tag = _resolution.disposition === \"terminal\" ? \"terminal\" : (_resolution.policyAction === \"park\" ? \"park\" : \"retry\");\n          ctx.log?.(\"error\", \"步骤 emit_identity_checked 按错误策略终止\", { action: _resolution.policyAction, facts: _resolution.facts });\n          throw new Error(\"[\" + _tag + \"] step emit_identity_checked: \" + _resolution.facts.message);\n        }\n        if (_resolution.suppressEmit) _suppressImplicitEmit = true;\n        if (_resolution.emitEvent) { await ctx.emit(_resolution.emitEvent, _afFailurePayload(_resolution)); _explicitEmitCount++; }\n        last = _resolution.defaultResult;\n      }\n      results[\"emit_identity_checked\"] = last;\n      // 决策核心（fail-close）：LLM 不可用/失败时绝不伪造通过\n      const decision = (await ctx.reason(SYSTEM_PROMPT + \"\\n只输出 JSON。\", { input: $in, lastResult: last, results })) as Record<string, unknown>;\n      if (decision._reasonFailed === true) throw new Error(\"决策核心失败（LLM 不可用）——fail-close，不伪造通过\");\n      // 显式 emit / errorPolicy intent 是权威输出；没有 intent 且未 suppress 时才走历史隐式终态。\n      if (_explicitEmitCount === 0 && !_suppressImplicitEmit) {\n        await ctx.emit(\"CANDIDATE_IDENTITY_CHECKED\", { ...carry(), ...decision });\n      }\n      return { ok: decision.pass !== false && decision.ok !== false, lastResult: last, results };\n  },\n});\n",
+    "codeExecuted": false,
+    "probeReason": "execution owner=declarative-plan: 工具调用需要独立 durable step、幂等键与 typed failure policy；错误策略需要宿主的 typed retry/park/terminal 控制流；代码直接访问 reason、tools.run；当前协议不能把这些调用恢复为独立 durable step"
+  },
+  "createdAt": "2026-07-20T05:49:12.892Z",
+  "versionId": "v-20260720054912892-0f578b0e",
+  "ownerTenantId": "ten-f17312c2b674",
+  "bindingDomainId": "Agents-generation"
+}

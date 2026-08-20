@@ -51,6 +51,9 @@ describe("sensitive input boundary", () => {
       authorizationContext: "probe_authorization:v2:" + "b".repeat(64),
       authorizationValue: "authorize_probe:v2:" + "c".repeat(64),
       option: "authorize_probe:v2:" + "a".repeat(64),
+      sandboxPlanContext: "sandbox_evidence_plan_authorization:v1:" + "d".repeat(64),
+      sandboxPlanConfirm: "authorize_sandbox_evidence_plan:v1:" + "e".repeat(64),
+      sandboxPlanDecline: "decline_sandbox_evidence_plan:v1:" + "f".repeat(64),
     };
     expect(sanitizeSensitiveInput(value)).toEqual({ sanitized: value, paths: [] });
   });

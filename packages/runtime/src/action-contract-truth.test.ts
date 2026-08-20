@@ -108,6 +108,21 @@ describe("action contracts fail closed", () => {
       type: "condition",
       condition: "input.ready && (results.check.score >= 80 || input.force == true)",
     }).success).toBe(true);
+    const proseCondition = ActionSchema.safeParse({
+      ...base,
+      type: "emit",
+      emit_event: "DONE",
+      condition: "审计已落库",
+    });
+    expect(proseCondition.success).toBe(true);
+    if (proseCondition.success) {
+      expect(proseCondition.data.condition).toBe("审计已落库");
+    }
+    expect(ActionSchema.safeParse({
+      ...base,
+      type: "tool",
+      condition: "input.ready && results.check.score >= 80",
+    }).success).toBe(true);
   });
 
   it("removes the dead action retry contract and migrates uniform legacy values to the agent", () => {

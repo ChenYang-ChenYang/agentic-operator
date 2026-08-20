@@ -1,24 +1,13 @@
 import type { FastifyInstance } from "fastify";
-import { readFile } from "node:fs/promises";
 import { and, desc, eq, inArray } from "drizzle-orm";
-import { agents, auditLog, events, getDb, runs, tasks } from "@agentic/db";
+import { agents, auditLog, getDb, runs, tasks } from "@agentic/db";
 import {
-  appendToLedger,
   getTenantInngest,
-  privateUsageAttributionMetadata,
   publishStreamEvent,
   tenantEventName,
 } from "@agentic/runtime";
-import {
-  currentUsageAttribution,
-  mergeUsageAttribution,
-} from "@agentic/llm-gateway";
 import { makeId } from "@agentic/shared";
-import {
-  CreateAgentRunResponseSchema,
-  ListRunsQuery,
-  ReplayStudioRunBodySchema,
-} from "@agentic/contracts";
+import { BulkRunActionBody, ListRunsQuery } from "@agentic/contracts";
 import { requirePermission } from "../../plugins/rbac";
 import { writeAudit } from "../../plugins/audit";
 import {
@@ -31,18 +20,22 @@ import {
   softDeleteRun,
   restoreRun,
   bulkSoftDeleteRuns,
+  bulkSoftDeleteRunIds,
+  bulkRestoreRunIds,
+  purgeRunIds,
   purgeDeletedRuns,
+  selectRunIds,
 } from "../../queries/runs";
 import { getRunSummary } from "../../queries/reasoning";
 import {
   generateRunSummary,
   RunSummaryGenerationError,
 } from "../../services/run-summary";
+import { finalizeCancelledStudioRun } from "../../services/studio-runner";
 import {
-  finalizeCancelledStudioRun,
-  replayStudioRun,
-  StudioRunInputError,
-} from "../../services/studio-runner";
+  replayRunForOperator,
+  RunReplayError,
+} from "../../services/run-replay";
 
 export async function runsRoutes(app: FastifyInstance) {
   // GET /v1/runs — list.
@@ -65,6 +58,15 @@ export async function runsRoutes(app: FastifyInstance) {
         agentName: q.agent,
         query: q.q,
         parentRunId: q.parentRunId,
+        triggerEvent: q.triggerEvent,
+        invocationSource: q.invocationSource,
+        businessResult: q.businessResult,
+        testRun:
+          q.testRun === undefined
+            ? undefined
+            : q.testRun === "1" || q.testRun === "true",
+        from: q.from,
+        to: q.to,
         deleted: wantDeleted,
       });
       return reply.ok(paged);
@@ -76,6 +78,15 @@ export async function runsRoutes(app: FastifyInstance) {
       agentName: q.agent,
       query: q.q,
       parentRunId: q.parentRunId,
+      triggerEvent: q.triggerEvent,
+      invocationSource: q.invocationSource,
+      businessResult: q.businessResult,
+      testRun:
+        q.testRun === undefined
+          ? undefined
+          : q.testRun === "1" || q.testRun === "true",
+      from: q.from,
+      to: q.to,
     });
     return reply.ok(rows);
   });
@@ -172,170 +183,119 @@ export async function runsRoutes(app: FastifyInstance) {
     "/runs/:id/replay",
     async (req, reply) => {
       const auth = requirePermission(req, "runs.replay");
-      const db = getDb();
-      const run = db
-        .select()
-        .from(runs)
-        .where(eq(runs.id, req.params.id))
-        .all()[0];
-      if (!run) return reply.fail("not_found", "run not found", 404);
-      if (run.tenantId !== auth.tenantId)
-        return reply.fail("forbidden", "forbidden", 403);
-      if (["studio", "replay"].includes(run.invocationSource)) {
-        const body = ReplayStudioRunBodySchema.parse(req.body ?? {});
-        try {
-          const replay = CreateAgentRunResponseSchema.parse(
-            await replayStudioRun(auth, run.id, body),
-          );
-          writeAudit({
-            tenantId: auth.tenantId,
-            action: "run.replay",
-            targetType: "run",
-            targetId: replay.runId,
-            meta: {
-              replay_of_run: run.id,
-              version: body.version,
-              session_id: replay.sessionId,
-            },
-          });
-          return reply.ok(replay, 202);
-        } catch (error) {
-          if (error instanceof StudioRunInputError) {
-            return reply.fail(
-              error.code,
-              error.message,
-              error.code.endsWith("missing") || error.code.endsWith("expired")
-                ? 410
-                : 400,
-              undefined,
-              error.issues,
-            );
-          }
-          throw error;
-        }
-      }
-      if (!run.triggerEventId)
-        return reply.fail("no_trigger", "run has no trigger event", 400);
-
-      const evt = db
-        .select()
-        .from(events)
-        .where(eq(events.id, run.triggerEventId))
-        .all()[0];
-      if (!evt) return reply.fail("gone", "trigger event missing", 410);
-
-      let payload: Record<string, unknown> = {};
-      if (evt.payloadRef) {
-        const [filePath, offsetStr] = evt.payloadRef.split("#");
-        if (
-          !filePath ||
-          offsetStr == null ||
-          !Number.isSafeInteger(Number(offsetStr))
-        ) {
-          return reply.fail(
-            "payload_unreadable",
-            "trigger event payload reference is malformed",
-            409,
-          );
-        }
-        try {
-          const buf = await readFile(filePath);
-          const offset = Number(offsetStr);
-          const nl = buf.indexOf(0x0a, offset);
-          const line = buf.toString("utf8", offset, nl === -1 ? undefined : nl);
-          payload = (JSON.parse(line).data ?? {}) as Record<string, unknown>;
-        } catch (err) {
-          req.log.error(
-            { err, runId: run.id, payloadRef: evt.payloadRef },
-            "run.replay: payload read failed",
-          );
-          return reply.fail(
-            "payload_unreadable",
-            "original trigger payload cannot be read; replay was not enqueued",
-            409,
-          );
-        }
-      }
-
-      const newEventId = makeId("evt");
-      const correlationId = makeId("cor");
-      const replayData = {
-        ...payload,
-        subject: evt.subject ?? undefined,
-        ...(auth.tenantSlug === "zhaopin"
-          ? { entity_id: evt.subject ?? newEventId }
-          : {}),
-        __triggerEventId: newEventId,
-        __correlationId: correlationId,
-        __replayOfRun: run.id,
-        ...privateUsageAttributionMetadata(
-          mergeUsageAttribution(currentUsageAttribution(), {
-            billingAccountId: auth.tenantId,
-            correlationId,
-            invocationSource: "replay",
-          }),
-        ),
-      };
-      const payloadRef = await appendToLedger(auth.tenantSlug, {
-        id: newEventId,
-        name: evt.name,
-        subject: evt.subject ?? undefined,
-        data: replayData,
-        ts: Date.now(),
-      });
-      db.insert(events)
-        .values({
-          id: newEventId,
-          tenantId: auth.tenantId,
-          name: evt.name,
-          category: evt.category ?? null,
-          subject: evt.subject ?? null,
-          payloadRef,
-        })
-        .run();
       try {
-        publishStreamEvent({
-          type: "event.emitted",
-          tenantId: auth.tenantId,
-          at: Date.now(),
-          eventId: newEventId,
-          name: evt.name,
-          subject: evt.subject ?? null,
-          sourceRunId: run.id,
-        });
-      } catch {
-        /* durable event row is authoritative */
-      }
-      try {
-        await getTenantInngest(auth.tenantSlug).send({
-          name: tenantEventName(
-            auth.tenantSlug,
-            evt.name,
-          ) as `${string}/${string}`,
-          data: replayData,
-        });
-      } catch (err) {
-        req.log.error(
-          { err, runId: run.id, eventId: newEventId },
-          "run.replay: inngest.send failed",
+        const replay = await replayRunForOperator(
+          auth,
+          req.params.id,
+          req.body ?? {},
         );
-        return reply.fail(
-          "enqueue_failed",
-          `replay event was persisted as ${newEventId}, but Inngest rejected the enqueue`,
-          502,
-        );
+        return reply.ok(replay.body, replay.statusCode);
+      } catch (error) {
+        if (error instanceof RunReplayError) {
+          req.log.warn({ error, runId: req.params.id }, "run replay rejected");
+          return reply.fail(
+            error.code,
+            error.message,
+            error.statusCode,
+            undefined,
+            error.issues,
+          );
+        }
+        throw error;
       }
-      writeAudit({
-        tenantId: auth.tenantId,
-        actorUserId: auth.userId ?? undefined,
-        action: "run.replay",
-        targetType: "run",
-        targetId: run.id,
-        meta: { new_event_id: newEventId },
-      });
-      return reply.ok({ replayed_run: run.id, new_event_id: newEventId });
     },
   );
+
+  // POST /v1/runs/bulk-actions — selected ids or a server-side filter snapshot.
+  // Filter mode is what makes "select all matching" correct across pagination.
+  app.post("/runs/bulk-actions", async (req, reply) => {
+    const body = BulkRunActionBody.parse(req.body);
+    const permission = body.action === "replay" ? "runs.replay" : "runs.delete";
+    const auth = requirePermission(req, permission);
+
+    const runIds =
+      body.selection.mode === "ids"
+        ? [...new Set(body.selection.ids)]
+        : selectRunIds(
+            auth.tenantId,
+            {
+              status: body.selection.filter.status,
+              agentName: body.selection.filter.agent,
+              query: body.selection.filter.q,
+              triggerEvent: body.selection.filter.triggerEvent,
+              invocationSource: body.selection.filter.invocationSource,
+              businessResult: body.selection.filter.businessResult,
+              testRun: body.selection.filter.testRun,
+              from: body.selection.filter.from,
+              to: body.selection.filter.to,
+              deleted: body.selection.filter.deleted,
+            },
+            body.selection.excludeIds,
+          );
+    if (runIds.length > 10_000) {
+      return reply.fail(
+        "selection_too_large",
+        "selection matches more than 10,000 runs; narrow the filters first",
+        413,
+      );
+    }
+
+    let affected = 0;
+    const replayedRunIds: string[] = [];
+    const failures: Array<{ runId: string; error: string }> = [];
+    if (body.action === "delete") {
+      affected = bulkSoftDeleteRunIds(auth.tenantId, runIds);
+    } else if (body.action === "restore") {
+      affected = bulkRestoreRunIds(auth.tenantId, runIds);
+    } else if (body.action === "purge") {
+      affected = await purgeRunIds(auth.tenantId, runIds);
+    } else {
+      if (runIds.length > 200) {
+        return reply.fail(
+          "replay_selection_too_large",
+          "bulk replay is limited to 200 runs per request",
+          413,
+        );
+      }
+      for (const runId of runIds) {
+        try {
+          const replay = await replayRunForOperator(auth, runId);
+          if (replay.newRunId) replayedRunIds.push(replay.newRunId);
+          affected += 1;
+        } catch (error) {
+          failures.push({
+            runId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+    }
+
+    writeAudit({
+      tenantId: auth.tenantId,
+      actorUserId: auth.userId ?? undefined,
+      action: `run.${body.action}.bulk`,
+      targetType: "run",
+      targetId:
+        body.selection.mode === "ids" ? "selected" : "filtered-selection",
+      meta: {
+        matched: runIds.length,
+        affected,
+        skipped: runIds.length - affected,
+        filter:
+          body.selection.mode === "filter" ? body.selection.filter : undefined,
+      },
+    });
+    return reply.ok({
+      action: body.action,
+      matched: runIds.length,
+      affected,
+      skipped: runIds.length - affected,
+      replayedRunIds: body.action === "replay" ? replayedRunIds : undefined,
+      failures: failures.length > 0 ? failures : undefined,
+      note: `${affected} of ${runIds.length} selected run(s) processed.`,
+    });
+  });
 
   // POST /v1/runs/:id/cancel — operator kill switch for an in-flight run.
   //

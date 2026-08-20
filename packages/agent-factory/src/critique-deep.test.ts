@@ -135,6 +135,54 @@ describe("critique_plan — 三视角分治评审", () => {
     expect(r.summary).toContain("三视角评审通过");
   });
 
+  it("服务端 Action scope 不把全域理解包泄漏给评审，也明确禁止补未选 Action", async () => {
+    vi.mocked(runSpecialists).mockResolvedValue([
+      { id: "chain", role: "链路完整视角", ok: true, output: { issues: [] }, summary: "" },
+      { id: "rules", role: "规则合规视角", ok: true, output: { issues: [] }, summary: "" },
+      { id: "contract", role: "IO 契约视角", ok: true, output: { issues: [] }, summary: "" },
+    ] as never);
+    const { ctx } = bigPlanCtx();
+    ctx.generationDirective = {
+      schema: "agent-factory-generation-directive/v1",
+      mode: "action_selection",
+      requestedActionIds: ["a1"],
+      requestedActionNames: ["a1"],
+      requestedActions: [{ id: "a1", name: "a1" }],
+      sourceOntologyHash: "scope-hash",
+    };
+    ctx.currentPlan = {
+      version: 1,
+      summary: "only a1",
+      notes: [],
+      agents: [
+        {
+          actionName: "a1",
+          role: "selected",
+          triggerEvents: ["a1_IN"],
+          emitEvents: ["a1_OUT"],
+          toolCandidates: [],
+          edgeCases: [],
+        },
+      ],
+    };
+    ctx.ontologyUnderstanding =
+      "全域历史理解：必须生成 a2、a3、a4 才算完整。";
+
+    const result = await critique.execute({ deep: true }, ctx);
+
+    expect(result.ok).toBe(true);
+    const tasks = vi.mocked(runSpecialists).mock.calls[0]![1] as Array<{
+      system: string;
+      user: string;
+    }>;
+    expect(tasks).toHaveLength(3);
+    for (const task of tasks) {
+      expect(task.system).toContain("本次唯一允许评审、生成和验收的 Action 是：a1");
+      expect(task.system).toContain("不能因为没有出现在计划里而判为漏项");
+      expect(task.user).not.toContain("必须生成 a2、a3、a4");
+    }
+  });
+
   it("专家 <2 成功 → 诚实降级（发降级 reflect，走单跳路径）", async () => {
     vi.mocked(runSpecialists).mockResolvedValue([
       { id: "chain", role: "链路完整视角", ok: false, output: null, summary: "挂了" },

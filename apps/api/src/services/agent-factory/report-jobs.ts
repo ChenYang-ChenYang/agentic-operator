@@ -557,7 +557,16 @@ async function runJob(job: ReportJob, extraHtml?: string): Promise<void> {
       );
       const sys = String(msgs[0]?.content ?? "");
       const usr = String(msgs[1]?.content ?? "");
-      return await chatOnce(sys, usr, { maxTokens: REPORT_MAX_TOKENS, purpose: "report-write" });
+      return await chatOnce(sys, usr, {
+        maxTokens: REPORT_MAX_TOKENS,
+        purpose: "report-write",
+        context: {
+          tenantId: job.tenantId,
+          tenantSlug: job.tenantSlug,
+          domain: job.domain,
+          runId: job.runId ?? undefined,
+        },
+      });
     };
 
     const agent = agentRegistry.get("reportGenerator");

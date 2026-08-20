@@ -42,6 +42,7 @@ export type IdPrefix =
   | "whk"
   | "intg"
   | "llc"
+  | "spf"
   | "use"
   | "exe";
 

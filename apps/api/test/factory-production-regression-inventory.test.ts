@@ -208,6 +208,27 @@ describe("Factory production regression inventory", () => {
     ).toThrow("orphan or cross-tenant version");
   });
 
+  it("ignores non-workflow runtime deployment markers", () => {
+    const rows = deployments();
+    rows.push({
+      deploymentId: "dpl-inngest-ten-inventory",
+      tenantId,
+      tenantSlug,
+      workflowTenantId: null,
+      target: "runtime",
+      status: "live",
+      note: "agentic-operator:tenant-inngest-selection:v1",
+      manifest: null,
+    });
+
+    expect(
+      buildFactoryProductionRegressionInventory({
+        deployments: rows,
+        ledger: ledger(),
+      }).liveAgents,
+    ).toHaveLength(1);
+  });
+
   it("refuses pending and empty ledgers instead of reporting an empty pass", () => {
     const pending = ledger();
     pending.pending.push({

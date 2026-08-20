@@ -500,9 +500,12 @@ export async function workflowAuthoringRoutes(
             workflow: snapshot.manifest,
             ...(snapshot.actions ? { actions: snapshot.actions } : {}),
             target: "production",
-            // Clicking Publish after a successful exact-version validation is
-            // the explicit promotion confirmation for the authoring surface.
-            confirm_overwrite: true,
+            // Clicking Publish confirms promoting THIS version — it does not
+            // confirm dropping agents that are live today. A tenant has one
+            // live workflow deployment, so a removal here removes the agent
+            // from the running system; `overwriteGuard` answers 409 with the
+            // diff and the operator re-submits with confirmOverwrite.
+            confirm_overwrite: body.confirmOverwrite,
             workflow_slug: snapshot.workflowSlug,
             workflow_name: snapshot.workflowName,
             note: body.note ?? `Published workflow ${snapshot.workflowSlug}`,

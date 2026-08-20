@@ -95,6 +95,58 @@ describe("LLM-backed reviews fail closed", () => {
     expect((result.output as { reviewFailures: string[] }).reviewFailures[0]).toContain("上下文裁判");
   });
 
+  it("anchors a scoped context review in the selected Action contract, not a conflicting full-domain digest", async () => {
+    vi.mocked(chatJson).mockResolvedValueOnce([]);
+    const scoped = ctx([spec({ tools: ["generateJdApi"] })]);
+    scoped.ontology = {
+      ...ontology,
+      actions: [
+        {
+          ...ontology.actions[0],
+          integration: {
+            systems: [
+              {
+                name: "GoHire_System",
+                via_tool: "generateJdApi",
+                capability: "jd.generate",
+              },
+            ],
+          },
+        },
+        {
+          name: "InviteInterview",
+          actor: ["Agent"],
+          trigger: ["INTERVIEW_REQUESTED"],
+          triggered_event: ["INTERVIEW_STARTED"],
+          target_objects: [],
+          tool_use: [],
+          system_prompt: "",
+          user_prompt: "",
+        },
+      ],
+    } as never;
+    scoped.ontologyUnderstanding =
+      "错误的全域旧摘要：GoHire_System 只属于 InviteInterview，CreateJD 不得调用。";
+    scoped.generationDirective = {
+      schema: "agent-factory-generation-directive/v1",
+      mode: "action_selection",
+      requestedActionIds: ["create-jd"],
+      requestedActionNames: ["CreateJD"],
+      requestedActions: [{ id: "create-jd", name: "CreateJD" }],
+      sourceOntologyHash: "a".repeat(64),
+    };
+
+    const result = await reviewContext.execute({}, scoped);
+
+    expect(result.ok).toBe(true);
+    const [system, user] = vi.mocked(chatJson).mock.calls[0]!;
+    expect(system).toContain("Action 权威契约");
+    expect(system).toContain("本次服务端验收范围只有：CreateJD");
+    expect(user).toContain("GoHire_System");
+    expect(user).toContain("generateJdApi");
+    expect(user).not.toContain("错误的全域旧摘要");
+  });
+
   it("blocks completeness review on a structurally invalid LLM verdict", async () => {
     vi.mocked(chatJson).mockResolvedValueOnce([{ gap: "missing edge case", severity: "critical" }]);
 

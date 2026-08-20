@@ -473,6 +473,66 @@ function asFinitePositive(
  * Structured generated-code execution API used by the step engine. Every
  * denial and worker/RPC failure retains a concrete reason and telemetry.
  */
+/**
+ * `ctx.invoke(<agentRef>, input, {timeoutMs})` —— agent 之间那条调用缝。
+ *
+ * 抽出来是因为这里有一条不能靠「记得别改」来守的规则：**没有 host 绑定就必须
+ * 失败，沙箱与生产失败得一模一样。** 沙箱曾经在这里退到
+ * `spawn("执行 <agentRef>", …)`——也就是让一个 LLM 现编一个「大概叫这个名字」的
+ * agent，把它的输出当成真子 agent 的回答返回。而沙箱证据正是晋升的门，于是
+ * 一个幻觉替身可以为一个根本不存在的子 agent 背书「跑通了」。两边行为不一致的
+ * 沙箱，测的就不是将要上线的那个东西。
+ *
+ * 这个分支只依赖 hostRuntime 与调用参数，不碰 spawn / emit / 容器状态——所以它
+ * 能独立成一个有名字、有契约、可单测的单元，而不必为了测它去拉起一个真容器
+ * （走 runGeneratedCodeIsolated 需要固定镜像摘要，测出来的是环境不是不变量）。
+ */
+export async function dispatchInvokeRpc(
+  hostRuntime: GeneratedCodeHostRuntime | undefined,
+  args: readonly unknown[],
+): Promise<unknown> {
+  const agentRef = args[0];
+  if (typeof agentRef !== "string" || !agentRef.trim())
+    throw new Error("invoke agentRef is required");
+  const invokeOptions =
+    args[2] && typeof args[2] === "object" && !Array.isArray(args[2])
+      ? (args[2] as { timeoutMs?: unknown })
+      : {};
+  if (
+    invokeOptions.timeoutMs !== undefined &&
+    (typeof invokeOptions.timeoutMs !== "number" ||
+      !Number.isFinite(invokeOptions.timeoutMs) ||
+      invokeOptions.timeoutMs <= 0)
+  ) {
+    throw new Error("invoke timeoutMs must be a positive finite number");
+  }
+  const timeoutMs = invokeOptions.timeoutMs as number | undefined;
+  const operation = async (): Promise<unknown> => {
+    if (hostRuntime?.invoke)
+      return hostRuntime.invoke(agentRef, args[1], { timeoutMs });
+    throw new Error(`invoke '${agentRef}' has no durable host binding`);
+  };
+  if (timeoutMs === undefined) return operation();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      operation(),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(
+          () =>
+            reject(
+              new Error(`invoke '${agentRef}' exceeded timeout (${timeoutMs}ms)`),
+            ),
+          timeoutMs,
+        );
+        timer.unref?.();
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 export async function runGeneratedCodeIsolated(
   code: string,
   input: Record<string, unknown>,
@@ -839,52 +899,8 @@ export async function runGeneratedCodeIsolated(
         return null;
       case "memory.search":
         return memory.search(String(args[0] ?? ""), Number(args[1] ?? 5));
-      case "invoke": {
-        const agentRef = args[0];
-        if (typeof agentRef !== "string" || !agentRef.trim())
-          throw new Error("invoke agentRef is required");
-        const invokeOptions =
-          args[2] && typeof args[2] === "object" && !Array.isArray(args[2])
-            ? (args[2] as { timeoutMs?: unknown })
-            : {};
-        if (
-          invokeOptions.timeoutMs !== undefined &&
-          (typeof invokeOptions.timeoutMs !== "number" ||
-            !Number.isFinite(invokeOptions.timeoutMs) ||
-            invokeOptions.timeoutMs <= 0)
-        ) {
-          throw new Error("invoke timeoutMs must be a positive finite number");
-        }
-        const timeoutMs = invokeOptions.timeoutMs as number | undefined;
-        const operation = async (): Promise<unknown> => {
-          if (hostRuntime?.invoke)
-            return hostRuntime.invoke(agentRef, args[1], { timeoutMs });
-          if (!sandbox)
-            throw new Error(
-              `production invoke '${agentRef}' has no durable host binding`,
-            );
-          const child = await spawn(`执行 ${agentRef}`, args[1] ?? input);
-          if (!child.ok)
-            throw new Error(child.error ?? `invoke '${agentRef}' failed`);
-          return child.data;
-        };
-        if (timeoutMs === undefined) return operation();
-        let timer: ReturnType<typeof setTimeout> | undefined;
-        try {
-          return await Promise.race([
-            operation(),
-            new Promise<never>((_resolve, reject) => {
-              timer = setTimeout(
-                () => reject(new Error(`invoke '${agentRef}' exceeded timeout (${timeoutMs}ms)`)),
-                timeoutMs,
-              );
-              timer.unref?.();
-            }),
-          ]);
-        } finally {
-          if (timer) clearTimeout(timer);
-        }
-      }
+      case "invoke":
+        return dispatchInvokeRpc(hostRuntime, args);
       case "spawn":
         return spawn(
           String(args[0] ?? ""),

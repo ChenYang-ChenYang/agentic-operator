@@ -33,7 +33,6 @@ import { Logo } from "./logo";
 import { NavGroup, NavItem } from "./nav";
 import { TenantSwitcher, type TenantOption } from "./tenant-switcher";
 import { useI18n } from "../../lib/preferences-context";
-import { reasoningAgentHref } from "@/lib/reasoning-workspace";
 import styles from "./sidebar.module.css";
 
 export interface SidebarProps {
@@ -239,12 +238,6 @@ export function Sidebar({
               label={t("nav.workflows")}
             />
             <NavItem
-              href={reasoningAgentHref(tenantSlug)}
-              icon="spark"
-              label={t("nav.reasoningAgent")}
-              matchPrefix
-            />
-            <NavItem
               href={`${base}/agents`}
               icon="agent"
               label={t("nav.agents")}
@@ -283,16 +276,13 @@ export function Sidebar({
             />
           </NavGroup>
           <NavGroup label={t("nav.group.manage")}>
+            {/* The conversational workspace is OntoCode's canonical product
+                surface. Its prefix match also keeps this item active while a
+                user is inside an individual Build Session. */}
             <NavItem
-              href={`${base}/ontocode`}
+              href={`${base}/ontocode-workspace`}
               icon="spark"
               label={t("nav.ontocode")}
-              matchPrefix
-            />
-            <NavItem
-              href={`${base}/factory`}
-              icon="spark"
-              label={t("nav.factory")}
               matchPrefix
             />
             <NavItem

@@ -291,6 +291,18 @@ export async function persistCassette(
   tenantSlug: string,
   toolName: string,
 ): Promise<string> {
+  return (await persistCassetteTracked(document, dataRoot, tenantSlug, toolName)).path;
+}
+
+/** Same content-addressed write with creation provenance, used by multi-file
+ * transactions so newly-created files can be compensated if the DB commit
+ * fails. Existing shared cassettes are never removed by that compensation. */
+export async function persistCassetteTracked(
+  document: CanonicalCassetteDocument,
+  dataRoot: string,
+  tenantSlug: string,
+  toolName: string,
+): Promise<{ path: string; created: boolean }> {
   const dir = path.resolve(dataRoot, "factory-cassettes", safeSegment(tenantSlug));
   await fs.mkdir(dir, { recursive: true, mode: 0o700 });
   const canonical = canonicalEvidenceJson(document);
@@ -302,14 +314,15 @@ export async function persistCassette(
       mode: 0o600,
       flag: "wx",
     });
+    return { path: target, created: true };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
     const existing = await fs.readFile(target, "utf8");
     if (existing !== canonical) {
       throw new Error(`content-addressed cassette collision for ${toolName}`);
     }
+    return { path: target, created: false };
   }
-  return target;
 }
 
 type PreparedWriteBoundary = {

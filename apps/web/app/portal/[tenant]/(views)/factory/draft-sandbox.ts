@@ -58,12 +58,11 @@ export interface DraftSandboxReview {
   challenge: DraftSandboxChallenge;
 }
 
-export interface DraftSandboxFinishReceipt {
+interface DraftSandboxFinishReceiptBase {
   schema: "agent-factory-draft-sandbox-finish/v1";
   scope: DraftSandboxScope & { baseVersionId: string };
   baseVersionId: string;
   versionId: string;
-  regressionReady: true;
   fingerprint: string;
   sandbox: {
     appId: string;
@@ -71,13 +70,44 @@ export interface DraftSandboxFinishReceipt {
     cleanupVerified: true;
     functionsRegistered: number;
     agentsRan: number;
+    qualification: "development_only" | "promotable";
+    isolationTier: "same_host_container" | "remote_container" | "remote_vm";
   };
+}
+
+export interface DraftSandboxPromotableFinishReceipt
+  extends DraftSandboxFinishReceiptBase {
+  regressionReady: true;
+  diagnosticOnly: false;
+  qualification: "promotable";
   regressionReplay: {
     pass: true;
     suiteFingerprint: string;
     results: number;
   };
 }
+
+export interface DraftSandboxDiagnosticFinishReceipt
+  extends DraftSandboxFinishReceiptBase {
+  regressionReady: false;
+  diagnosticOnly: true;
+  qualification: "development_only";
+  diagnosticEvidence: {
+    schema: "agent-factory-draft-sandbox-diagnostic/v1";
+    receiptId: string;
+    persisted: true;
+    promotionBlockers: string[];
+  };
+  regressionReplay: {
+    pass: false;
+    skipped: true;
+    reason: string;
+  };
+}
+
+export type DraftSandboxFinishReceipt =
+  | DraftSandboxPromotableFinishReceipt
+  | DraftSandboxDiagnosticFinishReceipt;
 
 export type DraftSandboxValidation<T> =
   | { ok: true; data: T }
@@ -265,26 +295,64 @@ export function readDraftSandboxFinishReceipt(
     return { ok: false, message: t("factory.draftSandbox.error.finishIncomplete") };
   }
   const scope = value.scope;
-  if (
+  if (!isRecord(value.sandbox)) {
+    return { ok: false, message: t("factory.draftSandbox.error.finishMismatch") };
+  }
+  const sandbox = value.sandbox;
+  const commonInvalid =
     typeof scope.tenantId !== "string" || !scope.tenantId
     || scope.tenantSlug !== expected.tenantSlug
     || scope.domain !== expected.domain
     || scope.slug !== expected.slug
     || scope.baseVersionId !== expected.baseVersionId
     || value.baseVersionId !== expected.baseVersionId
-    || typeof value.versionId !== "string" || !value.versionId || value.versionId === expected.baseVersionId
+    || typeof value.versionId !== "string" || !value.versionId
     || scope.versionId !== value.versionId
-    || value.regressionReady !== true
     || typeof value.fingerprint !== "string" || !/^sandbox-evidence:v\d+:[a-f0-9]{64}$/i.test(value.fingerprint)
-    || !isRecord(value.sandbox) || value.sandbox.cleanupVerified !== true
-    || typeof value.sandbox.appId !== "string" || !value.sandbox.appId
-    || typeof value.sandbox.attemptId !== "string" || !value.sandbox.attemptId
-    || !Number.isInteger(value.sandbox.functionsRegistered) || Number(value.sandbox.functionsRegistered) < 1
-    || !Number.isInteger(value.sandbox.agentsRan) || Number(value.sandbox.agentsRan) < 1
-    || !isRecord(value.regressionReplay) || value.regressionReplay.pass !== true
-    || typeof value.regressionReplay.suiteFingerprint !== "string" || !value.regressionReplay.suiteFingerprint
-    || !Number.isInteger(value.regressionReplay.results) || Number(value.regressionReplay.results) < 1
-  ) {
+    || sandbox.cleanupVerified !== true
+    || typeof sandbox.appId !== "string" || !sandbox.appId
+    || typeof sandbox.attemptId !== "string" || !sandbox.attemptId
+    || !Number.isInteger(sandbox.functionsRegistered) || Number(sandbox.functionsRegistered) < 1
+    || !Number.isInteger(sandbox.agentsRan) || Number(sandbox.agentsRan) < 1;
+  if (commonInvalid) {
+    return { ok: false, message: t("factory.draftSandbox.error.finishMismatch") };
+  }
+  const replay = value.regressionReplay;
+  const promotable =
+    value.versionId !== expected.baseVersionId
+    && value.regressionReady === true
+    && value.diagnosticOnly === false
+    && value.qualification === "promotable"
+    && sandbox.qualification === "promotable"
+    && (sandbox.isolationTier === "remote_container"
+      || sandbox.isolationTier === "remote_vm")
+    && isRecord(replay)
+    && replay.pass === true
+    && typeof replay.suiteFingerprint === "string"
+    && Boolean(replay.suiteFingerprint)
+    && Number.isInteger(replay.results)
+    && Number(replay.results) > 0;
+  const diagnostic = value.diagnosticEvidence;
+  const developmentOnly =
+    value.versionId === expected.baseVersionId
+    && value.regressionReady === false
+    && value.diagnosticOnly === true
+    && value.qualification === "development_only"
+    && sandbox.qualification === "development_only"
+    && sandbox.isolationTier === "same_host_container"
+    && isRecord(diagnostic)
+    && diagnostic.schema === "agent-factory-draft-sandbox-diagnostic/v1"
+    && typeof diagnostic.receiptId === "string"
+    && Boolean(diagnostic.receiptId)
+    && diagnostic.persisted === true
+    && isStringArray(diagnostic.promotionBlockers)
+    && diagnostic.promotionBlockers.length > 0
+    && isRecord(replay)
+    && replay.pass === false
+    && replay.skipped === true
+    && typeof replay.reason === "string"
+    && Boolean(replay.reason);
+  if (!promotable && !developmentOnly) {
     return { ok: false, message: t("factory.draftSandbox.error.finishMismatch") };
   }
   return { ok: true, data: value as unknown as DraftSandboxFinishReceipt };

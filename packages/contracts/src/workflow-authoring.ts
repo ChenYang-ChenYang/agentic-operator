@@ -168,8 +168,15 @@ export const PublishWorkflowBodySchema = z
   .object({
     versionId: z.string().trim().min(1).optional(),
     note: z.string().trim().max(500).optional(),
+    /**
+     * A tenant has exactly one live workflow deployment, so publishing a
+     * manifest that drops an agent removes it from the live runtime. The
+     * import pipeline's `overwriteGuard` answers 409 with the removal diff
+     * unless the operator has seen it and re-submitted with this flag.
+     */
+    confirmOverwrite: z.boolean().optional().default(false),
   })
-  .default({});
+  .default({ confirmOverwrite: false });
 export type PublishWorkflowBody = z.infer<typeof PublishWorkflowBodySchema>;
 
 export const WorkflowValidationIssueSchema = z.object({
@@ -187,6 +194,12 @@ export const WorkflowPromptScoreSchema = z.object({
   score: z.number().int().min(0).max(11),
   required: z.number().int().positive(),
   missing: z.array(z.string()),
+  /**
+   * Sections that are structurally present but say nothing. `score` counts
+   * headings, which a prompt template supplies for free; this is the part an
+   * author has to earn.
+   */
+  weak: z.array(z.string()).default([]),
 });
 export type WorkflowPromptScore = z.infer<typeof WorkflowPromptScoreSchema>;
 

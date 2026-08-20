@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { createHash, generateKeyPairSync } from "node:crypto";
 import {
   chmodSync,
   chownSync,
@@ -20,6 +20,10 @@ import {
   machineIdSha256,
   validateExternalSandboxConfiguration,
 } from "./validate-external-sandbox.mjs";
+import {
+  identityHash,
+  signExecutionPlaneAttestation,
+} from "./sign-execution-plane-attestation.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const COMPOSE = path.join(HERE, "compose.external.yml");
@@ -78,6 +82,22 @@ function fixture() {
   );
 
   const candidate = pinned("candidate", "4");
+  const attestationRoot = mkdtempSync(
+    path.join(tmpdir(), "agentic-external-attestation-"),
+  );
+  const remoteHostIdentityHash = identityHash("host", MACHINE_ID);
+  const remoteDaemonIdentityHash = identityHash(
+    "docker-daemon",
+    "remote-daemon-test-id",
+  );
+  const primaryHostIdentityHash = identityHash(
+    "host",
+    "primary-host-test-id",
+  );
+  const primaryDaemonIdentityHash = identityHash(
+    "docker-daemon",
+    "primary-daemon-test-id",
+  );
   const env = {
     EXTERNAL_SANDBOX_COMPOSE_PROJECT: "agentic_factory_remote",
     EXTERNAL_SANDBOX_IMAGE_PULL_POLICY: "never",
@@ -89,6 +109,21 @@ function fixture() {
     EXTERNAL_SANDBOX_HOST_ID_SOURCE_FILE: "/etc/machine-id",
     EXTERNAL_SANDBOX_EXPECTED_HOST_ID_SHA256: machineIdSha256(MACHINE_ID),
     EXTERNAL_SANDBOX_PRIMARY_HOST_ID_SHA256: "f".repeat(64),
+    EXTERNAL_SANDBOX_ATTESTATION_ROOT: attestationRoot,
+    EXTERNAL_SANDBOX_EXECUTION_PLANE_ID: "test-execution-plane",
+    EXTERNAL_SANDBOX_EXECUTION_PLANE_TRUST_DOMAIN:
+      "sandbox.test.internal",
+    EXTERNAL_SANDBOX_PLATFORM_ATTESTOR_KEY_ID: "platform-key-test",
+    EXTERNAL_SANDBOX_PRIMARY_HOST_IDENTITY_HASH:
+      primaryHostIdentityHash,
+    EXTERNAL_SANDBOX_PRIMARY_DOCKER_DAEMON_IDENTITY_HASH:
+      primaryDaemonIdentityHash,
+    EXTERNAL_SANDBOX_CONTROL_HOST_IDENTITY_HASH:
+      remoteHostIdentityHash,
+    EXTERNAL_SANDBOX_WORKLOAD_HOST_IDENTITY_HASH:
+      remoteHostIdentityHash,
+    EXTERNAL_SANDBOX_DOCKER_DAEMON_IDENTITY_HASH:
+      remoteDaemonIdentityHash,
     EXTERNAL_SANDBOX_SECRET_ROOT: root,
     EXTERNAL_SANDBOX_SECRET_GID: String(SECRET_GID),
     EXTERNAL_SANDBOX_DOCKER_SOCKET_PATH: "/var/run/docker.sock",
@@ -107,6 +142,34 @@ function fixture() {
     EXTERNAL_SANDBOX_POSTGRES_IMAGE: pinned("postgres", "6"),
     EXTERNAL_SANDBOX_REDIS_IMAGE: pinned("redis", "7"),
   };
+  const keys = generateKeyPairSync("ed25519");
+  const attestation = signExecutionPlaneAttestation(
+    {
+      planeId: env.EXTERNAL_SANDBOX_EXECUTION_PLANE_ID,
+      trustDomain: env.EXTERNAL_SANDBOX_EXECUTION_PLANE_TRUST_DOMAIN,
+      runnerId: env.EXTERNAL_SANDBOX_RUNNER_ID,
+      runnerBuildId: env.EXTERNAL_SANDBOX_RUNNER_BUILD_ID,
+      runtimeImageDigest: env.EXTERNAL_SANDBOX_RUNTIME_IMAGE_DIGEST,
+      isolationTier: "remote_vm",
+      controlHostIdentityHash: remoteHostIdentityHash,
+      workloadHostIdentityHash: remoteHostIdentityHash,
+      dockerDaemonIdentityHash: remoteDaemonIdentityHash,
+      issuedAt: new Date(Date.now() - 1_000).toISOString(),
+      expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+      attestorKeyId: env.EXTERNAL_SANDBOX_PLATFORM_ATTESTOR_KEY_ID,
+    },
+    keys.privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
+  );
+  writeFileSync(
+    path.join(attestationRoot, "execution-plane.json"),
+    `${JSON.stringify(attestation)}\n`,
+    { mode: 0o644 },
+  );
+  writeFileSync(
+    path.join(attestationRoot, "platform-attestor-public.pem"),
+    keys.publicKey.export({ type: "spki", format: "pem" }),
+    { mode: 0o644 },
+  );
   return { env, root };
 }
 
@@ -137,6 +200,35 @@ test("rejects same-host isolation and a machine-id mismatch", () => {
   expectConfigError(
     () => validateExternalSandboxConfiguration({ env: second.env, hostMachineId: "abcdefabcdefabcdefabcdefabcdefab" }),
     /does not match/,
+  );
+});
+
+test("rejects a shared primary daemon and a tampered platform attestation", () => {
+  const first = fixture();
+  first.env.EXTERNAL_SANDBOX_PRIMARY_DOCKER_DAEMON_IDENTITY_HASH =
+    first.env.EXTERNAL_SANDBOX_DOCKER_DAEMON_IDENTITY_HASH;
+  expectConfigError(
+    () => validateExternalSandboxConfiguration({
+      env: first.env,
+      hostMachineId: MACHINE_ID,
+    }),
+    /shares the primary Docker daemon/,
+  );
+
+  const second = fixture();
+  const documentFile = path.join(
+    second.env.EXTERNAL_SANDBOX_ATTESTATION_ROOT,
+    "execution-plane.json",
+  );
+  const document = JSON.parse(readFileSync(documentFile, "utf8"));
+  document.trustDomain = "tampered.invalid";
+  writeFileSync(documentFile, JSON.stringify(document), { mode: 0o644 });
+  expectConfigError(
+    () => validateExternalSandboxConfiguration({
+      env: second.env,
+      hostMachineId: MACHINE_ID,
+    }),
+    /does not match|hash is invalid|signature is invalid/,
   );
 });
 
@@ -187,7 +279,7 @@ test("binds the signed runtime digest to the exact workload OCI digest", () => {
   env.EXTERNAL_SANDBOX_RUNTIME_IMAGE_DIGEST = digest("a");
   expectConfigError(
     () => validateExternalSandboxConfiguration({ env, hostMachineId: MACHINE_ID }),
-    /must equal the pinned workload OCI digest/,
+    /runtimeImageDigest does not match|must equal the pinned workload OCI digest/,
   );
 });
 
@@ -228,6 +320,8 @@ test("primary connector uses exact external runner identity and a distinct recei
   assert.match(connector, /FACTORY_SB_ALLOWED_BUILD_IDS: '\["\$\{EXTERNAL_SANDBOX_RUNNER_BUILD_ID:/);
   assert.match(connector, /FACTORY_SB_ALLOWED_IMAGE_DIGESTS: '\["\$\{EXTERNAL_SANDBOX_RUNTIME_IMAGE_DIGEST:/);
   assert.match(connector, /FACTORY_SB_RUNNER_HTTP_ALLOWED_HOSTS: ""/);
+  assert.match(connector, /platformAttestorPublicKeyEnv/);
+  assert.match(connector, /primaryDockerDaemonIdentityHashEnv/);
 });
 
 test("secret initializer is idempotent, group-scoped, and never prints key values", () => {

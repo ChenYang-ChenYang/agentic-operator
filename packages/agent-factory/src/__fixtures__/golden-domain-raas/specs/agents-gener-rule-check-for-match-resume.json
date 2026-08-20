@@ -1,0 +1,1097 @@
+{
+  "domain": "Agents-generation",
+  "slug": "agents-gener-rule-check-for-match-resume",
+  "spec": {
+    "key": "ruleCheckForMatchResume",
+    "actionName": "ruleCheckForMatchResume",
+    "slug": "agents-gener-rule-check-for-match-resume",
+    "short": "RuleCheckForMatchResumeAgent",
+    "domainId": "Agents-generation",
+    "nameZh": "匹配规则审查员",
+    "kind": "llm",
+    "trigger": [
+      "RESUME_PROCESSED"
+    ],
+    "emit": [
+      "MATCH_RULE_CHECK_PASSED",
+      "MATCH_RULE_CHECK_FAILED"
+    ],
+    "tools": [
+      "facts.query",
+      "reasoning.evaluateRules",
+      "entities.write",
+      "ontology.writeInstance",
+      "ontology.fetchActionRules"
+    ],
+    "unresolvedTools": [],
+    "objects": [
+      "Candidate",
+      "Resume",
+      "Job_Requisition",
+      "Client",
+      "Client_Department",
+      "Blacklist",
+      "Compliance_Document",
+      "Candidate_Match_Result",
+      "Rule_Check_Audit"
+    ],
+    "systemPrompt": "你负责在候选人进入匹配前执行匹配规则审查，判断该候选人是否具备进入岗位匹配的资格，并产出可审计的规则审查结果。\n\n必须遵守：\n1. 你只做规则审查与审计记录，不负责匹配打分，也不负责发起面试邀约。\n2. 规则绝不写死。每次运行都必须通过 ontology.fetchActionRules 动态抓取 ruleCheckForMatchResume 当前有效规则，再结合候选人、岗位、需求上下文进行评估。\n3. 规则获取失败时必须 fail-closed：不得默认放行，必须终止并按失败分支处理。\n4. 评估结果必须结构化记录：至少包含 pass/fail、命中规则、拦截原因、证据摘要、是否需要人工复核。\n5. 审计结果必须落 RAAS 主记录；Allmeta 镜像写入可软失败但不能影响主判定。\n6. 放行时发 MATCH_RULE_CHECK_PASSED；拦截时发 MATCH_RULE_CHECK_FAILED；事件 payload 要携带下游所需的候选人、岗位、规则结论字段。\n7. 工具只使用已授权传输：facts.query、reasoning.evaluateRules、entities.write、ontology.writeInstance、ontology.fetchActionRules。",
+    "userPrompt": "简历匹配前置规则检查: 订阅 RESUME_PROCESSED,收敛目标岗位列表(三路径),对每个岗位执行本体规则推理(冷冻期/回流/国籍/黑名单/合规凭证等 mandatory+optional),强制落审计与 Candidate_Match_Result,按结论路由 MATCH_RULE_CHECK_PASSED / MATCH_RULE_CHECK_FAILED。基础设施故障(LLM 网关/图库/解析)≠候选人被拒: 停靠重试,绝不写未通过、绝不发 FAILED。外部时序: ①RAAS Postgres 读结构化上下文(候选人/岗位/历史投递/黑名单/凭证) → ②Allmeta 规则库选规则+LLM 逐条判定 → ③审计+CMR 落库(本地+RAAS+Allmeta) → ④emit。",
+    "designReasoning": "修正 foreach body 内的 toolArguments 路径：jr.job_requisition_id → locals.jr.job_requisition_id，其他不变。",
+    "toolRationale": "",
+    "decisionLogic": "1. validate_match_rule_input：候选人/岗位/需求关键标识缺失 → terminal，不得继续。\n2. load_match_context：读取候选人、岗位、需求、客户偏好等匹配规则所需上下文；非关键上下文缺失可标注证据不足继续，关键主对象缺失则 terminal。\n3. fetch_match_rules：动态抓取 ruleCheckForMatchResume 当前规则；超时/5xx → park；空规则集/无法解析 → terminal。\n4. evaluate_match_rules：用 reasoning.evaluateRules 基于规则与上下文做逐条评估，产出 pass/fail、matched_rules、failed_rules、evidence、needs_human_review。\n5. persist_match_rule_audit：通过 entities.write 写 RAAS 审计结果，ontology.writeInstance 写镜像；RAAS 主写失败 → park/terminal；镜像失败 → soft-fail。\n6. route_rule_check_outcome：pass → emit MATCH_RULE_CHECK_PASSED；fail → emit MATCH_RULE_CHECK_FAILED；路由通过 plan condition+emit 表达，不使用外部路由工具。",
+    "steps": [
+      {
+        "name": "step_1",
+        "description": "调用 facts.query",
+        "tool": "facts.query"
+      },
+      {
+        "name": "step_2",
+        "description": "调用 reasoning.evaluateRules",
+        "tool": "reasoning.evaluateRules"
+      },
+      {
+        "name": "step_3",
+        "description": "调用 persistRuleCheckAudit",
+        "tool": "persistRuleCheckAudit"
+      },
+      {
+        "name": "step_4",
+        "description": "调用 entities.write",
+        "tool": "entities.write"
+      },
+      {
+        "name": "step_5",
+        "description": "调用 ontology.writeInstance",
+        "tool": "ontology.writeInstance"
+      },
+      {
+        "name": "step_6",
+        "description": "调用 ontology.fetchActionRules",
+        "tool": "ontology.fetchActionRules"
+      }
+    ],
+    "ruleRefs": [
+      "10-25",
+      "10-26",
+      "10-32",
+      "10-34",
+      "10-35",
+      "10-42",
+      "10-43",
+      "10-45",
+      "10-49",
+      "10-51",
+      "10-56",
+      "10-46"
+    ],
+    "retries": 3,
+    "hitl": false,
+    "confidence": 0.8,
+    "promptSource": "llm",
+    "inputSchema": [
+      {
+        "field": "candidate_id",
+        "type": "String",
+        "source": "Candidate.candidate_id",
+        "description": "事件 RESUME_PROCESSED 的 payload 字段",
+        "required": true
+      },
+      {
+        "field": "resume_id",
+        "type": "String",
+        "source": "Resume.resume_id",
+        "description": "事件 RESUME_PROCESSED 的 payload 字段",
+        "required": true
+      },
+      {
+        "field": "upload_id",
+        "type": "String",
+        "source": "Resume_Upload.upload_id",
+        "description": "事件 RESUME_PROCESSED 的 payload 字段",
+        "required": true
+      },
+      {
+        "field": "employee_id",
+        "type": "String",
+        "source": "Employee.employee_id",
+        "description": "事件 RESUME_PROCESSED 的 payload 字段",
+        "required": true
+      },
+      {
+        "field": "application_id",
+        "type": "String",
+        "source": "Application.application_id",
+        "description": "事件 RESUME_PROCESSED 的 payload 字段",
+        "required": false
+      },
+      {
+        "field": "parsed",
+        "type": "Object",
+        "source": "Resume.parsed",
+        "description": "事件 RESUME_PROCESSED 的 payload 字段",
+        "required": false
+      },
+      {
+        "field": "job_requisition_id",
+        "type": "String",
+        "source": "Job_Requisition.job_requisition_id",
+        "description": "事件 RESUME_PROCESSED 的 payload 字段",
+        "required": false
+      },
+      {
+        "field": "job_requisition_ids",
+        "type": "Array<String>",
+        "source": "Job_Requisition.job_requisition_ids",
+        "description": "事件 RESUME_PROCESSED 的 payload 字段",
+        "required": false
+      },
+      {
+        "field": "sourcing_channel_id",
+        "type": "String",
+        "source": "Sourcing_Channel.sourcing_channel_id",
+        "description": "事件 RESUME_PROCESSED 的 payload 字段",
+        "required": false
+      },
+      {
+        "field": "client_id",
+        "type": "String",
+        "source": "Client.client_id",
+        "description": "事件 RESUME_PROCESSED 的 payload 字段",
+        "required": false
+      },
+      {
+        "field": "filename",
+        "type": "String",
+        "source": "Resume_Upload.filename",
+        "description": "事件 RESUME_PROCESSED 的 payload 字段",
+        "required": false
+      },
+      {
+        "field": "bucket",
+        "type": "String",
+        "source": "Resume_Upload.bucket",
+        "description": "事件 RESUME_PROCESSED 的 payload 字段",
+        "required": false
+      },
+      {
+        "field": "objectKey",
+        "type": "String",
+        "source": "Resume_Upload.objectKey",
+        "description": "事件 RESUME_PROCESSED 的 payload 字段",
+        "required": false
+      },
+      {
+        "field": "etag",
+        "type": "String",
+        "source": "Resume_Upload.etag",
+        "description": "事件 RESUME_PROCESSED 的 payload 字段",
+        "required": false
+      },
+      {
+        "field": "parsedAt",
+        "type": "String",
+        "description": "事件 RESUME_PROCESSED 的 payload 字段",
+        "required": false
+      },
+      {
+        "field": "parserVersion",
+        "type": "String",
+        "description": "事件 RESUME_PROCESSED 的 payload 字段",
+        "required": false
+      }
+    ],
+    "inputBindings": [
+      {
+        "field": "upload_id",
+        "type": "String",
+        "required": false,
+        "kind": "event",
+        "eventPath": "upload_id",
+        "sourceEvents": [
+          "RESUME_PROCESSED"
+        ]
+      },
+      {
+        "field": "candidate_id",
+        "type": "String",
+        "required": false,
+        "kind": "event",
+        "eventPath": "candidate_id",
+        "sourceEvents": [
+          "RESUME_PROCESSED"
+        ]
+      },
+      {
+        "field": "resume_id",
+        "type": "String",
+        "required": false,
+        "kind": "event",
+        "eventPath": "resume_id",
+        "sourceEvents": [
+          "RESUME_PROCESSED"
+        ]
+      },
+      {
+        "field": "employee_id",
+        "type": "String",
+        "required": true,
+        "kind": "event",
+        "eventPath": "employee_id",
+        "sourceEvents": [
+          "RESUME_PROCESSED"
+        ]
+      },
+      {
+        "field": "job_requisition_id",
+        "type": "String",
+        "required": false,
+        "kind": "event",
+        "eventPath": "job_requisition_id",
+        "sourceEvents": [
+          "RESUME_PROCESSED"
+        ]
+      },
+      {
+        "field": "job_requisition_ids",
+        "type": "Array<String>",
+        "required": false,
+        "kind": "event",
+        "eventPath": "job_requisition_ids",
+        "sourceEvents": [
+          "RESUME_PROCESSED"
+        ]
+      },
+      {
+        "field": "parsed",
+        "type": "Object",
+        "required": false,
+        "kind": "event",
+        "eventPath": "parsed",
+        "sourceEvents": [
+          "RESUME_PROCESSED"
+        ]
+      },
+      {
+        "field": "filename",
+        "type": "String",
+        "required": false,
+        "kind": "event",
+        "eventPath": "filename",
+        "sourceEvents": [
+          "RESUME_PROCESSED"
+        ]
+      }
+    ],
+    "outputSchema": [
+      {
+        "field": "candidate_id",
+        "type": "String",
+        "source": "Candidate.candidate_id",
+        "description": "事件 MATCH_RULE_CHECK_PASSED 的 payload 字段",
+        "required": true
+      },
+      {
+        "field": "resume_id",
+        "type": "String",
+        "source": "Resume.resume_id",
+        "description": "事件 MATCH_RULE_CHECK_PASSED 的 payload 字段",
+        "required": false
+      },
+      {
+        "field": "job_requisition_id",
+        "type": "String",
+        "source": "Job_Requisition.job_requisition_id",
+        "description": "事件 MATCH_RULE_CHECK_PASSED 的 payload 字段",
+        "required": true
+      },
+      {
+        "field": "client_id",
+        "type": "String",
+        "source": "Client.client_id",
+        "description": "事件 MATCH_RULE_CHECK_PASSED 的 payload 字段",
+        "required": true
+      },
+      {
+        "field": "rule_check_result",
+        "type": "Enum",
+        "source": "Candidate_Match_Result.rule_check_result",
+        "description": "事件 MATCH_RULE_CHECK_PASSED 的 payload 字段",
+        "required": true
+      },
+      {
+        "field": "rule_check_reason",
+        "type": "String",
+        "source": "Candidate_Match_Result.rule_check_reason",
+        "description": "事件 MATCH_RULE_CHECK_PASSED 的 payload 字段",
+        "required": true
+      },
+      {
+        "field": "upload_id",
+        "type": "String",
+        "source": "Resume_Upload.upload_id",
+        "description": "事件 MATCH_RULE_CHECK_PASSED 的 payload 字段",
+        "required": false
+      },
+      {
+        "field": "employee_id",
+        "type": "String",
+        "source": "Employee.employee_id",
+        "description": "事件 MATCH_RULE_CHECK_PASSED 的 payload 字段",
+        "required": true
+      },
+      {
+        "field": "audit",
+        "type": "Object",
+        "source": "Rule_Check_Audit.audit",
+        "description": "事件 MATCH_RULE_CHECK_PASSED 的 payload 字段",
+        "required": true
+      },
+      {
+        "field": "rule_check_rules",
+        "type": "Array<Object>",
+        "source": "Rule_Check_Audit.rule_check_rules",
+        "description": "事件 MATCH_RULE_CHECK_PASSED 的 payload 字段",
+        "required": false
+      },
+      {
+        "field": "job_requisition",
+        "type": "Object",
+        "source": "Job_Requisition.job_requisition",
+        "description": "事件 MATCH_RULE_CHECK_PASSED 的 payload 字段",
+        "required": true
+      },
+      {
+        "field": "parsed_resume",
+        "type": "Object",
+        "source": "Resume.parsed_resume",
+        "description": "事件 MATCH_RULE_CHECK_PASSED 的 payload 字段",
+        "required": true
+      },
+      {
+        "field": "parsed_content",
+        "type": "String",
+        "source": "Resume.parsed_content",
+        "description": "事件 MATCH_RULE_CHECK_PASSED 的 payload 字段",
+        "required": false
+      },
+      {
+        "field": "runtime_context",
+        "type": "Object",
+        "description": "事件 MATCH_RULE_CHECK_PASSED 的 payload 字段",
+        "required": true
+      },
+      {
+        "field": "resume_match_score_threshold",
+        "type": "Float",
+        "source": "Job_Requisition.resume_match_score_threshold",
+        "description": "事件 MATCH_RULE_CHECK_PASSED 的 payload 字段",
+        "required": true
+      },
+      {
+        "field": "failed_rules",
+        "type": "Array<Object>",
+        "source": "Rule_Check_Audit.failed_rules",
+        "description": "事件 MATCH_RULE_CHECK_FAILED 的 payload 字段",
+        "required": true
+      },
+      {
+        "field": "matching_score",
+        "type": "Float",
+        "description": "事件 MATCH_RULE_CHECK_FAILED 的 payload 字段",
+        "required": true
+      },
+      {
+        "field": "success",
+        "type": "Boolean",
+        "description": "事件 MATCH_RULE_CHECK_FAILED 的 payload 字段",
+        "required": true
+      },
+      {
+        "field": "data",
+        "type": "Object",
+        "description": "事件 MATCH_RULE_CHECK_FAILED 的 payload 字段",
+        "required": false
+      },
+      {
+        "field": "rule_check_passed",
+        "type": "Boolean",
+        "source": "event.rule_check_passed",
+        "required": true
+      },
+      {
+        "field": "audit_id",
+        "type": "String",
+        "source": "event.audit_id",
+        "required": true
+      }
+    ],
+    "toolPolicies": {
+      "facts.query": {
+        "operation": "read",
+        "effectScope": "external",
+        "sandboxPolicy": "live_external"
+      },
+      "reasoning.evaluateRules": {
+        "operation": "compute",
+        "effectScope": "external",
+        "sandboxPolicy": "live_external"
+      },
+      "entities.write": {
+        "operation": "write",
+        "effectScope": "external",
+        "sandboxPolicy": "requires_attempt_grant"
+      },
+      "ontology.writeInstance": {
+        "operation": "write",
+        "effectScope": "external",
+        "sandboxPolicy": "requires_attempt_grant"
+      },
+      "ontology.fetchActionRules": {
+        "operation": "read",
+        "effectScope": "external",
+        "sandboxPolicy": "live_external"
+      }
+    },
+    "toolSideEffects": {
+      "facts.query": "read",
+      "reasoning.evaluateRules": "call",
+      "entities.write": "write",
+      "ontology.writeInstance": "write",
+      "ontology.fetchActionRules": "read"
+    },
+    "integrationRequirements": [
+      {
+        "id": "10-1:integration:1",
+        "actionName": "ruleCheckForMatchResume",
+        "system": "RAAS_System",
+        "kind": "database",
+        "role": "read",
+        "capability": "rule_context.load — 回拉 parsed 简历 + 岗位收敛(单 JR 详情 / 预窄化数组 / requirement_claim×published 扫描) + 历史投递/黑名单/凭证上下文",
+        "operations": [],
+        "objectTypes": [
+          "Candidate",
+          "Resume",
+          "Job_Requisition",
+          "Client",
+          "Client_Department",
+          "Blacklist",
+          "Compliance_Document"
+        ],
+        "eventNames": [],
+        "replayable": true
+      },
+      {
+        "id": "10-1:integration:2",
+        "actionName": "ruleCheckForMatchResume",
+        "system": "Allmeta_Ontology_System",
+        "kind": "graph_db",
+        "role": "read",
+        "capability": "rules.select + graph.verify — 按 action/场景动态选规则(简历匹配阶段规则集),判定中实时图查询核验事实;判定前先幂等镜像 JR 实例",
+        "operations": [],
+        "objectTypes": [
+          "Job_Requisition",
+          "Candidate_Match_Result"
+        ],
+        "eventNames": [],
+        "replayable": true
+      },
+      {
+        "id": "10-1:integration:3",
+        "actionName": "ruleCheckForMatchResume",
+        "system": "LLM_Gateway",
+        "kind": "llm",
+        "role": "execute",
+        "capability": "rules.judge — Prompt Compiler 编译后逐条判定 mandatory/optional;网关故障=停靠不拒人",
+        "operations": [
+          "optional"
+        ],
+        "objectTypes": [
+          "Rule_Check_Audit"
+        ],
+        "eventNames": [],
+        "replayable": true
+      },
+      {
+        "id": "10-1:integration:4",
+        "actionName": "ruleCheckForMatchResume",
+        "system": "RAAS_System",
+        "kind": "database",
+        "role": "write",
+        "capability": "cmr.write_fail — FAIL 时无条件 upsert candidate_match_result(match_status=未通过);PASS 不写 partner 主表",
+        "operations": [],
+        "objectTypes": [
+          "Candidate_Match_Result"
+        ],
+        "eventNames": [],
+        "replayable": true
+      },
+      {
+        "id": "10-1:integration:5",
+        "actionName": "ruleCheckForMatchResume",
+        "system": "Allmeta_Ontology_System",
+        "kind": "graph_db",
+        "role": "write",
+        "capability": "cmr.mirror — 写 Candidate_Match_Result rule_check_* 字段(PK cmr_<candidate>_<jr>,与匹配段共行)",
+        "operations": [],
+        "objectTypes": [
+          "Candidate_Match_Result"
+        ],
+        "eventNames": [],
+        "replayable": true
+      }
+    ],
+    "integrationBindings": [
+      {
+        "requirement": {
+          "id": "10-1:integration:1",
+          "actionName": "ruleCheckForMatchResume",
+          "system": "RAAS_System",
+          "kind": "database",
+          "role": "read",
+          "capability": "rule_context.load — 回拉 parsed 简历 + 岗位收敛(单 JR 详情 / 预窄化数组 / requirement_claim×published 扫描) + 历史投递/黑名单/凭证上下文",
+          "operations": [],
+          "objectTypes": [
+            "Candidate",
+            "Resume",
+            "Job_Requisition",
+            "Client",
+            "Client_Department",
+            "Blacklist",
+            "Compliance_Document"
+          ],
+          "eventNames": [],
+          "replayable": true
+        },
+        "bindingKind": "tool",
+        "bindingId": "facts.query",
+        "toolName": "facts.query",
+        "genericSystemBinding": true,
+        "status": "needs_config",
+        "next": "ask_user",
+        "reason": "通用工具 facts.query 只能通过当前 tenant/domain/environment 已确认的 integration profile 绑定到 RAAS_System，不能根据 systems:[\"*\"] 猜连接"
+      },
+      {
+        "requirement": {
+          "id": "10-1:integration:2",
+          "actionName": "ruleCheckForMatchResume",
+          "system": "Allmeta_Ontology_System",
+          "kind": "graph_db",
+          "role": "read",
+          "capability": "rules.select + graph.verify — 按 action/场景动态选规则(简历匹配阶段规则集),判定中实时图查询核验事实;判定前先幂等镜像 JR 实例",
+          "operations": [],
+          "objectTypes": [
+            "Job_Requisition",
+            "Candidate_Match_Result"
+          ],
+          "eventNames": [],
+          "replayable": true
+        },
+        "bindingKind": "tool",
+        "bindingId": "reasoning.evaluateRules",
+        "toolName": "reasoning.evaluateRules",
+        "status": "needs_config",
+        "next": "ask_user",
+        "missingCredentialEnv": [],
+        "missingConfigKeys": [
+          "action",
+          "domainId",
+          "failEvent",
+          "passEvent",
+          "tenant_slug"
+        ],
+        "invalidConfigKeys": [],
+        "reason": "工具 reasoning.evaluateRules 的集成配置未就绪：还需要填写 tenant_slug。；还需要填写 domainId。；还需要填写 action。；还需要填写 passEvent。；还需要填写 failEvent。"
+      },
+      {
+        "requirement": {
+          "id": "10-1:integration:3",
+          "actionName": "ruleCheckForMatchResume",
+          "system": "LLM_Gateway",
+          "kind": "llm",
+          "role": "execute",
+          "capability": "rules.judge — Prompt Compiler 编译后逐条判定 mandatory/optional;网关故障=停靠不拒人",
+          "operations": [
+            "optional"
+          ],
+          "objectTypes": [
+            "Rule_Check_Audit"
+          ],
+          "eventNames": [],
+          "replayable": true
+        },
+        "bindingKind": "runtime",
+        "bindingId": "agent-runtime.reason",
+        "status": "missing",
+        "reason": "运行时能力 agent-runtime.reason 虽然匹配，但 plan 没有可执行的 logic 步骤",
+        "next": "ask_user"
+      },
+      {
+        "requirement": {
+          "id": "10-1:integration:4",
+          "actionName": "ruleCheckForMatchResume",
+          "system": "RAAS_System",
+          "kind": "database",
+          "role": "write",
+          "capability": "cmr.write_fail — FAIL 时无条件 upsert candidate_match_result(match_status=未通过);PASS 不写 partner 主表",
+          "operations": [],
+          "objectTypes": [
+            "Candidate_Match_Result"
+          ],
+          "eventNames": [],
+          "replayable": true
+        },
+        "bindingKind": "tool",
+        "bindingId": "entities.write",
+        "toolName": "entities.write",
+        "genericSystemBinding": true,
+        "status": "needs_config",
+        "next": "ask_user",
+        "reason": "通用工具 entities.write 只能通过当前 tenant/domain/environment 已确认的 integration profile 绑定到 RAAS_System，不能根据 systems:[\"*\"] 猜连接"
+      },
+      {
+        "requirement": {
+          "id": "10-1:integration:5",
+          "actionName": "ruleCheckForMatchResume",
+          "system": "Allmeta_Ontology_System",
+          "kind": "graph_db",
+          "role": "write",
+          "capability": "cmr.mirror — 写 Candidate_Match_Result rule_check_* 字段(PK cmr_<candidate>_<jr>,与匹配段共行)",
+          "operations": [],
+          "objectTypes": [
+            "Candidate_Match_Result"
+          ],
+          "eventNames": [],
+          "replayable": true
+        },
+        "bindingKind": "tool",
+        "bindingId": "ontology.writeInstance",
+        "toolName": "ontology.writeInstance",
+        "status": "needs_config",
+        "next": "ask_user",
+        "missingCredentialEnv": [],
+        "missingConfigKeys": [
+          "action",
+          "allowed_actions",
+          "allowed_domains",
+          "allowed_objects",
+          "allowed_tenants",
+          "api_key_env",
+          "base_url_env",
+          "domain",
+          "probe_action",
+          "probe_domain",
+          "probe_idempotency_field",
+          "probe_marker_field",
+          "probe_namespace",
+          "probe_namespace_field",
+          "probe_object",
+          "probe_primary_key_field"
+        ],
+        "invalidConfigKeys": [],
+        "reason": "工具 ontology.writeInstance 的集成配置未就绪：还需要填写 base_url_env。；还需要填写 api_key_env。；还需要填写 domain。；还需要填写 action。；还需要填写 allowed_tenants。；还需要填写 allowed_domains。；还需要填写 allowed_objects。；还需要填写 allowed_actions。；还需要填写 probe_domain。；还需要填写 probe_action。；还需要填写 probe_object。；还需要填写 probe_namespace。；还需要填写 probe_primary_key_field。；还需要填写 probe_marker_field。；还需要填写 probe_namespace_field。；还需要填写 probe_idempotency_field。"
+      }
+    ],
+    "plan": [
+      {
+        "stepId": "resolve_candidate_resume_context",
+        "kind": "tool",
+        "tool": "facts.query",
+        "toolArguments": {
+          "subject": {
+            "from": "input.candidate_id",
+            "required": true
+          },
+          "objectTypes": {
+            "const": [
+              "Candidate",
+              "Resume",
+              "Job_Requisition",
+              "Client",
+              "Client_Department",
+              "Blacklist",
+              "Compliance_Document"
+            ]
+          },
+          "resume_id": {
+            "from": "input.resume_id",
+            "required": false
+          },
+          "job_requisition_id": {
+            "from": "input.job_requisition_id",
+            "required": false
+          }
+        },
+        "resultMap": {
+          "fields": {
+            "candidate": "result.candidate",
+            "resume": "result.resume",
+            "parsedContent": "result.parsed_content",
+            "client": "result.client",
+            "blacklist": "result.blacklist"
+          },
+          "includeRaw": true
+        },
+        "idempotencyKeyFrom": "input.candidate_id",
+        "errorPolicy": [
+          {
+            "when": "status >= 500 || code == 'ETIMEDOUT'",
+            "do": "park",
+            "suppressEmit": true
+          },
+          {
+            "default": "terminal"
+          }
+        ],
+        "timeoutS": 30,
+        "description": "回拉 parsed 简历内容及客户/部门/历史投递/黑名单/合规凭证上下文"
+      },
+      {
+        "stepId": "resolve_matchable_requirements",
+        "kind": "tool",
+        "tool": "facts.query",
+        "toolArguments": {
+          "subject": {
+            "from": "input.candidate_id",
+            "required": true
+          },
+          "objectTypes": {
+            "const": [
+              "Job_Requisition",
+              "Job_Requisition_Specification"
+            ]
+          },
+          "job_requisition_id": {
+            "from": "input.job_requisition_id",
+            "required": false
+          },
+          "job_requisition_ids": {
+            "from": "input.job_requisition_ids",
+            "required": false
+          },
+          "employee_id": {
+            "from": "input.employee_id",
+            "required": false
+          }
+        },
+        "resultMap": {
+          "fields": {
+            "matchableJRs": "result.matchable_requirements"
+          },
+          "includeRaw": true
+        },
+        "idempotencyKeyFrom": "input.candidate_id",
+        "errorPolicy": [
+          {
+            "when": "status >= 500 || code == 'ETIMEDOUT'",
+            "do": "park",
+            "suppressEmit": true
+          },
+          {
+            "default": "terminal"
+          }
+        ],
+        "timeoutS": 30,
+        "description": "岗位收敛三路径 A/B'/B，过 hasMatchableContent 防线，0 条早退"
+      },
+      {
+        "stepId": "evaluate_rules_per_requisition",
+        "kind": "foreach",
+        "itemsFrom": "results.resolve_matchable_requirements.result.matchableJRs",
+        "itemAs": "jr",
+        "itemKeyFrom": "jr.job_requisition_id",
+        "body": [
+          {
+            "stepId": "evaluate_rules_per_jr",
+            "kind": "tool",
+            "tool": "reasoning.evaluateRules",
+            "toolArguments": {
+              "action": {
+                "const": "ruleCheckForMatchResume"
+              },
+              "candidate_id": {
+                "from": "input.candidate_id",
+                "required": true
+              },
+              "resume_id": {
+                "from": "input.resume_id",
+                "required": true
+              },
+              "job_requisition_id": {
+                "from": "locals.jr.job_requisition_id",
+                "required": true
+              },
+              "context": {
+                "from": "results.resolve_candidate_resume_context.result",
+                "required": true
+              }
+            },
+            "resultMap": {
+              "fields": {
+                "passed": "result.passed",
+                "failedRules": "result.failed_rules",
+                "auditEvidence": "result.evidence"
+              },
+              "includeRaw": true
+            },
+            "idempotencyKeyFrom": "locals.jr.job_requisition_id",
+            "errorPolicy": [
+              {
+                "when": "code == 'LLM_GATEWAY_UNAVAILABLE' || code == 'GRAPH_UNAVAILABLE'",
+                "do": "park",
+                "suppressEmit": true
+              },
+              {
+                "when": "status >= 500 || code == 'ETIMEDOUT'",
+                "do": "park",
+                "suppressEmit": true
+              },
+              {
+                "default": "terminal"
+              }
+            ],
+            "timeoutS": 60,
+            "description": "动态选规则， LLM 逐条判定，图库实时核验"
+          }
+        ],
+        "description": "对每个 JR 循环执行规则评估"
+      },
+      {
+        "stepId": "persist_rule_check_outcome",
+        "kind": "tool",
+        "tool": "persistRuleCheckAudit",
+        "toolArguments": {
+          "candidate_id": {
+            "from": "input.candidate_id",
+            "required": true
+          },
+          "resume_id": {
+            "from": "input.resume_id",
+            "required": true
+          },
+          "action": {
+            "const": "ruleCheckForMatchResume"
+          },
+          "evidence": {
+            "from": "results.evaluate_rules_per_requisition.result",
+            "required": true
+          }
+        },
+        "resultMap": {
+          "fields": {
+            "auditId": "result.audit_id"
+          }
+        },
+        "idempotencyKeyFrom": "input.candidate_id",
+        "errorPolicy": [
+          {
+            "when": "status >= 500 || code == 'ETIMEDOUT'",
+            "do": "park",
+            "suppressEmit": true
+          },
+          {
+            "default": "terminal"
+          }
+        ],
+        "timeoutS": 20,
+        "description": "强制幂等落审计及逐规则评估证据，写失败 park 重试"
+      },
+      {
+        "stepId": "fetch_match_rules",
+        "kind": "tool",
+        "tool": "ontology.fetchActionRules",
+        "toolArguments": {
+          "action": {
+            "const": "ruleCheckForMatchResume"
+          }
+        },
+        "resultMap": {
+          "fields": {
+            "rules": "result.rules"
+          }
+        },
+        "idempotencyKeyFrom": "input.candidate_id",
+        "errorPolicy": [
+          {
+            "when": "status >= 500 || code == 'ETIMEDOUT'",
+            "do": "park",
+            "suppressEmit": true
+          },
+          {
+            "default": "terminal"
+          }
+        ],
+        "timeoutS": 15,
+        "description": "读取当前 ruleCheckForMatchResume 规则补充审计依据"
+      },
+      {
+        "stepId": "persist_raas_rule_outcome",
+        "kind": "tool",
+        "tool": "entities.write",
+        "toolArguments": {
+          "objectType": {
+            "const": "Candidate_Match_Result"
+          },
+          "phase": {
+            "const": "candidate_match"
+          },
+          "candidateId": {
+            "from": "input.candidate_id",
+            "required": true
+          },
+          "resumeId": {
+            "from": "input.resume_id",
+            "required": true
+          },
+          "auditId": {
+            "from": "results.persist_rule_check_outcome.result.auditId",
+            "required": true
+          }
+        },
+        "resultMap": {
+          "fields": {
+            "cmrId": "result.cmr_id",
+            "persistOk": "result.ok"
+          }
+        },
+        "idempotencyKeyFrom": "input.candidate_id",
+        "errorPolicy": [
+          {
+            "when": "status >= 500 || code == 'ETIMEDOUT'",
+            "do": "park",
+            "suppressEmit": true
+          },
+          {
+            "default": "terminal"
+          }
+        ],
+        "timeoutS": 20,
+        "description": "phase=candidate_match 写 RAAS CMR，FAIL 时必写，PASS 跳过主表"
+      },
+      {
+        "stepId": "emit_rule_check_outcome",
+        "kind": "condition",
+        "condition": "results.evaluate_rules_per_requisition.result.passed == true",
+        "dependsOn": [
+          "persist_raas_rule_outcome"
+        ],
+        "description": "PASS 发 MATCH_RULE_CHECK_PASSED，FAIL 发 MATCH_RULE_CHECK_FAILED"
+      }
+    ],
+    "stateBindings": [
+      {
+        "object": "Candidate",
+        "reads": [
+          "candidate_id"
+        ],
+        "writes": []
+      },
+      {
+        "object": "Resume",
+        "reads": [
+          "resume_id",
+          "parsed"
+        ],
+        "writes": []
+      },
+      {
+        "object": "Job_Requisition",
+        "reads": [
+          "job_requisition_id",
+          "job_requisition_ids"
+        ],
+        "writes": []
+      },
+      {
+        "object": "Client",
+        "reads": [
+          "client_id"
+        ],
+        "writes": []
+      },
+      {
+        "object": "Client_Department",
+        "reads": [],
+        "writes": []
+      },
+      {
+        "object": "Blacklist",
+        "reads": [],
+        "writes": []
+      },
+      {
+        "object": "Compliance_Document",
+        "reads": [],
+        "writes": []
+      },
+      {
+        "object": "Candidate_Match_Result",
+        "reads": [],
+        "writes": [
+          "candidate_match_result_id",
+          "client_id",
+          "candidate_id",
+          "job_position_id",
+          "rule_check_result",
+          "rule_check_reason"
+        ]
+      },
+      {
+        "object": "Rule_Check_Audit",
+        "reads": [],
+        "writes": [
+          "audit_id",
+          "candidate_id",
+          "resume_id",
+          "job_requisition_id",
+          "decision",
+          "rules_evaluated",
+          "rule_source",
+          "rule_provenance",
+          "failure_reasons"
+        ]
+      },
+      {
+        "object": "Resume_Upload",
+        "reads": [
+          "upload_id",
+          "filename",
+          "bucket",
+          "objectKey",
+          "etag"
+        ],
+        "writes": []
+      },
+      {
+        "object": "Employee",
+        "reads": [
+          "employee_id"
+        ],
+        "writes": []
+      },
+      {
+        "object": "Application",
+        "reads": [
+          "application_id"
+        ],
+        "writes": []
+      },
+      {
+        "object": "Sourcing_Channel",
+        "reads": [
+          "sourcing_channel_id"
+        ],
+        "writes": []
+      }
+    ],
+    "codeSource": "render",
+    "generatedCode": "// 匹配规则审查员 — 由 Agent 工厂从本体动作 `ruleCheckForMatchResume`(Agents-generation)生成。\n// trigger: RESUME_PROCESSED → emit: MATCH_RULE_CHECK_PASSED | MATCH_RULE_CHECK_FAILED\n// 真实可审查代码：工具调用、条件、foreach、显式 emit 与错误策略均由结构化 spec 渲染。\n// CodeAct 只在执行语义可保真时过探针；需要逐步 durability/typed RPC policy 时 fail-close 到 manifest runtime。\n\n/** Input/Output schema — 依据本体 DataObjects 定义。 */\ninterface RuleCheckForMatchResumeAgentInput {\n  candidate_id: string; // 事件 RESUME_PROCESSED 的 payload 字段 (源: Candidate.candidate_id)\n  resume_id: string; // 事件 RESUME_PROCESSED 的 payload 字段 (源: Resume.resume_id)\n  upload_id: string; // 事件 RESUME_PROCESSED 的 payload 字段 (源: Resume_Upload.upload_id)\n  employee_id: string; // 事件 RESUME_PROCESSED 的 payload 字段 (源: Employee.employee_id)\n  application_id?: string; // 事件 RESUME_PROCESSED 的 payload 字段 (源: Application.application_id)\n  parsed?: Record<string, unknown>; // 事件 RESUME_PROCESSED 的 payload 字段 (源: Resume.parsed)\n  job_requisition_id?: string; // 事件 RESUME_PROCESSED 的 payload 字段 (源: Job_Requisition.job_requisition_id)\n  job_requisition_ids?: unknown[]; // 事件 RESUME_PROCESSED 的 payload 字段 (源: Job_Requisition.job_requisition_ids)\n  sourcing_channel_id?: string; // 事件 RESUME_PROCESSED 的 payload 字段 (源: Sourcing_Channel.sourcing_channel_id)\n  client_id?: string; // 事件 RESUME_PROCESSED 的 payload 字段 (源: Client.client_id)\n  filename?: string; // 事件 RESUME_PROCESSED 的 payload 字段 (源: Resume_Upload.filename)\n  bucket?: string; // 事件 RESUME_PROCESSED 的 payload 字段 (源: Resume_Upload.bucket)\n  objectKey?: string; // 事件 RESUME_PROCESSED 的 payload 字段 (源: Resume_Upload.objectKey)\n  etag?: string; // 事件 RESUME_PROCESSED 的 payload 字段 (源: Resume_Upload.etag)\n  parsedAt?: string; // 事件 RESUME_PROCESSED 的 payload 字段\n  parserVersion?: string; // 事件 RESUME_PROCESSED 的 payload 字段\n}\n\ninterface RuleCheckForMatchResumeAgentOutput {\n  candidate_id: string; // 事件 MATCH_RULE_CHECK_PASSED 的 payload 字段 (源: Candidate.candidate_id)\n  resume_id?: string; // 事件 MATCH_RULE_CHECK_PASSED 的 payload 字段 (源: Resume.resume_id)\n  job_requisition_id: string; // 事件 MATCH_RULE_CHECK_PASSED 的 payload 字段 (源: Job_Requisition.job_requisition_id)\n  client_id: string; // 事件 MATCH_RULE_CHECK_PASSED 的 payload 字段 (源: Client.client_id)\n  rule_check_result: unknown; // 事件 MATCH_RULE_CHECK_PASSED 的 payload 字段 (源: Candidate_Match_Result.rule_check_result)\n  rule_check_reason: string; // 事件 MATCH_RULE_CHECK_PASSED 的 payload 字段 (源: Candidate_Match_Result.rule_check_reason)\n  upload_id?: string; // 事件 MATCH_RULE_CHECK_PASSED 的 payload 字段 (源: Resume_Upload.upload_id)\n  employee_id: string; // 事件 MATCH_RULE_CHECK_PASSED 的 payload 字段 (源: Employee.employee_id)\n  audit: Record<string, unknown>; // 事件 MATCH_RULE_CHECK_PASSED 的 payload 字段 (源: Rule_Check_Audit.audit)\n  rule_check_rules?: unknown[]; // 事件 MATCH_RULE_CHECK_PASSED 的 payload 字段 (源: Rule_Check_Audit.rule_check_rules)\n  job_requisition: Record<string, unknown>; // 事件 MATCH_RULE_CHECK_PASSED 的 payload 字段 (源: Job_Requisition.job_requisition)\n  parsed_resume: Record<string, unknown>; // 事件 MATCH_RULE_CHECK_PASSED 的 payload 字段 (源: Resume.parsed_resume)\n  parsed_content?: string; // 事件 MATCH_RULE_CHECK_PASSED 的 payload 字段 (源: Resume.parsed_content)\n  runtime_context: Record<string, unknown>; // 事件 MATCH_RULE_CHECK_PASSED 的 payload 字段\n  resume_match_score_threshold: number; // 事件 MATCH_RULE_CHECK_PASSED 的 payload 字段 (源: Job_Requisition.resume_match_score_threshold)\n  failed_rules: unknown[]; // 事件 MATCH_RULE_CHECK_FAILED 的 payload 字段 (源: Rule_Check_Audit.failed_rules)\n  matching_score: number; // 事件 MATCH_RULE_CHECK_FAILED 的 payload 字段\n  success: boolean; // 事件 MATCH_RULE_CHECK_FAILED 的 payload 字段\n  data?: Record<string, unknown>; // 事件 MATCH_RULE_CHECK_FAILED 的 payload 字段\n  rule_check_passed: boolean; // 源: event.rule_check_passed\n  audit_id: string; // 源: event.audit_id\n}\n\nfunction readPath(obj: unknown, path: string): unknown {\n  if (obj == null || !path) return undefined;\n  let cur: unknown = obj;\n  for (const part of path.split(\".\")) {\n    if (cur == null || typeof cur !== \"object\") return undefined;\n    cur = (cur as Record<string, unknown>)[part];\n  }\n  return cur;\n}\nfunction readConditionPath(scope: Record<string, unknown>, rawPath: string): unknown {\n  const path = rawPath.trim().replace(/\\?\\./g, \".\").replace(/\\[['\"]([^'\"]+)['\"]\\]/g, \".$1\");\n  const results = scope.results as Record<string, unknown> | undefined;\n  const explicit = path.startsWith(\"results.\") || path.startsWith(\"steps.\");\n  const rel = explicit ? path.replace(/^(results|steps)\\./, \"\") : path;\n  for (const key of Object.keys(results ?? {}).sort((a, b) => b.length - a.length)) {\n    if (rel !== key && !rel.startsWith(key + \".\")) continue;\n    let tail = rel === key ? \"\" : rel.slice(key.length + 1);\n    if (tail === \"result\" || tail === \"data\" || tail === \"value\") tail = \"\";\n    else tail = tail.replace(/^(result|data|value)\\./, \"\");\n    return tail ? readPath(results![key], tail) : results![key];\n  }\n  if (explicit) return undefined;\n  const direct = readPath(scope, path);\n  if (direct !== undefined) return direct;\n  const last = readPath(scope.lastResult, path);\n  if (last !== undefined) return last;\n  return readPath(scope.input ?? (scope.event as Record<string, unknown> | undefined)?.data, path);\n}\nfunction evalCondition(expr: string, scope: Record<string, unknown>): boolean {\n  const e = (expr || \"\").trim();\n  if (!e) return false;\n  const split = (s: string, op: string): string[] => {\n    const out: string[] = []; let depth = 0; let q = \"\"; let buf = \"\";\n    for (let i = 0; i < s.length; i++) {\n      const c = s[i]!;\n      if (q) { buf += c; if (c === q) q = \"\"; continue; }\n      if (c === \"'\" || c === '\"') { q = c; buf += c; continue; }\n      if (c === \"(\") depth++; else if (c === \")\") depth--;\n      if (depth === 0 && s.startsWith(op, i)) { out.push(buf); buf = \"\"; i += op.length - 1; continue; }\n      buf += c;\n    }\n    out.push(buf); return out;\n  };\n  try {\n    const ors = split(e, \"||\");\n    if (ors.length > 1) return ors.some((p) => evalCondition(p, scope));\n    const ands = split(e, \"&&\");\n    if (ands.length > 1) return ands.every((p) => evalCondition(p, scope));\n    if (/^true$/i.test(e)) return true;\n    if (/^false$/i.test(e)) return false;\n    const m = e.match(/^(.+?)\\s*(===|!==|==|!=|>=|<=|>|<)\\s*(.+)$/);\n    if (m) {\n      const lit = (t0: string): unknown => {\n        const t = t0.trim();\n        if ((t.startsWith(\"'\") && t.endsWith(\"'\")) || (t.startsWith('\"') && t.endsWith('\"'))) return t.slice(1, -1);\n        if (t === \"null\" || t === \"undefined\") return null; if (t === \"true\") return true; if (t === \"false\") return false;\n        if (/^-?\\d+(\\.\\d+)?$/.test(t)) return Number(t);\n        return t;\n      };\n      const l = readConditionPath(scope, m[1]!.trim()); const r = lit(m[3]!); const op = m[2]!;\n      if (r === null && (op === \"==\" || op === \"===\")) return l == null;\n      if (r === null && (op === \"!=\" || op === \"!==\")) return l != null;\n      if (op === \"===\") return l === r;\n      if (op === \"!==\") return l !== r;\n      if (op === \"==\") return l === r || (l != null && r != null && String(l) === String(r));\n      if (op === \"!=\") return !(l === r || (l != null && r != null && String(l) === String(r)));\n      if (op === \">\") return Number(l) > Number(r);\n      if (op === \"<\") return Number(l) < Number(r);\n      if (op === \">=\") return Number(l) >= Number(r);\n      return Number(l) <= Number(r);\n    }\n    if (e.startsWith(\"!!\")) return Boolean(readConditionPath(scope, e.slice(2).trim()));\n    if (e.startsWith(\"!\")) return !Boolean(readConditionPath(scope, e.slice(1).trim()));\n    return Boolean(readConditionPath(scope, e));\n  } catch { return false; }\n}\n\ntype _AfToolArgument = { from: string; required?: boolean } | { const: unknown };\ntype _AfResultMap = { fields: Record<string, string>; includeRaw?: boolean };\nfunction _afCloneJson(value: unknown, seen = new Set<object>()): unknown {\n  if (value === null || typeof value === \"string\" || typeof value === \"boolean\") return value;\n  if (typeof value === \"number\") { if (!Number.isFinite(value)) throw new Error(\"[terminal] tool argument is not finite JSON\"); return value; }\n  if (!value || typeof value !== \"object\" || seen.has(value)) throw new Error(\"[terminal] tool argument is not JSON\");\n  seen.add(value);\n  if (Array.isArray(value)) return value.map((entry) => _afCloneJson(entry, seen));\n  const out: Record<string, unknown> = Object.create(null) as Record<string, unknown>;\n  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) out[key] = _afCloneJson(entry, seen);\n  return out;\n}\nfunction _afToolArguments(template: Record<string, _AfToolArgument>, scope: Record<string, unknown>): Record<string, unknown> {\n  const out: Record<string, unknown> = Object.create(null) as Record<string, unknown>;\n  for (const [argument, source] of Object.entries(template)) {\n    const hasFrom = Object.prototype.hasOwnProperty.call(source, \"from\");\n    const hasConst = Object.prototype.hasOwnProperty.call(source, \"const\");\n    if (hasFrom === hasConst) throw new Error(\"[terminal] tool argument \" + argument + \" must choose exactly one of from/const\");\n    if (hasFrom) {\n      const path = String((source as { from: string }).from ?? \"\");\n      const value = readConditionPath(scope, path);\n      if (value === undefined) {\n        if ((source as { required?: boolean }).required === false) continue;\n        throw new Error(\"[terminal] required tool argument path did not resolve: \" + argument + \" <- \" + path);\n      }\n      out[argument] = _afCloneJson(value);\n    } else {\n      out[argument] = _afCloneJson((source as { const: unknown }).const);\n    }\n  }\n  return out;\n}\nfunction _afMapToolResult(raw: unknown, map: _AfResultMap): Record<string, unknown> {\n  const out: Record<string, unknown> = Object.create(null) as Record<string, unknown>;\n  for (const [field, path] of Object.entries(map.fields)) {\n    const value = path === \"result\" ? raw : readPath(raw, path.slice(\"result.\".length));\n    if (value === undefined) throw new Error(\"[terminal] tool result path did not resolve: \" + field + \" <- \" + path);\n    out[field] = value;\n  }\n  if (map.includeRaw === true) out._raw = raw;\n  return out;\n}\n\ntype _AfPolicyAction = \"park\" | \"retry\" | \"terminal\" | \"continue\";\ntype _AfPolicyRule = {\n  when?: string;\n  do?: _AfPolicyAction;\n  default?: _AfPolicyAction;\n  defaultResult?: unknown;\n  emitEvent?: string;\n  emitPayload?: Record<string, unknown>;\n  suppressEmit?: boolean;\n};\ntype _AfErrorFacts = {\n  kind?: string;\n  code?: string;\n  status?: number;\n  name: string;\n  message: string;\n  data?: Record<string, unknown>;\n  meta?: Record<string, unknown>;\n};\ntype _AfFailureResolution = {\n  disposition: \"retry\" | \"terminal\" | \"continue\";\n  policyAction: _AfPolicyAction | \"soft\";\n  facts: _AfErrorFacts;\n  defaultResult?: unknown;\n  emitEvent?: string;\n  emitPayload?: Record<string, unknown>;\n  suppressEmit: boolean;\n  policyError?: string;\n};\nfunction _afRecord(value: unknown): Record<string, unknown> | undefined {\n  return value && typeof value === \"object\" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;\n}\nfunction _afScalar(value: unknown): string | undefined {\n  if (typeof value === \"string\" && value.trim()) return value.trim();\n  if (typeof value === \"number\" && Number.isFinite(value)) return String(value);\n  return undefined;\n}\nfunction _afErrorFacts(value: unknown): _AfErrorFacts {\n  const root = value instanceof Error ? value : undefined;\n  let kind: string | undefined;\n  let code: string | undefined;\n  let status: number | undefined;\n  let name = root?.name || \"Error\";\n  let message = root?.message || _afScalar(value) || \"action failed\";\n  let data: Record<string, unknown> | undefined;\n  let meta: Record<string, unknown> | undefined;\n  const queue: unknown[] = [value];\n  const seen = new Set<unknown>();\n  for (let i = 0; i < queue.length && i < 24; i++) {\n    const current = queue[i];\n    if (current == null || seen.has(current)) continue;\n    seen.add(current);\n    if (current instanceof Error) {\n      if ((!message || message === \"action failed\") && current.message) message = current.message;\n      if (name === \"Error\" && current.name) name = current.name;\n      queue.push(current.cause);\n    }\n    const row = _afRecord(current);\n    if (!row) continue;\n    kind ??= _afScalar(row.kind) ?? _afScalar(row.failureKind) ?? _afScalar(row.failure_kind) ?? _afScalar(row.category);\n    code ??= _afScalar(row.code) ?? _afScalar(row.errorCode) ?? _afScalar(row.error_code);\n    const rawStatus = row.status ?? row.statusCode ?? row.status_code;\n    if (status === undefined && Number.isFinite(Number(rawStatus))) status = Number(rawStatus);\n    const nestedData = _afRecord(row.data);\n    const nestedMeta = _afRecord(row.meta);\n    data ??= nestedData;\n    meta ??= nestedMeta;\n    kind ??= _afScalar(nestedMeta?.error) ?? _afScalar(nestedData?.kind);\n    code ??= _afScalar(nestedMeta?.code) ?? _afScalar(nestedData?.code) ?? _afScalar(nestedData?.error_code);\n    const nestedStatus = nestedMeta?.status ?? nestedData?.status;\n    if (status === undefined && Number.isFinite(Number(nestedStatus))) status = Number(nestedStatus);\n    queue.push(row.cause, row.error, row.reason, row.output, row.result, row.data, row.meta);\n  }\n  if (!kind) {\n    const prefixed = message.match(/^([a-z][a-z0-9_-]{1,80})\\s*:/i);\n    if (prefixed) kind = prefixed[1];\n  }\n  if (status === undefined) {\n    const http = message.match(/\\bHTTP\\s+(\\d{3})\\b/i);\n    if (http) status = Number(http[1]);\n  }\n  return { ...(kind ? { kind } : {}), ...(code ? { code } : {}), ...(status !== undefined ? { status } : {}), name, message, ...(data ? { data } : {}), ...(meta ? { meta } : {}) };\n}\nfunction _afStripParens(source: string): string {\n  let out = source.trim();\n  while (out.startsWith(\"(\") && out.endsWith(\")\")) {\n    let depth = 0; let quote = \"\"; let wraps = true;\n    for (let i = 0; i < out.length; i++) {\n      const c = out[i]!;\n      if (quote) { if (c === \"\\\\\") i++; else if (c === quote) quote = \"\"; continue; }\n      if (c === \"'\" || c === '\"') { quote = c; continue; }\n      if (c === \"(\") depth++; else if (c === \")\") depth--;\n      if (depth === 0 && i < out.length - 1) { wraps = false; break; }\n    }\n    if (!wraps || depth !== 0) break;\n    out = out.slice(1, -1).trim();\n  }\n  return out;\n}\nfunction _afSplitTop(source: string, operator: \"&&\" | \"||\"): string[] {\n  const parts: string[] = []; let buffer = \"\"; let depth = 0; let quote = \"\";\n  for (let i = 0; i < source.length; i++) {\n    const c = source[i]!;\n    if (quote) { buffer += c; if (c === \"\\\\\" && i + 1 < source.length) buffer += source[++i]!; else if (c === quote) quote = \"\"; continue; }\n    if (c === \"'\" || c === '\"') { quote = c; buffer += c; continue; }\n    if (c === \"(\") depth++; else if (c === \")\") depth--;\n    if (depth === 0 && source.startsWith(operator, i)) { parts.push(buffer); buffer = \"\"; i++; continue; }\n    buffer += c;\n  }\n  parts.push(buffer);\n  return parts;\n}\nfunction _afRead(value: unknown, path: string): unknown {\n  let current = value;\n  for (const key of path.split(\".\")) {\n    if (current == null || typeof current !== \"object\") return undefined;\n    current = (current as Record<string, unknown>)[key];\n  }\n  return current;\n}\nfunction _afLiteral(source: string): unknown {\n  const value = source.trim();\n  if ((value.startsWith('\"') && value.endsWith('\"')) || (value.startsWith(\"'\") && value.endsWith(\"'\"))) return value.slice(1, -1);\n  if (/^-?\\d+(?:\\.\\d+)?$/.test(value)) return Number(value);\n  if (value === \"true\") return true;\n  if (value === \"false\") return false;\n  if (value === \"null\" || value === \"undefined\") return null;\n  return value;\n}\nfunction _afCompare(left: unknown, right: unknown, operator: string): boolean {\n  if (right === null) {\n    if (operator === \"==\" || operator === \"===\") return left == null;\n    if (operator === \"!=\" || operator === \"!==\") return left != null;\n  }\n  if (operator === \"===\") return left === right;\n  if (operator === \"!==\") return left !== right;\n  if (operator === \"==\") return left === right || (left != null && right != null && String(left) === String(right));\n  if (operator === \"!=\") return !(left === right || (left != null && right != null && String(left) === String(right)));\n  if (operator === \">\") return Number(left) > Number(right);\n  if (operator === \"<\") return Number(left) < Number(right);\n  if (operator === \">=\") return Number(left) >= Number(right);\n  return Number(left) <= Number(right);\n}\nfunction _afPredicateAtom(source: string, facts: _AfErrorFacts): boolean {\n  const atom = _afStripParens(source);\n  if (/^true$/i.test(atom)) return true;\n  if (/^false$/i.test(atom)) return false;\n  const path = \"(?:error\\\\.)?(?:kind|code|status|name|message|data(?:\\\\.[A-Za-z_$][A-Za-z0-9_$-]*)*|meta(?:\\\\.[A-Za-z_$][A-Za-z0-9_$-]*)*)\";\n  const literal = \"(?:'(?:\\\\\\\\.|[^'\\\\\\\\])*'|\\\"(?:\\\\\\\\.|[^\\\"\\\\\\\\])*\\\"|-?\\\\d+(?:\\\\.\\\\d+)?|true|false|null|undefined|[A-Za-z_$][A-Za-z0-9_$.-]*)\";\n  const includes = atom.match(new RegExp(\"^(\" + path + \")\\\\.includes\\\\(\\\\s*(\" + literal + \")\\\\s*\\\\)$\", \"i\"));\n  if (includes) {\n    const left = _afRead(facts, includes[1]!.replace(/^error\\./, \"\"));\n    const right = _afLiteral(includes[2]!);\n    return typeof left === \"string\" ? left.includes(String(right)) : Array.isArray(left) && left.includes(right);\n  }\n  const comparison = atom.match(new RegExp(\"^(\" + path + \")\\\\s*(===|!==|==|!=|>=|<=|>|<)\\\\s*(\" + literal + \")$\", \"i\"));\n  if (comparison) return _afCompare(_afRead(facts, comparison[1]!.replace(/^error\\./, \"\")), _afLiteral(comparison[3]!), comparison[2]!);\n  const presence = atom.match(new RegExp(\"^(!{0,2})(\" + path + \")$\", \"i\"));\n  if (!presence) return false;\n  const value = Boolean(_afRead(facts, presence[2]!.replace(/^error\\./, \"\")));\n  return presence[1] === \"!\" ? !value : value;\n}\nfunction _afErrorPredicate(predicate: string, facts: _AfErrorFacts): boolean {\n  const evaluate = (source: string): boolean => {\n    const normalized = _afStripParens(source);\n    const ors = _afSplitTop(normalized, \"||\");\n    if (ors.length > 1) return ors.some(evaluate);\n    const ands = _afSplitTop(normalized, \"&&\");\n    return ands.length > 1 ? ands.every(evaluate) : _afPredicateAtom(normalized, facts);\n  };\n  return evaluate(predicate);\n}\nfunction _afResolveFailure(policy: \"soft\" | \"terminal\" | \"park\" | _AfPolicyRule[] | undefined, failure: unknown, stepDefault?: unknown): _AfFailureResolution {\n  const facts = _afErrorFacts(failure);\n  if (policy === \"soft\") return { disposition: \"continue\", policyAction: \"soft\", facts, defaultResult: stepDefault, suppressEmit: false };\n  if (policy === \"terminal\") return { disposition: \"terminal\", policyAction: \"terminal\", facts, suppressEmit: true };\n  if (policy === \"park\") return { disposition: \"retry\", policyAction: \"park\", facts, suppressEmit: true };\n  if (!Array.isArray(policy)) return { disposition: \"retry\", policyAction: \"retry\", facts, suppressEmit: true };\n  for (const rule of policy) {\n    const action = typeof rule.when === \"string\" ? (_afErrorPredicate(rule.when, facts) ? rule.do : undefined) : rule.default;\n    if (!action) continue;\n    const ownDefault = Object.prototype.hasOwnProperty.call(rule, \"defaultResult\");\n    const defaultResult = ownDefault ? rule.defaultResult : stepDefault;\n    return {\n      disposition: action === \"park\" || action === \"retry\" ? \"retry\" : action,\n      policyAction: action,\n      facts,\n      ...(ownDefault || stepDefault !== undefined ? { defaultResult } : {}),\n      ...(rule.emitEvent ? { emitEvent: rule.emitEvent } : {}),\n      ...(rule.emitPayload ? { emitPayload: rule.emitPayload } : {}),\n      suppressEmit: rule.suppressEmit ?? false,\n    };\n  }\n  return { disposition: \"terminal\", policyAction: \"terminal\", facts, suppressEmit: true, policyError: \"error policy has no matching/default rule\" };\n}\nfunction _afFailurePayload(resolution: _AfFailureResolution): Record<string, unknown> {\n  const fallback = resolution.defaultResult && typeof resolution.defaultResult === \"object\" && !Array.isArray(resolution.defaultResult)\n    ? resolution.defaultResult as Record<string, unknown>\n    : { error: resolution.facts };\n  return { ...fallback, ...(resolution.emitPayload ?? {}) };\n}\n\nconst _sanitizeStepPart = (value: string): string => {\n  const clean = (value || \"\").replace(/[^A-Za-z0-9_-]/g, \"-\").slice(0, 80);\n  return /[A-Za-z0-9]/.test(clean) ? clean : \"step\";\n};\nconst _stableDigest96 = (value: string): string => {\n  let hash = 0x6c62272e07bb014262b821756295c58dn;\n  const prime = 0x0000000001000000000000000000013bn; const mask = (1n << 128n) - 1n;\n  for (let i = 0; i < value.length; i++) hash = ((hash ^ BigInt(value.charCodeAt(i))) * prime) & mask;\n  return hash.toString(16).padStart(32, \"0\").slice(-24);\n};\nconst _stableForeachKey = (businessKey: string): string => _sanitizeStepPart(businessKey).slice(0, 40) + \"-\" + _stableDigest96(businessKey);\n\n/** System prompt — 工厂为【这一个】agent 亲自推理出来的。 */\nconst SYSTEM_PROMPT = `你负责在候选人进入匹配前执行匹配规则审查，判断该候选人是否具备进入岗位匹配的资格，并产出可审计的规则审查结果。\n\n必须遵守：\n1. 你只做规则审查与审计记录，不负责匹配打分，也不负责发起面试邀约。\n2. 规则绝不写死。每次运行都必须通过 ontology.fetchActionRules 动态抓取 ruleCheckForMatchResume 当前有效规则，再结合候选人、岗位、需求上下文进行评估。\n3. 规则获取失败时必须 fail-closed：不得默认放行，必须终止并按失败分支处理。\n4. 评估结果必须结构化记录：至少包含 pass/fail、命中规则、拦截原因、证据摘要、是否需要人工复核。\n5. 审计结果必须落 RAAS 主记录；Allmeta 镜像写入可软失败但不能影响主判定。\n6. 放行时发 MATCH_RULE_CHECK_PASSED；拦截时发 MATCH_RULE_CHECK_FAILED；事件 payload 要携带下游所需的候选人、岗位、规则结论字段。\n7. 工具只使用已授权传输：facts.query、reasoning.evaluateRules、entities.write、ontology.writeInstance、ontology.fetchActionRules。`;\n\nexport const ruleCheckForMatchResumeAgent = defineAgent({\n  id: \"agents-gener-rule-check-for-match-resume\",\n  name: \"RuleCheckForMatchResumeAgent\",\n  actor: [\"Agent\"],\n  trigger: [\"RESUME_PROCESSED\"],\n  emit: [\"MATCH_RULE_CHECK_PASSED\",\"MATCH_RULE_CHECK_FAILED\"],\n  tools: [\"facts.query\",\"reasoning.evaluateRules\",\"entities.write\",\"ontology.writeInstance\",\"ontology.fetchActionRules\"],\n  systemPrompt: SYSTEM_PROMPT,\n  // Fail-closed ownership marker: probeAgentModule keeps this code reviewable but does not\n  // claim CodeAct execution where the worker lacks durable/per-RPC policy semantics.\n  factoryExecutionMode: \"declarative_required\",\n  factoryExecutionReason: \"工具调用需要独立 durable step、幂等键与 typed failure policy；foreach 需要逐项稳定业务键、游标和 durable replay identity；错误策略需要宿主的 typed retry/park/terminal 控制流；代码直接访问 reason、tools.run；当前协议不能把这些调用恢复为独立 durable step\",\n  async handler(input, ctx) {\n      const $in = (input ?? {}) as Record<string, unknown>;\n      let last: unknown = undefined;\n      const results: Record<string, unknown> = {};\n      const carry = (): Record<string, unknown> => ({ ...$in, ...(last && typeof last === \"object\" ? (last as Record<string, unknown>) : {}), results: { ...results } });\n      let _explicitEmitCount = 0;\n      let _suppressImplicitEmit = false;\n      const _cond: Record<string, boolean> = {};\n      const _skipped = new Set<string>();\n      const _pass = (deps: string[]) => deps.every((d) => !_skipped.has(d) && _cond[d] !== false);\n      // step resolve_candidate_resume_context (tool) — 回拉 parsed 简历内容及客户/部门/历史投递/黑名单/合规凭证上下文\n      try {\n        last = await (async () => { const _raw = await ctx.tools.run(\"facts.query\", _afToolArguments({\"subject\":{\"from\":\"input.candidate_id\",\"required\":true},\"objectTypes\":{\"const\":[\"Candidate\",\"Resume\",\"Job_Requisition\",\"Client\",\"Client_Department\",\"Blacklist\",\"Compliance_Document\"]},\"resume_id\":{\"from\":\"input.resume_id\",\"required\":false},\"job_requisition_id\":{\"from\":\"input.job_requisition_id\",\"required\":false}}, { event: { name: \"RESUME_PROCESSED\", data: $in }, lastResult: last, results, input: $in })); return _afMapToolResult(_raw, {\"fields\":{\"candidate\":\"result.candidate\",\"resume\":\"result.resume\",\"parsedContent\":\"result.parsed_content\",\"client\":\"result.client\",\"blacklist\":\"result.blacklist\"},\"includeRaw\":true}); })();\n      } catch (e) {\n        const _resolution = _afResolveFailure([{\"when\":\"status >= 500 || code == 'ETIMEDOUT'\",\"do\":\"park\",\"suppressEmit\":true},{\"default\":\"terminal\"}], e, undefined);\n        if (_resolution.disposition !== \"continue\") {\n          const _tag = _resolution.disposition === \"terminal\" ? \"terminal\" : (_resolution.policyAction === \"park\" ? \"park\" : \"retry\");\n          ctx.log?.(\"error\", \"步骤 resolve_candidate_resume_context 按错误策略终止\", { action: _resolution.policyAction, facts: _resolution.facts });\n          throw new Error(\"[\" + _tag + \"] step resolve_candidate_resume_context: \" + _resolution.facts.message);\n        }\n        if (_resolution.suppressEmit) _suppressImplicitEmit = true;\n        if (_resolution.emitEvent) { await ctx.emit(_resolution.emitEvent, _afFailurePayload(_resolution)); _explicitEmitCount++; }\n        last = _resolution.defaultResult;\n      }\n      results[\"resolve_candidate_resume_context\"] = last;\n      // step resolve_matchable_requirements (tool) — 岗位收敛三路径 A/B'/B，过 hasMatchableContent 防线，0 条早退\n      try {\n        last = await (async () => { const _raw = await ctx.tools.run(\"facts.query\", _afToolArguments({\"subject\":{\"from\":\"input.candidate_id\",\"required\":true},\"objectTypes\":{\"const\":[\"Job_Requisition\",\"Job_Requisition_Specification\"]},\"job_requisition_id\":{\"from\":\"input.job_requisition_id\",\"required\":false},\"job_requisition_ids\":{\"from\":\"input.job_requisition_ids\",\"required\":false},\"employee_id\":{\"from\":\"input.employee_id\",\"required\":false}}, { event: { name: \"RESUME_PROCESSED\", data: $in }, lastResult: last, results, input: $in })); return _afMapToolResult(_raw, {\"fields\":{\"matchableJRs\":\"result.matchable_requirements\"},\"includeRaw\":true}); })();\n      } catch (e) {\n        const _resolution = _afResolveFailure([{\"when\":\"status >= 500 || code == 'ETIMEDOUT'\",\"do\":\"park\",\"suppressEmit\":true},{\"default\":\"terminal\"}], e, undefined);\n        if (_resolution.disposition !== \"continue\") {\n          const _tag = _resolution.disposition === \"terminal\" ? \"terminal\" : (_resolution.policyAction === \"park\" ? \"park\" : \"retry\");\n          ctx.log?.(\"error\", \"步骤 resolve_matchable_requirements 按错误策略终止\", { action: _resolution.policyAction, facts: _resolution.facts });\n          throw new Error(\"[\" + _tag + \"] step resolve_matchable_requirements: \" + _resolution.facts.message);\n        }\n        if (_resolution.suppressEmit) _suppressImplicitEmit = true;\n        if (_resolution.emitEvent) { await ctx.emit(_resolution.emitEvent, _afFailurePayload(_resolution)); _explicitEmitCount++; }\n        last = _resolution.defaultResult;\n      }\n      results[\"resolve_matchable_requirements\"] = last;\n      // step evaluate_rules_per_requisition (foreach) — 对每个 JR 循环执行规则评估\n      try {\n        const _collection1 = readConditionPath({ event: { name: \"RESUME_PROCESSED\", data: { ...($in), ...({}) } }, lastResult: last, results: results, input: $in, locals: {} }, \"results.resolve_matchable_requirements.result.matchableJRs\");\n        if (!Array.isArray(_collection1)) throw new Error(\"[terminal] foreach evaluate_rules_per_requisition: itemsFrom results.resolve_matchable_requirements.result.matchableJRs did not resolve to an array\");\n        const _seenKeys1 = new Set<string>();\n        const _seenStableKeys1 = new Map<string, string>();\n        const _receipts1: Array<Record<string, unknown>> = [];\n        for (let _index1 = 0; _index1 < _collection1.length; _index1++) {\n          const _item1 = _collection1[_index1];\n          const _locals1: Record<string, unknown> = { ...({}), \"jr\": _item1, index: _index1 };\n          const _keyValue1 = readConditionPath({ ..._locals1, locals: _locals1, event: { name: \"RESUME_PROCESSED\", data: { ...($in), ..._locals1 } }, lastResult: _item1, results: results, input: $in }, \"jr.job_requisition_id\");\n          if (_keyValue1 == null || String(_keyValue1).trim() === \"\") throw new Error(\"[terminal] foreach evaluate_rules_per_requisition: item has no stable key at jr.job_requisition_id\" + \" (#\" + _index1 + \")\");\n          const _businessKey1 = String(_keyValue1);\n          if (_seenKeys1.has(_businessKey1)) throw new Error(\"[terminal] foreach evaluate_rules_per_requisition: duplicate item key \" + _businessKey1);\n          _seenKeys1.add(_businessKey1);\n          const _stableKey1 = _stableForeachKey(_businessKey1);\n          if (_seenStableKeys1.has(_stableKey1) && _seenStableKeys1.get(_stableKey1) !== _businessKey1) throw new Error(\"[terminal] foreach evaluate_rules_per_requisition: stable key collision for \" + _businessKey1);\n          _seenStableKeys1.set(_stableKey1, _businessKey1);\n          _locals1.key = _businessKey1;\n          _locals1.stableKey = _stableKey1;\n          _locals1._foreachPath = [...(Array.isArray(({} as Record<string, unknown>)._foreachPath) ? (({} as Record<string, unknown>)._foreachPath as unknown[]) : []), _businessKey1];\n          let _localLast1: unknown = _item1;\n          const _localResults1: Record<string, unknown> = {};\n          const _localCond1: Record<string, boolean> = {};\n          const _localSkipped1 = new Set<string>();\n          const _localPass1 = (deps: string[]): boolean => deps.every((dep) => !_localSkipped1.has(dep) && _localCond1[dep] !== false);\n          const _localCarry1 = (): Record<string, unknown> => ({ ...($in), ...(last && typeof last === \"object\" ? (last as Record<string, unknown>) : {}), ..._locals1, ...(_localLast1 && typeof _localLast1 === \"object\" ? (_localLast1 as Record<string, unknown>) : {}), results: { ...(results), ..._localResults1 } });\n          // foreach child evaluate_rules_per_jr (tool)\n          try {\n            _localLast1 = await (async () => { const _raw = await ctx.tools.run(\"reasoning.evaluateRules\", _afToolArguments({\"action\":{\"const\":\"ruleCheckForMatchResume\"},\"candidate_id\":{\"from\":\"input.candidate_id\",\"required\":true},\"resume_id\":{\"from\":\"input.resume_id\",\"required\":true},\"job_requisition_id\":{\"from\":\"locals.jr.job_requisition_id\",\"required\":true},\"context\":{\"from\":\"results.resolve_candidate_resume_context.result\",\"required\":true}}, { ..._locals1, locals: _locals1, event: { name: \"RESUME_PROCESSED\", data: { ...($in), ..._locals1 } }, lastResult: _localLast1, results: { ...(results), ..._localResults1 }, input: $in })); return _afMapToolResult(_raw, {\"fields\":{\"passed\":\"result.passed\",\"failedRules\":\"result.failed_rules\",\"auditEvidence\":\"result.evidence\"},\"includeRaw\":true}); })();\n          } catch (e) {\n            const _resolution = _afResolveFailure([{\"when\":\"code == 'LLM_GATEWAY_UNAVAILABLE' || code == 'GRAPH_UNAVAILABLE'\",\"do\":\"park\",\"suppressEmit\":true},{\"when\":\"status >= 500 || code == 'ETIMEDOUT'\",\"do\":\"park\",\"suppressEmit\":true},{\"default\":\"terminal\"}], e, undefined);\n            if (_resolution.disposition !== \"continue\") {\n              const _tag = _resolution.disposition === \"terminal\" ? \"terminal\" : (_resolution.policyAction === \"park\" ? \"park\" : \"retry\");\n              ctx.log?.(\"error\", \"步骤 evaluate_rules_per_jr 按错误策略终止\", { action: _resolution.policyAction, facts: _resolution.facts });\n              throw new Error(\"[\" + _tag + \"] step evaluate_rules_per_jr: \" + _resolution.facts.message);\n            }\n            if (_resolution.suppressEmit) _suppressImplicitEmit = true;\n            if (_resolution.emitEvent) { await ctx.emit(_resolution.emitEvent, _afFailurePayload(_resolution)); _explicitEmitCount++; }\n            _localLast1 = _resolution.defaultResult;\n          }\n          _localResults1[\"evaluate_rules_per_jr\"] = _localLast1;\n          _receipts1.push({ index: _index1, key: _businessKey1, stableKey: _stableKey1, path: _locals1._foreachPath, item: _item1, results: _localResults1, lastResult: _localLast1 });\n        }\n        last = { count: _receipts1.length, items: _receipts1, byKey: Object.fromEntries(_receipts1.map((receipt) => [String(receipt.stableKey), receipt])) };\n      } catch (e) {\n        const _resolution = _afResolveFailure(undefined, e, undefined);\n        if (_resolution.disposition !== \"continue\") {\n          const _tag = _resolution.disposition === \"terminal\" ? \"terminal\" : (_resolution.policyAction === \"park\" ? \"park\" : \"retry\");\n          ctx.log?.(\"error\", \"步骤 evaluate_rules_per_requisition 按错误策略终止\", { action: _resolution.policyAction, facts: _resolution.facts });\n          throw new Error(\"[\" + _tag + \"] step evaluate_rules_per_requisition: \" + _resolution.facts.message);\n        }\n        if (_resolution.suppressEmit) _suppressImplicitEmit = true;\n        if (_resolution.emitEvent) { await ctx.emit(_resolution.emitEvent, _afFailurePayload(_resolution)); _explicitEmitCount++; }\n        last = _resolution.defaultResult;\n      }\n      results[\"evaluate_rules_per_requisition\"] = last;\n      // step persist_rule_check_outcome (tool) — 强制幂等落审计及逐规则评估证据，写失败 park 重试\n      try {\n        last = await (async () => { const _raw = await ctx.tools.run(\"persistRuleCheckAudit\", _afToolArguments({\"candidate_id\":{\"from\":\"input.candidate_id\",\"required\":true},\"resume_id\":{\"from\":\"input.resume_id\",\"required\":true},\"action\":{\"const\":\"ruleCheckForMatchResume\"},\"evidence\":{\"from\":\"results.evaluate_rules_per_requisition.result\",\"required\":true}}, { event: { name: \"RESUME_PROCESSED\", data: $in }, lastResult: last, results, input: $in })); return _afMapToolResult(_raw, {\"fields\":{\"auditId\":\"result.audit_id\"}}); })();\n      } catch (e) {\n        const _resolution = _afResolveFailure([{\"when\":\"status >= 500 || code == 'ETIMEDOUT'\",\"do\":\"park\",\"suppressEmit\":true},{\"default\":\"terminal\"}], e, undefined);\n        if (_resolution.disposition !== \"continue\") {\n          const _tag = _resolution.disposition === \"terminal\" ? \"terminal\" : (_resolution.policyAction === \"park\" ? \"park\" : \"retry\");\n          ctx.log?.(\"error\", \"步骤 persist_rule_check_outcome 按错误策略终止\", { action: _resolution.policyAction, facts: _resolution.facts });\n          throw new Error(\"[\" + _tag + \"] step persist_rule_check_outcome: \" + _resolution.facts.message);\n        }\n        if (_resolution.suppressEmit) _suppressImplicitEmit = true;\n        if (_resolution.emitEvent) { await ctx.emit(_resolution.emitEvent, _afFailurePayload(_resolution)); _explicitEmitCount++; }\n        last = _resolution.defaultResult;\n      }\n      results[\"persist_rule_check_outcome\"] = last;\n      // step fetch_match_rules (tool) — 读取当前 ruleCheckForMatchResume 规则补充审计依据\n      try {\n        last = await (async () => { const _raw = await ctx.tools.run(\"ontology.fetchActionRules\", _afToolArguments({\"action\":{\"const\":\"ruleCheckForMatchResume\"}}, { event: { name: \"RESUME_PROCESSED\", data: $in }, lastResult: last, results, input: $in })); return _afMapToolResult(_raw, {\"fields\":{\"rules\":\"result.rules\"}}); })();\n      } catch (e) {\n        const _resolution = _afResolveFailure([{\"when\":\"status >= 500 || code == 'ETIMEDOUT'\",\"do\":\"park\",\"suppressEmit\":true},{\"default\":\"terminal\"}], e, undefined);\n        if (_resolution.disposition !== \"continue\") {\n          const _tag = _resolution.disposition === \"terminal\" ? \"terminal\" : (_resolution.policyAction === \"park\" ? \"park\" : \"retry\");\n          ctx.log?.(\"error\", \"步骤 fetch_match_rules 按错误策略终止\", { action: _resolution.policyAction, facts: _resolution.facts });\n          throw new Error(\"[\" + _tag + \"] step fetch_match_rules: \" + _resolution.facts.message);\n        }\n        if (_resolution.suppressEmit) _suppressImplicitEmit = true;\n        if (_resolution.emitEvent) { await ctx.emit(_resolution.emitEvent, _afFailurePayload(_resolution)); _explicitEmitCount++; }\n        last = _resolution.defaultResult;\n      }\n      results[\"fetch_match_rules\"] = last;\n      // step persist_raas_rule_outcome (tool) — phase=candidate_match 写 RAAS CMR，FAIL 时必写，PASS 跳过主表\n      try {\n        last = await (async () => { const _raw = await ctx.tools.run(\"entities.write\", _afToolArguments({\"objectType\":{\"const\":\"Candidate_Match_Result\"},\"phase\":{\"const\":\"candidate_match\"},\"candidateId\":{\"from\":\"input.candidate_id\",\"required\":true},\"resumeId\":{\"from\":\"input.resume_id\",\"required\":true},\"auditId\":{\"from\":\"results.persist_rule_check_outcome.result.auditId\",\"required\":true}}, { event: { name: \"RESUME_PROCESSED\", data: $in }, lastResult: last, results, input: $in })); return _afMapToolResult(_raw, {\"fields\":{\"cmrId\":\"result.cmr_id\",\"persistOk\":\"result.ok\"}}); })();\n      } catch (e) {\n        const _resolution = _afResolveFailure([{\"when\":\"status >= 500 || code == 'ETIMEDOUT'\",\"do\":\"park\",\"suppressEmit\":true},{\"default\":\"terminal\"}], e, undefined);\n        if (_resolution.disposition !== \"continue\") {\n          const _tag = _resolution.disposition === \"terminal\" ? \"terminal\" : (_resolution.policyAction === \"park\" ? \"park\" : \"retry\");\n          ctx.log?.(\"error\", \"步骤 persist_raas_rule_outcome 按错误策略终止\", { action: _resolution.policyAction, facts: _resolution.facts });\n          throw new Error(\"[\" + _tag + \"] step persist_raas_rule_outcome: \" + _resolution.facts.message);\n        }\n        if (_resolution.suppressEmit) _suppressImplicitEmit = true;\n        if (_resolution.emitEvent) { await ctx.emit(_resolution.emitEvent, _afFailurePayload(_resolution)); _explicitEmitCount++; }\n        last = _resolution.defaultResult;\n      }\n      results[\"persist_raas_rule_outcome\"] = last;\n      // step emit_rule_check_outcome (condition) — 依赖: persist_raas_rule_outcome\n      if (_pass([\"persist_raas_rule_outcome\"])) {\n        try {\n          _cond[\"emit_rule_check_outcome\"] = evalCondition(\"results.evaluate_rules_per_requisition.result.passed == true\", { event: { name: \"RESUME_PROCESSED\", data: $in }, lastResult: last, results, input: $in });\n          results[\"emit_rule_check_outcome\"] = { evaluated: _cond[\"emit_rule_check_outcome\"] };\n        } catch (e) {\n          const _resolution = _afResolveFailure(undefined, e, undefined);\n          if (_resolution.disposition !== \"continue\") {\n            const _tag = _resolution.disposition === \"terminal\" ? \"terminal\" : (_resolution.policyAction === \"park\" ? \"park\" : \"retry\");\n            ctx.log?.(\"error\", \"步骤 emit_rule_check_outcome 按错误策略终止\", { action: _resolution.policyAction, facts: _resolution.facts });\n            throw new Error(\"[\" + _tag + \"] step emit_rule_check_outcome: \" + _resolution.facts.message);\n          }\n          if (_resolution.suppressEmit) _suppressImplicitEmit = true;\n          if (_resolution.emitEvent) { await ctx.emit(_resolution.emitEvent, _afFailurePayload(_resolution)); _explicitEmitCount++; }\n          last = _resolution.defaultResult;\n        }\n      } else {\n        _skipped.add(\"emit_rule_check_outcome\");\n        ctx.log?.(\"info\", \"跳过步骤 emit_rule_check_outcome（依赖条件不成立）\");\n      }\n      // 决策核心（fail-close）：LLM 不可用/失败时绝不伪造通过\n      const decision = (await ctx.reason(SYSTEM_PROMPT + \"\\n只输出 JSON；必须附字段 \\\"emit\\\" 选择产出事件，取值之一：MATCH_RULE_CHECK_PASSED | MATCH_RULE_CHECK_FAILED；判定失败/拒绝时选失败/拒绝类事件。\", { input: $in, lastResult: last, results })) as Record<string, unknown>;\n      if (decision._reasonFailed === true) throw new Error(\"决策核心失败（LLM 不可用）——fail-close，不伪造通过\");\n      if (!_suppressImplicitEmit) {\n        // 真实事件选择：优先决策核心显式选择的 emit；否则按 pass/ok 走首个(成功)或末个(失败)分支\n        const _declared = [\"MATCH_RULE_CHECK_PASSED\",\"MATCH_RULE_CHECK_FAILED\"];\n        const _failed = decision.pass === false || decision.ok === false;\n        let _chosen = _failed ? _declared[_declared.length - 1]! : _declared[0]!;\n        if (typeof decision.emit === \"string\" && _declared.includes(decision.emit)) _chosen = decision.emit;\n        await ctx.emit(_chosen, { ...carry(), ...decision });\n      }\n      return { ok: decision.pass !== false && decision.ok !== false, lastResult: last, results };\n  },\n});\n",
+    "codeExecuted": false,
+    "probeReason": "execution owner=declarative-plan: 工具调用需要独立 durable step、幂等键与 typed failure policy；foreach 需要逐项稳定业务键、游标和 durable replay identity；错误策略需要宿主的 typed retry/park/terminal 控制流；代码直接访问 reason、tools.run；当前协议不能把这些调用恢复为独立 durable step"
+  },
+  "createdAt": "2026-07-20T05:49:12.892Z",
+  "versionId": "v-20260720054912892-0f578b0e",
+  "ownerTenantId": "ten-f17312c2b674",
+  "bindingDomainId": "Agents-generation"
+}

@@ -20,6 +20,15 @@ import { closeDb, getDb } from "./client";
 import { hashPassword } from "./password";
 import { memberships, tenants, users } from "./schema";
 
+/**
+ * Compatibility execution namespaces, not the target Business Domain
+ * taxonomy. Runtime manifests, event names, credentials and tenant-native
+ * adapters are still keyed by these slugs. In particular, `zhaopin` and
+ * `agents-generation` must not be presented as proof that RAAS-v1 and
+ * Agents-generation are separate business categories; consolidating them
+ * under a canonical Recruitment Business Domain requires an explicit runtime
+ * and data migration (see docs/design/business-domain-runtime-migration-decision.md).
+ */
 const DEPLOYABLE_TENANTS = [
   {
     slug: "__system",
@@ -34,18 +43,18 @@ const DEPLOYABLE_TENANTS = [
     color: "#d0ff00",
   },
   {
-    // RAAS-v1 — faithful 1:1 migration of the old AO recruitment domain's 6
-    // production agents (models/zhaopin-v1/). Slug is lowercase-Latin (required
-    // by tenantSlugFromFolder); the RAAS-v1 label lives in `name`.
+    // Compatibility execution namespace for the faithful 1:1 migration of the
+    // old AO recruitment flow (models/zhaopin-v1/). It is not an Ontology
+    // Domain registration and must not be auto-merged into another tenant row.
     slug: "zhaopin",
     name: "RAAS-v1",
     subtitle: "招聘 6-agent 流水线 · JD/简历/查重/规则/匹配/面试邀约",
     color: "#65e0a3",
   },
   {
-    // Agents-generation — the agent-factory's input domain, grounded LIVE in
-    // AllmetaOntology rather than a local models/ folder. Seeded so it shows in
-    // the tenant switcher; its ontology is fetched live by the factory.
+    // Compatibility execution namespace for the historical Agent Factory
+    // deployment. The exact Allmeta identity now belongs in
+    // business_ontology_domains under a selected Business Domain.
     slug: "agents-generation",
     name: "Agents-generation",
     subtitle: "Agent factory · live AllmetaOntology 本体",

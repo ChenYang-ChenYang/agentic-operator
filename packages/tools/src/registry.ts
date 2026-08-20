@@ -32,12 +32,14 @@
  */
 
 import { createHash } from "node:crypto";
+import { normalizeToolSchema } from "./declarative/schema-validation";
 import type {
   ToolDescriptor,
   ToolWriteProbeLifecycle,
 } from "@agentic/agent-kit";
 import {
   inspectWriteProbeSafety,
+  safeProbePath,
   type ToolConfigContract,
   type WriteProbeSafetyContract,
 } from "@agentic/shared";
@@ -83,6 +85,7 @@ import {
 } from "./postgres";
 import { cryptoSha256 } from "./crypto";
 import { documentConvert } from "./document";
+import { inspectEnvironmentReferencesTool } from "./config";
 import { metaerpInvoke } from "./metaerp";
 import {
   browserOpenSession,
@@ -125,6 +128,37 @@ export interface ToolExecutionPolicy {
   operation: ToolOperation;
   effectScope: ToolEffectScope;
   sandboxPolicy: ToolSandboxPolicy;
+}
+
+/**
+ * #EFFECT-READBACK (D6) — how a claimed write is CONFIRMED by reading it back.
+ *
+ * A tool that reports success while returning nothing usable is the exact
+ * failure this exists for: RoboHire's `match-resume` wraps its analysis under
+ * `data.data.*`, the normalizer read one level too shallow, and every candidate
+ * came back `matchScore: null` while the call "succeeded" (see CLAUDE.md).
+ * `is_error: false` is the tool's own word for it; a read-back is somebody
+ * else's.
+ *
+ * The declaration lives with the TOOL — here, or on a manifest `tool_use[]`
+ * entry when the confirming endpoint is tenant-specific. It is never a name
+ * list in the runtime, and its absence is never a pass: an undeclared write
+ * reconciles as `not_verified`, which qualifies the run's completion.
+ *
+ * Every path is a safe dotted path (`safeProbePath` in @agentic/shared).
+ * `readArgs` values are read from the WRITE call (`input.*` / `output.*`);
+ * `match[].claim` is read from the write's output and `match[].observed` from
+ * the read tool's output. Values must be deep-equal.
+ */
+export interface ToolEffectVerificationContract {
+  /** Read-only tool that observes the effect. Must be in the same
+   * `tool_use[]` allow-list — the read-back does not widen the trust
+   * boundary. */
+  readTool: string;
+  /** Read-tool argument name → dotted source path on the write call. */
+  readArgs?: Record<string, string>;
+  /** Field pairs that must agree between what was claimed and what is there. */
+  match: Array<{ claim: string; observed: string }>;
 }
 
 /** Catalog metadata surfaced via GET /v1/tools and the Tools UI. */
@@ -193,6 +227,7 @@ export interface ToolCatalogEntry {
     kinds: string[];
     roles: string[];
     operations?: string[];
+    requiresOperation?: boolean;
     objectTypes?: string[];
     probeRequired?: boolean;
   }>;
@@ -211,6 +246,14 @@ export interface ToolCatalogEntry {
   /** A write/dual probe is disabled until the complete disposable-canary
    * lifecycle (create, cleanup, absence proof) is declared. */
   probeSafety?: WriteProbeSafetyContract;
+  /**
+   * #EFFECT-READBACK (D6) — declared confirmation route for this tool's write.
+   * Undefined means this tool declares no read-back; the runtime then records
+   * `not_verified` on every one of its calls rather than assuming success.
+   * A manifest `tool_use[].effect_verification` entry overrides this, because
+   * the confirming endpoint is frequently tenant-bound.
+   */
+  effectVerification?: ToolEffectVerificationContract;
   /** Shape of the success return value (what handler resolves with under .data). */
   returnsSchema?: Record<string, ToolFieldSchema>;
   /** A worked example of the return value. */
@@ -378,6 +421,114 @@ const GOHIRE_CONFIG_EXAMPLE = {
 };
 
 const REGISTRATIONS: ToolRegistration[] = [
+  // ── config.* — non-secret profile diagnostics. These entries never
+  //    declare business-system capabilities: presence is not a live probe. ─
+  {
+    descriptor: inspectEnvironmentReferencesTool,
+    catalog: {
+      name: "config.inspectEnvironmentReferences",
+      category: "config",
+      summary:
+        "Check whether reviewed environment references are populated without exposing their values; code generation may continue with a warning, but runtime remains probe-gated.",
+      sideEffect: "read",
+      testPolicy: "allow",
+      operation: "compute",
+      effectScope: "none",
+      sandboxPolicy: "pure",
+      description:
+        "Reads only the environment-variable names supplied by a reviewed tool profile and reports configured/missing names. It never returns values and never claims connectivity. The result explicitly separates code-generation disposition from runtime readiness so OntoCode can keep drafting while giving the FDE an actionable dependency warning.",
+      argsSchema: {},
+      argsExample: {},
+      configSchema: {
+        profile_name: {
+          type: "string",
+          required: true,
+          description: "Stable non-secret integration-profile label.",
+        },
+        system_name: {
+          type: "string",
+          required: true,
+          description:
+            "Exact Ontology integration system represented by the profile.",
+        },
+        required_env: {
+          type: "string[]",
+          required: true,
+          description:
+            "Reviewed required environment-variable names; values are never returned.",
+        },
+        optional_env: {
+          type: "string[]",
+          description:
+            "Reviewed optional environment-variable names; values are never returned.",
+        },
+        legacy_env_alternatives: {
+          type: "Record<string,string[]>",
+          description:
+            "Migration-only preferred→legacy env-name candidates. The tool reports configured alternatives but never selects one or copies a value.",
+        },
+        probe_tool: {
+          type: "string",
+          description:
+            "Real connectivity/probe tool the FDE should run next; informational only.",
+        },
+      },
+      configExample: {
+        profile_name: "agents-generation-gohire",
+        system_name: "GoHire_System",
+        required_env: [
+          "GOHIRE_API_BASE_URL",
+          "GOHIRE_API_KEY",
+        ],
+        probe_tool: "gohireHealthApi",
+      },
+      returnsSchema: {
+        status: {
+          type:
+            "'needs_configuration'|'needs_profile_selection'|'configured_unverified'",
+        },
+        configured_env: { type: "string[]" },
+        missing_env: { type: "string[]" },
+        unresolved_missing_env: { type: "string[]" },
+        legacy_configured_alternatives: {
+          type:
+            "Array<{required_env:string,configured_alternatives:string[]}>",
+        },
+        code_generation_disposition: {
+          type: "'continue_with_warning'",
+        },
+        runtime_disposition: {
+          type:
+            "'blocked_until_configured_and_probed'|'blocked_until_profile_selected_and_probed'|'blocked_until_probed'",
+        },
+        warning: { type: "string" },
+      },
+      returnsExample: {
+        profile_name: "agents-generation-gohire",
+        system_name: "GoHire_System",
+        status: "configured_unverified",
+        configured_env: [
+          "GOHIRE_API_BASE_URL",
+          "GOHIRE_API_KEY",
+        ],
+        missing_env: [],
+        unresolved_missing_env: [],
+        optional_configured_env: [],
+        optional_missing_env: [],
+        legacy_configured_alternatives: [],
+        probe_tool: "gohireHealthApi",
+        code_generation_disposition: "continue_with_warning",
+        runtime_disposition: "blocked_until_probed",
+        warning:
+          "Environment references are present; a real probe is still required.",
+      },
+      // Intentionally no capabilities: this diagnostic cannot satisfy a
+      // GoHire/Allmeta/Postgres/object-store integration binding.
+      sourcePath:
+        "packages/tools/src/config/inspect-environment-references.ts",
+    },
+  },
+
   // ── gohire.* — the CANONICAL recruitment tool family (live vendor:
   //    GoHire / gohire.top, RoboHire-compatible contract). Credentials come
   //    from Settings → Integrations (DB-backed, via resolveIntegrationCreds)
@@ -492,8 +643,8 @@ const REGISTRATIONS: ToolRegistration[] = [
       capabilities: [{
         systems: ["RoboHire", "GoHire", "RoboHire_System", "GoHire_System"],
         kinds: ["external_api"],
-        roles: ["calls"],
-        operations: ["generate-jd", "jobs/generate-jd"],
+        roles: ["calls", "call", "execute"],
+        operations: ["generate-jd", "jobs/generate-jd", "jd.generate"],
         objectTypes: ["Job_Posting", "Job_Requisition"],
         probeRequired: true,
       }],
@@ -555,7 +706,7 @@ const REGISTRATIONS: ToolRegistration[] = [
       },
       argsExample: {},
       configSchema: GOHIRE_CONFIG_SCHEMA,
-      capabilities: [{ systems: ["RoboHire", "GoHire", "RoboHire_System", "GoHire_System"], kinds: ["external_api"], roles: ["calls"], operations: ["parse-resume"], objectTypes: ["Resume", "Candidate"], probeRequired: true }],
+      capabilities: [{ systems: ["RoboHire", "GoHire", "RoboHire_System", "GoHire_System"], kinds: ["external_api"], roles: ["calls", "call", "execute"], operations: ["parse-resume", "resume.parse"], objectTypes: ["Resume", "Candidate"], probeRequired: true }],
       returnsSchema: {
         data: {
           type: "object",
@@ -609,7 +760,7 @@ const REGISTRATIONS: ToolRegistration[] = [
         jd: "Senior Backend Engineer — Must have Postgres OLTP expertise ...",
       },
       configSchema: GOHIRE_CONFIG_SCHEMA,
-      capabilities: [{ systems: ["RoboHire", "GoHire", "RoboHire_System", "GoHire_System"], kinds: ["external_api"], roles: ["calls"], operations: ["match-resume"], objectTypes: ["Resume", "Job_Posting", "Job_Requisition", "Candidate_Match_Result"], probeRequired: true }],
+      capabilities: [{ systems: ["RoboHire", "GoHire", "RoboHire_System", "GoHire_System"], kinds: ["external_api"], roles: ["calls", "call", "execute"], operations: ["match-resume", "resume.match"], objectTypes: ["Resume", "Job_Posting", "Job_Requisition", "Candidate_Match_Result"], probeRequired: true }],
       returnsSchema: {
         matchScore: {
           type: "number | null",
@@ -705,7 +856,7 @@ const REGISTRATIONS: ToolRegistration[] = [
       configSchema: GOHIRE_CONFIG_SCHEMA,
       credentialPosture: "server_managed",
       probeRequired: true,
-      capabilities: [{ systems: ["RoboHire", "GoHire", "RoboHire_System", "GoHire_System"], kinds: ["external_api"], roles: ["write", "writes", "calls"], operations: ["invite-candidate"], objectTypes: ["Candidate", "Job_Requisition", "Interview_Record", "Communication_Log"], probeRequired: true }],
+      capabilities: [{ systems: ["RoboHire", "GoHire", "RoboHire_System", "GoHire_System"], kinds: ["external_api"], roles: ["write", "writes", "calls", "call", "execute"], operations: ["invite-candidate", "interview.invite"], objectTypes: ["Candidate", "Job_Requisition", "Interview_Record", "Communication_Log"], probeRequired: true }],
       returnsSchema: {
         success: { type: "boolean", description: "True only when RoboHire issued/reused a real invitation." },
         error_code: { type: "string | null", description: "Stable terminal business-failure classification; null on success." },
@@ -836,6 +987,16 @@ const REGISTRATIONS: ToolRegistration[] = [
         bytesWritten: 1247,
       },
       aliases: ["writeJdToDisk"],
+      // 本地容器磁盘写入。刻意【不】声明 Object_Storage_System：这些工具写的是
+      // 容器盘，谎称覆盖对象存储会让能力匹配用一次本地写去满足 S3/MinIO 需求，
+      // 生成的 agent 会静默地写错地方。当前没有 Agent 动作需要它，属预防性声明。
+      capabilities: [{
+        systems: ["local filesystem"],
+        kinds: ["file_store"],
+        roles: ["write", "writes"],
+        operations: ["write-file"],
+        objectTypes: ["*"],
+      }],
       sourcePath: "packages/tools/src/fs/write-markdown-to-archive.ts",
     },
   },
@@ -884,6 +1045,16 @@ const REGISTRATIONS: ToolRegistration[] = [
         bytesWritten: 2762,
       },
       aliases: ["writeReportToDisk", "writeBriefToDisk"],
+      // 本地容器磁盘写入。刻意【不】声明 Object_Storage_System：这些工具写的是
+      // 容器盘，谎称覆盖对象存储会让能力匹配用一次本地写去满足 S3/MinIO 需求，
+      // 生成的 agent 会静默地写错地方。当前没有 Agent 动作需要它，属预防性声明。
+      capabilities: [{
+        systems: ["local filesystem"],
+        kinds: ["file_store"],
+        roles: ["write", "writes"],
+        operations: ["write-file"],
+        objectTypes: ["*"],
+      }],
       sourcePath: "packages/tools/src/fs/write-html-to-archive.ts",
     },
   },
@@ -933,6 +1104,16 @@ const REGISTRATIONS: ToolRegistration[] = [
         line: "2026-05-27T17:46:48.591Z  event=AGENT_TEST1_DONE  agent=agent-test2  subject=REQ-123",
       },
       aliases: ["writeWorkflowLog"],
+      // 本地容器磁盘写入。刻意【不】声明 Object_Storage_System：这些工具写的是
+      // 容器盘，谎称覆盖对象存储会让能力匹配用一次本地写去满足 S3/MinIO 需求，
+      // 生成的 agent 会静默地写错地方。当前没有 Agent 动作需要它，属预防性声明。
+      capabilities: [{
+        systems: ["local filesystem"],
+        kinds: ["file_store"],
+        roles: ["write", "writes"],
+        operations: ["write-file"],
+        objectTypes: ["*"],
+      }],
       sourcePath: "packages/tools/src/fs/append-to-log.ts",
     },
   },
@@ -1127,6 +1308,9 @@ const REGISTRATIONS: ToolRegistration[] = [
         headers: { "content-type": "application/json" },
         body: { id: 4892, url: "https://api.example.com/v1/issues/4892" },
       },
+      // 【刻意不声明 capabilities】通用 HTTP 传输。给它声明能力，就等于让一个通用
+      // 取数器宣称覆盖任意 external_api 需求——绑定门就此失效。需要真实外部集成时，
+      // 走 fetch_doc → extract_api_schema → create_tool 造具名适配器。
       sourcePath: "packages/tools/src/http/fetch.ts",
     },
   },
@@ -1174,6 +1358,8 @@ const REGISTRATIONS: ToolRegistration[] = [
       // silently degrade to this diagnostic probe when a tenant registration
       // is missing. Keep only the semantically equivalent legacy probe name.
       aliases: ["pingProbe"],
+      // 【刻意不声明 capabilities】诊断探针。绝不让诊断工具满足真实业务操作——
+      // 缺集成必须 fail closed（把真实业务操作别名到探针上曾是本仓明令禁止的事）。
       sourcePath: "packages/tools/src/meta/ping.ts",
     },
   },
@@ -1221,6 +1407,7 @@ const REGISTRATIONS: ToolRegistration[] = [
       },
       returnsExample: { svg: "<svg xmlns=…></svg>", width: 640, height: 94 },
       chainsWith: ["fs.writeHtmlToArchive", "report.htmlToPdf"],
+      // 【刻意不声明 capabilities】纯渲染，不触达任何外部系统。
       sourcePath: "packages/tools/src/viz/svg-chart.ts",
     },
   },
@@ -1268,6 +1455,16 @@ const REGISTRATIONS: ToolRegistration[] = [
         bytes: 48213,
       },
       chainsWith: ["viz.svgChart"],
+      // 本地容器磁盘写入。刻意【不】声明 Object_Storage_System：这些工具写的是
+      // 容器盘，谎称覆盖对象存储会让能力匹配用一次本地写去满足 S3/MinIO 需求，
+      // 生成的 agent 会静默地写错地方。当前没有 Agent 动作需要它，属预防性声明。
+      capabilities: [{
+        systems: ["local filesystem"],
+        kinds: ["file_store"],
+        roles: ["write", "writes"],
+        operations: ["write-file"],
+        objectTypes: ["*"],
+      }],
       sourcePath: "packages/tools/src/report/pdf.ts",
     },
   },
@@ -1301,7 +1498,31 @@ const REGISTRATIONS: ToolRegistration[] = [
         domain: "RAAS-v1",
         action: "ruleCheckForMatchResume",
       },
-      capabilities: [{ systems: ["Allmeta", "本体/规则库"], kinds: ["rulebase", "datastore"], roles: ["reads"], operations: ["fetch-action-rules"], objectTypes: ["Rule"], probeRequired: true }],
+      // MIGRATION-DEBT(system-profiles 2026-07-22): "Allmeta_Ontology_System" 同上——档案跑通后移除。
+      capabilities: [
+        {
+          systems: ["Allmeta", "Allmeta_Ontology_System", "本体/规则库"],
+          kinds: ["rulebase", "datastore"],
+          roles: ["read", "reads", "query"],
+          operations: ["fetch-action-rules", "rules.fetch", "rules.select"],
+          objectTypes: ["Rule"],
+          probeRequired: true,
+        },
+        {
+          // Allmeta's Action integration contract describes the same HTTP rule
+          // endpoint as a graph_db read and associates it with the Action's
+          // result object. The wildcard object remains narrow because Factory
+          // requires the exact rules.fetch/rules.select operation for graph
+          // requirements; this cannot satisfy an instance read or graph query.
+          systems: ["Allmeta", "Allmeta_Ontology_System"],
+          kinds: ["graph_db", "graph_database", "ontology"],
+          roles: ["read", "reads", "query"],
+          operations: ["rules.fetch", "rules.select"],
+          requiresOperation: true,
+          objectTypes: ["*"],
+          probeRequired: true,
+        },
+      ],
       profileScope: {
         exact: [
           { configKey: "domain", source: "domain" },
@@ -1429,7 +1650,15 @@ const REGISTRATIONS: ToolRegistration[] = [
         systems: ["Allmeta", "AllmetaOntology", "Allmeta_Ontology_System", "Neo4j ontology gateway"],
         kinds: ["ontology", "datastore", "graph_database", "graph_db"],
         roles: ["write", "writes", "persist", "upsert"],
-        operations: ["write-instance", "upsert-instance", "persist-object"],
+        operations: [
+          "write-instance",
+          "upsert-instance",
+          "persist-object",
+          "instance.mirror",
+          "instance.write",
+          "cmr.mirror",
+          "cmr.merge_overall",
+        ],
         objectTypes: ["*"],
         probeRequired: true,
       }],
@@ -2274,6 +2503,7 @@ const REGISTRATIONS: ToolRegistration[] = [
             "True when any returned source content exceeded a per-result or aggregate content budget.",
         },
       },
+      // 【刻意不声明 capabilities】通用检索传输，理由同 http.fetch。
       sourcePath: "packages/tools/src/search/web.ts",
       sideEffect: "read",
       testPolicy: "allow",
@@ -2368,6 +2598,34 @@ const REGISTRATIONS: ToolRegistration[] = [
         count: { type: "number" },
         truncated: { type: "boolean" },
       },
+      // A declared capability is the ONLY thing that can satisfy an Ontology
+      // integration requirement — semantic similarity may recommend a tool, but
+      // it can never bind one. This entry had none, so a domain declaring
+      // `Allmeta_Ontology_System / graph_db / read` (the rule-gate actions do)
+      // could not bind the read-only Neo4j Query API tool we already ship: the
+      // action blocked, and the FDE was told to go build a tool that exists.
+      // `ontology.fetchActionRules` does not cover it (kinds rulebase/datastore)
+      // and `ontology.writeInstance` is write-only; kind matching is exact.
+      //
+      // `operations` are taken verbatim from this entry's own argsSchema union —
+      // an invented spelling would simply fail to match. `systems` mirrors
+      // ontology.writeInstance: same Allmeta boundary, opposite direction.
+      capabilities: [{
+        systems: ["Allmeta", "AllmetaOntology", "Allmeta_Ontology_System", "Neo4j ontology gateway"],
+        kinds: ["graph_db", "graph_database", "ontology", "datastore"],
+        roles: ["read", "reads", "query"],
+        operations: [
+          "query",
+          "search_nodes",
+          "get_node",
+          "neighbors",
+          "find_paths",
+          "schema",
+          "graph.verify",
+        ],
+        objectTypes: ["*"],
+        probeRequired: true,
+      }],
       sourcePath: "packages/tools/src/ontology/query.ts",
       sideEffect: "read",
       testPolicy: "allow",
@@ -2735,14 +2993,26 @@ function buildRegistry(regs: ToolRegistration[]): Map<string, ToolDescriptor> {
         descriptor.factoryWriteProbeLifecycle,
       );
     }
-    map.set(catalog.name, descriptor);
+    // #ARG-CONTRACT (D3) — publish the catalog's argument contract on the
+    // EXECUTABLE descriptor. Every registration here declares a full
+    // `argsSchema`, but the runtime could not see it: with no argument slot on
+    // the descriptor, `step-engine` advertised `{additionalProperties:true}` to
+    // the model for any tool a manifest had not re-described. Normalized to
+    // JSON Schema so a consumer can hand it to a provider unchanged. Absent
+    // stays absent — a fabricated permissive schema reads as "anything goes".
+    const declaredArgs = normalizeToolSchema(catalog.argsSchema);
+    const published: ToolDescriptor = declaredArgs
+      ? { ...descriptor, inputSchema: declaredArgs }
+      : descriptor;
+    map.set(catalog.name, published);
     for (const alias of catalog.aliases ?? []) {
       if (map.has(alias)) {
         throw new Error(
           `globalToolRegistry: alias collision on '${alias}' (already registered).`,
         );
       }
-      map.set(alias, descriptor);
+      // The same object, so an alias and its canonical name cannot drift.
+      map.set(alias, published);
     }
   }
   return map;
@@ -2798,6 +3068,58 @@ export function getGlobalToolCatalogEntry(
   return registration
     ? effectiveCatalogMetadata(registration.catalog)
     : undefined;
+}
+
+/**
+ * #EFFECT-READBACK — structural guard for a read-back declaration.
+ *
+ * TypeScript types stop at the persistence boundary; a manifest carries this
+ * shape as JSON, so both sides validate here and there is one semantics. A
+ * malformed declaration is NOT silently ignored: callers report it as an
+ * unverified effect, never as a verified one.
+ */
+const EFFECT_READBACK_ARG_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+export function isToolEffectVerificationContract(
+  value: unknown,
+): value is ToolEffectVerificationContract {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const row = value as Partial<ToolEffectVerificationContract>;
+  if (typeof row.readTool !== "string" || !row.readTool.trim()) return false;
+  if (row.readArgs !== undefined) {
+    if (!row.readArgs || typeof row.readArgs !== "object" || Array.isArray(row.readArgs)) {
+      return false;
+    }
+    for (const [name, path] of Object.entries(row.readArgs)) {
+      if (!EFFECT_READBACK_ARG_NAME.test(name)) return false;
+      // A read-back argument may only be sourced from THIS call: the write's
+      // own input or its own output. Anything else would let a declaration
+      // reach into ambient state and confirm something it did not observe.
+      if (typeof path !== "string") return false;
+      if (!path.startsWith("input.") && !path.startsWith("output.")) return false;
+      if (!safeProbePath(path)) return false;
+    }
+  }
+  if (!Array.isArray(row.match) || row.match.length === 0) return false;
+  return row.match.every(
+    (pair) =>
+      !!pair
+      && typeof pair === "object"
+      && safeProbePath((pair as { claim?: unknown }).claim)
+      && safeProbePath((pair as { observed?: unknown }).observed),
+  );
+}
+
+/**
+ * Resolve the declared read-back contract for a first-party tool name or
+ * alias. Absent stays absent — an undeclared effect must read as unverified,
+ * never as verified.
+ */
+export function globalToolEffectVerification(
+  name: string,
+): ToolEffectVerificationContract | undefined {
+  const contract = getGlobalToolCatalogEntry(name)?.effectVerification;
+  return isToolEffectVerificationContract(contract) ? contract : undefined;
 }
 
 /**

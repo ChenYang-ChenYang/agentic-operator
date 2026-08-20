@@ -38,15 +38,16 @@ import { fmtAgo } from "@/app/portal/lib/format";
 import { useI18n } from "@/app/portal/lib/preferences-context";
 import {
   TENANTS_KEYS,
+  useSetTenantInngestDeployment,
   useTenants,
   type TenantListItem,
 } from "@/lib/hooks/useTenants";
-import {
-  isVisibleRuntimeDomain,
-} from "@/lib/domain-display";
+import { useIsSuperadmin } from "@/lib/hooks/useMe";
+import { isVisibleRuntimeDomain } from "@/lib/domain-display";
 import { useTenant } from "@/app/portal/lib/use-tenant";
 import { readApiData } from "@/lib/api-response";
 import { DomainSyncPanel } from "./domain-sync";
+import { RuntimeProfilesPanel } from "./runtime-profiles";
 
 const DEFAULT_COLORS = [
   "#d0ff00",
@@ -61,10 +62,7 @@ const DEFAULT_COLORS = [
 
 const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
 
-async function callV1<T>(
-  path: string,
-  init: RequestInit = {},
-): Promise<T> {
+async function callV1<T>(path: string, init: RequestInit = {}): Promise<T> {
   const res = await fetch(path, {
     credentials: "same-origin",
     headers: {
@@ -145,6 +143,8 @@ export default function TenantsPage() {
   );
   const toast = useToast();
   const restore = useRestoreTenant();
+  const setInngestDeployment = useSetTenantInngestDeployment();
+  const isSuperadmin = useIsSuperadmin();
   const { t } = useI18n();
 
   const query = useTenants({ includeArchived });
@@ -166,14 +166,52 @@ export default function TenantsPage() {
     });
   }
 
+  function handleInngestDeployment(target: TenantListItem, enabled: boolean) {
+    const confirmation = enabled
+      ? t("tenants.inngestDeployConfirm", { name: target.name })
+      : t("tenants.inngestStopConfirm", { name: target.name });
+    if (!window.confirm(confirmation)) return;
+    setInngestDeployment.mutate(
+      { slug: target.slug, enabled },
+      {
+        onSuccess: (result) =>
+          toast({
+            tone: enabled ? "green" : "amber",
+            title: enabled
+              ? t("tenants.inngestDeployedToast")
+              : t("tenants.inngestStoppedToast"),
+            description: enabled
+              ? t("tenants.inngestFunctionCount", {
+                  count: result.functionCount,
+                })
+              : result.appId,
+          }),
+        onError: (error) =>
+          toast({
+            tone: "red",
+            title: t("tenants.inngestChangeFailedToast"),
+            description: error instanceof Error ? error.message : String(error),
+          }),
+      },
+    );
+  }
+
   const rows = (query.data?.items ?? []).filter((row) =>
     isVisibleRuntimeDomain(row),
   );
-  const rowCount: string | number = query.isError && !query.data
-    ? "—"
-    : query.isLoading && !query.data
-      ? "…"
-      : rows.length;
+  const rowCount: string | number =
+    query.isError && !query.data
+      ? "—"
+      : query.isLoading && !query.data
+        ? "…"
+        : rows.length;
+  const activeRows = rows.filter((row) => !row.archivedAt);
+  const processScopedRows = activeRows.filter(
+    (row) => row.inngestProcessScoped,
+  );
+  const deployedCount = processScopedRows.filter(
+    (row) => row.inngestEnabled,
+  ).length;
 
   return (
     <div style={{ height: "100%", overflow: "auto", padding: "20px 24px" }}>
@@ -193,6 +231,41 @@ export default function TenantsPage() {
       <div style={{ marginBottom: 14 }}>
         <DomainSyncPanel activeTenant={activeTenant} />
       </div>
+
+      <div style={{ marginBottom: 14 }}>
+        <RuntimeProfilesPanel activeTenant={activeTenant} />
+      </div>
+
+      <Panel
+        title={t("tenants.inngestPanelTitle")}
+        style={{ marginBottom: 14 }}
+      >
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 16,
+          }}
+        >
+          <div
+            style={{
+              color: "var(--text-2)",
+              fontSize: 12,
+              lineHeight: 1.5,
+              maxWidth: 760,
+            }}
+          >
+            {t("tenants.inngestPanelHint")}
+          </div>
+          <Badge tone="signal" style={{ whiteSpace: "nowrap" }}>
+            {t("tenants.inngestSelectedCount", {
+              selected: deployedCount,
+              total: processScopedRows.length,
+            })}
+          </Badge>
+        </div>
+      </Panel>
 
       <div
         style={{
@@ -253,7 +326,8 @@ export default function TenantsPage() {
         </div>
       )}
 
-      {query.isError && !query.data ? null : query.isLoading && rows.length === 0 ? (
+      {query.isError && !query.data ? null : query.isLoading &&
+        rows.length === 0 ? (
         <Empty
           title={t("tenants.loadingTitle")}
           hint={t("tenants.loadingHint")}
@@ -273,6 +347,10 @@ export default function TenantsPage() {
           onEdit={setEditTarget}
           onArchive={setArchiveTarget}
           onRestore={handleRestore}
+          onInngestDeployment={handleInngestDeployment}
+          deploymentPendingSlug={setInngestDeployment.variables?.slug ?? null}
+          isDeploymentPending={setInngestDeployment.isPending}
+          isSuperadmin={isSuperadmin}
         />
       )}
 
@@ -315,11 +393,19 @@ function TenantsTable({
   onEdit,
   onArchive,
   onRestore,
+  onInngestDeployment,
+  deploymentPendingSlug,
+  isDeploymentPending,
+  isSuperadmin,
 }: {
   rows: TenantListItem[];
   onEdit: (t: TenantListItem) => void;
   onArchive: (t: TenantListItem) => void;
   onRestore: (slug: string) => void;
+  onInngestDeployment: (t: TenantListItem, enabled: boolean) => void;
+  deploymentPendingSlug: string | null;
+  isDeploymentPending: boolean;
+  isSuperadmin: boolean;
 }) {
   const { t } = useI18n();
   return (
@@ -327,8 +413,9 @@ function TenantsTable({
       <div
         style={{
           display: "grid",
+          minWidth: 1080,
           gridTemplateColumns:
-            "32px 1.2fr 1.4fr 80px 80px 80px 1fr 200px",
+            "32px 1.1fr 1.3fr 70px 70px 70px 120px 1fr 270px",
           gap: 12,
           padding: "10px 14px",
           borderBottom: "1px solid var(--border)",
@@ -345,6 +432,7 @@ function TenantsTable({
         <div style={{ textAlign: "right" }}>{t("tenants.colAgents")}</div>
         <div style={{ textAlign: "right" }}>{t("tenants.colRuns24h")}</div>
         <div style={{ textAlign: "right" }}>{t("tenants.colOpenTasks")}</div>
+        <div>{t("tenants.colInngest")}</div>
         <div>{t("tenants.colCreated")}</div>
         <div></div>
       </div>
@@ -358,6 +446,12 @@ function TenantsTable({
             onEdit={() => onEdit({ ...t, name: displayName })}
             onArchive={() => onArchive({ ...t, name: displayName })}
             onRestore={() => onRestore(t.slug)}
+            onInngestDeployment={(enabled) => onInngestDeployment(t, enabled)}
+            deploymentPending={
+              isDeploymentPending && deploymentPendingSlug === t.slug
+            }
+            deploymentMutationActive={isDeploymentPending}
+            canManageDeployment={isSuperadmin || t.membership === "admin"}
           />
         );
       })}
@@ -371,12 +465,20 @@ function Row({
   onEdit,
   onArchive,
   onRestore,
+  onInngestDeployment,
+  deploymentPending,
+  deploymentMutationActive,
+  canManageDeployment,
 }: {
   tenant: TenantListItem;
   displayName: string;
   onEdit: () => void;
   onArchive: () => void;
   onRestore: () => void;
+  onInngestDeployment: (enabled: boolean) => void;
+  deploymentPending: boolean;
+  deploymentMutationActive: boolean;
+  canManageDeployment: boolean;
 }) {
   const { language, t } = useI18n();
   const archived = !!tenant.archivedAt;
@@ -384,7 +486,8 @@ function Row({
     <div
       style={{
         display: "grid",
-        gridTemplateColumns: "32px 1.2fr 1.4fr 80px 80px 80px 1fr 200px",
+        minWidth: 1080,
+        gridTemplateColumns: "32px 1.1fr 1.3fr 70px 70px 70px 120px 1fr 270px",
         gap: 12,
         padding: "12px 14px",
         borderBottom: "1px solid var(--border)",
@@ -437,9 +540,7 @@ function Row({
           whiteSpace: "nowrap",
         }}
       >
-        {tenant.subtitle ?? (
-          <span style={{ color: "var(--text-4)" }}>—</span>
-        )}
+        {tenant.subtitle ?? <span style={{ color: "var(--text-4)" }}>—</span>}
       </div>
       <div
         style={{
@@ -471,6 +572,15 @@ function Row({
       >
         {tenant.openTasks}
       </div>
+      <div style={{ display: "flex", alignItems: "center" }}>
+        {!tenant.inngestProcessScoped ? (
+          <Badge tone="muted">{t("tenants.inngestExternal")}</Badge>
+        ) : tenant.inngestEnabled ? (
+          <Badge tone="signal">{t("tenants.inngestDeployed")}</Badge>
+        ) : (
+          <Badge tone="muted">{t("tenants.inngestStopped")}</Badge>
+        )}
+      </div>
       <div
         style={{
           color: "var(--text-3)",
@@ -483,6 +593,31 @@ function Row({
       <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
         {!archived ? (
           <>
+            {canManageDeployment && tenant.inngestProcessScoped && (
+              <button
+                onClick={() => onInngestDeployment(!tenant.inngestEnabled)}
+                disabled={deploymentMutationActive}
+                style={{
+                  padding: "3px 8px",
+                  border: `1px solid color-mix(in srgb, ${
+                    tenant.inngestEnabled ? "var(--amber)" : "var(--signal)"
+                  } 35%, transparent)`,
+                  borderRadius: 4,
+                  fontSize: 11,
+                  color: tenant.inngestEnabled
+                    ? "var(--amber)"
+                    : "var(--signal)",
+                  background: "transparent",
+                  opacity: deploymentMutationActive ? 0.55 : 1,
+                }}
+              >
+                {deploymentPending
+                  ? t("tenants.inngestChanging")
+                  : tenant.inngestEnabled
+                    ? t("tenants.inngestStop")
+                    : t("tenants.inngestDeploy")}
+              </button>
+            )}
             <button
               onClick={onEdit}
               style={{
@@ -500,7 +635,8 @@ function Row({
               onClick={onArchive}
               style={{
                 padding: "3px 8px",
-                border: "1px solid color-mix(in srgb, var(--red) 30%, transparent)",
+                border:
+                  "1px solid color-mix(in srgb, var(--red) 30%, transparent)",
                 borderRadius: 4,
                 fontSize: 11,
                 color: "var(--red)",
@@ -548,8 +684,7 @@ function EditModal({
   const { t } = useI18n();
 
   const colorOk = HEX_COLOR_RE.test(color);
-  const canSave =
-    name.trim().length > 0 && colorOk && !update.isPending;
+  const canSave = name.trim().length > 0 && colorOk && !update.isPending;
 
   function submit() {
     if (!canSave) return;
@@ -594,17 +729,33 @@ function EditModal({
           <div style={{ fontSize: 13, color: "var(--text)", fontWeight: 500 }}>
             {t("tenants.editTitle")} · {target.slug}
           </div>
-          <button onClick={onClose} style={{ color: "var(--text-3)", padding: 4, background: "transparent", border: "none" }}>
+          <button
+            onClick={onClose}
+            style={{
+              color: "var(--text-3)",
+              padding: 4,
+              background: "transparent",
+              border: "none",
+            }}
+          >
             <Icon name="x" size={12} />
           </button>
         </div>
-        <div style={{ padding: "16px 18px", display: "flex", flexDirection: "column", gap: 12 }}>
+        <div
+          style={{
+            padding: "16px 18px",
+            display: "flex",
+            flexDirection: "column",
+            gap: 12,
+          }}
+        >
           {update.isError && (
             <div
               style={{
                 padding: "8px 12px",
                 background: "color-mix(in srgb, var(--red) 8%, transparent)",
-                border: "1px solid color-mix(in srgb, var(--red) 30%, transparent)",
+                border:
+                  "1px solid color-mix(in srgb, var(--red) 30%, transparent)",
                 borderRadius: 4,
                 color: "var(--red)",
                 fontSize: 12,
@@ -754,17 +905,33 @@ function ArchiveModal({
           <div style={{ fontSize: 13, color: "var(--text)", fontWeight: 500 }}>
             {t("tenants.archiveTitle")} · {target.slug}
           </div>
-          <button onClick={onClose} style={{ color: "var(--text-3)", padding: 4, background: "transparent", border: "none" }}>
+          <button
+            onClick={onClose}
+            style={{
+              color: "var(--text-3)",
+              padding: 4,
+              background: "transparent",
+              border: "none",
+            }}
+          >
             <Icon name="x" size={12} />
           </button>
         </div>
-        <div style={{ padding: "16px 18px", display: "flex", flexDirection: "column", gap: 12 }}>
+        <div
+          style={{
+            padding: "16px 18px",
+            display: "flex",
+            flexDirection: "column",
+            gap: 12,
+          }}
+        >
           {archive.isError && (
             <div
               style={{
                 padding: "8px 12px",
                 background: "color-mix(in srgb, var(--red) 8%, transparent)",
-                border: "1px solid color-mix(in srgb, var(--red) 30%, transparent)",
+                border:
+                  "1px solid color-mix(in srgb, var(--red) 30%, transparent)",
                 borderRadius: 4,
                 color: "var(--red)",
                 fontSize: 12,
@@ -773,10 +940,15 @@ function ArchiveModal({
               {(archive.error as Error).message}
             </div>
           )}
-          <div style={{ fontSize: 13, color: "var(--text-2)", lineHeight: 1.5 }}>
+          <div
+            style={{ fontSize: 13, color: "var(--text-2)", lineHeight: 1.5 }}
+          >
             {t("tenants.archiveBody", { name: target.name })}
           </div>
-          <Field label={t("tenants.confirmLabel", { slug: target.slug })} preserveCase>
+          <Field
+            label={t("tenants.confirmLabel", { slug: target.slug })}
+            preserveCase
+          >
             <input
               autoFocus
               value={confirm}

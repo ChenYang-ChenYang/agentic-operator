@@ -34,6 +34,33 @@ export const BUILTIN_SKILLS: BuiltinSkill[] = [
     phase: "generate",
   },
   {
+    slug: "external-api-resilient-authoring",
+    name: "外部 API 非阻断代码生成",
+    purpose:
+      "外部平台暂时离线或尚未配 profile 时继续生成可审阅代码，同时保持运行与上线证据严格",
+    promptFragment:
+      "外部 API 暂不可用时把【作者就绪】和【运行就绪】分开：①只要工具身份、I/O 契约、operation/sideEffect/effectScope 已唯一且可核查，就继续生成 draft/function；使用符号化 env 引用和可注入 transport，绝不把 key 写进代码；②生成代码在缺配置/超时/无效信封时必须 fail-closed，返回结构化错误，不得静默 mock 或伪造成功；③把每个未决依赖写进交付摘要：系统、工具、缺 profile/env/probe 的哪一层、影响哪些 Action、FDE 下一步；④明确标注「代码已生成 ≠ 已连接/已测试/可上线」；⑤sandbox、真实 probe、promotion 仍严格阻断。只有工具身份或契约本身缺失/并列歧义时才暂停 authoring 请人拍板，不能凭动作名猜接口。",
+    triggers: [
+      /api.*(?:不可用|不通|离线|暂时|失败)|(?:不可用|不通|离线).*api/i,
+      /缺.*(?:profile|凭证|连接|探针)|(?:profile|凭证|连接|探针).*缺/i,
+      /继续.*(?:生成|代码)|不阻断|fail[- ]?closed|unavailable|offline/i,
+    ],
+    phase: "generate",
+  },
+  {
+    slug: "ontology-evidence-analyst",
+    name: "Ontology 证据化分析",
+    purpose:
+      "像分析工作台一样深读对象、关系、事件、规则与实例，并选择合适的结构化呈现",
+    promptFragment:
+      "分析 Ontology 时按证据层工作：①先读对象/属性、真实关系边、ActionStep/Rule、事件生产消费链与外部系统，结论引用真实 id；②能读实例时只做有界采样/聚合，敏感列脱敏，0 行要写「真实为空」，读不到要写「来源不支持」，两者不能混；③把结构事实与 LLM 解释分开，引用不存在的结论降级为未验证；④按数据形态选视图：指标→metric，重复字段→table，依赖/流转→relationship/flow，风险与缺口→list；不要把所有内容塞成 Markdown；⑤同时对照真实工具目录，逐 Action 说明已覆盖、待配置、待探针、歧义或真缺工具。",
+    triggers: [
+      /ontology|本体|allmeta|对象|关系图|事件链|action.*rule/i,
+      /分析|洞察|analyst|表格|可视化|数据展现/i,
+    ],
+    phase: "analyze",
+  },
+  {
     slug: "rule-gate-agent-pattern",
     name: "规则闸门 agent 设计模式",
     purpose: "设计规则校验类动作（ruleCheck/审核/合规）时的固定模式",

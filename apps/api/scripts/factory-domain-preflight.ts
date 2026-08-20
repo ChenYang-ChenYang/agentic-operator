@@ -417,6 +417,9 @@ export function summarizeFactoryDomainPreflight(input: {
   globalTools: RealTool[];
   declarativeTools: DeclarativeTool[];
   runtimeProviders: IntegrationCapabilityProvider[];
+  /** Tenant-confirmed System Profile alias groups (外部系统档案) — the same
+   * synonym source the live design gate uses, so preflight verdicts agree. */
+  systemAliasGroups?: string[][];
   /** Presence-only map (`"configured"`), never raw environment values. */
   envPresence?: Record<string, string | undefined>;
   /** Hashes computed at the I/O boundary with real env values. The pure
@@ -453,6 +456,7 @@ export function summarizeFactoryDomainPreflight(input: {
       toolConfigs: {},
       env: envPresence,
       capabilityProviders: input.runtimeProviders,
+      systemAliasGroups: input.systemAliasGroups ?? [],
     });
     const decisions = new Map<string, ProfileDecision>();
     const toolConfigs: Record<string, Record<string, unknown>> = {};
@@ -484,6 +488,7 @@ export function summarizeFactoryDomainPreflight(input: {
       env: envPresence,
       expectedDefinitionHashes,
       capabilityProviders: input.runtimeProviders,
+      systemAliasGroups: input.systemAliasGroups ?? [],
       toolProfiles,
       executionScope: {
         tenantId: input.scope.tenantId,
@@ -621,11 +626,12 @@ export async function runFactoryDomainPreflight(
   // tenant-native capabilities are not falsely reported as missing.
   await ensureTenantRegistrySnapshotForReadOnlyPreflight(options.tenantSlug);
   const ports = makeFactoryPorts(options.tenantSlug, options.tenantId, options.domain);
-  const [rootOntology, globalTools, declarativeTools, runtimeProviders] = await Promise.all([
+  const [rootOntology, globalTools, declarativeTools, runtimeProviders, systemAliasGroups] = await Promise.all([
     ports.ontology.fetchOntology(options.domain),
     ports.toolRegistry?.list() ?? Promise.resolve([]),
     ports.tools?.list(options.domain) ?? Promise.resolve([]),
     ports.integrationCapabilities?.list() ?? Promise.resolve([]),
+    ports.systemAliases?.list() ?? Promise.resolve([]),
   ]);
   const ontology = await resolveOntologyReferences(rootOntology, ports.ontology);
   const mergedTools = mergeFactoryPreflightTools(globalTools, declarativeTools);
@@ -646,6 +652,7 @@ export async function runFactoryDomainPreflight(
     globalTools,
     declarativeTools,
     runtimeProviders,
+    systemAliasGroups,
     envPresence: credentialPresence(mergedTools.executableTools, process.env),
     profileDefinitionHashes,
   });

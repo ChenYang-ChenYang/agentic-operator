@@ -120,6 +120,34 @@ describe("generic data-plane registry", () => {
     }
   });
 
+  it("keeps GoHire capability systems separate from RAAS while preserving legacy tool-name aliases", () => {
+    const aliases = [
+      ["gohireHealthApi", "robohireHealthApi"],
+      ["gohireParseJdApi", "parseJdApi"],
+      ["generateJdApi", "gohire.generateJd"],
+      ["gohireParseResumeApi", "parseResumeApi"],
+      ["gohireMatchResumeApi", "matchResumeApi"],
+      ["gohireInviteCandidateApi", "inviteCandidateApi"],
+    ] as const;
+
+    for (const [canonicalName, legacyName] of aliases) {
+      const canonical = getGlobalToolCatalogEntry(canonicalName);
+      const legacy = getGlobalToolCatalogEntry(legacyName);
+      expect(canonical?.name).toBe(canonicalName);
+      expect(legacy?.name).toBe(canonicalName);
+
+      const systems =
+        canonical?.capabilities?.flatMap(
+          (capability) => capability.systems ?? [],
+        ) ?? [];
+      expect(systems).toEqual(
+        expect.arrayContaining(["GoHire", "GoHire_System"]),
+      );
+      expect(systems).not.toContain("RAAS");
+      expect(systems).not.toContain("RAAS_System");
+    }
+  });
+
   it("resolves the same reviewed policy for aliases and rejects unknown names", () => {
     const aliased = listGlobalTools().find((tool) => tool.aliases?.length);
     expect(aliased).toBeDefined();
@@ -127,6 +155,49 @@ describe("generic data-plane registry", () => {
       globalToolExecutionPolicy(aliased!.name),
     );
     expect(globalToolExecutionPolicy("missing.tool")).toBeUndefined();
+  });
+
+  it("publishes non-secret profile diagnostics without claiming integration coverage", () => {
+    const diagnostic = getGlobalToolCatalogEntry(
+      "config.inspectEnvironmentReferences",
+    );
+    expect(diagnostic).toMatchObject({
+      operation: "compute",
+      effectScope: "none",
+      sandboxPolicy: "pure",
+      testPolicy: "allow",
+      configSchema: {
+        profile_name: { required: true },
+        system_name: { required: true },
+        required_env: { required: true },
+      },
+    });
+    expect(diagnostic?.capabilities).toBeUndefined();
+    expect(diagnostic?.credentialEnv).toBeUndefined();
+  });
+
+  it("covers the exact Agents-generation Ontology operation coordinates", () => {
+    const operations = (name: string): string[] =>
+      getGlobalToolCatalogEntry(name)?.capabilities?.flatMap(
+        (capability) => capability.operations ?? [],
+      ) ?? [];
+
+    expect(operations("generateJdApi")).toContain("jd.generate");
+    expect(operations("parseResumeApi")).toContain("resume.parse");
+    expect(operations("matchResumeApi")).toContain("resume.match");
+    expect(operations("inviteCandidateApi")).toContain("interview.invite");
+    expect(operations("ontology.fetchActionRules")).toEqual(
+      expect.arrayContaining(["rules.fetch", "rules.select"]),
+    );
+    expect(operations("ontology.writeInstance")).toEqual(
+      expect.arrayContaining([
+        "instance.mirror",
+        "instance.write",
+        "cmr.mirror",
+        "cmr.merge_overall",
+      ]),
+    );
+    expect(operations("ontology.query")).toContain("graph.verify");
   });
 
   it.each([

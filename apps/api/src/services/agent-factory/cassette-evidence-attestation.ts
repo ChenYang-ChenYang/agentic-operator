@@ -411,6 +411,64 @@ export function createAuthorizedSignedFixtureCassette(
   }, input.expiresAt, options);
 }
 
+/** Build one independently replayable cassette that belongs to an exact
+ * server-derived sandbox evidence plan. The plan receipt is verified once per
+ * cassette so a caller cannot append an unreviewed tool after confirmation. */
+export function createAuthorizedSandboxEvidencePlanCassette(
+  input: AuthorizedSignedFixtureInput & { planSubjectDigest: string },
+  options?: SigningOptions,
+): CanonicalCassetteDocument {
+  if (
+    input.authorization.runId !== input.execution.runId
+    || input.authorization.conversationId !== input.execution.conversationId
+  ) {
+    throw new Error("sandbox evidence plan authorization does not belong to the current execution");
+  }
+  if (!verifyConsumedFactoryAuthorization({
+    tenantId: input.tenantId,
+    domain: input.domainId,
+    receipt: input.authorization,
+    kind: "sandbox_evidence_plan",
+    subjectDigest: input.planSubjectDigest,
+  })) {
+    throw new Error("sandbox evidence plan requires an exact consumed human authorization receipt");
+  }
+  const document: CanonicalCassetteDocument = {
+    version: 1,
+    tool: {
+      name: input.toolName,
+      definitionHash: input.definitionHash,
+      ...(input.schemaHash ? { schemaHash: input.schemaHash } : {}),
+    },
+    evidence: {
+      recordedAt: input.recordedAt,
+      recordedBy: input.authorization.actor,
+      mode: "signed-fixture",
+      authorization: {
+        kind: "sandbox_evidence_plan",
+        subjectDigest: input.planSubjectDigest,
+        challengeId: input.authorization.challengeId,
+      },
+    } as NonNullable<CanonicalCassetteDocument["evidence"]> & {
+      authorization: {
+        kind: "sandbox_evidence_plan";
+        subjectDigest: string;
+        challengeId: string;
+      };
+    },
+    entries: sanitizedFixtureEntries(input.entries),
+  };
+  return attestCassette(document, {
+    tenantId: input.tenantId,
+    tenantSlug: input.tenantSlug,
+    domainId: input.domainId,
+    toolName: input.toolName,
+    definitionHash: input.definitionHash,
+    config: input.config,
+    actor: input.authorization.actor,
+  }, input.expiresAt, options);
+}
+
 function safeEqualHex(left: string, right: string): boolean {
   if (!/^[a-f0-9]{64}$/i.test(left) || !/^[a-f0-9]{64}$/i.test(right)) return false;
   return timingSafeEqual(Buffer.from(left, "hex"), Buffer.from(right, "hex"));

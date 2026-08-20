@@ -20,6 +20,7 @@
 
 import { chatOnce } from "./stream-gateway";
 import { modelChain, type ModelTier } from "./model-router";
+import { ruleEnforcementLevelValue } from "./ontology-aggregates";
 import type { BrainCtx } from "./brain-types";
 import type { DomainOntology } from "./ontology-types";
 
@@ -277,8 +278,9 @@ const DIM_SYSTEM = (role: string, focus: string) =>
  * The expert could not tell a mandatory rule from an advisory one anywhere in its checklist.
  * Accept every spelling; stay silent only when the rule genuinely declares no level. */
 export function ruleEnforcementTag(rule: Record<string, unknown>): string {
-  const level = rule.enforcement ?? rule.severity ?? rule.enforcementLevel ?? rule.enforcement_level;
-  const text = typeof level === "string" ? level.trim() : typeof level === "number" ? String(level) : "";
+  // Shared with rules_by_enforcement_level (ontology-aggregates) so the chart
+  // and this narrative can never disagree about the same rule's declared level.
+  const text = ruleEnforcementLevelValue(rule);
   return text ? `[${text}]` : "";
 }
 

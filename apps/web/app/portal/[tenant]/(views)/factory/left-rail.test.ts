@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 import { translate } from "@/lib/i18n";
 
 import type { DraftRow } from "./model";
-import { draftPromotionIneligibleReason } from "./left-rail";
+import {
+  draftPromotionIneligibleReason,
+  shouldShowHistoryAgentCount,
+} from "./left-rail";
 
 const t = (key: string, vars?: Record<string, string | number>) => translate("zh", key, vars);
 
@@ -60,5 +63,16 @@ describe("draft promotion evidence labels", () => {
       promotionEligible: true,
       promotionEvidenceReady: false,
     }))).not.toBeNull();
+  });
+});
+
+describe("history run agent count", () => {
+  it("omits the metadata count when the fallback title already contains it", () => {
+    expect(shouldShowHistoryAgentCount("")).toBe(false);
+    expect(shouldShowHistoryAgentCount("   ")).toBe(false);
+  });
+
+  it("keeps the metadata count beside a real goal title", () => {
+    expect(shouldShowHistoryAgentCount("生成简历处理 Agent")).toBe(true);
   });
 });

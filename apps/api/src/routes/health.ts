@@ -7,6 +7,7 @@ import {
   assertInheritedSqliteWriterLease,
   getDb,
   getRawSqlite,
+  getTenantInngestDeploymentEnabledMap,
   tenants,
 } from "@agentic/db";
 import type { HealthReport } from "@agentic/contracts";
@@ -32,6 +33,7 @@ import {
   inngestRegistrationStatus,
 } from "../services/inngest-sync";
 import { getMcpManager, type McpServerStatus } from "@agentic/mcp";
+import { hasFactoryModelAdapter } from "@agentic/agent-factory";
 import {
   checkFactorySandboxRunner,
   checkProductionCodeActExecutor,
@@ -71,7 +73,10 @@ export async function readApiBuildStatus(
 function enabledTenantScope(): Set<string> | null {
   const raw = process.env.AGENTIC_ENABLED_TENANTS?.trim();
   if (!raw) return null;
-  const slugs = raw.split(",").map((slug) => slug.trim()).filter(Boolean);
+  const slugs = raw
+    .split(",")
+    .map((slug) => slug.trim())
+    .filter(Boolean);
   return slugs.length ? new Set(slugs) : null;
 }
 
@@ -96,13 +101,36 @@ export async function healthRoute(app: FastifyInstance) {
     let tenantSlugs = [SYSTEM_SLUG];
     try {
       const enabled = enabledTenantScope();
+      // Inngest readiness describes the apps this process actually serves, not
+      // every control-plane tenant row. DB-only tenants (for example an
+      // interrupted test fixture or a newly-created tenant with no manifest)
+      // have no Inngest app and must not inflate degradedTenants. Conversely,
+      // intersecting with the live registry keeps a real zombie app visible
+      // until the sandbox/tenant teardown unregisters it.
+      const registeredSlugs = new Set(
+        listRegisteredApps().map((registered) => registered.slug),
+      );
+      const tenantRows = getDb()
+        .select({
+          id: tenants.id,
+          slug: tenants.slug,
+          archivedAt: tenants.archivedAt,
+        })
+        .from(tenants)
+        .all();
+      const inngestEnabledByTenant = getTenantInngestDeploymentEnabledMap(
+        tenantRows.map((tenant) => tenant.id),
+      );
       tenantSlugs = [
         SYSTEM_SLUG,
-        ...getDb()
-          .select({ slug: tenants.slug, archivedAt: tenants.archivedAt })
-          .from(tenants)
-          .all()
-          .filter((tenant) => tenant.archivedAt === null && (!enabled || enabled.has(tenant.slug)))
+        ...tenantRows
+          .filter(
+            (tenant) =>
+              tenant.archivedAt === null &&
+              inngestEnabledByTenant.get(tenant.id) !== false &&
+              registeredSlugs.has(tenant.slug) &&
+              (!enabled || enabled.has(tenant.slug)),
+          )
           .map((tenant) => tenant.slug),
       ];
     } catch {
@@ -151,7 +179,8 @@ export async function healthRoute(app: FastifyInstance) {
       sharedBlob.ok;
     const executionPlanesReady =
       productionCodeActExecutor.ok && factorySandboxRunner.ok;
-    const ready = ok && schedules.ok && executionPlanesReady && productionImageTrust.ok;
+    const ready =
+      ok && schedules.ok && executionPlanesReady && productionImageTrust.ok;
     const report: HealthReport = {
       ok: ready,
       ts: Date.now(),
@@ -210,6 +239,7 @@ async function checkLLMGateway(): Promise<
       ...(live.note ? { note: live.note } : {}),
       // #NOMOCK — explicit flag so a mock runtime can never masquerade as real (one curl reveals it).
       mock,
+      factoryCentralRouting: hasFactoryModelAdapter(),
     };
   } catch {
     return { ok: false };
@@ -300,12 +330,19 @@ export async function checkInngest(
         blockedTenants,
       }
     : { mode };
-  const registration = tenantSlugs ? inngestRegistrationStatus() : null;
+  const registeredApps = tenantSlugs ? listRegisteredApps() : [];
+  const emptyApps = registeredApps
+    .filter((app) => app.fnCount === 0)
+    .map((app) => app.appId);
+  const registration = tenantSlugs
+    ? inngestRegistrationStatus(registeredApps)
+    : null;
   const registrationFields = registration
     ? {
         registrationOk: registration.ok,
         expectedApps: registration.expectedApps,
         syncedApps: registration.syncedApps,
+        ...(emptyApps.length > 0 ? { emptyApps } : {}),
         ...(registration.lastSyncAt != null
           ? { lastSyncAt: registration.lastSyncAt }
           : {}),
@@ -458,7 +495,7 @@ export async function checkInngest(
   // GraphQL surface, so their mandatory proof remains the successful PUT sync
   // performed during startup and on every mutation.
   if (process.env.INNGEST_DEV === "1" && tenantSlugs) {
-    const expected = listRegisteredApps();
+    const expected = registeredApps;
     if (expected.length === 0) {
       return {
         ok: false,
@@ -468,11 +505,17 @@ export async function checkInngest(
         note: "Inngest is reachable but the local runtime registry has no apps",
       };
     }
+    // An app with no functions has nothing to dispatch, and Inngest therefore
+    // does not establish a dispatch session for it (`connected:false` is the
+    // stable, valid broker state). Its successful PUT/sync receipt above still
+    // proves that the empty registration was accepted; only non-empty apps
+    // need the independent connected/function-count dispatch proof below.
+    const dispatchApps = expected.filter((app) => app.fnCount > 0);
     const statusBySlug = new Map(
       statuses.map((status) => [status.slug, status]),
     );
-    const appsByBase = new Map<string, typeof expected>();
-    for (const app of expected) {
+    const appsByBase = new Map<string, typeof dispatchApps>();
+    for (const app of dispatchApps) {
       const base = (
         statusBySlug.get(app.slug)?.baseUrl ?? configuredBases[0]!
       ).replace(/\/+$/, "");
@@ -544,7 +587,11 @@ export async function checkInngest(
       reachable: true,
       ...configFields,
       ...registrationFields,
-      note: `${expected.length} Inngest app(s) connected with registered functions across ${appsByBase.size} broker(s)`,
+      note:
+        `${dispatchApps.length} dispatchable Inngest app(s) connected with registered functions across ${appsByBase.size} broker(s)` +
+        (emptyApps.length > 0
+          ? `; ${emptyApps.length} empty app(s) require no dispatch session`
+          : ""),
     };
   }
 
@@ -570,9 +617,9 @@ export async function checkSqlite(): Promise<HealthReport["sqlite"]> {
     const dbPath =
       process.env.DATABASE_URL?.replace(/^file:/, "") ?? "./agentic.db";
     if (
-      process.env.AGENTIC_SQLITE_WRITER_SUPERVISED?.trim() === "1"
-      && process.env.AGENTIC_DATABASE_READONLY?.trim() !== "1"
-      && process.env.AGENTIC_DATABASE_READONLY?.trim().toLowerCase() !== "true"
+      process.env.AGENTIC_SQLITE_WRITER_SUPERVISED?.trim() === "1" &&
+      process.env.AGENTIC_DATABASE_READONLY?.trim() !== "1" &&
+      process.env.AGENTIC_DATABASE_READONLY?.trim().toLowerCase() !== "true"
     ) {
       // Re-prove the canonical token on every readiness probe. If an owner
       // record changes, health turns non-ready immediately instead of waiting

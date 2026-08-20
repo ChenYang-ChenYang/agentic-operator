@@ -44,11 +44,42 @@ export interface FactoryConversationArchive {
   count(conversationId: string): Promise<number>;
 }
 
-const CONTENT_CAP = 4_000;
+// 归档存在的唯一理由，是让一次【不可逆的折叠】仍然可恢复。上限设成 4,000 字时，
+// 它恰好把最值得留的东西砍掉：实测一条真实会话 189 条归档里有 58 条被截断，
+// 其中包括四份权威 Action 契约——折叠之后原文就没了，截断即永久损失。
+//
+// 存储在文件系统（FsConversationArchiveStore，NDJSON），磁盘不是瓶颈；
+// 这里对齐系统在别处已经接受的最大单体（FACTORY_UI_OUTPUT_CAP 默认 64,000）。
+// 仍然保留上限：一条 400KB 的工具输出进归档也不合理，但截断必须被【报出来】。
+const DEFAULT_CONTENT_CAP = 64_000;
+function contentCap(): number {
+  const configured = Number(process.env.FACTORY_ARCHIVE_CONTENT_CAP);
+  return Number.isFinite(configured) && configured >= 1_000
+    ? Math.floor(configured)
+    : DEFAULT_CONTENT_CAP;
+}
+
+/** Resolve the cap a CALLER asked for, falling back to the conductor's own.
+ * The override exists because the cap is a property of the SURFACE, not of the
+ * archive: a surface that admits a 200,000-char tool result into its context
+ * cannot honour "archive losslessly before fold" under a 64,000-char cap — it
+ * would destroy ~136k chars per entry and still report a successful archive.
+ * Callers that pass nothing keep today's behaviour byte-for-byte. */
+function resolveContentCap(capOverride?: number): number {
+  return Number.isFinite(capOverride) && (capOverride as number) >= 1_000
+    ? Math.floor(capOverride as number)
+    : contentCap();
+}
 
 /** Serialize dropped ChatMsgs into archive entries. Tool calls/results keep their JSON payloads
  * (capped) so a recall can show real arguments/outputs, not just "called a tool". */
-export function archiveEntriesFromDropped(dropped: ChatMsg[], foldSeq: number, now: number): ConversationArchiveEntry[] {
+export function archiveEntriesFromDropped(
+  dropped: ChatMsg[],
+  foldSeq: number,
+  now: number,
+  capOverride?: number,
+): ConversationArchiveEntry[] {
+  const cap = resolveContentCap(capOverride);
   return dropped.map((message, i) => {
     let content: string;
     if (typeof message.content === "string") {
@@ -69,7 +100,7 @@ export function archiveEntriesFromDropped(dropped: ChatMsg[], foldSeq: number, n
     return {
       at: now + i, // preserve intra-batch order under identical clock reads
       role: message.role,
-      content: content.length > CONTENT_CAP ? `${content.slice(0, CONTENT_CAP)}…[截断，原文 ${content.length} 字]` : content,
+      content: content.length > cap ? `${content.slice(0, cap)}…[截断，原文 ${content.length} 字]` : content,
       foldSeq,
     };
   });
@@ -98,13 +129,15 @@ const HIT_PREVIEW_CAP = 700;
 /** recall_conversation — retrieve folded conversation turns verbatim. Registered in FACTORY_TOOLS. */
 export const recallConversationTool: BrainTool = {
   name: "recall_conversation",
+  // 只读检索归档原文（append-only 归档由 maybeCompact 写，不由本工具写）。
+  effect: { sideEffect: "read", scope: "none", checkpoint: "turn", gate: "any" },
   description:
     "检索本会话被上下文压缩折叠掉的【对话原文】（含早期用户消息、你自己的推理回复、工具调用与结果）。当你需要引用/核对早期对话细节、用户此前的具体表述或某次工具的真实输入输出，而状态摘要不够时用它。关键词以空格分隔（全部命中才返回），返回最近命中的原文片段。",
   parameters: {
     type: "object",
     properties: {
       reasoning: { type: "string", description: "为什么需要找回这段原文（一句话）" },
-      query: { type: "string", description: "空格分隔的关键词，如 “人工边界 Internal_Recruitment”" },
+      query: { type: "string", description: "空格分隔的关键词，如 “人工边界 <本域系统名>”" },
       limit: { type: "number", description: "最多返回几条（默认 6，上限 20）" },
     },
     required: ["reasoning", "query"],
@@ -135,14 +168,24 @@ export const recallConversationTool: BrainTool = {
           output: { total, hits: [] },
         };
       }
+      // 归属必须随原文一起给出。这里存了 `at`/`foldSeq` 却在渲染时丢掉，等于
+      // 把「一次召回只有被归属才算证据」这条不变量写在注释里而不落在输出上：
+      // 大脑只拿到序号和角色，无法说出这句话在会话里的位置或出自哪次折叠，
+      // 引用出去与它自己编的东西无法区分。
+      //
+      // 诚实的边界：`at` 是【折叠写入归档】的时刻，不是发言时刻——原始发言时间
+      // 会话里根本没有记录。所以它照实给出，同时在 summary 里说清它是什么；
+      // 真正的先后顺序以 index（append-only 位置）与 foldSeq 为准。
       const rendered = hits.map((h) => ({
         index: h.index,
         role: h.role,
+        foldSeq: h.foldSeq ?? null,
+        archivedAt: new Date(h.at).toISOString(),
         excerpt: h.content.length > HIT_PREVIEW_CAP ? `${h.content.slice(0, HIT_PREVIEW_CAP)}…` : h.content,
       }));
       return {
         ok: true,
-        summary: `从 ${total} 条折叠原文中命中 ${hits.length} 条（最近优先）。这些是当时的逐字记录，可直接引用。`,
+        summary: `从 ${total} 条折叠原文中命中 ${hits.length} 条（最近优先）。这些是当时的逐字记录，可直接引用；archivedAt 是【归档时刻】不是发言时刻，先后顺序以 index / foldSeq 为准。`,
         output: { total, hits: rendered },
       };
     } catch (error) {
@@ -150,3 +193,17 @@ export const recallConversationTool: BrainTool = {
     }
   },
 };
+
+/** 本批归档里被截断的条数与原文总字数。折叠是不可逆的，所以「这次归档是有损的」
+ *  必须是一个可见事实，而不是埋在某条 content 字符串末尾的一句话。 */
+export function archiveTruncationReport(
+  entries: readonly ConversationArchiveEntry[],
+  capOverride?: number,
+): { truncated: number; cap: number } {
+  const cap = resolveContentCap(capOverride);
+  return {
+    truncated: entries.filter((entry) => entry.content.endsWith("字]")
+      && entry.content.includes("…[截断，原文 ")).length,
+    cap,
+  };
+}

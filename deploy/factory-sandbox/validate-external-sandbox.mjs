@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { createHash } from "node:crypto";
+import { createHash, verify as verifySignature } from "node:crypto";
 import {
   readFileSync,
   realpathSync,
@@ -17,6 +17,7 @@ const SHA256 = /^[a-f0-9]{64}$/;
 const OCI_DIGEST = /^sha256:[a-f0-9]{64}$/;
 const PINNED_IMAGE = /^[a-z0-9][a-z0-9._:/-]*@sha256:[a-f0-9]{64}$/;
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$/;
+const IDENTITY_HASH = /^sha256:[a-f0-9]{64}$/;
 const PLACEHOLDER = /(?:replace[-_ ]?with|placeholder|change[-_ ]?me|example\.(?:com|invalid)|<[^>]+>|^sha256:0{64}$)/i;
 
 const REQUIRED = [
@@ -26,6 +27,15 @@ const REQUIRED = [
   "EXTERNAL_SANDBOX_MODEL_PROXY_ORIGIN",
   "EXTERNAL_SANDBOX_EXPECTED_HOST_ID_SHA256",
   "EXTERNAL_SANDBOX_PRIMARY_HOST_ID_SHA256",
+  "EXTERNAL_SANDBOX_ATTESTATION_ROOT",
+  "EXTERNAL_SANDBOX_EXECUTION_PLANE_ID",
+  "EXTERNAL_SANDBOX_EXECUTION_PLANE_TRUST_DOMAIN",
+  "EXTERNAL_SANDBOX_PLATFORM_ATTESTOR_KEY_ID",
+  "EXTERNAL_SANDBOX_PRIMARY_HOST_IDENTITY_HASH",
+  "EXTERNAL_SANDBOX_PRIMARY_DOCKER_DAEMON_IDENTITY_HASH",
+  "EXTERNAL_SANDBOX_CONTROL_HOST_IDENTITY_HASH",
+  "EXTERNAL_SANDBOX_WORKLOAD_HOST_IDENTITY_HASH",
+  "EXTERNAL_SANDBOX_DOCKER_DAEMON_IDENTITY_HASH",
   "EXTERNAL_SANDBOX_SECRET_ROOT",
   "EXTERNAL_SANDBOX_SECRET_GID",
   "EXTERNAL_SANDBOX_DOCKER_SOCKET_PATH",
@@ -100,6 +110,112 @@ function required(env, name) {
   if (!value) fail(`${name} is required`);
   if (PLACEHOLDER.test(value)) fail(`${name} still contains a placeholder`);
   return value;
+}
+
+function canonical(value) {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+  return `{${Object.keys(value).sort().map((key) =>
+    `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}`;
+}
+
+function validatePlatformAttestation(env) {
+  const rootInput = required(env, "EXTERNAL_SANDBOX_ATTESTATION_ROOT");
+  if (!path.isAbsolute(rootInput)) {
+    fail("EXTERNAL_SANDBOX_ATTESTATION_ROOT must be absolute");
+  }
+  let document;
+  let publicKey;
+  try {
+    const root = realpathSync(rootInput);
+    document = JSON.parse(
+      readFileSync(path.join(root, "execution-plane.json"), "utf8"),
+    );
+    publicKey = readFileSync(
+      path.join(root, "platform-attestor-public.pem"),
+      "utf8",
+    );
+  } catch {
+    fail("execution-plane attestation document/public key is missing or invalid");
+  }
+  const comparisons = {
+    planeId: "EXTERNAL_SANDBOX_EXECUTION_PLANE_ID",
+    trustDomain: "EXTERNAL_SANDBOX_EXECUTION_PLANE_TRUST_DOMAIN",
+    runnerId: "EXTERNAL_SANDBOX_RUNNER_ID",
+    runnerBuildId: "EXTERNAL_SANDBOX_RUNNER_BUILD_ID",
+    runtimeImageDigest: "EXTERNAL_SANDBOX_RUNTIME_IMAGE_DIGEST",
+    controlHostIdentityHash: "EXTERNAL_SANDBOX_CONTROL_HOST_IDENTITY_HASH",
+    workloadHostIdentityHash: "EXTERNAL_SANDBOX_WORKLOAD_HOST_IDENTITY_HASH",
+    dockerDaemonIdentityHash: "EXTERNAL_SANDBOX_DOCKER_DAEMON_IDENTITY_HASH",
+    attestorKeyId: "EXTERNAL_SANDBOX_PLATFORM_ATTESTOR_KEY_ID",
+  };
+  for (const [field, envName] of Object.entries(comparisons)) {
+    if (document[field] !== required(env, envName)) {
+      fail(`execution-plane attestation ${field} does not match ${envName}`);
+    }
+  }
+  if (
+    document.schema
+      !== "agent-factory-sandbox-execution-plane-attestation/v1"
+    || document.isolationTier !== "remote_vm"
+    || document.signatureAlgorithm !== "ed25519"
+  ) {
+    fail("execution-plane attestation schema/isolation/signature is invalid");
+  }
+  for (const name of [
+    "EXTERNAL_SANDBOX_PRIMARY_HOST_IDENTITY_HASH",
+    "EXTERNAL_SANDBOX_PRIMARY_DOCKER_DAEMON_IDENTITY_HASH",
+    "EXTERNAL_SANDBOX_CONTROL_HOST_IDENTITY_HASH",
+    "EXTERNAL_SANDBOX_WORKLOAD_HOST_IDENTITY_HASH",
+    "EXTERNAL_SANDBOX_DOCKER_DAEMON_IDENTITY_HASH",
+  ]) {
+    if (!IDENTITY_HASH.test(env[name] ?? "")) {
+      fail(`${name} must be a domain-separated sha256:<64 hex> identity`);
+    }
+  }
+  if (
+    env.EXTERNAL_SANDBOX_PRIMARY_HOST_IDENTITY_HASH
+      === document.controlHostIdentityHash
+    || env.EXTERNAL_SANDBOX_PRIMARY_HOST_IDENTITY_HASH
+      === document.workloadHostIdentityHash
+  ) fail("signed execution plane shares the primary host identity");
+  if (
+    env.EXTERNAL_SANDBOX_PRIMARY_DOCKER_DAEMON_IDENTITY_HASH
+      === document.dockerDaemonIdentityHash
+  ) fail("signed execution plane shares the primary Docker daemon identity");
+  const {
+    attestationHash,
+    signature,
+    ...body
+  } = document;
+  const expectedHash =
+    `sandbox-execution-plane:v1:${createHash("sha256")
+      .update(canonical(body), "utf8")
+      .digest("hex")}`;
+  if (attestationHash !== expectedHash) {
+    fail("execution-plane attestation hash is invalid");
+  }
+  try {
+    if (
+      !verifySignature(
+        null,
+        Buffer.from(canonical({ ...body, attestationHash }), "utf8"),
+        publicKey,
+        Buffer.from(String(signature ?? ""), "base64url"),
+      )
+    ) fail("execution-plane attestor signature is invalid");
+  } catch (error) {
+    if (error instanceof ExternalSandboxConfigError) throw error;
+    fail("execution-plane attestor signature/public key is invalid");
+  }
+  const issuedAt = Date.parse(document.issuedAt);
+  const expiresAt = Date.parse(document.expiresAt);
+  if (
+    !Number.isFinite(issuedAt)
+    || !Number.isFinite(expiresAt)
+    || expiresAt <= Date.now()
+    || expiresAt <= issuedAt
+  ) fail("execution-plane attestation is expired or malformed");
 }
 
 function exactHttpsOrigin(value, name) {
@@ -204,6 +320,7 @@ export function validateExternalSandboxConfiguration({ env, hostMachineId }) {
   for (const name of FORBIDDEN_DIRECT_SECRETS) {
     if (env[name]?.trim()) fail(`${name} must not contain a direct secret value`);
   }
+  validatePlatformAttestation(env);
 
   if (!/^[a-z0-9][a-z0-9_-]{2,62}$/.test(env.EXTERNAL_SANDBOX_COMPOSE_PROJECT)) {
     fail("EXTERNAL_SANDBOX_COMPOSE_PROJECT is invalid");

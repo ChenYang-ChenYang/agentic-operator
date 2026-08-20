@@ -319,7 +319,7 @@ export function runArtifactRetentionUntil(
     .all()
     .find((row) => row.retentionUntil !== null)?.retentionUntil;
   return (
-    retained ?? new Date(fallbackFrom.getTime() + 30 * 24 * 60 * 60 * 1_000)
+    retained ?? new Date(fallbackFrom.getTime() + 3_650 * 24 * 60 * 60 * 1_000)
   );
 }
 

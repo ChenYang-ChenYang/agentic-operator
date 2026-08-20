@@ -256,6 +256,8 @@ async function promoteDraftsActive(domain: string, request: PromoteDraftRequest,
       expectedRunnerId: remote.runnerId,
       allowedRunnerBuildIds: remote.allowedBuildIds,
       allowedRuntimeImageDigests: remote.allowedImageDigests,
+      platformAttestationExpected:
+        remote.platformAttestationExpected,
     });
   } catch (error) {
     throw new Error(

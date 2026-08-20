@@ -28,10 +28,18 @@ export const INTEGRATION_PROVIDERS = [
 
 export type IntegrationProviderId = (typeof INTEGRATION_PROVIDERS)[number]["id"];
 
-/** The set of provider ids accepted by the upsert route. */
-export const IntegrationProvider = z.enum(
-  INTEGRATION_PROVIDERS.map((p) => p.id) as [string, ...string[]],
-);
+/**
+ * Provider ids accepted by the upsert route. Deliberately NOT an enum of the
+ * static catalog: any tenant System Profile may declare its own
+ * `credential.provider`, and the integration row must be creatable for it
+ * without a code change. Kebab-case, same grammar as profile ids.
+ */
+export const IntegrationProvider = z
+  .string()
+  .trim()
+  .min(1)
+  .max(120)
+  .regex(/^[a-z][a-z0-9-]*$/, "provider must be kebab-case (a-z, 0-9, -)");
 
 export const IntegrationStatus = z.enum(["unconfigured", "ok", "error"]);
 export type IntegrationStatus = z.infer<typeof IntegrationStatus>;
@@ -46,6 +54,10 @@ export const IntegrationPublic = z.object({
   keyMasked: z.string().nullable(),
   /** True when an API key is stored for this integration. */
   hasKey: z.boolean(),
+  /** Non-secret dynamic field values (region, org id…), keyed by field spec key. */
+  config: z.record(z.string(), z.string()).default({}),
+  /** KEYS of stored extra secret fields (values never cross the wire). */
+  secretKeysStored: z.array(z.string()).default([]),
   status: IntegrationStatus,
   lastCheckedAt: z.number().nullable(),
   lastError: z.string().nullable(),
@@ -57,15 +69,19 @@ export type IntegrationPublic = z.infer<typeof IntegrationPublic>;
 
 export const ListIntegrationsResponse = z.object({
   integrations: z.array(IntegrationPublic),
-  /** The provider catalog so the UI can offer "Add integration" choices. */
+  /** Providers the operator can add: the static catalog PLUS every provider a
+   *  tenant System Profile declares in `credential.provider` — so a profiled
+   *  system is configurable with zero code changes. */
   available: z.array(
     z.object({
       id: z.string(),
       name: z.string(),
       kind: z.string(),
-      defaultBaseUrl: z.string(),
-      description: z.string(),
+      defaultBaseUrl: z.string().default(""),
+      description: z.string().default(""),
       docsUrl: z.string().optional(),
+      /** "catalog" = built-in static entry; "profile" = derived from a System Profile. */
+      source: z.enum(["catalog", "profile"]).default("catalog"),
     }),
   ),
 });
@@ -83,6 +99,14 @@ export const UpsertIntegrationBody = z.object({
   name: z.string().min(1).max(80).optional(),
   baseUrl: z.string().url().max(2048).optional(),
   apiKey: z.string().max(4096).optional(),
+  /**
+   * Dynamic field values keyed by ConfigFieldSpec.key (beyond the first-class
+   * baseUrl/apiKey). The server routes each value into the plain config bag or
+   * the encrypted secrets bag according to the field's spec — unknown keys are
+   * treated as SECRET (fail closed). Empty string deletes the stored value;
+   * omitted keys stay untouched.
+   */
+  fields: z.record(z.string().max(120), z.string().max(8192)).optional(),
   enabled: z.boolean().optional(),
 });
 export type UpsertIntegrationBody = z.infer<typeof UpsertIntegrationBody>;

@@ -6,6 +6,7 @@ import test, { after } from "node:test";
 
 import {
   HELP_TEXT,
+  assertNoAllmetaStorageMetadata,
   buildDiscoveryRequest,
   buildReviewedPreviewRequest,
   classifyDiscoveryBlockers,
@@ -33,7 +34,7 @@ const step = { id: "step-reviewed", name: "reviewed-step", type: "logic" };
 const RAW_BUNDLE = {
   schemaVersion: 1,
   domainId: "Agents-generation",
-  version: "v0_4_000",
+  version: "v0_4_001",
   generatedAt: "2026-07-15T00:00:00.000Z",
   mode: "exact-domain-replacement",
   payloadDigest: "",
@@ -140,6 +141,56 @@ test("validates a self-contained reviewed Agents-generation bundle", () => {
   assert.match(BUNDLE.hashes.actions, /^sha256:[0-9a-f]{64}$/);
 });
 
+test("rejects Allmeta graph-storage metadata before any HTTP request", async () => {
+  const polluted = structuredClone(RAW_BUNDLE);
+  Object.assign(polluted.rules[0], {
+    __allmeta_definition_json: JSON.stringify({ id: "rule-1", name: "stale graph definition" }),
+    __allmeta_position: 9,
+    source_file: "rules_v0_1_005.json",
+    relatedEntities: ["Candidate"],
+    relatedEntities_json: JSON.stringify(["Candidate"]),
+  });
+  polluted.payloadDigest = hashFullDomainArtifact({
+    objects: polluted.objects,
+    rules: polluted.rules,
+    actions: polluted.actions,
+    actionSteps: polluted.actionSteps,
+    events: polluted.events,
+    policyScopes: polluted.policyScopes,
+    links: polluted.links,
+  });
+  assert.throws(
+    () => validateReleaseBundle(polluted),
+    /server-owned Allmeta storage metadata.*__allmeta_definition_json/,
+  );
+  assert.throws(
+    () => assertNoAllmetaStorageMetadata({
+      action: { action_steps: [{ id: "step-1", __allmeta_position: 0 }] },
+    }),
+    /server-owned Allmeta storage metadata.*__allmeta_position/,
+  );
+
+  const pollutedPath = join(FIXTURE_DIR, "polluted-release-bundle.json");
+  writeFileSync(pollutedPath, `${JSON.stringify(polluted)}\n`, { mode: 0o600 });
+  let httpCalls = 0;
+  await assert.rejects(
+    () => run({
+      ...parseCli([]),
+      bundle: pollutedPath,
+      auditDir: join(FIXTURE_DIR, "polluted-audit"),
+      baseUrl: "http://localhost:3500",
+    }, {
+      env: { ONTOLOGY_API_TOKEN: "ordinary-test-token" },
+      fetchImpl: async () => {
+        httpCalls += 1;
+        throw new Error("HTTP must not be reached");
+      },
+    }),
+    /server-owned Allmeta storage metadata/,
+  );
+  assert.equal(httpCalls, 0);
+});
+
 test("refuses an offline-scaffold bundle before any Allmeta request", () => {
   assert.throws(
     () => validateReleaseBundle({
@@ -156,14 +207,18 @@ test("refuses an offline-scaffold bundle before any Allmeta request", () => {
   );
 });
 
-test("v0.4 gate rejects stale payload digests, wrong versions, and duplicate stable step ids", () => {
+test("v0.4 gate rejects stale payload digests, malformed bundle versions, and duplicate stable step ids", () => {
   assert.throws(
     () => validateReleaseBundle({ ...RAW_BUNDLE, payloadDigest: `sha256:${"f".repeat(64)}` }),
     /payloadDigest mismatch/,
   );
+  assert.doesNotThrow(
+    () => validateReleaseBundle({ ...RAW_BUNDLE, version: "v0_4_002" }),
+    "the client validates the reviewed version carried by the bundle instead of a hard-coded release",
+  );
   assert.throws(
-    () => validateReleaseBundle({ ...RAW_BUNDLE, version: "v0_4_001" }),
-    /only reviewed version 'v0_4_000'/,
+    () => validateReleaseBundle({ ...RAW_BUNDLE, version: "0.4.1" }),
+    /canonical v<major>_<minor>_<patch>/,
   );
   const duplicateStep = structuredClone(RAW_BUNDLE);
   duplicateStep.actions[0].action_steps.push({ ...step, name: "another-name" });
@@ -353,8 +408,10 @@ test("managed Link coverage compares buildListLinks identities, not unrelated re
 
 test("CLI help and env parser never require placing tokens on the command line", () => {
   assert.match(HELP_TEXT, /Safe default: dry-run/);
+  assert.match(HELP_TEXT, /default: v0_4_001 Agents-generation/);
   assert.doesNotMatch(HELP_TEXT, /--token/);
   assert.equal(parseCli([]).execute, false);
+  assert.match(parseCli([]).bundle, /v0_4_001\/release_bundle_v0_4_001\.json$/);
   assert.equal(parseCli([]).domain, "Agents-generation");
   assert.equal(exitCodeForSummary({ ready_for_execute: false }), 2);
   assert.equal(exitCodeForSummary({ ready_for_execute: true }), 0);

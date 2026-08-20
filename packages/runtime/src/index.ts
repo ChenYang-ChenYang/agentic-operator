@@ -13,6 +13,7 @@ export {
   TARGET_INNGEST_ISOLATION_IDENTITY_SCHEMA,
   TenantInngestConfigurationError,
   tenantInngestConfigStatus,
+  tenantInngestDiagnosticIsolationIdentity,
   tenantInngestIsolationIdentity,
   sandboxInngestIsolationStatus,
   tenantInngestServeOrigin,
@@ -297,7 +298,35 @@ export {
   buildWorkflowJsonSchema,
   serializeWorkflowSchema,
 } from "./generate-workflow-schema";
-export { runAction } from "./step-engine";
+export { runAction, toolClaimsEffect } from "./step-engine";
+// #RUN-EVIDENCE (D6) — run-completion reconciliation + the declarable
+// read-back contract. Exported so evidence consumers (run views, promotion
+// gates, CLIs) read the same verdict the runtime wrote, never a re-derivation.
+export {
+  RUN_COMPLETION_RECONCILIATION_SCHEMA,
+  reconcileRunCompletion,
+  runCompletionEnforcementFromEnv,
+  summarizeRunCompletion,
+  toolLedgerEntryFromAuditRecord,
+  type RunCompletionEnforcement,
+  type RunCompletionQualification,
+  type RunCompletionQualificationCode,
+  type RunCompletionReconciliation,
+  type ToolCallLedgerEntry,
+  type UncoveredStep,
+} from "./run-completion-reconciliation";
+export {
+  compareEffectReadback,
+  readEffectPath,
+  resolveEffectVerificationContract,
+  resolveReadbackArgs,
+  unverifiedEffect,
+  type EffectVerificationCheck,
+  type EffectVerificationReceipt,
+  type EffectVerificationSource,
+  type EffectVerificationUnverifiedReason,
+  type ToolEffectVerificationContract,
+} from "./effect-verification";
 export {
   writeRunLog,
   logPathFor,
@@ -306,6 +335,7 @@ export {
 } from "./log-writer";
 export {
   writeArtifact,
+  registerStepArtifactEvidence,
   artifactsRoot,
   createFilesystemArtifactSink,
   persistTerminalRunArtifacts,

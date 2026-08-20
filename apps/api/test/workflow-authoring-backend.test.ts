@@ -598,6 +598,12 @@ describe("tenant document extraction, research, and generation", () => {
                     procedure: ["Validate input", "Create the brief"],
                     triggers: ["REQUEST_RECEIVED"],
                     emits: ["REQUEST_ANALYZED"],
+                    result_schema: {
+                      type: "object",
+                      required: ["brief"],
+                      properties: { brief: { type: "string", minLength: 1 } },
+                      additionalProperties: false,
+                    },
                     tools: [
                       {
                         name: "fs.writeMarkdownToArchive",
@@ -637,6 +643,12 @@ describe("tenant document extraction, research, and generation", () => {
                     procedure: ["Validate the brief", "Produce the result"],
                     triggers: ["REQUEST_ANALYZED"],
                     emits: ["REQUEST_COMPLETED"],
+                    result_schema: {
+                      type: "object",
+                      required: ["outcome"],
+                      properties: { outcome: { type: "string", minLength: 1 } },
+                      additionalProperties: false,
+                    },
                     tools: [],
                     actions: [
                       {

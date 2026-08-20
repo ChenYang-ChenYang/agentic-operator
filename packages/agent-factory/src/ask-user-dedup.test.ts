@@ -6,6 +6,7 @@ import type { BrainCtx, BrainEvent } from "./brain-types";
 // the recorded answer is replayed to the brain instead (no park, no clarify event).
 
 const askUser = FACTORY_TOOLS.find((t) => t.name === "ask_user")!;
+const askUserBatch = FACTORY_TOOLS.find((t) => t.name === "ask_user_batch")!;
 
 function stubCtx(over: Partial<BrainCtx> = {}): { ctx: BrainCtx; emitted: BrainEvent[] } {
   const emitted: BrainEvent[] = [];
@@ -90,5 +91,31 @@ describe("ask_user dedup (#ASK-DEDUP)", () => {
     }, embedded.ctx);
     expect(embeddedResult.ok).toBe(false);
     expect(embedded.emitted).toEqual([]);
+
+    const plan = stubCtx();
+    const planResult = await askUser.execute({
+      question: "是否确认整包？",
+      context: `sandbox_evidence_plan_authorization:v1:${"d".repeat(64)}`,
+      options: [
+        { label: "取消", value: "cancel", recommended: true },
+        { label: "确认", value: `authorize_sandbox_evidence_plan:v1:${"e".repeat(64)}`, recommended: false },
+      ],
+    }, plan.ctx);
+    expect(planResult.ok).toBe(false);
+    expect(plan.emitted).toEqual([]);
+
+    const batch = stubCtx();
+    const batchResult = await askUserBatch.execute({
+      items: [{
+        question: "是否确认整包？",
+        context: `sandbox_evidence_plan_authorization:v1:${"f".repeat(64)}`,
+        options: [
+          { label: "取消", value: "cancel", recommended: true },
+          { label: "确认", value: `authorize_sandbox_evidence_plan:v1:${"1".repeat(64)}`, recommended: false },
+        ],
+      }, { question: "另一个普通问题？" }],
+    }, batch.ctx);
+    expect(batchResult.ok).toBe(false);
+    expect(batch.emitted).toEqual([]);
   });
 });

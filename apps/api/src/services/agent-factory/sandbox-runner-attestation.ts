@@ -3,10 +3,12 @@ import { createHash } from "node:crypto";
 import {
   sandboxExecutionReceiptHash,
   sandboxInfrastructureCleanupEvidenceIssues,
+  sandboxExecutionPlaneAttestationIssues,
   generatedFleetModelRequirement,
   sandboxModelUsageEvidenceIssues,
   type SandboxDeployResult,
   type SandboxExecutionPlaneReceipt,
+  type SandboxExecutionPlaneAttestation,
   type SandboxInfrastructureCleanupEvidence,
 } from "@agentic/agent-factory";
 
@@ -16,6 +18,7 @@ import {
   remoteSandboxResultHash,
   RemoteSandboxProtocolError,
   signSandboxExecutionPlaneReceipt,
+  verifyExactSandboxCandidateBundle,
 } from "./sandbox-remote-protocol";
 
 export interface SandboxRunnerExecutionIdentity {
@@ -26,6 +29,7 @@ export interface SandboxRunnerExecutionIdentity {
   brokerOrigin: string;
   serveOrigin: string;
   actualIsolationTier: "same_host_container" | "remote_container" | "remote_vm";
+  platformAttestation?: SandboxExecutionPlaneAttestation;
 }
 
 /** Control-plane attestation over already-returned workload evidence. This file
@@ -50,6 +54,34 @@ export function attestSandboxCandidateResult(input: {
     throw new RemoteSandboxProtocolError(
       "runner_result_not_promotable",
       "Workload result is not bound to complete zero-live-call cleanup evidence",
+    );
+  }
+  if (
+    input.identity.actualIsolationTier !== "same_host_container"
+    && sandboxExecutionPlaneAttestationIssues(
+      input.identity.platformAttestation,
+    ).length > 0
+  ) {
+    throw new RemoteSandboxProtocolError(
+      "runner_platform_attestation_missing",
+      "Remote runner has no valid independently signed platform attestation",
+    );
+  }
+  if (
+    input.identity.platformAttestation
+    && (
+      input.identity.platformAttestation.runnerId !== input.identity.runnerId
+      || input.identity.platformAttestation.runnerBuildId
+        !== input.identity.runnerBuildId
+      || input.identity.platformAttestation.runtimeImageDigest
+        !== input.identity.runtimeImageDigest
+      || input.identity.platformAttestation.isolationTier
+        !== input.identity.actualIsolationTier
+    )
+  ) {
+    throw new RemoteSandboxProtocolError(
+      "runner_platform_attestation_mismatch",
+      "Remote runner identity does not match its signed platform attestation",
     );
   }
   const infrastructureIssues = sandboxInfrastructureCleanupEvidenceIssues(
@@ -115,6 +147,10 @@ export function attestSandboxCandidateResult(input: {
     );
   }
   const resultHash = remoteSandboxResultHash(input.result);
+  const candidateBundleVerification = verifyExactSandboxCandidateBundle(
+    input.bundle,
+    input.completedAt,
+  );
   const body = {
     schema: "agent-factory-sandbox-execution/v2" as const,
     executionOrigin: "remote" as const,
@@ -131,6 +167,10 @@ export function attestSandboxCandidateResult(input: {
     runnerId: input.identity.runnerId,
     runnerBuildId: input.identity.runnerBuildId,
     runtimeImageDigest: input.identity.runtimeImageDigest,
+    ...(input.identity.platformAttestation
+      ? { platformAttestation: input.identity.platformAttestation }
+      : {}),
+    candidateBundleVerification,
     brokerOriginHash: `sha256:${canonicalSandboxSha256(input.identity.brokerOrigin)}`,
     serveOriginHash: `sha256:${canonicalSandboxSha256(input.identity.serveOrigin)}`,
     policyHash: `sandbox-policy:v1:${canonicalSandboxSha256(input.bundle.policy)}`,

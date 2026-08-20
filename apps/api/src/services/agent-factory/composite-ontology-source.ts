@@ -13,6 +13,10 @@
 // domains disappear from the operator catalog.
 
 import type { OntologySource, DomainOntology } from "@agentic/agent-factory";
+import {
+  describeOntologyTransport,
+  type OntologyTransportDescriptor,
+} from "./ontology-transport-descriptor";
 
 export class CompositeOntologySource implements OntologySource {
   constructor(
@@ -56,9 +60,36 @@ export class CompositeOntologySource implements OntologySource {
     return this.allmeta.fetchOntology(domainId);
   }
 
+  /** Describe whichever side THIS domain routes to — the same predicate the
+   *  fetch uses, so provenance can never disagree with what served. */
+  async describeTransport(
+    domainId: string,
+  ): Promise<OntologyTransportDescriptor | null> {
+    const target = (await this.isAllmetaDomain(domainId))
+      ? this.allmeta
+      : this.manifest;
+    return describeOntologyTransport(target, domainId);
+  }
+
   async fetchActionRules(domainId: string, actionName: string): Promise<unknown[]> {
     return (await this.isAllmetaDomain(domainId))
       ? this.allmeta.fetchActionRules(domainId, actionName)
       : this.manifest.fetchActionRules(domainId, actionName);
+  }
+
+  async listInstances(
+    domainId: string,
+    objectType: string,
+    opts: { limit: number },
+  ) {
+    const source = (await this.isAllmetaDomain(domainId))
+      ? this.allmeta
+      : this.manifest;
+    if (!source.listInstances) {
+      throw new Error(
+        `Ontology source for ${domainId} does not support instance reads`,
+      );
+    }
+    return source.listInstances(domainId, objectType, opts);
   }
 }

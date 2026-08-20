@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   archiveEntriesFromDropped,
+  archiveTruncationReport,
   recallConversationTool,
   searchArchiveEntries,
   type ConversationArchiveEntry,
@@ -26,12 +27,34 @@ describe("#CONV-ARCHIVE — entry serialization", () => {
     expect(entries[2]!.content).toContain("已提交"); // non-string content JSON-serialized
   });
 
-  it("caps oversized content and says so honestly (never silent truncation)", () => {
+  it("keeps content the old 4,000-char cap would have destroyed", () => {
+    // 归档的唯一职责是让不可逆折叠可恢复。上限曾是 4,000 字，恰好砍掉最值得留
+    // 的东西——实测一条真实会话 189 条里 58 条被截断，含四份权威 Action 契约。
     const big = "x".repeat(9_000);
     const [entry] = archiveEntriesFromDropped([{ role: "assistant", content: big }], 1, 0);
-    expect(entry!.content.length).toBeLessThan(4_200);
+    expect(entry!.content).toBe(big);
+    expect(entry!.content).not.toContain("截断");
+  });
+
+  it("still caps, and says so honestly, beyond the configured limit", () => {
+    const huge = "x".repeat(70_000);
+    const [entry] = archiveEntriesFromDropped([{ role: "assistant", content: huge }], 1, 0);
+    expect(entry!.content.length).toBeLessThan(70_000);
     expect(entry!.content).toContain("截断");
-    expect(entry!.content).toContain("9000");
+    expect(entry!.content).toContain("70000");
+  });
+
+  it("reports a lossy batch as a fact, not just as text buried in one entry", () => {
+    const entries = archiveEntriesFromDropped(
+      [
+        { role: "assistant", content: "x".repeat(70_000) },
+        { role: "assistant", content: "short" },
+      ],
+      1,
+      0,
+    );
+    expect(archiveTruncationReport(entries)).toMatchObject({ truncated: 1 });
+    expect(archiveTruncationReport(entries).cap).toBeGreaterThanOrEqual(64_000);
   });
 });
 
@@ -94,6 +117,22 @@ describe("#CONV-ARCHIVE — recall_conversation tool", () => {
     const empty: FactoryConversationArchive = { append: async () => {}, search: async () => [], count: async () => 0 };
     const res2 = await recallConversationTool.execute({ reasoning: "找", query: "x" }, fakeCtx(empty, "frn-1"));
     expect(String(res2.summary)).toContain("归档为空");
+  });
+
+  // 「一次召回只有在【被归属】时才算证据」是这个工具自己写下的不变量，但渲染
+  // 只输出 {index, role, excerpt}：`at` 和 `foldSeq` 存了却在渲染时丢掉，大脑
+  // 拿到的是序号而没有任何时间线索。未归属的召回注入 prompt，与模型自己编的
+  // 东西无法区分。
+  it("ATTRIBUTES every recalled hit — fold sequence and archive time, honestly labelled", async () => {
+    const res = await recallConversationTool.execute({ reasoning: "核对", query: "边界" }, fakeCtx(stocked, "frn-1"));
+    const out = res.output as {
+      hits: Array<{ index: number; role: string; foldSeq: number | null; archivedAt: string }>;
+    };
+    expect(out.hits[0]).toMatchObject({ index: 2, role: "user", foldSeq: 1 });
+    expect(out.hits[0]!.archivedAt).toBe(new Date(3).toISOString());
+    // `at` is stamped at FOLD time, not utterance time. Saying so is the
+    // difference between attribution and a misleading clock.
+    expect(String(res.summary)).toContain("归档时刻");
   });
 
   it("fails plainly without a configured archive or conversation id; archive errors are reported not swallowed", async () => {

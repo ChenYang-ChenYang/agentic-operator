@@ -22,10 +22,12 @@ import { getRawSqlite, closeDb } from "./client";
 export interface BackupOptions {
   /** Directory to write backups into. Created if absent. */
   backupDir?: string;
-  /** Delete backups older than this many days. Default 14. */
+  /** Delete backups older than this many days. Default 90. */
   retentionDays?: number;
   /** Optional explicit timestamp for the filename (mostly for tests). */
   timestamp?: string;
+  /** Snapshot append-only logs + run artifacts beside the SQLite backup. */
+  includeEvidence?: boolean;
 }
 
 export interface BackupResult {
@@ -35,9 +37,12 @@ export interface BackupResult {
   sizeBytes: number;
   /** Backup files removed by the retention sweep. */
   removed: string[];
+  /** Directory containing the matching logs/artifacts snapshot. */
+  evidenceTarget: string | null;
+  evidenceSizeBytes: number;
 }
 
-const DEFAULT_RETENTION_DAYS = 14;
+const DEFAULT_RETENTION_DAYS = 90;
 
 function configuredRetentionDays(): number {
   const raw = process.env.BACKUP_RETENTION_DAYS?.trim();
@@ -50,8 +55,22 @@ function configuredRetentionDays(): number {
 }
 
 function defaultBackupDir(): string {
+  if (process.env.AGENTIC_BACKUP_DIR?.trim()) {
+    return path.resolve(process.env.AGENTIC_BACKUP_DIR.trim());
+  }
   const dataDir = process.env.AGENTIC_DATA_DIR ?? "./data";
   return path.join(dataDir, "backups");
+}
+
+function directorySize(root: string): number {
+  if (!fs.existsSync(root)) return 0;
+  let total = 0;
+  for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+    const candidate = path.join(root, entry.name);
+    if (entry.isDirectory()) total += directorySize(candidate);
+    else if (entry.isFile()) total += fs.statSync(candidate).size;
+  }
+  return total;
 }
 
 function timestampUtc(): string {
@@ -83,12 +102,15 @@ export function backupDatabase(opts: BackupOptions = {}): BackupResult {
   sqlite.exec(`VACUUM INTO '${literal}'`);
 
   // Verify the snapshot has rows in sqlite_master.
-  const Database = sqlite.constructor as new (p: string, opts?: object) => typeof sqlite;
+  const Database = sqlite.constructor as new (
+    p: string,
+    opts?: object,
+  ) => typeof sqlite;
   const probe = new Database(target, { readonly: true });
   try {
-    const row = probe.prepare("SELECT COUNT(*) AS c FROM sqlite_master").get() as
-      | { c: number }
-      | undefined;
+    const row = probe
+      .prepare("SELECT COUNT(*) AS c FROM sqlite_master")
+      .get() as { c: number } | undefined;
     if (!row || row.c === 0) {
       probe.close();
       fs.unlinkSync(target);
@@ -99,6 +121,52 @@ export function backupDatabase(opts: BackupOptions = {}): BackupResult {
   }
 
   const stat = fs.statSync(target);
+  const includeEvidence = opts.includeEvidence ?? true;
+  const evidenceTarget = includeEvidence
+    ? path.join(backupDir, `agentic-${ts}-evidence`)
+    : null;
+  if (evidenceTarget) {
+    fs.rmSync(evidenceTarget, { recursive: true, force: true });
+    fs.mkdirSync(evidenceTarget, { recursive: true });
+    const evidenceRoots = [
+      {
+        name: "logs",
+        source: path.resolve(process.env.AGENTIC_LOGS_DIR ?? "./logs"),
+      },
+      {
+        name: "artifacts",
+        source: path.resolve(
+          process.env.AGENTIC_ARTIFACTS_DIR ?? "./artifacts",
+        ),
+      },
+    ];
+    for (const root of evidenceRoots) {
+      if (!fs.existsSync(root.source)) continue;
+      fs.cpSync(root.source, path.join(evidenceTarget, root.name), {
+        recursive: true,
+        force: false,
+        errorOnExist: true,
+      });
+    }
+    fs.writeFileSync(
+      path.join(evidenceTarget, "manifest.json"),
+      JSON.stringify(
+        {
+          schemaVersion: 1,
+          createdAt: new Date().toISOString(),
+          database: path.basename(target),
+          evidence: evidenceRoots.map((root) => ({
+            name: root.name,
+            source: root.source,
+            included: fs.existsSync(root.source),
+          })),
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+  }
 
   // Retention sweep — delete files older than retentionDays.
   const cutoff = Date.now() - retentionDays * 86_400_000;
@@ -111,13 +179,27 @@ export function backupDatabase(opts: BackupOptions = {}): BackupResult {
       if (s.mtimeMs < cutoff) {
         fs.unlinkSync(p);
         removed.push(p);
+        const matchingEvidence = path.join(
+          backupDir,
+          `${name.slice(0, -3)}-evidence`,
+        );
+        if (fs.existsSync(matchingEvidence)) {
+          fs.rmSync(matchingEvidence, { recursive: true, force: true });
+          removed.push(matchingEvidence);
+        }
       }
     } catch {
       /* race with concurrent prune — ignore */
     }
   }
 
-  return { target, sizeBytes: stat.size, removed };
+  return {
+    target,
+    sizeBytes: stat.size,
+    removed,
+    evidenceTarget,
+    evidenceSizeBytes: evidenceTarget ? directorySize(evidenceTarget) : 0,
+  };
 }
 
 // CLI entrypoint — `pnpm --filter @agentic/db exec tsx src/backup.ts`.
@@ -129,7 +211,7 @@ if (isMain) {
   try {
     const res = backupDatabase({ retentionDays: configuredRetentionDays() });
     console.log(
-      `[db:backup] ok target=${res.target} size=${res.sizeBytes} pruned=${res.removed.length}`,
+      `[db:backup] ok target=${res.target} size=${res.sizeBytes} evidence=${res.evidenceTarget ?? "disabled"} evidence_size=${res.evidenceSizeBytes} pruned=${res.removed.length}`,
     );
     closeDb();
   } catch (err) {

@@ -52,9 +52,29 @@ async function fetchJson(
 function countModels(body: unknown): number | null {
   if (!body || typeof body !== "object") return null;
   const obj = body as Record<string, unknown>;
-  if (Array.isArray(obj.data)) return obj.data.length;
-  if (Array.isArray(obj.models)) return obj.models.length;
-  return null;
+  const models = Array.isArray(obj.data)
+    ? obj.data
+    : Array.isArray(obj.models)
+      ? obj.models
+      : null;
+  if (models === null) return null;
+  if (
+    models.some((model) => {
+      if (!model || typeof model !== "object") return true;
+      const entry = model as Record<string, unknown>;
+      return !(
+        (typeof entry.id === "string" && entry.id.trim().length > 0) ||
+        (typeof entry.name === "string" && entry.name.trim().length > 0)
+      );
+    })
+  ) {
+    return null;
+  }
+  return models.length;
+}
+
+function invalidModelCatalogMessage(status: number): string {
+  return `${status} OK — response is not a valid OpenAI-compatible model catalog; verify the gateway base URL (it usually must include /v1)`;
 }
 
 interface OpenAICompatibleConfig {
@@ -99,6 +119,15 @@ async function testOpenAICompatible(
     const latencyMs = Date.now() - start;
     if (status >= 200 && status < 300) {
       const modelCount = countModels(body);
+      if (path === "/models" && modelCount === null) {
+        return {
+          ok: false,
+          statusCode: status,
+          latencyMs,
+          modelCount: null,
+          message: invalidModelCatalogMessage(status),
+        };
+      }
       const detail =
         modelCount !== null
           ? `returned ${modelCount} models`
@@ -206,7 +235,9 @@ async function testGemini(apiKey: string): Promise<ProviderTestResult> {
 }
 
 async function testAzure(apiKey: string): Promise<ProviderTestResult> {
-  const endpoint = (process.env.AZURE_OPENAI_ENDPOINT ?? "").trim().replace(/\/+$/, "");
+  const endpoint = (process.env.AZURE_OPENAI_ENDPOINT ?? "")
+    .trim()
+    .replace(/\/+$/, "");
   const apiVersion = (process.env.AZURE_OPENAI_API_VERSION ?? "").trim();
   if (!endpoint || !apiVersion) {
     return {
@@ -220,7 +251,10 @@ async function testAzure(apiKey: string): Promise<ProviderTestResult> {
   let base: URL;
   try {
     base = new URL(endpoint);
-    if (base.protocol !== "https:" && !(process.env.NODE_ENV !== "production" && base.protocol === "http:")) {
+    if (
+      base.protocol !== "https:" &&
+      !(process.env.NODE_ENV !== "production" && base.protocol === "http:")
+    ) {
       throw new Error("unsupported protocol");
     }
   } catch {
@@ -446,14 +480,17 @@ export async function testGatewayConnection(args: {
       }
       const latencyMs = Date.now() - startedAt;
       const modelCount = response.ok ? countModels(body) : null;
+      const validModelCatalog = response.ok && modelCount !== null;
       return {
-        ok: response.ok,
+        ok: validModelCatalog,
         statusCode: response.status,
         latencyMs,
         modelCount,
-        message: response.ok
+        message: validModelCatalog
           ? `${response.status} OK · ${latencyMs} ms${modelCount === null ? "" : ` · returned ${modelCount} models`}`
-          : redact(errorMessageFromStatus(response.status, body)),
+          : response.ok
+            ? invalidModelCatalogMessage(response.status)
+            : redact(errorMessageFromStatus(response.status, body)),
         endpoint,
         testedAt: Date.now(),
       };

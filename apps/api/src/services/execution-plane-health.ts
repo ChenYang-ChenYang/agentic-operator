@@ -1,5 +1,9 @@
 import type { HealthReport } from "@agentic/contracts";
 import {
+  sandboxExecutionPlaneAttestationIssues,
+  type SandboxExecutionPlaneAttestation,
+} from "@agentic/agent-factory";
+import {
   productionCodeActRemoteEnabled,
   productionCodeActRemoteHealthExpectation,
   productionCodeActSecret,
@@ -222,11 +226,33 @@ export async function checkFactorySandboxRunner(
     ) {
       return blockedSandbox("sandbox_runner_identity_or_deep_health_failed");
     }
-    if (body.isolationTier === "same_host_container") {
-      return {
-        ...blockedSandbox("sandbox_runner_shares_primary_host_docker_daemon"),
-        isolationTier: "same_host_container",
-      } as SandboxRunnerHealth;
+    const diagnosticSameHost =
+      body.isolationTier === "same_host_container";
+    let platformAttestation: SandboxExecutionPlaneAttestation | null = null;
+    if (!diagnosticSameHost) {
+      if (!expected.platformAttestationExpected) {
+        return blockedSandbox(
+          "sandbox_runner_platform_attestation_unconfigured",
+        );
+      }
+      platformAttestation = object(
+        body.platformAttestation,
+      ) as unknown as SandboxExecutionPlaneAttestation | null;
+      const platformIssues = sandboxExecutionPlaneAttestationIssues(
+        platformAttestation,
+        {
+          ...expected.platformAttestationExpected,
+          now: new Date(nowMs),
+        },
+      );
+      if (
+        platformIssues.length
+        || platformAttestation?.isolationTier !== body.isolationTier
+      ) {
+        return blockedSandbox(
+          "sandbox_runner_platform_attestation_invalid",
+        );
+      }
     }
     const accepted = jobs.accepted ?? 0;
     const running = jobs.running ?? 0;
@@ -259,6 +285,14 @@ export async function checkFactorySandboxRunner(
     if (!busy && !idle) {
       return blockedSandbox("sandbox_runner_cleanup_or_orphan_failed");
     }
+    if (diagnosticSameHost && env.NODE_ENV === "production") {
+      return {
+        ...blockedSandbox("sandbox_runner_shares_primary_host_docker_daemon"),
+        isolationTier: "same_host_container",
+        diagnosticOnly: true,
+        qualification: "development_only",
+      } as SandboxRunnerHealth;
+    }
     return {
       configured: true,
       ok: true,
@@ -266,7 +300,20 @@ export async function checkFactorySandboxRunner(
       runnerId: body.runnerId as string,
       buildId: body.runnerBuildId as string,
       runtimeImageDigest: body.runtimeImageDigest as string,
-      isolationTier: body.isolationTier as "remote_container" | "remote_vm",
+      isolationTier: body.isolationTier,
+      diagnosticOnly: diagnosticSameHost,
+      qualification: diagnosticSameHost
+        ? "development_only"
+        : "promotable",
+      ...(platformAttestation
+        ? {
+            executionPlaneId: platformAttestation.planeId,
+            trustDomain: platformAttestation.trustDomain,
+            platformAttestationHash: platformAttestation.attestationHash,
+          }
+        : {
+            note: "sandbox_runner_same_host_development_only",
+          }),
       broker: "ready",
       storage: "ready",
       jobs,

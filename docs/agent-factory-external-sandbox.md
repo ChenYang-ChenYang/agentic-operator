@@ -61,9 +61,20 @@ API 端使用 `FACTORY_SANDBOX_REMOTE_CONFIG_REFS` 。JSON 中只放环境变量
   "keyIdEnv": "FACTORY_SB_KEY_ID",
   "runnerIdEnv": "FACTORY_SB_RUNNER_ID",
   "allowedBuildIdsEnv": "FACTORY_SB_ALLOWED_BUILD_IDS",
-  "allowedImageDigestsEnv": "FACTORY_SB_ALLOWED_IMAGE_DIGESTS"
+  "allowedImageDigestsEnv": "FACTORY_SB_ALLOWED_IMAGE_DIGESTS",
+  "executionPlaneIdEnv": "FACTORY_SB_EXECUTION_PLANE_ID",
+  "executionPlaneTrustDomainEnv": "FACTORY_SB_EXECUTION_PLANE_TRUST_DOMAIN",
+  "platformAttestorKeyIdEnv": "FACTORY_SB_PLATFORM_ATTESTOR_KEY_ID",
+  "platformAttestorPublicKeyEnv": "FACTORY_SB_PLATFORM_ATTESTOR_PUBLIC_KEY",
+  "primaryHostIdentityHashEnv": "FACTORY_PRIMARY_HOST_IDENTITY_HASH",
+  "primaryDockerDaemonIdentityHashEnv": "FACTORY_PRIMARY_DOCKER_DAEMON_IDENTITY_HASH",
+  "allowedControlHostIdentityHashesEnv": "FACTORY_SB_ALLOWED_CONTROL_HOST_IDENTITY_HASHES",
+  "allowedWorkloadHostIdentityHashesEnv": "FACTORY_SB_ALLOWED_WORKLOAD_HOST_IDENTITY_HASHES",
+  "allowedDockerDaemonIdentityHashesEnv": "FACTORY_SB_ALLOWED_DOCKER_DAEMON_IDENTITY_HASHES"
 }
 ```
+
+外部 production topology 中，以上 platform 字段全部必填。平台证明由独立 Ed25519 attestor 签发，包含 `planeId`、`trustDomain`、control/workload host hash、Docker daemon hash、runner/build/image、能力列表和有效期；attestor 私钥不得进入 Primary API 或 runner。API 必须将远端 host/daemon hash 与自己由基础设施提供的 Primary host/daemon hash 比较。缺少 Primary 对照值、签名、公钥 allowlist 或任一远端身份 allowlist 时，health 与 promotion 都保持 blocked。详细契约和签发步骤见 [`design/sandbox-execution-plane-qualification.md`](design/sandbox-execution-plane-qualification.md)。
 
 control runner API 默认监听容器内 `3560`，需实现：
 
@@ -109,7 +120,7 @@ runner 镜像必须：
 3. 测试只使用 fixture/cassette 和沙箱数据。需要 GoHire、RAAS、Allmeta 或其他公网/内网真实写入时，停下并 `ask_user`，由人确认受限 proxy/测试 tenant，不为了“跑通”打开通用 egress。
 4. 执行结束后 workload 先停止接收新 event，等待 in-flight run 排空，再通过受限 token 调用 control 的窄化 delete endpoint。生产外部 delete control 必须是 HTTPS；Compose 内部明文 HTTP 只限 internal execution network 上的这个固定 service 身份，不允许通用内网 URL。
 5. workload 只在所有 one-shot candidate 容器都已退出、显式删除并反查不存在，当次物化的 manifest/tenant/tool/replay workspace 已删除、nonce App cleanup 已完成后，才返回带 content-addressed `evidenceHash` 的 infrastructure cleanup 证据。control 还必须自己从 broker 权威 app 列表反查该 app id 已不存在；不能只信 workload 的 app 删除声明。
-6. 只有 control 完成独立 broker 反查后才签名 `agent-factory-sandbox-execution/v2` receipt。其 `infrastructureCleanup` 必须精确包含 `candidateExecutionAbsent=true`、`workspaceAbsent=true`、`candidateSecretsIssued=false`、`isolation=isolated_container`、每次 CodeAct 的 code/image/policy/exit/removal 证据、有效 `verifiedAt` 和可重算的 `evidenceHash`，Factory 才能接受测试结果并进入 promotion。workload 永远没有 receipt 签名密钥。
+6. 只有 control 完成独立 broker 反查后才签名 `agent-factory-sandbox-execution/v2` receipt。签名前 control 还会从收到的 exact bundle 重新计算 bundle/specs/manifest/test/tool hashes，形成 `agent-factory-sandbox-candidate-bundle-verification/v1`；execution receipt 同时绑定独立 Ed25519 platform attestation。其 `infrastructureCleanup` 必须精确包含 `candidateExecutionAbsent=true`、`workspaceAbsent=true`、`candidateSecretsIssued=false`、`isolation=isolated_container`、每次 CodeAct 的 code/image/policy/exit/removal 证据、有效 `verifiedAt` 和可重算的 `evidenceHash`，Factory 才能接受测试结果并进入 promotion。workload 永远没有 receipt 或 platform-attestor 签名密钥。
 
 清理超时、delete mutation 失败、反查失败、app 仍存在或本地目录删除失败，都把 attempt 置为 `cleanup_failed/quarantined`。禁止 promotion，禁止将该 app/attempt 复用给修改后代码。reaper 可重试清理，但不能篡改原始失败证据。
 

@@ -11,7 +11,10 @@
 // reads the cache synchronously (returns null when not yet warmed → the router just skips
 // catalog validation and uses the configured/base chain as-is).
 
-import { resolveFactoryGateway } from "./stream-gateway";
+import {
+  hasFactoryModelAdapter,
+  resolveFactoryGateway,
+} from "./stream-gateway";
 
 let cache: { ids: string[]; at: number } | null = null;
 let inflight: Promise<string[] | null> | null = null;
@@ -33,6 +36,9 @@ export async function fetchModelCatalog(
   env: Record<string, string | undefined> = process.env,
   opts: { force?: boolean; signal?: AbortSignal } = {},
 ): Promise<string[] | null> {
+  // The API's central tenant gateway owns catalog/routing discovery. Never
+  // bypass it with a second process-env credentialed /models request.
+  if (hasFactoryModelAdapter()) return cache?.ids ?? null;
   if (!opts.force && cache && Date.now() - cache.at < ttlMs(env)) return cache.ids;
   if (inflight) return inflight;
   // Catalog discovery is optional.  A deployment with no gateway credential

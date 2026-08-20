@@ -10,6 +10,7 @@ const state = vi.hoisted(() => ({
   run: null as null | Record<string, unknown>,
   steps: [] as Array<Record<string, unknown>>,
   turns: [] as Array<Record<string, unknown>>,
+  artifacts: [] as Array<Record<string, unknown>>,
   events: [] as Array<Record<string, unknown>>,
   logs: [] as string[],
   failLlmTurn: false,
@@ -29,6 +30,22 @@ vi.mock("@agentic/shared", () => ({
 
 vi.mock("@agentic/runtime", () => ({
   logPathFor: () => "/tmp/agents-run-truth.log",
+  registerStepArtifactEvidence: async (artifact: Record<string, unknown>) => {
+    state.artifacts.push(artifact);
+    return {
+      ...artifact,
+      id: `art-${state.artifacts.length}`,
+      path: artifact.filePath,
+      logicalName:
+        String(artifact.filePath ?? "")
+          .split("/")
+          .at(-1) ?? "",
+      contentType: "application/json",
+      size: 0,
+      sha256: "test",
+      redacted: false,
+    };
+  },
   publishStreamEvent: (event: Record<string, unknown>) => {
     state.events.push(event);
   },
@@ -195,6 +212,7 @@ beforeEach(async () => {
   state.run = null;
   state.steps.length = 0;
   state.turns.length = 0;
+  state.artifacts.length = 0;
   state.events.length = 0;
   state.logs.length = 0;
   state.failLlmTurn = false;

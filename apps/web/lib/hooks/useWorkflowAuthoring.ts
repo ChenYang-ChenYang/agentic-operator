@@ -64,6 +64,52 @@ export class WorkflowAuthoringClientError extends Error {
   }
 }
 
+/**
+ * Publish answers 409 with a bare confirmation envelope rather than the usual
+ * `{ok:false,error}` shape, because the operator has to see WHICH live agents
+ * a publish would drop before deciding. Carry the diff instead of collapsing
+ * it into an opaque "HTTP 409".
+ */
+export class WorkflowPublishOverwriteRequiredError extends Error {
+  constructor(
+    public readonly reason: "removes_agents" | "modifies_threshold",
+    public readonly removed: string[],
+    public readonly modified: string[],
+  ) {
+    super(`workflow_publish_requires_confirmation: ${reason}`);
+    this.name = "WorkflowPublishOverwriteRequiredError";
+  }
+}
+
+/** Returns the typed conflict when `body` is the 409 confirmation envelope. */
+export function workflowOverwriteConflict(
+  status: number,
+  body: unknown,
+): WorkflowPublishOverwriteRequiredError | null {
+  if (status !== 409 || !body || typeof body !== "object") return null;
+  const envelope = body as {
+    requires_confirmation?: unknown;
+    reason?: unknown;
+    diff?: { removed?: unknown; modified?: unknown };
+  };
+  if (envelope.requires_confirmation !== true) return null;
+  if (
+    envelope.reason !== "removes_agents" &&
+    envelope.reason !== "modifies_threshold"
+  ) {
+    return null;
+  }
+  const names = (value: unknown): string[] =>
+    Array.isArray(value)
+      ? value.filter((item): item is string => typeof item === "string")
+      : [];
+  return new WorkflowPublishOverwriteRequiredError(
+    envelope.reason,
+    names(envelope.diff?.removed),
+    names(envelope.diff?.modified),
+  );
+}
+
 type WorkflowAuthoringTranslate = (
   key: string,
   vars?: Record<string, string | number>,
@@ -114,6 +160,8 @@ async function callV1<T>(
     | ApiErr
     | null;
   if (!response.ok || !body || body.ok !== true) {
+    const conflict = workflowOverwriteConflict(response.status, body);
+    if (conflict) throw conflict;
     const error = body && body.ok === false ? body.error : null;
     if (!error) {
       throw new WorkflowAuthoringClientError(
@@ -336,7 +384,13 @@ export function useValidateWorkflow(slug?: string | null) {
 export function usePublishWorkflow(slug?: string | null) {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: (body: { versionId?: string; note?: string } = {}) => {
+    mutationFn: (
+      body: {
+        versionId?: string;
+        note?: string;
+        confirmOverwrite?: boolean;
+      } = {},
+    ) => {
       if (!slug) {
         throw new WorkflowAuthoringClientError(
           "workflowRequired",

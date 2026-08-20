@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   WorkflowAuthoringApiError,
   WorkflowAuthoringClientError,
+  WorkflowPublishOverwriteRequiredError,
   formatWorkflowAuthoringError,
+  workflowOverwriteConflict,
 } from "./useWorkflowAuthoring";
 
 describe("formatWorkflowAuthoringError", () => {
@@ -31,5 +33,39 @@ describe("formatWorkflowAuthoringError", () => {
         t,
       ),
     ).toBe("server detail");
+  });
+});
+
+describe("workflowOverwriteConflict", () => {
+  const envelope = {
+    ok: false,
+    requires_confirmation: true,
+    reason: "removes_agents",
+    diff: {
+      added: [],
+      removed: ["support-response-drafter"],
+      modified: ["support-ticket-triage"],
+      prior_version: "auto-abc",
+    },
+    conflicts: [],
+  };
+
+  it("recognizes the publish confirmation envelope and names the removed agents", () => {
+    const conflict = workflowOverwriteConflict(409, envelope);
+    expect(conflict).toBeInstanceOf(WorkflowPublishOverwriteRequiredError);
+    expect(conflict?.reason).toBe("removes_agents");
+    expect(conflict?.removed).toEqual(["support-response-drafter"]);
+    expect(conflict?.modified).toEqual(["support-ticket-triage"]);
+  });
+
+  it("ignores ordinary error envelopes and non-409 responses", () => {
+    expect(
+      workflowOverwriteConflict(409, {
+        ok: false,
+        error: { code: "workflow_conflict", message: "slug taken" },
+      }),
+    ).toBeNull();
+    expect(workflowOverwriteConflict(400, envelope)).toBeNull();
+    expect(workflowOverwriteConflict(409, null)).toBeNull();
   });
 });

@@ -136,6 +136,13 @@ describe("factory smoke — the whole brainLoop journey with a fleet (scripted t
     //    so members need no read_ontology round-trip of their own
     const memberTurns = seenTurns.filter((t) => t.some((m) => typeof m.content === "string" && m.content.includes("【动作简报 ·")));
     expect(memberTurns.length).toBeGreaterThanOrEqual(3);
+    const memberPrompt = memberTurns
+      .flatMap((turn) => turn.map((message) => String(message.content ?? "")))
+      .join("\n");
+    expect(memberPrompt).toContain("结构化 integration");
+    expect(memberPrompt).toContain("每个顶层 tool/invoke");
+    expect(memberPrompt).toContain("禁止把 emit 改成 condition");
+    expect(memberPrompt).toContain("不要再提交 decision_tables");
     // ⑤ validate_graph really ran against the landed specs
     const validation = events.find((e): e is Extract<BrainEvent, { t: "validation" }> => e.t === "validation");
     expect(validation).toBeTruthy();

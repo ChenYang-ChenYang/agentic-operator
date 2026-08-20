@@ -59,6 +59,48 @@ export interface GatewayCallRecord {
   purpose?: string;
   tenantId?: string;
   runId?: string;
+  interactionId?: string;
+  correlationId?: string;
+  invocationSource?: string;
+  /** Ordered model preference the caller asked for (difficulty routing). */
+  modelPreference?: string[];
+  /** Caller's label for that preference (e.g. the difficulty tier). */
+  modelPreferenceTier?: string;
+  /** Whether an allowed candidate actually matched the preference. */
+  modelPreferenceSatisfied?: boolean;
+  /** Why it was (not) matched — recorded so a miss is auditable, not silent. */
+  modelPreferenceReason?: string;
+}
+
+/**
+ * Project the model-preference decision onto the telemetry record. Emitted on
+ * BOTH the success and failure paths: "the caller asked for a harder model and
+ * policy could not offer one" must stay answerable from the telemetry table
+ * rather than living only in a log line.
+ */
+function modelPreferenceRecord(
+  req: ChatRequest,
+): Pick<
+  GatewayCallRecord,
+  | "modelPreference"
+  | "modelPreferenceTier"
+  | "modelPreferenceSatisfied"
+  | "modelPreferenceReason"
+> {
+  const routing = req.routing;
+  if (!routing?.modelPreference?.length) return {};
+  return {
+    modelPreference: routing.modelPreference,
+    ...(routing.modelPreferenceTier
+      ? { modelPreferenceTier: routing.modelPreferenceTier }
+      : {}),
+    ...(routing.modelPreferenceSatisfied !== undefined
+      ? { modelPreferenceSatisfied: routing.modelPreferenceSatisfied }
+      : {}),
+    ...(routing.modelPreferenceReason
+      ? { modelPreferenceReason: routing.modelPreferenceReason }
+      : {}),
+  };
 }
 
 let gatewayCallSink: ((rec: GatewayCallRecord) => void | Promise<void>) | null =
@@ -129,6 +171,10 @@ export class LLMGateway {
    */
   async chat(req: ChatRequest): Promise<ChatResponse> {
     const started = Date.now();
+    const sinkAttribution = mergeUsageAttribution(
+      currentUsageAttribution(),
+      req.attribution,
+    );
     let res: ChatResponse;
     try {
       res = await this.chatInner(req);
@@ -148,6 +194,10 @@ export class LLMGateway {
           purpose: req.purpose,
           tenantId: req.tenantId,
           runId: req.runId,
+          interactionId: sinkAttribution.interactionId,
+          correlationId: sinkAttribution.correlationId,
+          invocationSource: sinkAttribution.invocationSource,
+          ...modelPreferenceRecord(req),
         });
       } catch (telemetryError) {
         throw new AggregateError(
@@ -171,6 +221,10 @@ export class LLMGateway {
       purpose: req.purpose,
       tenantId: req.tenantId,
       runId: req.runId,
+      interactionId: sinkAttribution.interactionId,
+      correlationId: sinkAttribution.correlationId,
+      invocationSource: sinkAttribution.invocationSource,
+      ...modelPreferenceRecord(req),
     });
     return res;
   }

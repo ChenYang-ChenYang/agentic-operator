@@ -24,6 +24,7 @@ import {
   apiTokens,
   auditLog,
   getDb,
+  isTenantInngestDeploymentEnabled,
   tenantBudgets,
   tenants,
 } from "@agentic/db";
@@ -76,6 +77,8 @@ describe("TC-50: tenant CRUD", () => {
     expect(body.data.tenant.name).toBe("Crud Test Tenant");
     expect(body.data.tenant.color).toBe("#5deeff");
     expect(body.data.tenant.archivedAt).toBeNull();
+    expect(body.data.tenant.inngestEnabled).toBe(false);
+    expect(body.data.tenant.inngestProcessScoped).toBe(true);
     expect(body.data.token).not.toBeNull();
     expect(body.data.token.plaintext).toMatch(/^agentic_/);
     expect(body.data.starter).toBeNull();
@@ -89,6 +92,7 @@ describe("TC-50: tenant CRUD", () => {
       .all()[0];
     expect(row).toBeDefined();
     expect(row!.archivedAt).toBeNull();
+    expect(isTenantInngestDeploymentEnabled(row!.id)).toBe(false);
 
     const budget = db
       .select()
@@ -187,6 +191,8 @@ describe("TC-50: tenant CRUD", () => {
     expect(row).toBeDefined();
     expect(row.agentCount).toBe(0);
     expect(row.openTasks).toBe(0);
+    expect(row.inngestEnabled).toBe(false);
+    expect(row.inngestProcessScoped).toBe(true);
   });
 
   it("GET /v1/tenants/:slug — detail with budget rollup", async () => {
@@ -198,6 +204,95 @@ describe("TC-50: tenant CRUD", () => {
     expect(body.data.budgets.monthlyTokenCap).toBe(1000);
     expect(body.data.workflowCount).toBe(0);
     expect(body.data.deploymentLiveCount).toBe(0);
+  });
+
+  it("PUT /v1/tenants/:slug/inngest-deployment — selects and stops this tenant", async () => {
+    const deploy = await env.fetch(`/v1/tenants/${SLUG}/inngest-deployment`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ enabled: true }),
+    });
+    expect(deploy.status).toBe(200);
+    const deployed = await deploy.json();
+    expect(deployed.data).toMatchObject({
+      slug: SLUG,
+      enabled: true,
+      changed: true,
+      functionCount: 0,
+      status: "empty",
+      brokerVerified: true,
+    });
+    const tenantId = getDb()
+      .select({ id: tenants.id })
+      .from(tenants)
+      .where(eq(tenants.slug, SLUG))
+      .all()[0]!.id;
+    expect(isTenantInngestDeploymentEnabled(tenantId)).toBe(true);
+
+    const stop = await env.fetch(`/v1/tenants/${SLUG}/inngest-deployment`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ enabled: false }),
+    });
+    expect(stop.status).toBe(200);
+    const stopped = await stop.json();
+    expect(stopped.data).toMatchObject({
+      slug: SLUG,
+      enabled: false,
+      changed: true,
+      functionCount: 0,
+      status: "stopped",
+      brokerVerified: true,
+    });
+
+    const actions = getDb()
+      .select({ action: auditLog.action })
+      .from(auditLog)
+      .where(
+        eq(
+          auditLog.tenantId,
+          getDb()
+            .select({ id: tenants.id })
+            .from(tenants)
+            .where(eq(tenants.slug, SLUG))
+            .all()[0]!.id,
+        ),
+      )
+      .all()
+      .map((row) => row.action);
+    expect(actions).toContain("tenant.inngest.deploy");
+    expect(actions).toContain("tenant.inngest.stop");
+  });
+
+  it("PUT /v1/tenants/:slug/inngest-deployment — removes and restores a real manifest function set", async () => {
+    const stop = await env.fetch("/v1/tenants/raas/inngest-deployment", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ enabled: false }),
+    });
+    expect(stop.status).toBe(200);
+    expect((await stop.json()).data).toMatchObject({
+      slug: "raas",
+      enabled: false,
+      functionCount: 0,
+      status: "stopped",
+      brokerVerified: true,
+    });
+
+    const deploy = await env.fetch("/v1/tenants/raas/inngest-deployment", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ enabled: true }),
+    });
+    expect(deploy.status).toBe(200);
+    const data = (await deploy.json()).data;
+    expect(data).toMatchObject({
+      slug: "raas",
+      enabled: true,
+      status: "deployed",
+      brokerVerified: true,
+    });
+    expect(data.functionCount).toBeGreaterThan(0);
   });
 
   it("PUT /v1/tenants/:slug — name/color update writes audit row", async () => {
@@ -312,6 +407,7 @@ describe("TC-50: tenant CRUD", () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.data.archivedAt).toBeNull();
+    expect(body.data.inngestEnabled).toBe(false);
 
     const db = getDb();
     const row = db

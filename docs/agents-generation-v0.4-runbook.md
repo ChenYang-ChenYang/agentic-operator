@@ -14,12 +14,12 @@ pnpm run build:agents-generation-ontology
 - 当前 AllmetaOntology 中 `Agents-generation` 的实时 Rules；
 - 旧六函数仅作为事件/数据契约对照，不把旧 tenant 的候选人判定、阈值或路由代码带入新 tenant。
 
-输出目录为 `artifacts/ontology/Agents-generation/v0_4_000/`。只有 `releaseGrounding.mode=live_allmeta_api`、`allmetaRulesRead=true` 且 `releasable=true` 的包能进入发布预览。
+当前 reviewed 版本输出目录为 `artifacts/ontology/Agents-generation/v0_4_001/`。只有 `releaseGrounding.mode=live_allmeta_api`、`allmetaRulesRead=true` 且 `releasable=true` 的包能进入发布预览。
 
 本版本的 full-domain 发布范围严格限定为 DataObjects、Rules、PolicyScopes、Actions、ActionSteps、Events 和 Links。Allmeta 的这个发布端点不管理运行时 Workflow，因此：
 
-- `domain_ontology_v0_4_000.json` 中的 `workflow: []` 是有意的，表示候选 Ontology 不夹带手写 Agent；
-- `release_bundle_v0_4_000.json` 不含 `workflow` 字段，不会删除或伪造运行时 deployment；
+- `domain_ontology_v0_4_001.json` 中的 `workflow: []` 是有意的，表示候选 Ontology 不夹带手写 Agent；
+- `release_bundle_v0_4_001.json` 不含 `workflow` 字段，不会删除或伪造运行时 deployment；
 - 业务串联由 Event 与 Action 的输入/输出/触发 Links 表达，实际 Inngest functions 只能由 Factory 草稿、审查、sandbox、promotion 流程产生。
 
 仅做本地结构测试时可使用：
@@ -29,6 +29,8 @@ ALLOW_OFFLINE_LIVE_RULES=1 pnpm run build:agents-generation-ontology
 ```
 
 离线包会被永久标记为 `offline_scaffold_test`；发布客户端会在发出任何 Allmeta 请求前拒绝它，不能把离线结果冒充已读取实时 Ontology。
+
+仓库中的 `v0_4_000` 仅保留为历史离线结构参考，不是 reviewed 发布输入，也不是发布客户端默认 bundle。不要对它执行 preview、authorize 或 execute；需要发布时必须重新生成 live-grounded `v0_4_001`。
 
 ## 2. 只读发布预览
 
@@ -67,7 +69,12 @@ pnpm run preview:agents-generation-ontology-release -- --execute --operator-id "
 - GoHire/RAAS/PostgreSQL/Allmeta 的测试租户、测试 namespace 和可回收的 canary 数据；
 - 写工具的安全探针契约。不可逆邀请不能用真实候选人做自动 canary，应保留人工 `INTERVIEW_INVITATION_REQUESTED` 闸门或由平台提供可撤销测试邀约 API。
 
-缺少上述内容时，Factory 会用人话说明缺什么并停在 `ask_user`，不会生成假配置、假成功或把 signed fixture 当作 production 证明。
+缺少上述内容时，Factory 可以继续生成带有 typed dependency port、错误分支与
+未验证标记的 **non-promotable 草稿**，并在总结中逐系统告诉 FDE 缺什么；
+它不能生成假配置、假成功或把 signed fixture 当作 production 证明。
+真正的 sandbox 执行、production probe 与 promotion 仍停在 `ask_user` /
+配置闸门，直到 profile 和真实探针证据齐全。环境引用与诊断返回契约见
+[`agents-generation-tool-env-contract.md`](./agents-generation-tool-env-contract.md)。
 
 ### 集成 profile 与安全探针最低要求
 
@@ -77,7 +84,7 @@ pnpm run preview:agents-generation-ontology-release -- --execute --operator-id "
 | `facts.query` | 精确 `system_name`、只读角色、服务端 statement-catalog operation allowlist、连接 credential 引用 | 禁止模型提交任意 SQL；探针证明 operation 存在、只读且结果 schema 匹配 |
 | `parseResumeApi` / `generateJdApi` / `matchResumeApi` | 外部系统、endpoint、模型/版本、超时、幂等和 credential 引用 | sandbox 使用隔离租户或签名 cassette；production 用不触发业务副作用的 canary 验证真实 endpoint |
 | `records.upsert` | 目标 store、tenant namespace、主键/幂等键、写 credential 引用 | 创建、重复写、清理、删除后缺席四项均成功 |
-| `postgres.executeTransaction` / `entities.write` | 精确 system 绑定（通用 `entities.write` 使用 `system_name`）、写角色、服务端 statement-catalog allowlist、事务/幂等键、credential 引用 | 创建、重复写、事务回滚、清理、删除后缺席均有证据；当前若没有 cleanup/absence adapter，状态必须保持 `needs_config` |
+| `entities.write` | 精确 system 绑定（`system_name`）、写角色、当前 Action 固定的 server-owned operation、statement-catalog allowlist、values 字段映射、稳定幂等键与 credential 引用 | 创建、重复写、事务回滚、清理、删除后缺席均有证据；当前若没有 cleanup/absence adapter，状态必须保持 `needs_config` |
 | `ontology.fetchActionRules` | Allmeta base URL、精确 domain、只读 credential 引用 | 通过 Allmeta API 读取当前 Action/Rule/Link 版本与摘要，禁止直连 Neo4j |
 | `ontology.writeInstance` | Allmeta base URL、精确 domain、隔离 canary namespace、写 credential 引用 | 创建、幂等、清理、删除后通过 Allmeta API 证明缺席 |
 | `inviteCandidateApi` | 外部系统、审批事件、幂等键、可恢复/补偿策略、credential 引用 | 不允许拿真实候选人做自动探针；必须使用可撤销测试邀约 API，或停在人工闸门 |

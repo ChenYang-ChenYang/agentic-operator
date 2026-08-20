@@ -104,7 +104,12 @@ function context() {
     ports: {
       tools: {
         list: async () => [],
-        save: async () => {},
+        saveDraft: async () => ({
+          revisionId: "tvr-signed-fixture-test",
+          version: 1,
+          definitionHash: "a".repeat(64),
+          status: "draft" as const,
+        }),
         prepareSignedFixture,
         createSignedFixture,
       },

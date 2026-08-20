@@ -19,7 +19,12 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { defineTool } from "@agentic/agent-kit";
 import type { ToolDescriptor } from "@agentic/agent-kit";
 
-import type { McpServerConfig, McpServerStatus } from "./types";
+import type {
+  McpServerConfig,
+  McpServerStatus,
+  McpToolSchemaIssue,
+} from "./types";
+import { sanitizeMcpInputSchema } from "./input-schema";
 import { resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 
@@ -166,13 +171,17 @@ export class McpManager {
         }
         reg.client = client;
         const list = await client.listTools();
-        reg.tools = this.buildShims(reg, list.tools);
+        const built = this.buildShims(reg, list.tools);
+        reg.tools = built.tools;
         reg.status = {
           ...reg.status,
           connected: true,
           toolCount: reg.tools.length,
           connectedAt: Date.now(),
           lastError: undefined,
+          schemaIssues: built.schemaIssues.length
+            ? built.schemaIssues
+            : undefined,
         };
       } catch (err) {
         reg.status = {
@@ -199,59 +208,77 @@ export class McpManager {
    * `ToolResult.data` slot the gateway feeds back as a `tool_result` block
    * — adapters that don't speak structured tool_result still see a
    * stringified body.
+   *
+   * #MCP-ARGS — the server's advertised `inputSchema` is carried onto the
+   * descriptor. It used to be dropped here, so every MCP tool reached the model
+   * with no argument contract unless a manifest author hand-copied the schema
+   * into `tool_use[].input_schema` — a direct cause of hallucinated arguments.
+   * A refused schema leaves the slot ABSENT (fail closed) and is reported on
+   * the server status; it is never replaced with a permissive stand-in.
    */
   private buildShims(
     reg: RegisteredServer,
     mcpTools: ListedTool[],
-  ): ToolDescriptor[] {
+  ): { tools: ToolDescriptor[]; schemaIssues: McpToolSchemaIssue[] } {
     const allow = reg.config.allowTools ? new Set(reg.config.allowTools) : null;
     const out: ToolDescriptor[] = [];
+    const schemaIssues: McpToolSchemaIssue[] = [];
     for (const t of mcpTools) {
       if (allow && !allow.has(t.name)) continue;
       const shimName = qualify(reg.config.name, t.name);
+      const argsContract = sanitizeMcpInputSchema(t.inputSchema);
+      if (!argsContract.usable) {
+        schemaIssues.push({ tool: shimName, reason: argsContract.reason });
+      }
+      const shim = defineTool({
+        name: shimName,
+        description:
+          t.description ?? `MCP tool '${t.name}' on '${reg.config.name}'`,
+        async handler(ctx) {
+          const client = reg.client;
+          if (!client) {
+            throw new Error(
+              `mcp: server '${reg.config.name}' is not connected`,
+            );
+          }
+          const args = (ctx.event?.data ?? {}) as Record<string, unknown>;
+          const res = await client.callTool({
+            name: t.name,
+            arguments: args,
+          });
+          // `res.content` is typed loosely by the SDK; narrow at the
+          // edge so the flattener doesn't need to know SDK shapes.
+          const content = Array.isArray(res.content)
+            ? (res.content as McpContentBlock[])
+            : undefined;
+          if (res.isError) {
+            const detail = flattenMcpContent(content);
+            throw new Error(
+              `mcp: tool '${reg.config.name}.${t.name}' failed: ${
+                typeof detail === "string" ? detail : JSON.stringify(detail)
+              }`,
+            );
+          }
+          return {
+            data: flattenMcpContent(content),
+            meta: {
+              mcpServer: reg.config.name,
+              mcpTool: t.name,
+              isError: false,
+            },
+          };
+        },
+      });
+      // `defineTool`'s input surface is owned by @agentic/agent-kit (an
+      // args-contract slot is landing there separately), so the additive
+      // descriptor field is attached here instead of through the builder.
       out.push(
-        defineTool({
-          name: shimName,
-          description:
-            t.description ?? `MCP tool '${t.name}' on '${reg.config.name}'`,
-          async handler(ctx) {
-            const client = reg.client;
-            if (!client) {
-              throw new Error(
-                `mcp: server '${reg.config.name}' is not connected`,
-              );
-            }
-            const args = (ctx.event?.data ?? {}) as Record<string, unknown>;
-            const res = await client.callTool({
-              name: t.name,
-              arguments: args,
-            });
-            // `res.content` is typed loosely by the SDK; narrow at the
-            // edge so the flattener doesn't need to know SDK shapes.
-            const content = Array.isArray(res.content)
-              ? (res.content as McpContentBlock[])
-              : undefined;
-            if (res.isError) {
-              const detail = flattenMcpContent(content);
-              throw new Error(
-                `mcp: tool '${reg.config.name}.${t.name}' failed: ${
-                  typeof detail === "string" ? detail : JSON.stringify(detail)
-                }`,
-              );
-            }
-            return {
-              data: flattenMcpContent(content),
-              meta: {
-                mcpServer: reg.config.name,
-                mcpTool: t.name,
-                isError: false,
-              },
-            };
-          },
-        }),
+        argsContract.usable
+          ? { ...shim, inputSchema: argsContract.schema }
+          : shim,
       );
     }
-    return out;
+    return { tools: out, schemaIssues };
   }
 
   /**
@@ -273,7 +300,13 @@ export class McpManager {
   describe(scope?: string): McpServerStatus[] {
     return Array.from(this.servers.values())
       .filter((r) => scope == null || r.scope === scope)
-      .map((r) => ({ ...r.status }));
+      .map((r) => ({
+        ...r.status,
+        // Detach the array so a diagnostics consumer can't mutate live state.
+        schemaIssues: r.status.schemaIssues
+          ? r.status.schemaIssues.map((issue) => ({ ...issue }))
+          : undefined,
+      }));
   }
 
   /**
@@ -291,13 +324,17 @@ export class McpManager {
             return;
           }
           const list = await reg.client.listTools();
-          reg.tools = this.buildShims(reg, list.tools);
+          const built = this.buildShims(reg, list.tools);
+          reg.tools = built.tools;
           reg.status = {
             ...reg.status,
             connected: true,
             toolCount: reg.tools.length,
             connectedAt: Date.now(),
             lastError: undefined,
+            schemaIssues: built.schemaIssues.length
+              ? built.schemaIssues
+              : undefined,
           };
         } catch (error) {
           reg.status = {
@@ -305,6 +342,9 @@ export class McpManager {
             connected: false,
             toolCount: 0,
             lastError: safeMcpError(error),
+            // A disconnected server advertises nothing; stale per-tool schema
+            // findings would read as current.
+            schemaIssues: undefined,
           };
           const client = reg.client;
           reg.client = null;
@@ -335,6 +375,7 @@ export class McpManager {
           reg.client = null;
           reg.status.connected = false;
           reg.status.toolCount = 0;
+          reg.status.schemaIssues = undefined;
           reg.tools = [];
         }
       }),

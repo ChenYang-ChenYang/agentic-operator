@@ -13,37 +13,33 @@
 // streamTurn tries the chain in order, falling through on a model the gateway doesn't serve, and
 // reports which model actually served the turn so the activity log can annotate it.
 
-import { resolveFactoryGateway } from "./stream-gateway";
+import {
+  hasFactoryModelAdapter,
+  resolveFactoryGateway,
+} from "./stream-gateway";
 import { cachedModelIds } from "./model-catalog";
+import {
+  MODEL_TIERS,
+  modelPreference,
+  pinnedChain,
+  preferPatterns,
+  tierForPreference,
+  type ModelTier,
+} from "./model-tiers";
 
-// Tiers, cheapest → strongest. `review` is the CRITIC tier (AI quality-judge / failure-diagnosis /
-// post-run analysis) — the roles where a wrong verdict is most expensive, so they get the best
-// model even though routine codegen stays on the `hard` main (质量优先·混合: strong-but-not-opus-
-// every-turn). tierForContext never auto-routes to `review`; only explicit critic callers ask for it.
-export type ModelTier = "fast" | "default" | "hard" | "review";
-
-/** Built-in preference patterns used to DERIVE a tier chain from the live catalog when no env
- *  chain is pinned. Overridable per tier via FACTORY_MODEL_<TIER>_PREFER (comma-separated
- *  substrings/regex). These are heuristics over whatever the gateway serves — never hardcoded ids. */
-// New-api gpt-5.6 tiering by price/strength: luna ($1/$6)→fast, terra ($2.50/$15)→default,
-// sol ($5/$30)→hard, sol-pro→review (strongest for the critic). Each is listed first so it LEADS
-// its tier when served, with the prior cross-family models kept as fallbacks. Bare "gpt-5" stays a
-// broad family catch-all. `.` in a pattern is a regex wildcard — harmless (matches the literal dot).
-const DEFAULT_PREFER: Record<ModelTier, string[]> = {
-  fast: ["gpt-5.6-luna", "flash", "haiku", "mini", "nano", "lite", "small"],
-  default: ["gpt-5.6-terra", "gemini-3.1-pro", "gpt-5.4", "sonnet", "pro", "gpt-5"],
-  hard: ["gpt-5.6-sol", "sonnet", "kimi", "gpt-5.4", "opus", "gpt-5", "deepseek-v4-pro", "reason"],
-  review: ["gpt-5.6-sol-pro", "opus", "gpt-5.5", "gpt-5", "sonnet", "reason"],
+// The tier vocabulary itself lives in the dependency-free `model-tiers` leaf so
+// both this router and the transport can label a preference without importing
+// each other. Re-exported here because this module is the router's public face.
+export {
+  MODEL_TIERS,
+  modelPreference,
+  preferPatterns,
+  tierForPreference,
+  type ModelTier,
 };
 
 /** Models that are clearly not chat/reasoning models — excluded from catalog derivation. */
 const NON_CHAT = /image|embed|tts|audio|whisper|rerank|moderation|vision-ocr|speech/i;
-
-function preferPatterns(tier: ModelTier, env: Record<string, string | undefined>): string[] {
-  const raw = env[`FACTORY_MODEL_${tier.toUpperCase()}_PREFER`];
-  const custom = (raw ?? "").split(",").map((s) => s.trim()).filter(Boolean);
-  return custom.length ? custom : DEFAULT_PREFER[tier];
-}
 
 /** Derive an ordered chain for a tier from the live catalog by preference patterns. */
 function deriveFromCatalog(tier: ModelTier, catalog: string[], env: Record<string, string | undefined>): string[] {
@@ -59,13 +55,14 @@ function deriveFromCatalog(tier: ModelTier, catalog: string[], env: Record<strin
 /** The ordered model chain for a tier — preferred first, then fallbacks, always ending in the
  *  base factory model (deduped) so there is always at least one model to try. */
 export function modelChain(tier: ModelTier, env: Record<string, string | undefined> = process.env): string[] {
+  // The API-hosted central gateway owns provider/model SELECTION: it alone
+  // knows which routes this tenant enabled. The factory still states the task
+  // DIFFICULTY it needs, as a preference the gateway intersects with that
+  // allowed set — so tiering survives without process-wide FACTORY_MODEL_*
+  // values ever overriding tenant/Vault policy.
+  if (hasFactoryModelAdapter()) return modelPreference(tier, env);
   const base = resolveFactoryGateway(env).model;
-  const raw =
-    tier === "hard" ? env.FACTORY_MODEL_HARD
-    : tier === "fast" ? env.FACTORY_MODEL_FAST
-    : tier === "review" ? (env.FACTORY_MODEL_REVIEW ?? env.FACTORY_MODEL_HARD) // review falls back to hard's chain if unpinned
-    : env.FACTORY_MODEL_DEFAULT;
-  let chain = (raw ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+  let chain = pinnedChain(tier, env);
 
   const catalog = cachedModelIds(env);
   // No env chain pinned → derive from the live catalog (config-driven defaults, no hardcoded ids).

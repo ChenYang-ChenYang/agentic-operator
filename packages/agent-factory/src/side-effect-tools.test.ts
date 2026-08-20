@@ -1,51 +1,153 @@
 import { describe, expect, it } from "vitest";
-import { isSideEffectTool, SIDE_EFFECT_TOOLS } from "./side-effect-tools";
+import type { BrainTool } from "./brain-types";
+import {
+  ROOT_BRAIN_TOOLS,
+  SUBAGENT_BRAIN_TOOLS,
+} from "./conductor";
+import {
+  assertBrainToolGatesDeclared,
+  brainToolEffect,
+  isSideEffectTool,
+  registeredBrainToolNames,
+  sideEffectToolNames,
+  stageAdvancingTools,
+} from "./side-effect-tools";
 
-// WS1 (#SIDE-EFFECT-CKPT): the brain checkpoints immediately after a SIDE-EFFECTING tool
-// so a crash before the end-of-turn checkpoint cannot make resume re-run the real effect.
-// This predicate is the trust boundary for "which tool results must be made durable at once".
-describe("isSideEffectTool", () => {
-  it("classifies the durable/external/billed tools as side-effecting", () => {
-    // The three the resumability analysis flagged for DUPLICATION on replay:
-    expect(isSideEffectTool("sandbox_run")).toBe(true); // deploys ephemeral app + real billed tests
-    expect(isSideEffectTool("finish")).toBe(true);       // persists delivery + marks delivered
-    expect(isSideEffectTool("save_draft")).toBe(true);   // persists a draft version
-    // Other durable/external writers must also be covered:
-    expect(isSideEffectTool("run_regression")).toBe(true);
-    expect(isSideEffectTool("create_tool")).toBe(true);
-    expect(isSideEffectTool("create_skill")).toBe(true);
-    expect(isSideEffectTool("create_signed_fixture")).toBe(true);
-    expect(isSideEffectTool("confirm_integration_profile")).toBe(true);
-    expect(isSideEffectTool("revise_ontology")).toBe(true);
-    expect(isSideEffectTool("generate_report")).toBe(true);
-    expect(isSideEffectTool("delivery_bundle")).toBe(true);
-    expect(isSideEffectTool("probe_tool")).toBe(true);
+// #SIDE-EFFECT-CKPT / #TOOL-EFFECT — these assertions exercise the actual
+// dispatchable surfaces exported by the conductor. The registry is derived
+// from each BrainTool.effect declaration; there is no parallel name list.
+describe("brain-tool effect registry", () => {
+  it("registers every root/sub-agent tool and accepts every declared gate", () => {
+    const dispatchable = new Set(
+      [...ROOT_BRAIN_TOOLS, ...SUBAGENT_BRAIN_TOOLS].map((tool) => tool.name),
+    );
+
+    expect(new Set(registeredBrainToolNames())).toEqual(dispatchable);
+    expect(() =>
+      assertBrainToolGatesDeclared(ROOT_BRAIN_TOOLS, SUBAGENT_BRAIN_TOOLS),
+    ).not.toThrow();
   });
 
-  it("treats read-only / in-memory-ctx tools as NON side-effecting", () => {
-    // Pure reads — re-running on resume is free and harmless, no checkpoint needed:
-    for (const t of [
-      "read_ontology", "list_agents", "list_domains", "describe_domain",
-      "describe_object", "inspect_run", "read_spec", "diff_spec", "score_spec",
-      "review_agent", "review_context", "review_completeness", "web_search",
-      "fetch_doc", "search_tools", "inspect_action_readiness",
+  it("rejects an external stage-free effect without a reviewed reason", () => {
+    const undeclaredReason: BrainTool = {
+      name: "test_unreviewed_external_effect",
+      effect: {
+        sideEffect: "call",
+        scope: "external",
+        checkpoint: "immediate",
+        gate: "any",
+      },
+      description: "invalid test descriptor",
+      parameters: { type: "object", properties: {} },
+      async execute() {
+        return { ok: true, summary: "not executed" };
+      },
+    };
+
+    expect(() => assertBrainToolGatesDeclared([undeclaredReason])).toThrow(
+      /stageFreeReason/,
+    );
+  });
+
+  it("keeps declarations tied to each tool's real blast radius", () => {
+    expect(brainToolEffect("read_ontology")).toMatchObject({
+      sideEffect: "read",
+      scope: "external",
+      checkpoint: "turn",
+      gate: "read",
+      advancesStage: true,
+    });
+    expect(brainToolEffect("sandbox_run")).toMatchObject({
+      sideEffect: "call",
+      scope: "sandbox",
+      checkpoint: "immediate",
+      gate: "sandbox",
+      advancesStage: true,
+    });
+    expect(brainToolEffect("save_draft")).toMatchObject({
+      sideEffect: "write",
+      scope: "factory_durable",
+      checkpoint: "immediate",
+      gate: "any",
+    });
+    expect(brainToolEffect("revise_ontology")).toMatchObject({
+      sideEffect: "read",
+      scope: "none",
+      checkpoint: "turn",
+      gate: "any",
+    });
+    expect(brainToolEffect("spawn_subagent")).toMatchObject({
+      sideEffect: "call",
+      scope: "external",
+      checkpoint: "immediate",
+      gate: "any",
+    });
+    expect(brainToolEffect("delivery_bundle")).toMatchObject({
+      sideEffect: "read",
+      scope: "conversation",
+      checkpoint: "turn",
+      gate: "deliver",
+      advancesStage: true,
+    });
+  });
+
+  it("derives immediate checkpoints without classifying reads and turn-local work as effects", () => {
+    for (const name of [
+      "sandbox_run",
+      "finish",
+      "save_draft",
+      "run_regression",
+      "create_tool",
+      "create_skill",
+      "create_signed_fixture",
+      "confirm_integration_profile",
+      "generate_report",
+      "probe_tool",
+      "spawn_subagent",
+      "design_fleet",
     ]) {
-      expect(isSideEffectTool(t), `${t} should be read-only`).toBe(false);
+      expect(isSideEffectTool(name), `${name} needs an immediate checkpoint`).toBe(
+        true,
+      );
     }
-    // In-memory ctx builders — their product lands in ctx, which is already
-    // checkpointed per-turn; re-deriving is cheap and idempotent, so no per-tool save:
-    for (const t of ["create_plan", "critique_plan", "understand_ontology", "design_agent", "codegen_agent"]) {
-      expect(isSideEffectTool(t), `${t} is an in-memory ctx builder`).toBe(false);
+
+    for (const name of [
+      "read_ontology",
+      "list_agents",
+      "describe_object",
+      "read_spec",
+      "review_agent",
+      "create_plan",
+      "understand_ontology",
+      "design_agent",
+      "codegen_agent",
+      "revise_ontology",
+      "delivery_bundle",
+    ]) {
+      expect(isSideEffectTool(name), `${name} checkpoints at turn end`).toBe(
+        false,
+      );
     }
+
+    const immediate = sideEffectToolNames();
+    expect(immediate.has("save_draft")).toBe(true);
+    expect(immediate.has("delivery_bundle")).toBe(false);
   });
 
-  it("is false for unknown/open-vocabulary tool names (fail-open to no extra checkpoint)", () => {
-    expect(isSideEffectTool("some_new_tool_2027")).toBe(false);
-    expect(isSideEffectTool("")).toBe(false);
+  it("fails closed for unknown tool names", () => {
+    expect(isSideEffectTool("some_new_tool_2027")).toBe(true);
+    expect(isSideEffectTool("")).toBe(true);
+    expect(brainToolEffect("some_new_tool_2027")).toBeUndefined();
   });
 
-  it("SIDE_EFFECT_TOOLS is a non-empty frozen set", () => {
-    expect(SIDE_EFFECT_TOOLS.size).toBeGreaterThan(5);
-    expect(SIDE_EFFECT_TOOLS.has("sandbox_run")).toBe(true);
+  it("derives stage movement only from advancesStage declarations", () => {
+    const stages = stageAdvancingTools();
+    expect(stages.get("read_ontology")).toBe("read");
+    expect(stages.get("create_plan")).toBe("plan");
+    expect(stages.get("design_agent")).toBe("design");
+    expect(stages.get("sandbox_run")).toBe("sandbox");
+    expect(stages.get("finish")).toBe("deliver");
+    expect(stages.has("read_spec")).toBe(false);
+    expect(stages.has("search_tools")).toBe(false);
   });
 });

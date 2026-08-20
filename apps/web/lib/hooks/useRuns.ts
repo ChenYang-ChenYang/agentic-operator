@@ -37,6 +37,12 @@ export interface RunListFilter {
   status?: string;
   agent?: string;
   q?: string;
+  triggerEvent?: string;
+  invocationSource?: RunInvocationSource;
+  businessResult?: RunBusinessResult;
+  testRun?: boolean;
+  from?: number;
+  to?: number;
   limit?: number;
   /**
    * P3-FE-04 — only runs whose `parentRunId` matches this. Used by the
@@ -75,6 +81,14 @@ function buildQuery(filter: RunListFilter | undefined): string {
   if (filter.status) sp.set("status", filter.status);
   if (filter.agent) sp.set("agent", filter.agent);
   if (filter.q) sp.set("q", filter.q);
+  if (filter.triggerEvent) sp.set("triggerEvent", filter.triggerEvent);
+  if (filter.invocationSource)
+    sp.set("invocationSource", filter.invocationSource);
+  if (filter.businessResult) sp.set("businessResult", filter.businessResult);
+  if (filter.testRun !== undefined)
+    sp.set("testRun", filter.testRun ? "1" : "0");
+  if (filter.from !== undefined) sp.set("from", String(filter.from));
+  if (filter.to !== undefined) sp.set("to", String(filter.to));
   if (filter.limit) sp.set("limit", String(filter.limit));
   if (filter.parentRunId) sp.set("parentRunId", filter.parentRunId);
   const s = sp.toString();
@@ -84,6 +98,9 @@ function buildQuery(filter: RunListFilter | undefined): string {
 export interface RunListRow extends CodeActReceiptFields {
   id: string;
   status: string;
+  invocationSource?: RunInvocationSource;
+  businessResult?: RunBusinessResult;
+  outputValid?: boolean | null;
   agentName: string;
   agentTitle: string | null;
   subject: string | null;
@@ -142,6 +159,13 @@ export interface RunPageFilter {
   /** Single status, or "all"/undefined for no status filter. */
   status?: string;
   q?: string;
+  agent?: string;
+  triggerEvent?: string;
+  invocationSource?: RunInvocationSource;
+  businessResult?: RunBusinessResult;
+  testRun?: boolean;
+  from?: number;
+  to?: number;
   /** 1-indexed. */
   page: number;
   pageSize: number;
@@ -155,6 +179,13 @@ function buildPageQuery(f: RunPageFilter): string {
   sp.set("pageSize", String(f.pageSize));
   if (f.status && f.status !== "all") sp.set("status", f.status);
   if (f.q) sp.set("q", f.q);
+  if (f.agent) sp.set("agent", f.agent);
+  if (f.triggerEvent) sp.set("triggerEvent", f.triggerEvent);
+  if (f.invocationSource) sp.set("invocationSource", f.invocationSource);
+  if (f.businessResult) sp.set("businessResult", f.businessResult);
+  if (f.testRun !== undefined) sp.set("testRun", f.testRun ? "1" : "0");
+  if (f.from !== undefined) sp.set("from", String(f.from));
+  if (f.to !== undefined) sp.set("to", String(f.to));
   if (f.deleted) sp.set("deleted", "1");
   return `?${sp.toString()}`;
 }
@@ -235,6 +266,69 @@ export function useBulkDeleteRuns() {
   });
 }
 
+export type RunInvocationSource =
+  | "studio"
+  | "event"
+  | "api"
+  | "replay"
+  | "demo";
+
+export type RunBusinessResult =
+  | "pending"
+  | "produced"
+  | "completed"
+  | "no_output"
+  | "invalid"
+  | "failed";
+
+export type BulkRunAction = "delete" | "restore" | "purge" | "replay";
+
+export type BulkRunSelection =
+  | { mode: "ids"; ids: string[] }
+  | {
+      mode: "filter";
+      filter: {
+        status?: string;
+        agent?: string;
+        q?: string;
+        triggerEvent?: string;
+        invocationSource?: RunInvocationSource;
+        businessResult?: RunBusinessResult;
+        testRun?: boolean;
+        from?: number;
+        to?: number;
+        deleted?: boolean;
+      };
+      excludeIds: string[];
+    };
+
+export interface BulkRunActionResult {
+  action: BulkRunAction;
+  matched: number;
+  affected: number;
+  skipped: number;
+  replayedRunIds?: string[];
+  failures?: Array<{ runId: string; error: string }>;
+  note: string;
+}
+
+/** Arbitrary selected rows or all rows matching the current server filters. */
+export function useBulkRunAction() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (arg: { action: BulkRunAction; selection: BulkRunSelection }) =>
+      callV1<BulkRunActionResult>("/v1/runs/bulk-actions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(arg),
+      }),
+    onSettled: () => {
+      void client.invalidateQueries({ queryKey: RUN_KEYS.all });
+      void client.invalidateQueries({ queryKey: COUNT_KEYS.tenant });
+    },
+  });
+}
+
 // ─── AI run summary (W2) ──────────────────────────────────────────────────
 
 export interface RunSummary {
@@ -292,6 +386,8 @@ export interface StepRow extends CodeActReceiptFields {
   startedAt: string | null;
   endedAt: string | null;
   durationMs: number | null;
+  inputRef?: string | null;
+  outputRef?: string | null;
   error: string | null;
   provider: string | null;
   model: string | null;
@@ -380,6 +476,7 @@ export function useRunChain(
 export interface RunArtifact {
   id: string;
   kind: string;
+  stepId?: string | null;
   role?: string;
   logicalName?: string | null;
   contentType?: string | null;

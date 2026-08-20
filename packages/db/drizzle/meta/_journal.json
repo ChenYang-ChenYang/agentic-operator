@@ -439,8 +439,127 @@
     {
       "idx": 62,
       "version": "6",
-      "when": 1787164302873,
-      "tag": "0062_agent_execution_live_window",
+      "when": 1785945608000,
+      "tag": "0062_system_profiles",
+      "breakpoints": true
+    },
+    {
+      "idx": 63,
+      "version": "6",
+      "when": 1785945609000,
+      "tag": "0063_integration_dynamic_fields",
+      "breakpoints": true
+    },
+    {
+      "idx": 64,
+      "version": "6",
+      "when": 1785945610000,
+      "tag": "0064_run_monitoring_indexes",
+      "breakpoints": true
+    },
+    {
+      "idx": 65,
+      "version": "6",
+      "when": 1785945611000,
+      "tag": "0065_ontocode_conversational_workspace",
+      "breakpoints": true
+    },
+    {
+      "idx": 66,
+      "version": "6",
+      "when": 1785945612000,
+      "tag": "0066_ontocode_artifacts_changesets_evidence",
+      "breakpoints": true
+    },
+    {
+      "idx": 67,
+      "version": "6",
+      "when": 1785945613000,
+      "tag": "0067_ontocode_project_domain_identity",
+      "breakpoints": true
+    },
+    {
+      "idx": 68,
+      "version": "6",
+      "when": 1785945614000,
+      "tag": "0068_ontocode_configuration_tasks",
+      "breakpoints": true
+    },
+    {
+      "idx": 69,
+      "version": "6",
+      "when": 1785945616000,
+      "tag": "0069_ontocode_durable_assistant_runs",
+      "breakpoints": true
+    },
+    {
+      "idx": 70,
+      "version": "6",
+      "when": 1785945617000,
+      "tag": "0070_ontocode_candidate_packages",
+      "breakpoints": true
+    },
+    {
+      "idx": 71,
+      "version": "6",
+      "when": 1785945618000,
+      "tag": "0071_ontocode_candidate_cas_sandbox",
+      "breakpoints": true
+    },
+    {
+      "idx": 72,
+      "version": "6",
+      "when": 1785945619000,
+      "tag": "0072_business_ontology_domain_registry",
+      "breakpoints": true
+    },
+    {
+      "idx": 73,
+      "version": "6",
+      "when": 1785945620000,
+      "tag": "0073_runtime_profiles",
+      "breakpoints": true
+    },
+    {
+      "idx": 74,
+      "version": "6",
+      "when": 1785945621000,
+      "tag": "0074_ontocode_session_purges",
+      "breakpoints": true
+    },
+    {
+      "idx": 75,
+      "version": "6",
+      "when": 1786032021000,
+      "tag": "0075_factory_tool_revisions",
+      "breakpoints": true
+    },
+    {
+      "idx": 76,
+      "version": "6",
+      "when": 1786118421000,
+      "tag": "0076_ontocode_ontology_comprehension",
+      "breakpoints": true
+    },
+    {
+      "idx": 77,
+      "version": "6",
+      "when": 1786204821000,
+      "tag": "0077_llm_call_difficulty_preference",
+      "breakpoints": true
+    },
+    {
+      "idx": 78,
+      "version": "6",
+      "when": 1786291221000,
+      "tag": "0078_ontocode_build_executions",
+      "breakpoints": true
+    },
+    {
+      "idx": 79,
+      "version": "6",
+      "when": 1786377621000,
+      "tag": "0079_agent_execution_live_window",
       "breakpoints": true
     }
   ]

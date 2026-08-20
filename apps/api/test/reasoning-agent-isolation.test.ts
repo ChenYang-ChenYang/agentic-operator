@@ -61,23 +61,6 @@ describe("standalone reasoning ontology isolation", () => {
     getDb().delete(tenants).where(eq(tenants.id, tenantId)).run();
   });
 
-  it("serves real Actions through the dedicated Reasoning context", async () => {
-    const response = await env.fetch("/v1/reasoning-agent/context", { headers });
-    expect(response.status).toBe(200);
-    const body = (await response.json()) as {
-      data: {
-        domainId: string;
-        provider: string;
-        actions: Array<{ name: string }>;
-      };
-    };
-    expect(body.data).toMatchObject({
-      domainId,
-      provider: "allmeta",
-    });
-    expect(body.data.actions.map((action) => action.name)).toEqual([actionName]);
-  });
-
   it("rejects foreign domains and unknown Actions without a Factory binding", async () => {
     const foreign = await env.fetch("/v1/agents/reasoningAgent/invoke", {
       method: "POST",

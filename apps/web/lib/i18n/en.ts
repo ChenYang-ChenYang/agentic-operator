@@ -53,8 +53,6 @@ export const en = {
     group: { run: "Run", observe: "Observe", manage: "Manage" },
     dashboard: "Dashboard",
     workflows: "Workflows",
-    reasoningAgent: "Reasoning Agent",
-    "reasoning-agent": "Reasoning Agent",
     agents: "Agents",
     runs: "Runs",
     events: "Events",
@@ -63,437 +61,480 @@ export const en = {
     reasoning: "AI insights",
     deployments: "Deployments",
     tools: "Agentic Tools",
-    tenants: "Domains",
+    tenants: "Business Domains",
     access: "Access & roles",
     settings: "Settings",
     factory: "Agent Factory",
     ontocode: "OntoCode",
+    "ontocode-workspace": "OntoCode",
     toolLibrary: "Tool Library",
     systemCheck: "System check",
+    configure: "Configure",
   },
-  reasoningAgent: {
-    examples: {
-      tencentIeg: {
-        label: "Tencent · IEG",
+  ontocode: {
+    hub: {
+      eyebrow: "Ontology-native Agent Engineering",
+      title: "Build Sessions",
+      description:
+        "Each Session pins one exact registered Ontology Domain under the current Business Domain for an independent FDE + AI delivery flow.",
+      create: "Create Build Session",
+      closeCreate: "Close",
+      currentContext: "Current build context",
+      tenant: "Business Domain",
+      ontology: "Selected Ontology Domain",
+      sessions: "Sessions",
+      noOntology: "Ontology not connected",
+      actionsCount: "{count} Agent-owned Actions",
+      sessionsCount: "{count} persisted Sessions",
+      sourceAllmeta: "Allmeta live source",
+      sourceUpload: "Uploaded snapshot",
+      sourceUnknown: "Source not declared",
+      details: "Connection details",
+      manageDomain: "Manage Ontology Domains",
+      manageDomainDetail:
+        "Register and maintain them under the current Business Domain",
+      manageRegisteredDomains:
+        "Manage Ontology Domains in this Business Domain",
+      domainPolicy:
+        "A Session cannot free-type a Domain. Define it in Allmeta or an approved uploaded Ontology first, then register it under the current Business Domain.",
+      domainBinding: {
+        title: "Register an Allmeta Domain in this Business Domain",
+        description:
+          "Choose an exact identity from the live catalog. One Business Domain can register multiple Domains; both remain separate persisted records.",
+        catalogLabel: "Published Allmeta Domains",
+        emptyCatalog: "No published Allmeta Domains found",
+        catalogError: "The live Allmeta catalog is unavailable: {reason}",
+        changeWarning:
+          "This will replace the persisted binding from {current} to {next}. Historical Sessions stay auditable under their original Ontology.",
+        sourceChangeWarning:
+          "This will switch {domain} from an uploaded snapshot to the live Allmeta source. The Domain ID stays unchanged; historical Sessions remain pinned to their original snapshot.",
+        bind: "Bind selected Domain",
+        binding: "Binding…",
+        current: "Currently bound",
+        refresh: "Refresh catalog",
+        refreshing: "Refreshing…",
+        success: "The persisted Domain binding is updated.",
+        failed: "The Domain binding could not be updated.",
+        refreshFailed: "The Allmeta Domain catalog could not be refreshed.",
+        openSessionBlocked:
+          "This Ontology Domain association cannot be archived while related Sessions or Harness jobs remain active. Complete or retire them, then try again.",
+        publishPolicy:
+          "Need a new Domain? Create and publish it in Allmeta first, then refresh this catalog. OntoCode never invents or free-types a Domain identity.",
+        uploadPath: "Manage the separate uploaded Ontology path",
       },
-      bytedanceEcommerce: {
-        label: "ByteDance · Douyin E-commerce",
+      readiness: "Creation readiness",
+      readinessItem: {
+        binding: "Ontology binding",
+        gateway: "LLM Gateway",
+        harness: "Harness",
+        loading: "Loading",
+        notConnected: "Not connected",
+        configured: "Configured",
+        notConfigured: "Not configured",
+        verifiedInSession: "Verified inside each Session",
+        configure: "Configure",
+        inspect: "Inspect",
       },
+      metric: {
+        active: "Active",
+        needsAction: "Needs FDE action",
+        review: "Awaiting review",
+        released: "Released",
+      },
+      metricDetail: {
+        active: "Current Ontology Project · {count} total",
+        needsAction: "From persisted Session state",
+        review: "Candidate version and evidence need review",
+        released: "Released Sessions in the current list",
+      },
+      createHeading: "Start a new FDE + OntoCode collaboration",
+      createSubheading:
+        "The Business Domain is fixed. Choose one registered Ontology Domain, then describe what this Session should deliver.",
+      blockers: "{count} prerequisite(s) remain",
+      tenantFixed: "Business Domain · fixed",
+      businessDomainFixed: "Business Domain · fixed",
+      ontologyFixed: "Ontology Domain",
+      chooseOntologyDomain: "Choose Ontology Domain",
+      defaultDomain: "default",
+      sessionIndependent: "New Session · independent",
+      independentDetail: "Own goal, history, code, tests, and evidence",
+      intentLabel: "What should the Agent accomplish?",
+      intentPlaceholder:
+        "Describe the business trigger, expected outcome, integration boundary, and success criteria. OntoCode will first analyze Scope.",
+      autonomy: {
+        legend: "Execution mode",
+        autonomous: {
+          title: "Autonomous",
+          description:
+            "Advances analysis, Blueprint, Build, and sandbox iteration automatically. Irreversible external actions and production still require approval.",
+        },
+        confirm: {
+          title: "Confirm each step",
+          description:
+            "Read-only analysis runs automatically; every artifact change or sandbox step waits for your confirmation.",
+        },
+        analysis: {
+          title: "Analysis only",
+          description:
+            "Allows reads, explanations, scope analysis, and candidate comparison only. It never changes artifacts or runs a sandbox.",
+        },
+        productionGate:
+          "Execution mode can only tighten low-risk progress. No mode can bypass production or irreversible-action gates.",
+      },
+      advanced: "Advanced scope and naming",
+      scopeLegend: "Generation scope",
+      scope: {
+        full: {
+          title: "Whole domain",
+          description:
+            "Let OntoCode propose Agent boundaries across all authoritative Agent Actions.",
+        },
+        scenario: {
+          title: "Business scenario",
+          description:
+            "Start from one end-to-end scenario and resolve only Ontology-backed capabilities.",
+        },
+        actions: {
+          title: "Selected Actions",
+          description:
+            "Generate and validate Packages only for explicitly selected Agent Actions.",
+        },
+      },
+      selectedActions: "{selected} / {total} selected",
+      noActions: "The bound Ontology returned no selectable Agent Actions.",
+      sessionName: "Session name",
+      validation: {
+        action: "Select at least one Action from the current Ontology.",
+        title: "Enter a recognizable Session name.",
+        scenario: "Describe the real business scenario for this Session.",
+        goal: "Confirm the delivery goal for this Session.",
+        createFailed:
+          "Could not create the Build Session. Check the service state and try again.",
+      },
+      connectOntology: "Connect Ontology",
+      configureGateway: "Configure LLM Gateway",
+      configureRuntimeProfile: "Configure Runtime Profile",
+      runtimeBlocked: "runtime adapter blocked",
+      unavailable: "Unavailable",
+      notConnected: "Not connected",
+      createHelpTitle:
+        "Creation starts with Scope; it never deploys production.",
+      createHelpDetail:
+        "Pin snapshot → analyze gaps → propose Blueprint → generate → validate",
+      createSubmit: "Create and enter chat",
+      creating: "Creating…",
+      searchPlaceholder: "Search Sessions, domains, or goals",
+      searchAria: "Search Build Sessions",
+      filterAria: "Filter Sessions by status",
+      overviewAria: "Build Session overview",
+      filter: {
+        all: "All",
+        running: "Running",
+        needsAction: "Needs action",
+        ready: "Review",
+        released: "Released",
+      },
+      open: "Open",
+      emptyTitle: "No Build Session exists for this Ontology yet",
+      emptyDetail:
+        "Create one Session and describe the Agent outcome. No mock Session will be generated.",
+      blockedEmptyTitle:
+        "This Business Domain cannot create a Build Session yet",
+      blockedEmptyDetail:
+        "Register a real Ontology Domain and configure the LLM Gateway first. OntoCode never substitutes a mock Session.",
+      inspectReadiness: "Inspect readiness",
     },
-    auditView: {
-      legacyReplayNote:
-        "This run has no first-turn LLM fact receipt; this item is deterministically replayed from the raw input.",
-      factLabel: {
-        candidate: "Candidate",
-        nationality: "Nationality",
-        targetClient: "Target client",
-        targetDepartment: "Target department",
-        targetStudio: "Target studio",
-        targetRole: "Target role",
-        employmentHistory: "Employment #{index}",
-        endDate: "End date #{index}",
-      },
-      relevance: {
-        clientScope: "Determines the client-wide rule scope.",
-        departmentScope: "Determines the client department rule scope.",
-      },
-      matchReason: {
-        scopedTo: "Scope link",
-        governs: "Explicit process link",
-        appliesTo: "Object link",
-        relevantTo: "Reviewed semantic link",
-        actionLink: "Action semantic link",
-        csiUniversal: "CSI universal scope",
-        departmentMatch: "Target department match",
-        clientMatch: "Target client match",
-        objectMatch: "Business object match",
-        keyword: "Semantic keyword · {keyword}",
-      },
-      depthLimited: "[depth limited]",
-      redactedFromPublicAudit: "[redacted from public audit]",
+    configurationTask: {
+      loadingTitle: "Loading the configuration task",
+      loadingDetail:
+        "OntoCode is resolving the server-owned target and original Session.",
+      loadFailedTitle: "Configuration task unavailable",
+      loadFailedDetail:
+        "The task could not be loaded or did not match this route. No provider was inferred from the URL.",
+      redirectTitle: "Opening the required integration",
+      redirectDetail:
+        "The task resolved provider {provider}. Opening its real configuration form…",
+      returnSession: "Return to the OntoCode Session",
+      unsupportedTitle: "Configuration target is incomplete",
+      unsupportedDetail:
+        "The task has neither a server-resolved provider nor a system identity. OntoCode will not guess a target.",
+      title: "Resolve configuration task",
+      subtitle:
+        "{system} has no authorized provider/profile contract yet. Create the real platform declarations here.",
+      contextTitle: "Task context",
+      taskId: "Task",
+      system: "System",
+      status: "Status",
+      ontology: "Ontology snapshot",
+      missingProviderDetail:
+        "{system} is referenced by the Ontology, but no provider is available to open in Integration Settings. Create a reviewed System Profile and, when required, an executable Tool from the real API contract.",
+      contractTitle: "API contract workbench",
+      contractSubtitle: "Draft first, review the JSON, then explicitly save",
+      openToolLibrary: "Open Tool Library",
+      builderAria: "Choose a contract artifact to create",
+      profileBuilder: "System Profile",
+      toolBuilder: "Tool contract draft",
+      contractText: "API / event / data contract",
+      contractTextPlaceholder:
+        "Paste the real API documentation, OpenAPI excerpt, event contract, or data contract…",
+      contractUrl: "Public documentation URL (optional)",
+      toolIntentLabel: "Tool intent",
+      toolIntent:
+        "Create the minimal authorized tool needed to access {system}; preserve exact request/response contracts and side-effect boundaries.",
+      secretWarning:
+        "Do not paste credentials or private tokens. Credentials belong in Integration Settings.",
+      working: "Working…",
+      draftProfile: "Draft System Profile",
+      draftTool: "Draft Tool",
+      reviewDraft: "Review generated draft",
+      reviewDraftDetail:
+        "Confirmation saves only a controlled revision draft; it cannot run before a real probe and human activation",
+      confirmSave: "Confirm and save controlled draft",
+      invalidJson: "The reviewed draft is not valid JSON.",
+      operationFailed: "The contract operation failed.",
+      profileSaved:
+        "The System Profile was saved. Return to OntoCode to verify the task and continue.",
+      toolSaved:
+        "The controlled tool draft was saved. It is not executable yet.",
+      returnToVerify: "Return, verify, and continue",
+      toolProfileTitle: "Configure Tool Profile",
+      toolProfileSubtitle:
+        "Create the exact {environment} configuration for {tool}, then immediately rerun authoritative verification.",
+      profileEnvOnly:
+        "Enter only non-secret configuration and environment-variable names here. Never paste API keys, tokens, or password values.",
+      profileConfigTitle: "Profile configuration JSON",
+      profileConfigSubtitle:
+        "Fields come from the Factory's current Tool contract. The server revalidates schema, scope, and environment references on save.",
+      profileConfigObject: "The Profile configuration must be a JSON object.",
+      saveProfileAndVerify: "Save Profile and verify",
+      toolProfileSaved: "The Tool Profile was saved and verified.",
+      toolProfileIncomplete:
+        "The Tool Profile was saved, but environment variables or probe evidence are still missing. The task remains open.",
     },
-    runProjection: {
-      agent: {
-        reasoning: {
-          label: "Intent Reasoner",
-          detailReady:
-            "Public Harness, semantic anchors, and evidence structure generated.",
-          detailWorking:
-            "Parsing intent and designing the dynamic Reasoning Harness…",
-        },
-        query: {
-          label: "Rule Selector / QueryAgent",
-          detailOk:
-            "Allmeta Link-only Cypher and semantic-path receipts complete.",
-          detailStatus: "Allmeta rule selection: {status}",
-          detailWaiting: "Waiting for Harness anchors…",
-        },
-        compiler: {
-          label: "Prompt Compiler",
-          detailOk: "QualifiedAgent prompt compiled.",
-          detailStatus: "Prompt compile: {status}",
-          detailUpstreamFailed:
-            "Upstream run failed; Prompt Compiler did not execute.",
-          detailWaiting: "Waiting for RuleBundle…",
-        },
-        qualified: {
-          label: "QualifiedAgent",
-          detailDone:
-            "Independent child run {runId} finished per-rule quality checks.",
-          detailStatus: "Independent child run {runId}: {status}",
-          detailUpstreamFailed:
-            "Upstream run failed; QualifiedAgent produced no verdict.",
-          detailWaiting: "Waiting for the compiled rule-verdict harness…",
-        },
-        fold: {
-          label: "Deterministic Fold",
-          detailFailed: "Run failed; no clearance verdict was produced.",
-          detailWaiting: "Waiting for QualifiedAgent output…",
-        },
+    workspace: {
+      sessionHub: "Session Hub",
+      context: "Context",
+      contextTenant: "Business Domain",
+      contextDomain: "Ontology Domain",
+      sourceAllmeta: "Allmeta live",
+      sourceUpload: "Business Domain upload",
+      sourceHistorical: "Historical binding (read-only)",
+      sourceUnknown: "Source unverified",
+      contextProject: "Project",
+      contextOntology: "Ontology snapshot",
+      contextChangeSet: "Change Set",
+      contextEnvironment: "Environment",
+      contextAutonomy: "Autonomy policy",
+      retireTitle: "End this Session",
+      retireDetail:
+        "Retire unfinished work while preserving every message, command, artifact, and evidence record.",
+      retireAction: "Retire Session",
+      retireConfirmTitle: "Confirm Session retirement",
+      retireConfirmDetail:
+        "Only an idle Session can be retired. This releases the Domain binding guard, and the Session becomes immutable historical evidence.",
+      retireCancel: "Keep Session",
+      retireConfirm: "Retire unfinished Session",
+      retiring: "Retiring…",
+      retireFailed:
+        "The Session could not be retired. Resolve its active Harness work or configuration task first.",
+      buildJourney: "Build journey",
+      stage: {
+        understand: "Understand",
+        build: "Build",
+        validate: "Validate & release",
       },
-      stepName: {
-        qualifiedJsonRepair: "QualifiedAgent · JSON Repair",
-        qualifiedPerRuleVerdict: "QualifiedAgent · Per-rule Verdict",
-        qualifiedGeneric: "QualifiedAgent · {name}",
-        ruleSelector: "Rule Selector / QueryAgent",
-        promptCompiler: "Prompt Compiler",
-        ontologySearch: "Ontology Search",
-        ontologyDetail: "Ontology Detail",
-        orchestratorJsonRepair: "Reasoning Orchestrator · JSON Repair",
-        orchestratorChildHandoff:
-          "Reasoning Orchestrator · Child Handoff Confirmation",
-        intentReasonerPlanning: "Intent Reasoner · Planning & Tool Selection",
-        orchestratorToolReceipt:
-          "Reasoning Orchestrator · Tool Receipt Processing",
-      },
-    },
-    auditProjection: {
-      legacyHashUnverified: "legacy / hash unverified",
-    },
-    page: {
-      meta: {
-        client: "Client",
-        clientSource: "Client source",
-        department: "Department",
-        departmentSource: "Department source",
-        objects: "Objects",
-        keywords: "Keywords",
-        status: "Status",
-        model: "Model",
-        tokens: "Tokens",
-        duration: "Duration",
-        steps: "Steps",
-        childRun: "Child run",
-        childStep: "Child step {ordinal}.",
-        promptReceipt: "Prompt receipt",
-        providerModel: "Provider / model",
-        capabilities: "Capabilities",
-        fingerprint: "Fingerprint",
-        pathPattern: "Path pattern",
-        signal: "Signal",
-        matchedAnchors: "Matched anchors",
-        confidence: "Confidence",
-        scenario: "Scenario",
-        harnessMethods: "Harness methods",
-        promptSource: "Prompt source",
-        promptCharacters: "Prompt characters",
-        compilerChild: "Compiler ↔ child",
-        compiledChildMessages: "Compiled ↔ child messages",
-        durationAssessments: "Duration / assessments",
+      phase: {
+        scope: "Scope",
+        blueprint: "Blueprint",
+        build: "Build",
+        tests: "Tests",
+        debug: "Debug",
+        review: "Review",
+        release: "Release",
       },
       status: {
         completed: "Completed",
-        warning: "Warning",
-        blocked: "Blocked",
+        observing: "Observing",
+        needsAction: "Needs action",
+        review: "Awaiting review",
         running: "Running",
-        waiting: "Waiting",
+        paused: "Paused",
+        ready: "Ready",
+      },
+      job: {
+        scope: "Analyze Ontology scope",
+        blueprint: "Compile Agent blueprint",
+        build: "Generate Agent package",
+        simulation: "Run simulation",
+        test: "Execute package tests",
+        debug: "Diagnose and patch",
+        regression: "Compare regression baseline",
+        promotion: "Prepare release candidate",
+        deploy: "Prepare deployment",
+        productionAnalysis: "Analyze production evidence",
+      },
+      testSummary: {
+        blocked: "Build blocked; FDE repair required",
+        decision: "Waiting for an FDE decision",
+        configuration: "Waiting for external configuration",
+        review: "Waiting for FDE review",
+        evidence: "Waiting for Harness evidence",
+      },
+      you: "You",
+      nowLabel: "Now",
+      now: "Now",
+      next: "Next",
+      completed: "Complete",
+      fullFlow: "Full flow",
+      aiCopilot: "AI copilot",
+      chatTitle: "Tell OntoCode what to do",
+      viewResults: "View results",
+      newSession: "New Session",
+      earlierMessages: "Show {count} earlier messages",
+      composerPlaceholder:
+        "Describe what you want OntoCode to do in {phase}, or ask it to open results…",
+      sending: "Sending",
+      send: "Send",
+      recommended: "Recommended",
+      openEvidence: "Open evidence",
+      executionDetails: "Execution details",
+      chatControlHint:
+        "You can also say “open test results”, “show changes”, “expand execution details”, or “return to chat”.",
+      currentResult: "Current result",
+      artifactTitle: "Live Artifact Workspace",
+      artifactSubtitle: "Projected from persisted Harness facts",
+      artifactNotFound:
+        "Artifact {id} is not part of this Session, so the workspace did not guess a replacement.",
+      backToChat: "Back to chat",
+      focusWorkspace: "Focus workspace",
+      harnessTitle: "Harness execution",
+      collapse: "Collapse",
+      expand: "Expand",
+      noHarnessJobs:
+        "No Harness jobs yet. Send an execution request to see durable steps here.",
+      testBlocker:
+        "Finish Build and generate a testable Agent code candidate first.",
+      readOnlyTitle: "Session read-only protection",
+      readOnlyBack:
+        "Return to the Hub and create a Session for the current Ontology",
+      chatAria: "OntoCode conversational workspace",
+      removeContext: "Remove context",
+      sendAria: "Send a message to OntoCode",
+      guidance: {
+        reason: "Reason",
+        impact: "Impact",
+        next: "AI next step",
+      },
+      emptyArtifactTitle: "No persisted artifacts yet",
+      emptyArtifactDetail:
+        "Artifact versions will appear after they are persisted through the Session event stream.",
+      phaseEmptyDetail:
+        "This Session has no persisted summary for this stage yet. Continue in chat and ask OntoCode to plan or execute the next step.",
+      linkedArtifacts: "{count} linked artifacts",
+      waitingEvidence: "Waiting for Harness evidence",
+      empty: {
+        changeSetTitle: "No Change Set yet",
+        changeSetDetail:
+          "Operations and status will appear after OntoCode creates or loads a Change Set.",
+        changeSetRows: "The Change Set has no operations.",
+        testsTitle: "No test evidence yet",
+        testsBlockedTitle: "Tests cannot run yet",
+        testsDetail:
+          "Ask OntoCode to generate and run tests; suite results and coverage will appear here.",
+        evidenceTitle: "No evidence records yet",
+        evidenceDetail:
+          "Immutable Evidence records will appear after Harness verification completes.",
+      },
+      runTests: "Run tests",
+      inspector: {
+        select:
+          "Select an Artifact version to inspect its source, contract, and evidence.",
+        blocked: "Blocked",
+        source: "Source",
+        contract: "Tool dependency / contract",
+        tests: "Test evidence",
+        conversation: "From the current conversation",
+        readOnly:
+          "Read-only · describe changes in chat and let Harness create a new version",
+        loading: "Loading persisted version {version}…",
+        loadFailed: "Unable to load this immutable version",
+        retry: "Retry",
+        readerUnavailable:
+          "The content reader is not connected; version metadata still comes from the persisted Artifact.",
+        noVersion: "This node has no readable persisted Artifact version.",
+      },
+      loadingSession: "Loading Build Session…",
+      loadSessionFailed: "Unable to load this Build Session",
+      loadSessionFailedDetail:
+        "The service could not confirm this Session's state. Return to the current Business Domain's Session center and try again.",
+      sessionUnavailableTitle:
+        "This Session is unavailable in the current Business Domain",
+      sessionUnavailableDetail:
+        "It is outside the current Business Domain's accessible scope or no longer exists. OntoCode does not search for or display Sessions across Business Domains.",
+      currentBusinessDomain: "Current Business Domain",
+      returnBusinessDomainSessions:
+        "Return to this Business Domain's Session center",
+      turnFailed:
+        "This message did not form a complete Turn, so no partial Command or Job was created. Check the API, Session revision, or permission and try again.",
+      noAssistantResponse:
+        "OntoCode returned no verifiable message or directive, so this request was treated as failed.",
+      unknownError: "Unknown service error",
+      messageFailed: "Not completed",
+      retryTurn: "Retry this request",
+      retryTurnHint:
+        "Retry reuses the original input without adding a duplicate user message.",
+      thinkingTitle: "OntoCode is thinking",
+      thinkingDetail:
+        "Waiting for the server to complete real planning and persist the Turn. Recommendations or results appear only after it returns.",
+      thinkingTruth:
+        "No Command, Job, or Artifact has been marked complete by this request yet.",
+      actionRunning: "Processing this action",
+      actionFailed: "Action not completed",
+      actionFailedDetail:
+        "The server did not complete this action. Review the error and retry.",
+      retryAction: "Retry action",
+      harnessActivityTitle: "Current Harness activity",
+      harnessActivityCount:
+        "{count} unfinished steps; statuses come from Session Jobs.",
+      harnessStatus: {
+        complete: "Complete",
+        running: "Running",
+        blocked: "Blocked",
         queued: "Queued",
-        ok: "Succeeded",
-        failed: "Failed",
-        cancelled: "Cancelled",
-        active: "Active",
-        satisfied: "Satisfied",
-        violated: "Violated",
-        optionalUnmet: "Optional condition unmet",
-        notApplicable: "Not applicable",
-        insufficientEvidence: "Insufficient evidence",
       },
-      format: {
-        tokenIo: "{input} in / {output} out",
-        promptCharacters: "{system} system / {user} user",
+      controlPlane: {
+        error:
+          "The control-plane API is unavailable. Check migrations and the API service.",
+        loading: "Loading persisted Build Sessions…",
+        connected:
+          "Control plane connected · {count} current-Ontology Sessions",
+        historical: " · {count} historical Binding Sessions isolated",
       },
-      rawStatusTitle: "Raw audit status: {status}",
-      legacyReplay: "legacy replay",
-      scopeSource: {
-        jobRequisition: "Job Requisition",
-        jd: "JD",
-        explicitFallback: "Explicit fallback",
-        genericInputsFallback: "Generic Inputs fallback",
-        missing: "Missing",
-        unknown: "Legacy run / not recorded",
+      tab: {
+        map: "Map",
+        changes: "Changes",
+        tests: "Tests",
+        evidence: "Evidence",
       },
-      runEndedWith: "run ended with {status}",
-      jsonObjectRequired: "JSON object required",
-      noDurableRunId: "Reasoning runtime did not return a durable runId",
-      readOnly: "read-only",
-      rulesCount: "{count} rules",
-      actionInline: "Action",
-      unknownError: "unknown error",
-      rulesTab: "Rules",
-      logTab: "Log",
-      readOnlyOntology: "read-only ontology",
-      charsJson: "{count} chars · JSON",
-      runAuditReadFailed: "Failed to read the run audit: {detail}",
-      viewDynamicAgentGraph: "View the dynamic agent execution graph",
-      scope: {
-        csiUniversal: "CSI universal",
-        clientGeneral: "Client general",
-        clientDepartment: "Client department",
+      prompt: {
+        scope:
+          "Analyze the current Ontology scope and propose a clear Agent boundary",
+        blueprint:
+          "Generate an auditable Agent blueprint from the approved scope",
+        build:
+          "Generate real Agent code from the blueprint and create a candidate package",
+        tests:
+          "Generate and run tests against the current Agent code candidate",
+        debug: "Analyze the failure evidence and create the smallest safe fix",
+        review:
+          "Compare the candidate with the release baseline and run regression checks",
+        release: "Summarize changes, tests, evidence, and release-gate risks",
+        deploy:
+          "Deploy the current candidate to production Agentic Operator; first create a production deployment Command that requires FDE approval",
+        openEvidence: "Open the latest evidence in the right workspace",
+        expandHarness: "Expand Harness execution details",
       },
-      generatingBoundedQueryIr:
-        "Generating a bounded Query IR and auditable selection basis…",
-      card: {
-        auditableReasoning: "Auditable reasoning this round",
-        durableRun: "Durable Run",
-        qualifiedAgentChildRun: "QualifiedAgent Child Run",
-        instanceInputEvidence: "Instance input / Evidence",
-        intentReasoner: "Intent Reasoner",
-        qualifiedAgentQualityCheck: "QualifiedAgent Quality Check",
-        deterministicFold: "Deterministic Fold",
-        auditTimeline: "Audit timeline",
-        realStepsTerminated: "Real execution steps (run terminated)",
-        realSteps: "Real execution steps",
-        realStepsWriting: "Real steps are being written",
-        evidenceAnalysis: "Fact extraction / Evidence Analysis",
-        dynamicReasoningHarness: "Dynamic Reasoning Harness",
-        ruleSelectorQueryAgent: "Rule Selector / QueryAgent",
-        generatedCypherQueryAgent: "Generated Cypher / QueryAgent",
-        ruleBundleSelected: "RuleBundle · selected rules and fact linkage",
-        promptCompiler: "Prompt Compiler",
-        fullPublicAuditLog: "Full public audit log",
-      },
-      legacyResultSchema:
-        "Legacy result schema ({version}): compatibility replay only; it does not assert v2 child receipts, prompt hash, Link-only, or the dual-query guarantee.",
-      unversioned: "unversioned",
-      showsIntentSummary:
-        "Shows the intent summary, selection strategy, tool parameters, and evidence basis; it does not show the model's private hidden chain of thought.",
-      canonicalCapabilityBoundary: "canonical capability boundary",
-      semanticLinksOnly: "semantic links only",
-      linkContractUnverified: "legacy / link contract unverified",
-      scopeConflictIsolated: "Scope conflicts isolated",
-      scopeConflictDetail:
-        "{field}: using {selectedValue} ({selectedSource}), ignoring {ignoredValue} ({ignoredSource})",
-      awaitingProvider: "Waiting for provider…",
-      inProgress: "Running",
-      instanceInputBody:
-        "Candidate, Resume, Job Requisition, JD, and the generic Inputs are the single source of truth for this round.",
-      viewFullInstanceJson: "View the full instance data JSON",
-      strategyPrefix: "strategy",
-      intentReasonerBody:
-        "This shows the verifiable intent summary and strategy choice, not the model's private hidden chain of thought.",
-      legacyNoChildRun:
-        "This is a legacy run and did not record a separate QualifiedAgent child run; new runs display the full parent-child receipts.",
-      metric: {
-        checked: "checked",
-        satisfied: "satisfied",
-        violated: "violated",
-        optionalFlags: "optional flags",
-        mandatoryPending: "mandatory pending",
-        notApplicable: "not applicable",
-        selectionRows: "selection rows",
-        totalDuration: "total duration",
-        maxHops: "max hops",
-        allmetaScanned: "Allmeta scanned",
-        semanticMatched: "semantic matched",
-        selected: "selected",
-      },
-      optionalFlagsLabel: "Optional flags",
-      missingEvidenceLabel: "Missing evidence",
-      llmPathRuntimeValues: "LLM-submitted path · runtime values",
-      legacyInputDeterministicReplay: "Legacy run · deterministic input replay",
-      verifiedCount: "{count} verified",
-      unverifiedCount: "{count} unverified",
-      evidenceAnalysisBody:
-        "This shows the fact paths the model selected and the real values the system parsed from the raw JSON. Target-job facts are used to narrow the scope; candidate and resume facts are used only for per-rule assessment and never prune rules ahead of time.",
-      legacyEvidenceReplayNote:
-        "This legacy run predates structured fact receipts; the content below is replayed from persisted input and does not impersonate the model's hidden thinking at the time. Re-run to get the LLM path + runtime verification.",
-      forRuleScope: "For rule scope",
-      forPerRuleAssessment: "For per-rule assessment",
-      awaitingIntentReasonerFacts:
-        "Waiting for the Intent Reasoner to write fact paths…",
-      viewTemporalFacts: "View {count} deterministic temporal facts",
-      temporalFactDetail:
-        "{value} · {relation} · {days} days · {months} complete months",
-      harnessLegacyNote:
-        "This legacy run has no persisted Harness receipt. Re-run to see the model's chosen methods, semantic anchors, evidence anchors, and stop conditions.",
-      harnessBody:
-        "This is the reasoning plan the model publicly submitted and the runtime verified; it shows auditable methods and boundaries, not the private chain of thought.",
-      evidenceAnchorsGroups: "{count} evidence anchors",
-      stopConditions: "Stop conditions",
-      cypherLegacyNote:
-        "This legacy run only recorded {source}, and did not save the actually executed Cypher. Re-run to see the full query, parameters, fingerprint, path pattern, and row count.",
-      templateId: "template {id}",
-      legacySelectionReceipt: "a legacy selection receipt",
-      queryIrReplay: "Query IR replay",
-      cypherLegacyV1Note:
-        "Legacy v1 query receipts: the original replay is preserved, but they do not assert the v2 Link-only dual-query contract.",
-      domainLocked: "domain-locked",
-      linkOnly: "link-only",
-      linkContractUnverifiedShort: "link contract unverified",
-      fallbackFalse: "fallback=false",
-      fallbackUnverified: "fallback unverified",
-      queryReceiptsCount: "{count} query receipts",
-      rowsCount: "{count} rows",
-      executedCypher: "Executed Cypher",
-      boundParameters: "Bound parameters",
-      viewQueryIrDiagnostics: "View Query IR and Allmeta diagnostics",
-      queryIr: "Query IR",
-      allmetaDiagnostics: "Allmeta diagnostics",
-      noDiagnostics: "no diagnostics",
-      executionPurpose: {
-        mandatoryLinkCoverage: "Mandatory Link Coverage",
-        semanticRuleSelection: "Semantic Rule Selection",
-      },
-      verified: "verified",
-      unverified: "unverified",
-      unparsed: "Not parsed",
-      rulePoolBody:
-        'Rules enter the rule pool through the SCOPED_TO, GOVERNS, APPLIES_TO, and RELEVANT_TO triples; the canonical Action must form a capability semantic gate via GOVERNS/RELEVANT_TO. The "fact linkage" below is the QualifiedAgent\'s verification route, and is not equivalent to pass or violate.',
-      scoreLabel: "score {score}",
-      linkTriplesCount: "{count} link triples",
-      whyEnteredRuleBundle: "Why it entered the RuleBundle",
-      allmetaSemanticLinkMatch: "Allmeta semantic Link path match",
-      llmFactLinkage: "LLM fact linkage",
-      noDirectFactSignal: "No direct fact signal",
-      noStructuredFactRoute:
-        "No structured fact → rule route yet; see the QualifiedAgent assessment card for the final cited evidence.",
-      noSemanticLinkReceipt:
-        "This legacy rule has no semantic Link receipt; new runs will not accept this result.",
-      semanticLinkPaths: "Semantic Link Paths",
-      linkEvidenceCount: "{count} link evidence",
-      perRuleAssessmentEvidence: "Per-rule assessment and evidence",
-      noDirectEvidencePath: "No direct evidence path referenced",
-      lockedScenarioAction:
-        "Locked the {scenario} scenario and the {action} Action.",
-      toolAuditableSelectionSummary:
-        "This is the auditable selection summary of the tool call; it does not show the model's private hidden chain of thought.",
-      receiptMismatch: "receipt mismatch",
-      receiptVerified: "receipt verified",
-      awaitingChild: "awaiting child",
-      legacyUnverified: "legacy / unverified",
-      unknownCompiler: "unknown compiler",
-      promptSourceReasoningResult: "reasoning-result compiledPrompt",
-      promptSourceVerifiedChild: "verified QualifiedAgent child input",
-      promptSourceCompactReceipt: "compact compiler receipt",
-      evidenceKeysCount: "{count} evidence keys",
-      semanticLinksCount: "{count} semantic links",
-      evidenceRoutesCount: "{count} evidence routes",
-      promptCompilerBody:
-        "This card shows the actual execution input dynamically compiled from Intent/Harness, the QueryAgent RuleBundle, and the instance evidence; the fixed safety instructions and the dynamic business data stay layered, and it does not show the model's private hidden chain of thought.",
-      compactReceiptSeeRuntime: "compact receipt / see runtime input",
-      immutableReceipts: "Immutable receipts",
-      legacyNotRecorded: "legacy / not recorded",
-      childInputRecovered: "child input recovered",
-      childMessagesNotLoaded: "child messages not loaded",
-      exactMatch: "exact match",
-      mismatch: "mismatch",
-      qualifiedAgentExecutionReceipt: "QualifiedAgent execution receipt",
-      receiptMismatchWarning:
-        "The compile receipt, RuleBundle, or QualifiedAgent actual input do not match. This Prompt should not be treated as verified execution input; export the audit log to investigate.",
-      promptPrivacyNotice:
-        "The full Prompt contains this round's instance data and is expanded on demand only on this permission-protected Reasoning audit page.",
-      viewFullSystemPrompt: "View the full system prompt",
-      viewFullUserPrompt: "View the full user prompt + RuleBundle",
-      viewFactRuleRoutes: "View {count} fact → rule verification routes",
-      compactReceiptOnly:
-        "Only a compact receipt was received; the full Prompt will be recovered from the verified QualifiedAgent child step input, or shown after the final reasoning-result is generated.",
-      rulesEmptyHint:
-        "After the Rule Selector finishes, the full rules returned by Allmeta and the QualifiedAgent assessment will appear here.",
-      allmetaRuleBundle: "Allmeta RuleBundle",
-      mandatoryOptionalCount: "{mandatory} mandatory · {optional} optional",
-      ruleSelectorDoneNoAssessment:
-        "The Rule Selector has finished; the QualifiedAgent has not yet produced the final per-rule assessment.",
-      selectionBasis: "Selection basis",
-      field: {
-        scopePath: "Scope path",
-        matchedAnchors: "Matched anchors",
-        ruleLogic: "Rule logic",
-        submissionCriteria: "Submission criteria",
-        businessReason: "Business reason",
-        applicableClientDept: "Applicable client / department",
-        relatedObjects: "Related objects",
-      },
-      generic: "generic",
-      qualifiedAgentAssessmentBasis: "QualifiedAgent assessment basis",
-      logEmptyHint:
-        "After the run starts, the real LLM and tool-call logs are written here step by step.",
-      auditLogBody:
-        "Keeps the real LLM / tool I/O; credentials, session information, and provider private-thought fields are redacted.",
-      input: "Input",
-      output: "Output",
-      runtimeGraphAriaLabel: "Reasoning Agent runtime graph",
     },
-    title: "Reasoning Agent",
-    subtitle:
-      "Universal recruitment rule brain: intent, selection, prompt compilation, qualification, and auditable decisions",
-    intro:
-      "Choose any recruitment Action and scenario, then provide its inputs. I will build a bounded Query IR, select applicable Allmeta rules, compile a QualifiedAgent prompt, and evaluate every mandatory and optional rule.",
-    context: "Business input",
-    contextHint:
-      "Configure the target Action and facts; JSON is submitted only with the next run",
-    sidebarTabs: "Reasoning workspace sidebar",
-    flowTab: "Flow",
-    closeSidebar: "Close sidebar",
-    exportJson: "Export JSON",
-    runConfig: "Run configuration",
-    testExample: "Test example",
-    loadExample: "Load example",
-    instanceData: "Instance data",
-    inputScopeHint: "Candidate, resume, and target-job facts",
-    inputReady: "Ready",
-    inputEmpty: "Empty",
-    inputInvalid: "Invalid JSON",
-    action: "Target Action",
-    scenario: "Business scenario",
-    candidate: "Candidate JSON",
-    resume: "Resume JSON",
-    job: "Job Requisition JSON",
-    jd: "JD JSON",
-    genericInputs: "Generic scenario Inputs JSON",
-    prompt:
-      "Describe the recruitment scenario, user intent, and decision to make…",
-    send: "Run reasoning",
-    running: "Agent is running…",
-    stalled: "The run stopped making progress",
-    pollingFailed: "The run status is temporarily unavailable",
-    stalledHint:
-      "Input is unlocked and the run is not reported as complete; the UI will keep checking for a late terminal state.",
-    inspector: "Runtime execution",
-    inspectorHint:
-      "Shows Intent Reasoner, Rule Selector, Prompt Compiler, QualifiedAgent, and deterministic folding—not hidden chain of thought",
-    noRun: "Start a conversation to see live status and the agent DAG here.",
-    decision: "Rule decision",
-    rules: "Rule checks",
-    domain: "Reasoning rule domain",
-    domainLoading: "Loading standalone Reasoning configuration…",
-    domainRequired: "This tenant has no standalone Reasoning rule domain",
-    domainLoadFailed:
-      "The standalone Reasoning configuration or Allmeta Actions could not be loaded",
-    workspaceRequired:
-      "This workspace has no standalone Reasoning configuration; Agent Factory does not host or inherit it.",
-    openWorkspace: "Open the RAAS Reasoning workspace",
-    retry: "Retry",
-    actionRequired: "Target Action is required",
-    chooseAction: "Choose a real Action from the Reasoning rule domain…",
-    integrationRequired: "The Allmeta rule API requires real API credentials",
-    bundle: "RuleBundle",
-    viewRun: "Open run detail",
-    invalidJson: "Invalid JSON",
-    failed: "Reasoning run failed",
-    clear: "Clear context",
-    mandatory: "mandatory",
-    optional: "optional",
-    missing: "Missing evidence",
   },
   reasoning: {
     title: "AI insights / reasoning audit",
@@ -1175,10 +1216,10 @@ export const en = {
         keepConfirmUndelivered:
           "The keep confirmation didn't reach the brain: {detail}",
         serverNotQueued: "the server didn't confirm the message was queued",
-        deleteToolFailed: 'Failed to delete "{name}": {detail}',
-        serverNotDeleted: "the server didn't confirm the deletion",
+        deleteToolFailed: 'Failed to deactivate "{name}": {detail}',
+        serverNotDeleted: "the server didn't confirm deactivation",
         toolDeletedNotNotified:
-          "The tool was deleted, but the running brain couldn't be notified: {detail}",
+          "The tool was deactivated with revision history retained, but the running brain couldn't be notified: {detail}",
         reportStartFailed: "Failed to start the report: {detail}",
         serverNotRunning:
           "the server didn't confirm the background task is running",
@@ -1191,7 +1232,7 @@ export const en = {
         keepTool:
           'I\'ve confirmed keeping the tool "{name}" in the tool library; feel free to reuse it in later designs.',
         deleteTool:
-          "I've removed the tool \"{name}\" from the tool library; please don't use it in later designs.",
+          "I've deactivated the active revision of \"{name}\" (history is retained); don't use it in later designs.",
       },
       action: {
         report: "Report",
@@ -1228,9 +1269,9 @@ export const en = {
       },
       tool: {
         keepOrDelete:
-          "The brain actually wrote this tool into the tool library — keep it for later reuse, or delete it now?",
+          "This tool is currently in the runtime catalog — keep it active for later reuse, or deactivate the active revision while retaining history?",
         keep: "✓ Keep",
-        delete: "✗ Delete",
+        delete: "✗ Deactivate",
       },
       crossSession: {
         header: "Cross-session background",
@@ -1887,6 +1928,8 @@ export const en = {
           "The tenant or domain has changed; the page result was discarded, but the server will still finish cleaning up the temporary app.",
         sandboxComplete:
           "The temporary app ran and its deletion was confirmed; the regression artifacts for new version {versionId} were replayed and passed again. You can now run a manual review and promotion preview for this new version.",
+        sandboxDiagnosticComplete:
+          "The same-host Sandbox ran and cleanup was verified. Its signed report was saved as development-only diagnostics; no regression version or verified candidate was created. Connect an independently attested remote Sandbox before promotion.",
         deleteFailed: "Failed to delete draft: {reason}",
       },
       promote: {
@@ -2064,6 +2107,7 @@ export const en = {
     },
     api: {
       invalidJson: "HTTP {status} returned invalid JSON",
+      serviceRestarting: "OntoCode is restarting. Please retry in a moment.",
       noSuccessStatus: "The API did not return a success status",
       missingData: "The success response is missing data",
       networkFailure: "Network request failed",
@@ -3033,9 +3077,12 @@ export const en = {
       demoted: " · demoted",
     },
     createdBadge: "Custom",
-    deleteCreatedConfirm: "Delete custom tool “{name}”?",
-    deleteCreatedFailed: "Delete failed: {message}",
-    deleteCreated: "Delete",
+    deleteCreatedConfirm:
+      "Deactivate the current active revision of custom tool “{name}”? Immutable revision history will be retained.",
+    deleteCreatedFailed: "Deactivation failed: {message}",
+    deactivateCreatedSuccess:
+      "“{name}” was deactivated; revision history was retained",
+    deleteCreated: "Deactivate",
     subtitle:
       "Globally-registered tools any workflow can call. Configure per Domain via the manifest's tool_use[].config block — no code changes required.",
     countBadge: "{count} tools · {categories} categories",
@@ -3260,28 +3307,122 @@ export const en = {
   },
   tenants: {
     domainSync: {
-      source: {
-        explicit: "Manual connection",
-        auto: "Migration confirmed",
-        upload: "Uploaded ontology",
+      panelTitle: "Ontology Domains in this Business Domain",
+      businessDomain: "Business Domain",
+      ontologyDomains: "Ontology Domains",
+      description:
+        "A Business Domain can register multiple exact Ontology Domains. New OntoCode Sessions can select only active registrations here; names and tenant slugs are never used to guess an identity.",
+      showArchived: "Show archived",
+      allmetaCatalog: "Live AllmetaOntology catalog",
+      loadingCatalog: "Loading the Allmeta catalog…",
+      noAttachableDomains: "No additional Allmeta Domain is available",
+      register: "Register in this Business Domain",
+      registering: "Registering…",
+      registered: "Ontology Domain registered",
+      registerFailed: "Ontology Domain registration failed",
+      catalogError: "The live Allmeta catalog is unavailable: {message}",
+      readError: "Failed to read the Domain registry: {message}",
+      default: "default",
+      status: {
+        active: "active",
+        unavailable: "unavailable",
+        archived: "archived",
       },
-      panelTitle: "Runtime domain ↔ ontology connection",
-      runtimeDomainLabel: "Runtime domain (tenant)",
-      readError: "Failed to read ontology connection: {message}",
-      connectedLabel: "Connected ontology",
-      viewOrChange: "View or change connection",
-      unavailableLabel: "Connection unavailable",
-      missingOntology:
-        "This ontology is no longer in the catalog; the factory has stopped running.",
-      reconnect: "Reconnect",
-      notConnected:
-        "No ontology connected yet; this tenant is still valid, but the agent factory will not guess an ontology.",
-      goToFactory: "Connect in the agent factory",
+      verifiedAt: "verified",
+      runtimeReady: "runtime ready",
+      runtimeBlocked: "runtime blocked",
+      runtimeBinding: "Runtime Profile",
+      legacyRuntime: "Legacy native runtime (migration compatibility)",
+      runtimeUnbound: "No immutable Runtime Profile is pinned",
+      credentialsStayHere:
+        "Credentials, Integrations, permissions, files, and logs remain owned by Business Domain {tenant}.",
+      bindRuntime: "Bind Runtime Profile…",
+      runtimeLoading: "Loading Runtime Profiles…",
+      runtimeArchived: "archived",
+      runtimeBound: "Runtime Profile bound",
+      runtimeBindFailed: "Runtime Profile binding failed",
+      setDefault: "Set as default",
+      defaultUpdated: "Default Ontology Domain updated",
+      defaultFailed: "Failed to update the default",
+      verify: "Verify",
+      verified: "Ontology Domain verified",
+      verifyFailed: "Ontology Domain verification failed",
+      archive: "Archive association",
+      archiveConfirm:
+        "Archive this Business Domain's association with {domain}? This does not delete the remote Domain from AllmetaOntology. Open OntoCode Sessions will block archival.",
+      archived: "Ontology Domain association archived",
+      archiveFailed: "Archive failed",
+      archivePolicy:
+        "Archive association removes this Domain from future selection in the current Business Domain and preserves historical Sessions and evidence. It never deletes or modifies the remote AllmetaOntology Domain.",
+      empty:
+        "No Ontology Domain is registered in this Business Domain. Add one from the live Allmeta catalog above.",
+    },
+    runtimeProfiles: {
+      panelTitle: "Runtime Profiles",
+      businessDomain: "Business Domain",
+      runtimeProfiles: "Runtime Profiles",
+      description:
+        "A Runtime Profile is an immutable, secret-free adapter coordinate. Compatibility profiles may reuse reviewed handlers and event names from a historical namespace; they never inherit that namespace's credentials, data, permissions, files, or logs.",
+      showArchived: "Show archived",
+      create: "Create profile",
+      platformManaged: "platform-managed",
+      createTitle: "Create Runtime Profile",
+      versionTitle: "Create a new immutable version for {name}",
+      immutableHint:
+        "Existing versions never change. Sessions, Harness Jobs, Candidates, and evidence pin the exact version ID.",
+      name: "Profile name",
+      descriptionLabel: "Description",
+      adapterKind: "Adapter kind",
+      native: "Native Business Domain adapter",
+      compatibility: "Historical namespace compatibility",
+      registrySlug: "Reviewed adapter registry",
+      registryVersion: "Adapter build/version",
+      eventNamespace: "Event namespace",
+      compatibilitySlug: "Historical runtime namespace",
+      credentialScope:
+        "Credential scope: current Business Domain {tenant}; no secrets are copied from a compatibility namespace.",
+      save: "Save immutable version",
+      created: "Runtime Profile created",
+      versionCreated: "Runtime Profile version created",
+      saveFailed: "Runtime Profile could not be saved",
+      readError: "Failed to read Runtime Profiles: {message}",
+      status: {
+        active: "active",
+        archived: "archived",
+      },
+      versionCount: "{count} immutable versions",
+      credentialsOwned: "credentials: Business Domain",
+      newVersion: "New version",
+      archive: "Archive",
+      archiveConfirm:
+        'Archive Runtime Profile "{name}"? Active registration bindings or open work will block this action.',
+      archived: "Runtime Profile archived",
+      archiveFailed: "Runtime Profile archive failed",
+      empty:
+        "No Runtime Profile exists yet. Create one, then bind an exact version to each Ontology Domain registration above.",
     },
     subtitle:
-      "Business boundaries. Each Domain is an isolated stack of agents, workflows, runs, events, budgets, and audit trail.",
-    countSingular: "DOMAIN",
-    countPlural: "DOMAINS",
+      "Business Domains are boundaries such as recruitment or energy. Each can manage multiple Ontology Domains that map exactly to AllmetaOntology.",
+    inngestPanelTitle: "Business Domain runtime deployment (compatibility)",
+    inngestPanelHint:
+      "This controls every manifest workflow in the internal tenant namespace; it does not add, move, or switch an Ontology Domain registration. Deploy registers this Business Domain's enabled functions; Stop removes them while preserving configuration, versions, and history.",
+    inngestSelectedCount: "{selected} / {total} selected",
+    inngestDeployConfirm:
+      'Deploy the enabled workflow agents for "{name}" to Inngest now?',
+    inngestStopConfirm:
+      'Stop the Inngest workflow for "{name}"? New events will no longer start its agents.',
+    inngestDeployedToast: "Business Domain runtime deployed",
+    inngestStoppedToast: "Business Domain runtime stopped",
+    inngestChangeFailedToast: "Inngest deployment change failed",
+    inngestFunctionCount: "{count} functions verified on Inngest",
+    inngestDeployed: "DEPLOYED",
+    inngestStopped: "STOPPED",
+    inngestExternal: "EXTERNAL",
+    inngestDeploy: "Deploy",
+    inngestStop: "Stop",
+    inngestChanging: "Applying…",
+    countSingular: "BUSINESS DOMAIN",
+    countPlural: "BUSINESS DOMAINS",
     showArchived: "Show deleted",
     refresh: "Refresh",
     createHint:
@@ -3297,11 +3438,12 @@ export const en = {
     toastRestoreFailed: "Restore failed",
     toastUpdated: "Domain updated",
     toastArchived: "Domain deleted",
-    colTenant: "Domain",
+    colTenant: "Business Domain",
     colDescription: "Description",
     colAgents: "Agents",
     colRuns24h: "Runs/24h",
     colOpenTasks: "Open tasks",
+    colInngest: "Inngest",
     colCreated: "Created",
     archivedBadge: "DELETED",
     edit: "Edit",
@@ -3880,23 +4022,24 @@ export const en = {
   tenantCreateModal: {
     errColorHex: "Color must be a 6-digit hex like #d0ff00",
     errNetwork: "Network error",
-    ariaWizard: "New domain · step {step} of 3",
-    headerTitle: "New domain · Step {step} of 3",
+    ariaWizard: "New Business Domain · step {step} of 3",
+    headerTitle: "New Business Domain · Step {step} of 3",
     close: "Close",
     displayName: "Display name",
-    displayNameHint: "Shown in the sidebar Domain switcher and domain lists.",
+    displayNameHint:
+      "Shown in the sidebar Business Domain switcher and Business Domain lists.",
     displayNamePlaceholder: "e.g. Acme Recruiting",
     slugPlaceholder: "acme",
     subtitlePlaceholder: "Recruitment-as-a-Service · Asia-Pac",
     tokenCapPlaceholder: "e.g. 50000000",
     usdCapPlaceholder: "e.g. 500.00",
-    slug: "Domain slug",
+    slug: "Business Domain slug",
     slugHint:
       "Immutable. Used in URLs, log paths, and Inngest function IDs. [a-z][a-z0-9-]{1,31}",
     subtitle: "Subtitle",
     subtitleHint: "Optional short description shown under the name.",
     accentColor: "Accent color",
-    accentColorHint: "Used for the Domain avatar and accent strokes.",
+    accentColorHint: "Used for the Business Domain avatar and accent strokes.",
     colorSwatchAria: "Color {color}",
     tokenCap: "Monthly token cap",
     tokenCapHint:
@@ -3920,7 +4063,7 @@ export const en = {
     back: "Back",
     next: "Next",
     provisioning: "Provisioning…",
-    createTenant: "Create domain",
+    createTenant: "Create Business Domain",
     slugIssue: {
       required:
         "enter a slug — couldn't auto-derive one from the name (e.g. acme)",
@@ -4150,6 +4293,21 @@ export const en = {
     impactDownstreamAgents: "Downstream agents",
     impactEstimatedRollout: "Estimated rollout",
   },
+  publishOverwrite: {
+    ariaLabel: "Confirm what publishing changes in the live runtime",
+    removesTitle: "Publishing removes live agents",
+    modifiesTitle: "Publishing changes many live agents",
+    subtitle: "This workspace runs one live workflow at a time.",
+    removedLabel: "Removed from the live runtime ({count})",
+    modifiedLabel: "Changed ({count})",
+    removesExplanation:
+      "These agents stop receiving events as soon as this version goes live. Their run history is kept, but they will no longer execute until a version that declares them is published again.",
+    modifiesExplanation:
+      "This publish rewrites a large share of the live workflow at once. Review the changed agents before continuing.",
+    cancel: "Cancel",
+    confirm: "Publish anyway",
+    publishing: "Publishing…",
+  },
   newWorkflowModal: {
     title: "New workflow",
     subtitle:
@@ -4225,6 +4383,7 @@ export const en = {
     displayNamePlaceholder: "Customer support triage",
     modelOverride: "Model override",
     workspaceDefault: "Workspace default",
+    providerNotConfigured: "not configured",
     blankStarterTitle: "Blank starter",
     blankStarterBody:
       "Creates one production-shaped starter agent with editable prompt, typed input/output, a logic action, conservative limits, and a completion event. Add and connect nodes on the canvas.",
@@ -5732,14 +5891,14 @@ export const en = {
     bannerViewportPinnedDismiss: "Dismiss",
   },
   tenantSwitcher: {
-    toastProvisionedTitle: "Domain provisioned",
+    toastProvisionedTitle: "Business Domain provisioned",
     toastProvisionedDesc: "{name} ({slug}) is ready",
     agentCount: "{count} agents",
     runs24h: "{count} runs/24h",
-    newTenant: "New domain",
-    switchAria: "{name} domain. Switch domain",
-    openAria: "{name} domain. Open domain switcher",
-    tooltip: "Domain: {name}",
+    newTenant: "New Business Domain",
+    switchAria: "{name} Business Domain. Switch Business Domain",
+    openAria: "{name} Business Domain. Open Business Domain switcher",
+    tooltip: "Business Domain: {name}",
   },
   importPreviewGraph: {
     title: "Workflow topology from the manifest",
@@ -6017,6 +6176,37 @@ export const en = {
     cancel: "Cancel",
     configureAria: "Configure {name}",
     removeAria: "Remove {name}",
+    reqLoading: "Resolving this system's configuration requirements…",
+    envPresent: "present",
+    envMissing: "missing",
+    envOnlyHint:
+      "This value lives only in the deployment environment (env var {name}) — never stored or entered here.",
+    secretPlaceholder: "Paste the credential value",
+    selectPlaceholder: "Select…",
+    noConfigNeeded:
+      "This system declares no credential configuration (public API or event-only).",
+    sourceProfile: "from system profile",
+    sourceTool: "from tool declaration",
+    sourceCatalog: "from built-in catalog",
+    sourceDefault: "generic default",
+    task: {
+      title: "OntoCode configuration task",
+      loading: "Resolving the server-owned target…",
+      loadFailed:
+        "The task could not be loaded. No provider was selected from the URL.",
+      providerUnavailable:
+        "Provider {provider} is not available in the tenant integration catalog. No substitute was selected.",
+      pending:
+        "Configure only the provider named by this task. Secret values stay in Settings and are never returned to chat.",
+      saved:
+        "Configuration saved. Return to OntoCode for task-level verification before execution continues.",
+      tested:
+        "Connection test passed. Return to OntoCode for task-level verification and continuation.",
+      testFailed:
+        "The connection test failed. The task remains blocked; review the error below.",
+      return: "Return without claiming completion",
+      returnToVerify: "Return, verify, and continue",
+    },
   },
   workflowAuthoringError: {
     networkUnavailable:
@@ -9014,7 +9204,7 @@ export const en = {
       saveSuccess: 'Saved tool "{name}" to the tool library',
       saveFailed: "Save failed: {message}",
     },
-    title: "Create tool · Add to shared tool library",
+    title: "Create tool · Save a governed revision draft",
     extractSection: {
       heading: "① Extract with AI from a URL / doc (optional)",
     },
@@ -9031,6 +9221,12 @@ export const en = {
       urlTemplateLabel:
         "URL template (may contain {placeholder}, filled from the event payload at runtime)",
       sideEffectLabel: "Side effect",
+      operationLabel: "Operation",
+      effectScopeLabel: "Effect scope",
+      sandboxPolicyLabel: "Sandbox policy",
+      executionPolicyHint:
+        "These fields are the execution-authorization contract and must be reviewed against the real API. The system never infers them from an HTTP method, tool name, or side-effect label: external reads/computations use live_external; every external write uses requires_attempt_grant.",
+      capabilitiesLabel: "Capabilities (non-empty JSON array)",
       sharedLabel:
         "Shared (any domain can bind); uncheck to keep it tenant-only",
       headersLabel:
@@ -9050,7 +9246,7 @@ export const en = {
     cancel: "Cancel",
     saveButton: {
       pending: "Saving…",
-      idle: "Save to tool library",
+      idle: "Save governed draft",
     },
   },
 } satisfies Dict;

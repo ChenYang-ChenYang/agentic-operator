@@ -55,6 +55,18 @@ const nextConfig = {
   transpilePackages: ["@agentic/contracts"],
   typedRoutes: true,
   reactStrictMode: true,
+  async redirects() {
+    return [
+      {
+        // `/ontocode` was the original single-screen factory facade. Keep
+        // bookmarks and query-string deep links working while making the
+        // connected Session Hub the one canonical product entry.
+        source: "/portal/:tenant/ontocode",
+        destination: "/portal/:tenant/ontocode-workspace",
+        permanent: false,
+      },
+    ];
+  },
   async rewrites() {
     return {
       beforeFiles: [

@@ -6,6 +6,7 @@ import {
   SandboxLifecycleBlockedError,
   sandboxCleanupReceiptIssues,
   verificationPolicy,
+  type SandboxExecutionPlaneAttestationExpected,
   type GeneratedAgentSpec,
   type SandboxDeployer,
   type SandboxDeployResult,
@@ -61,6 +62,7 @@ export interface RemoteSandboxConnectionConfig {
   runnerId: string;
   allowedBuildIds: ReadonlySet<string>;
   allowedImageDigests: ReadonlySet<string>;
+  platformAttestationExpected?: SandboxExecutionPlaneAttestationExpected;
 }
 
 interface RemoteSandboxConfigRefs {
@@ -72,6 +74,15 @@ interface RemoteSandboxConfigRefs {
   runnerIdEnv: string;
   allowedBuildIdsEnv: string;
   allowedImageDigestsEnv: string;
+  executionPlaneIdEnv?: string;
+  executionPlaneTrustDomainEnv?: string;
+  platformAttestorKeyIdEnv?: string;
+  platformAttestorPublicKeyEnv?: string;
+  primaryHostIdentityHashEnv?: string;
+  primaryDockerDaemonIdentityHashEnv?: string;
+  allowedControlHostIdentityHashesEnv?: string;
+  allowedWorkloadHostIdentityHashesEnv?: string;
+  allowedDockerDaemonIdentityHashesEnv?: string;
 }
 
 export interface RemoteSandboxTransport {
@@ -164,7 +175,8 @@ export interface RemoteSandboxDeployerOptions {
   pollIntervalMs?: number;
   timeoutMs?: number;
   envelopeTtlMs?: number;
-  /** Test-only trust boundary injection. Production construction rejects it. */
+  /** Non-production diagnostic/test trust posture. Production construction
+   * rejects injection and reads host-observed attestation directly. */
   productionImageTrust?: () => FactoryProductionImageTrustStatus;
 }
 
@@ -172,6 +184,24 @@ interface ActiveRemoteAttempt {
   domain: string;
   bundleHash: string;
   consumedResultNonces: Set<string>;
+}
+
+const adapterVerifiedResults = new WeakSet<object>();
+
+function markAdapterVerifiedResult(
+  result: SandboxDeployResult,
+): SandboxDeployResult {
+  adapterVerifiedResults.add(result);
+  return result;
+}
+
+/** In-process provenance fence between the HMAC/Ed25519-verifying remote
+ * adapter and stores that can mutate Candidate qualification. JSON-shaped
+ * evidence constructed by another caller does not carry this capability. */
+export function remoteSandboxResultWasAdapterVerified(
+  result: SandboxDeployResult,
+): boolean {
+  return adapterVerifiedResults.has(result);
 }
 
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -252,6 +282,15 @@ function parseRefs(value: string | undefined): RemoteSandboxConfigRefs {
     "runnerIdEnv",
     "allowedBuildIdsEnv",
     "allowedImageDigestsEnv",
+    "executionPlaneIdEnv",
+    "executionPlaneTrustDomainEnv",
+    "platformAttestorKeyIdEnv",
+    "platformAttestorPublicKeyEnv",
+    "primaryHostIdentityHashEnv",
+    "primaryDockerDaemonIdentityHashEnv",
+    "allowedControlHostIdentityHashesEnv",
+    "allowedWorkloadHostIdentityHashesEnv",
+    "allowedDockerDaemonIdentityHashesEnv",
   ]);
   const unknown = Object.keys(row).find((key) => !allowed.has(key));
   if (unknown) {
@@ -287,6 +326,24 @@ function parseRefs(value: string | undefined): RemoteSandboxConfigRefs {
     allowedImageDigestsEnv: exactEnvName(
       row.allowedImageDigestsEnv,
       "allowedImageDigestsEnv",
+    ),
+    ...Object.fromEntries(
+      [
+        "executionPlaneIdEnv",
+        "executionPlaneTrustDomainEnv",
+        "platformAttestorKeyIdEnv",
+        "platformAttestorPublicKeyEnv",
+        "primaryHostIdentityHashEnv",
+        "primaryDockerDaemonIdentityHashEnv",
+        "allowedControlHostIdentityHashesEnv",
+        "allowedWorkloadHostIdentityHashesEnv",
+        "allowedDockerDaemonIdentityHashesEnv",
+      ]
+        .filter((field) => row[field] !== undefined)
+        .map((field) => [
+          field,
+          exactEnvName(row[field], field),
+        ]),
     ),
   };
 }
@@ -381,6 +438,22 @@ function imageDigestSet(value: string, label: string): ReadonlySet<string> {
   return digests;
 }
 
+function identityHashSet(
+  value: string,
+  label: string,
+): ReadonlySet<string> {
+  const hashes = stringSet(value, label);
+  for (const hash of hashes) {
+    if (!/^sha256:[a-f0-9]{64}$/.test(hash)) {
+      throw new RemoteSandboxProtocolError(
+        "remote_config_invalid",
+        `${label} must contain only domain-separated sha256:<64 hex> identities`,
+      );
+    }
+  }
+  return hashes;
+}
+
 function normalizedRunnerUrl(
   value: string,
   env: Record<string, string | undefined>,
@@ -441,6 +514,26 @@ export function loadRemoteSandboxConnectionConfig(
       "External sandbox production requires an independent receipt signing key reference",
     );
   }
+  const platformRefFields = [
+    "executionPlaneIdEnv",
+    "executionPlaneTrustDomainEnv",
+    "platformAttestorKeyIdEnv",
+    "platformAttestorPublicKeyEnv",
+    "primaryHostIdentityHashEnv",
+    "primaryDockerDaemonIdentityHashEnv",
+    "allowedControlHostIdentityHashesEnv",
+    "allowedWorkloadHostIdentityHashesEnv",
+    "allowedDockerDaemonIdentityHashesEnv",
+  ] as const;
+  if (
+    externalProduction
+    && platformRefFields.some((field) => !refs[field])
+  ) {
+    throw new RemoteSandboxProtocolError(
+      "remote_config_invalid",
+      "External sandbox production requires execution-plane attestor, trust-domain, primary host/daemon and remote host/daemon allowlist references",
+    );
+  }
   const resultSigningKey = envValue(refs.resultSigningKeyEnv, env, {
     secret: true,
   });
@@ -459,6 +552,47 @@ export function loadRemoteSandboxConnectionConfig(
       "External sandbox request, result, and receipt signing keys must be distinct",
     );
   }
+  const platformAttestationExpected =
+    platformRefFields.every((field) => refs[field])
+      ? {
+          planeId: envValue(refs.executionPlaneIdEnv!, env),
+          trustDomain: envValue(refs.executionPlaneTrustDomainEnv!, env),
+          runnerId: envValue(refs.runnerIdEnv, env),
+          allowedRunnerBuildIds: stringSet(
+            envValue(refs.allowedBuildIdsEnv, env),
+            refs.allowedBuildIdsEnv,
+          ),
+          allowedRuntimeImageDigests: imageDigestSet(
+            envValue(refs.allowedImageDigestsEnv, env),
+            refs.allowedImageDigestsEnv,
+          ),
+          allowedControlHostIdentityHashes: identityHashSet(
+            envValue(refs.allowedControlHostIdentityHashesEnv!, env),
+            refs.allowedControlHostIdentityHashesEnv!,
+          ),
+          allowedWorkloadHostIdentityHashes: identityHashSet(
+            envValue(refs.allowedWorkloadHostIdentityHashesEnv!, env),
+            refs.allowedWorkloadHostIdentityHashesEnv!,
+          ),
+          allowedDockerDaemonIdentityHashes: identityHashSet(
+            envValue(refs.allowedDockerDaemonIdentityHashesEnv!, env),
+            refs.allowedDockerDaemonIdentityHashesEnv!,
+          ),
+          primaryHostIdentityHash: [...identityHashSet(
+            envValue(refs.primaryHostIdentityHashEnv!, env),
+            refs.primaryHostIdentityHashEnv!,
+          )][0]!,
+          primaryDockerDaemonIdentityHash: [...identityHashSet(
+            envValue(refs.primaryDockerDaemonIdentityHashEnv!, env),
+            refs.primaryDockerDaemonIdentityHashEnv!,
+          )][0]!,
+          attestorKeyId: envValue(refs.platformAttestorKeyIdEnv!, env),
+          attestorPublicKey: envValue(
+            refs.platformAttestorPublicKeyEnv!,
+            env,
+          ),
+        } satisfies SandboxExecutionPlaneAttestationExpected
+      : undefined;
   return {
     runnerUrl: normalizedRunnerUrl(envValue(refs.runnerUrlEnv, env), env),
     requestSigningKey,
@@ -474,6 +608,9 @@ export function loadRemoteSandboxConnectionConfig(
       envValue(refs.allowedImageDigestsEnv, env),
       refs.allowedImageDigestsEnv,
     ),
+    ...(platformAttestationExpected
+      ? { platformAttestationExpected }
+      : {}),
   };
 }
 
@@ -716,10 +853,13 @@ export class RemoteSandboxDeployer implements SandboxDeployer {
   private readonly envelopeTtlMs: number;
 
   constructor(private readonly options: RemoteSandboxDeployerOptions) {
-    if (options.productionImageTrust && process.env.NODE_ENV !== "test") {
+    // Non-production composition may explicitly downgrade a signed same-host
+    // runner to development_only. Production must always read the independent
+    // host attestation itself and may never accept an injected trust result.
+    if (options.productionImageTrust && process.env.NODE_ENV === "production") {
       throw new RemoteSandboxProtocolError(
         "remote_config_invalid",
-        "production image trust verifier cannot be injected outside tests",
+        "production image trust verifier cannot be injected in production",
       );
     }
     this.transport = options.transport ?? new HttpRemoteSandboxTransport(
@@ -867,6 +1007,8 @@ export class RemoteSandboxDeployer implements SandboxDeployer {
       allowedRunnerBuildIds: this.options.connection.allowedBuildIds,
       allowedRuntimeImageDigests:
         this.options.connection.allowedImageDigests,
+      platformAttestationExpected:
+        this.options.connection.platformAttestationExpected,
       allowDiagnosticSameHost:
         productionImageTrust.topology === "single_host_compose",
       now: this.now(),
@@ -1119,10 +1261,10 @@ export class RemoteSandboxDeployer implements SandboxDeployer {
           productionImageTrust,
         );
         completed = true;
-        return qualifyForHostTopology({
+        return markAdapterVerifiedResult(qualifyForHostTopology({
           ...validated,
           cassetteRefs: this.bindLocalCassetteRefs(toolSnapshot, bundle),
-        }, productionImageTrust);
+        }, productionImageTrust));
       }
       if (submitted.status === "cancelled") {
         throw new RemoteSandboxProtocolError(
@@ -1162,10 +1304,10 @@ export class RemoteSandboxDeployer implements SandboxDeployer {
             productionImageTrust,
           );
           completed = true;
-          return qualifyForHostTopology({
+          return markAdapterVerifiedResult(qualifyForHostTopology({
             ...validated,
             cassetteRefs: this.bindLocalCassetteRefs(toolSnapshot, bundle),
-          }, productionImageTrust);
+          }, productionImageTrust));
         }
         if (status.status === "cancelled") {
           throw new RemoteSandboxProtocolError(

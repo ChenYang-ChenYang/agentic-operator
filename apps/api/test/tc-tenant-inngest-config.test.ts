@@ -14,6 +14,7 @@ import {
   isFactorySandboxTenant,
   sandboxInngestIsolationStatus,
   tenantInngestConfigStatus,
+  tenantInngestDiagnosticIsolationIdentity,
   tenantInngestIsolationIdentity,
 } from "@agentic/runtime";
 import { checkInngest } from "../src/routes/health";
@@ -457,6 +458,36 @@ describe("tenant-specific Inngest configuration", () => {
     });
   });
 
+  it("issues a fingerprint-only identity for shared development tenants but never in production", () => {
+    process.env.NODE_ENV = "development";
+    process.env.INNGEST_EVENT_KEY = "evt_shared_development_2Rs4Tu6Vw9";
+    process.env.INNGEST_SIGNING_KEY =
+      "sign_shared_development_3St5Uv7Wx1";
+    process.env.INNGEST_SERVE_ORIGIN = "http://localhost:3540";
+    process.env.INNGEST_BASE_URL = "http://localhost:8288";
+
+    const identity =
+      tenantInngestDiagnosticIsolationIdentity("agents-generation");
+    expect(identity).toMatchObject({
+      schema: "agent-factory-target-inngest-isolation/v1",
+      targetTenantSlug: "agents-generation",
+    });
+    expect(JSON.stringify(identity)).not.toContain(
+      process.env.INNGEST_EVENT_KEY,
+    );
+    expect(JSON.stringify(identity)).not.toContain(
+      process.env.INNGEST_SIGNING_KEY,
+    );
+    expect(() =>
+      tenantInngestIsolationIdentity("agents-generation"),
+    ).toThrow(TenantInngestConfigurationError);
+
+    process.env.NODE_ENV = "production";
+    expect(() =>
+      tenantInngestDiagnosticIsolationIdentity("agents-generation"),
+    ).toThrow(TenantInngestConfigurationError);
+  });
+
   it("does not let an ephemeral app inherit shared production configuration", () => {
     configureAcme();
     delete process.env[SANDBOX_INNGEST_CONFIG_REFS_ENV];
@@ -614,6 +645,79 @@ describe("tenant-specific Inngest configuration", () => {
       mode: "cloud",
     });
     expect(stale.note).toMatch(/stale or missing/);
+  });
+
+  it("treats a zero-function tenant app as trivially dispatch-ready", async () => {
+    process.env.NODE_ENV = "development";
+    process.env.INNGEST_DEV = "1";
+    process.env.INNGEST_BASE_URL = "http://127.0.0.1:8288";
+    delete process.env.INNGEST_SYNC_DISABLED;
+
+    const systemClient = getTenantInngest(SYSTEM_SLUG);
+    const systemFn = systemClient.createFunction(
+      {
+        id: "zero-function-health-system",
+        triggers: { event: `${SYSTEM_SLUG}/ZERO_FUNCTION_HEALTH` },
+      },
+      async () => ({ ok: true }),
+    );
+    const emptySlug = "zero-function-health";
+    initInngestRegistry({
+      systemBase: [systemFn],
+      systemCodeAgent: [],
+      tenants: [{ slug: emptySlug, fns: [] }],
+    });
+    const registered = listRegisteredApps();
+    for (const app of registered) {
+      __recordInngestSyncEvidenceForTests({
+        slug: app.slug,
+        appId: app.appId,
+        fnCount: app.fnCount,
+        ok: true,
+      });
+    }
+
+    const calls: string[] = [];
+    const health = await checkInngest(
+      (async (input: string | URL | Request) => {
+        const url = String(input);
+        calls.push(url);
+        if (url.endsWith("/v0/gql")) {
+          return new Response(
+            JSON.stringify({
+              data: {
+                apps: registered.map((app) => ({
+                  name: app.appId,
+                  connected: app.fnCount > 0,
+                  functionCount: app.fnCount,
+                  error: null,
+                })),
+              },
+            }),
+            {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            },
+          );
+        }
+        return new Response("ok", { status: 200 });
+      }) as typeof fetch,
+      [SYSTEM_SLUG, emptySlug],
+    );
+
+    expect(health).toMatchObject({
+      ok: true,
+      reachable: true,
+      registrationOk: true,
+      expectedApps: 2,
+      syncedApps: 2,
+      emptyApps: [appIdForTenant(emptySlug)],
+    });
+    expect(health.note).toMatch(/1 empty app\(s\) require no dispatch session/);
+    expect(calls).toEqual([
+      "http://127.0.0.1:8288/health",
+      "http://127.0.0.1:8288/v0/gql",
+    ]);
   });
 
   it("probes a production self-host and requires current sync evidence", async () => {

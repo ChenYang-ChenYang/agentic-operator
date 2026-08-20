@@ -1,16 +1,28 @@
 import {
+  SANDBOX_CANDIDATE_BUNDLE_VERIFICATION_SCHEMA,
   SANDBOX_EXECUTION_RECEIPT_SCHEMA,
   SANDBOX_INFRASTRUCTURE_CLEANUP_SCHEMA,
   SANDBOX_MODEL_USAGE_SCHEMA,
+  SANDBOX_EXECUTION_PLANE_ATTESTATION_SCHEMA,
+  sandboxCandidateBundleVerificationEvidenceHash,
+  sandboxExecutionPlaneCapabilities,
   sandboxExecutionReceiptHash,
   sandboxInfrastructureCleanupEvidenceHash,
   sandboxModelUsageEvidenceHash,
+  signSandboxExecutionPlaneAttestation,
   type SandboxExecutionPlaneReceipt,
   type SandboxModelUsageEvidence,
 } from "@agentic/agent-factory";
+import { generateKeyPairSync } from "node:crypto";
 
 import { signSandboxExecutionPlaneReceipt } from "../src/services/agent-factory/sandbox-remote-protocol";
 import type { TargetInngestIsolationIdentity } from "@agentic/runtime";
+
+const platformKeys = generateKeyPairSync("ed25519");
+const platformPrivateKey = platformKeys.privateKey.export({
+  type: "pkcs8",
+  format: "pem",
+}).toString();
 
 export function makeTargetInngestIsolationIdentity(
   targetTenantSlug: string,
@@ -38,9 +50,54 @@ export function makePromotableSandboxExecutionReceipt(input: {
   targetTenantSlug?: string;
   marker?: string;
   modelUsageHash?: string;
+  isolationTier?: "remote_container" | "remote_vm" | "same_host_container";
 }): SandboxExecutionPlaneReceipt {
   const marker = (input.marker ?? "a").slice(0, 1).padEnd(1, "a");
   const now = new Date(0).toISOString();
+  const runnerId = "test-external-runner";
+  const runnerBuildId = "test-external-runner-build";
+  const runtimeImageDigest = `sha256:${marker.repeat(64)}`;
+  const isolationTier = input.isolationTier ?? "remote_container";
+  const platformAttestation = signSandboxExecutionPlaneAttestation(
+    {
+      schema: SANDBOX_EXECUTION_PLANE_ATTESTATION_SCHEMA,
+      planeId: "test-execution-plane",
+      trustDomain: "test.agentic.internal",
+      runnerId,
+      runnerBuildId,
+      runtimeImageDigest,
+      isolationTier,
+      controlHostIdentityHash: `sha256:${"6".repeat(64)}`,
+      workloadHostIdentityHash: `sha256:${"7".repeat(64)}`,
+      dockerDaemonIdentityHash: `sha256:${"8".repeat(64)}`,
+      capabilities: sandboxExecutionPlaneCapabilities(),
+      issuedAt: now,
+      expiresAt: new Date(24 * 60 * 60_000).toISOString(),
+      attestorKeyId: "test-platform-attestor",
+      signatureAlgorithm: "ed25519",
+    },
+    platformPrivateKey,
+  );
+  const bundleHash = `sandbox-bundle:v2:${marker.repeat(64)}`;
+  const bundleVerificationBody = {
+    schema: SANDBOX_CANDIDATE_BUNDLE_VERIFICATION_SCHEMA,
+    candidateBundleSchema:
+      "agent-factory-sandbox-candidate-bundle/v2" as const,
+    sandboxAttemptId: input.sandboxAttemptId,
+    candidateFingerprint: input.candidateFingerprint,
+    bundleHash,
+    specsFingerprint: `specs:v2:${"9".repeat(64)}`,
+    manifestHash: `manifest:v1:${"a".repeat(64)}`,
+    testSuiteHash: `test-suite:v1:${"b".repeat(64)}`,
+    toolSnapshotHash: `tool-snapshot:v1:${"c".repeat(64)}`,
+    verifiedAt: now,
+  };
+  const candidateBundleVerification = {
+    ...bundleVerificationBody,
+    evidenceHash: sandboxCandidateBundleVerificationEvidenceHash(
+      bundleVerificationBody,
+    ),
+  };
   const cleanupBody = {
     schema: SANDBOX_INFRASTRUCTURE_CLEANUP_SCHEMA,
     candidateExecutionAbsent: true as const,
@@ -71,17 +128,19 @@ export function makePromotableSandboxExecutionReceipt(input: {
   const unsigned = {
     schema: SANDBOX_EXECUTION_RECEIPT_SCHEMA,
     executionOrigin: "remote" as const,
-    isolationTier: "remote_container" as const,
+    isolationTier,
     candidateFingerprint: input.candidateFingerprint,
     targetDomainId: input.targetDomainId,
     targetTenantId: input.targetTenantId ?? "ten-test-external-sandbox",
     targetTenantSlug: input.targetTenantSlug ?? "test-external-sandbox",
     sandboxAttemptId: input.sandboxAttemptId,
-    bundleHash: `sandbox-bundle:v1:${marker.repeat(64)}`,
+    bundleHash,
     resultHash: `sandbox-result:v1:${marker.repeat(64)}`,
-    runnerId: "test-external-runner",
-    runnerBuildId: "test-external-runner-build",
-    runtimeImageDigest: `sha256:${marker.repeat(64)}`,
+    runnerId,
+    runnerBuildId,
+    runtimeImageDigest,
+    platformAttestation,
+    candidateBundleVerification,
     brokerOriginHash: `sha256:${"b".repeat(64)}`,
     serveOriginHash: `sha256:${"c".repeat(64)}`,
     policyHash: `sandbox-policy:v1:${"d".repeat(64)}`,
@@ -124,7 +183,7 @@ export function makePromotableSandboxModelUsage(input: {
   const body = {
     schema: SANDBOX_MODEL_USAGE_SCHEMA,
     sandboxAttemptId: input.sandboxAttemptId,
-    bundleHash: `sandbox-bundle:v1:${marker.repeat(64)}`,
+    bundleHash: `sandbox-bundle:v2:${marker.repeat(64)}`,
     targetTenantId: input.targetTenantId ?? "ten-test-external-sandbox",
     targetTenantSlug: input.targetTenantSlug ?? "test-external-sandbox",
     calls,
@@ -168,6 +227,7 @@ export function makePromotableSandboxExecutionEvidence(input: {
   targetTenantSlug?: string;
   marker?: string;
   agentRefs: string[];
+  isolationTier?: "remote_container" | "remote_vm" | "same_host_container";
 }): {
   modelUsage: SandboxModelUsageEvidence;
   executionReceipt: SandboxExecutionPlaneReceipt;

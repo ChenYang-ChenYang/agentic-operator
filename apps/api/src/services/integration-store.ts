@@ -16,7 +16,12 @@
  * hot path is a single indexed read + a cheap GCM decrypt.
  */
 
-import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from "node:crypto";
+import {
+  createCipheriv,
+  createDecipheriv,
+  randomBytes,
+  scryptSync,
+} from "node:crypto";
 import { hostname } from "node:os";
 import { and, eq } from "drizzle-orm";
 
@@ -51,7 +56,10 @@ function encryptKey(plain: string): KeyMaterial {
   const saltHex = randomBytes(16).toString("hex");
   const iv = randomBytes(12);
   const cipher = createCipheriv("aes-256-gcm", deriveKey(saltHex), iv);
-  const cipherBuf = Buffer.concat([cipher.update(plain, "utf8"), cipher.final()]);
+  const cipherBuf = Buffer.concat([
+    cipher.update(plain, "utf8"),
+    cipher.final(),
+  ]);
   return {
     keyCipher: cipherBuf.toString("hex"),
     keyIv: iv.toString("hex"),
@@ -94,6 +102,37 @@ function maskKey(plain: string): string {
 
 type IntegrationRow = typeof integrations.$inferSelect;
 
+/** Parse a JSON object column into a string→string record (tolerant). */
+function parseJsonRecord(
+  raw: string | null | undefined,
+): Record<string, string> {
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+      return {};
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof v === "string") out[k] = v;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+/** Decrypt the extra-secrets bag (JSON object of key→plaintext). Empty on
+ *  missing/corrupt — same fail-soft posture as decryptKey. */
+function readSecretsBag(row: IntegrationRow): Record<string, string> {
+  const plain = decryptKey({
+    keyCipher: row.secretsCipher,
+    keyIv: row.secretsIv,
+    keyTag: row.secretsTag,
+    keySalt: row.secretsSalt,
+  });
+  return parseJsonRecord(plain);
+}
+
 /** Map a DB row to the secret-free public contract shape. */
 export function toPublic(row: IntegrationRow): IntegrationPublic {
   return {
@@ -103,6 +142,9 @@ export function toPublic(row: IntegrationRow): IntegrationPublic {
     baseUrl: row.baseUrl ?? null,
     keyMasked: row.keyMasked ?? null,
     hasKey: Boolean(row.keyCipher),
+    config: parseJsonRecord(row.configJson),
+    // Names only — the values never leave the store in a public shape.
+    secretKeysStored: Object.keys(readSecretsBag(row)).sort(),
     status: (row.status as IntegrationStatus) ?? "unconfigured",
     lastCheckedAt: row.lastCheckedAt ? row.lastCheckedAt.getTime() : null,
     lastError: row.lastError ?? null,
@@ -130,8 +172,59 @@ export function getIntegrationRow(
   return db
     .select()
     .from(integrations)
-    .where(and(eq(integrations.tenantId, tenantId), eq(integrations.provider, provider)))
+    .where(
+      and(
+        eq(integrations.tenantId, tenantId),
+        eq(integrations.provider, provider),
+      ),
+    )
     .all()[0];
+}
+
+/**
+ * Secret-free verification projection for Configuration Tasks. This function
+ * deliberately never decrypts either credential column: it exposes only
+ * presence booleans, non-secret configured field names, and persisted health
+ * state.
+ */
+export interface IntegrationVerificationSnapshot {
+  id: string;
+  provider: string;
+  enabled: boolean;
+  baseUrlPresent: boolean;
+  apiKeyPresent: boolean;
+  plainFieldKeys: string[];
+  additionalSecretsPresent: boolean;
+  status: IntegrationStatus;
+  lastCheckedAt: number | null;
+  updatedAt: number;
+}
+
+export function getIntegrationVerificationSnapshot(
+  tenantId: string,
+  provider: string,
+): IntegrationVerificationSnapshot | null {
+  const row = getIntegrationRow(tenantId, provider);
+  if (!row) return null;
+  return {
+    id: row.id,
+    provider: row.provider,
+    enabled: Boolean(row.enabled),
+    baseUrlPresent: Boolean(row.baseUrl?.trim()),
+    apiKeyPresent: Boolean(
+      row.keyCipher && row.keyIv && row.keyTag && row.keySalt,
+    ),
+    plainFieldKeys: Object.entries(parseJsonRecord(row.configJson))
+      .filter(([, value]) => Boolean(value.trim()))
+      .map(([key]) => key)
+      .sort(),
+    additionalSecretsPresent: Boolean(
+      row.secretsCipher && row.secretsIv && row.secretsTag && row.secretsSalt,
+    ),
+    status: (row.status as IntegrationStatus) ?? "unconfigured",
+    lastCheckedAt: row.lastCheckedAt ? row.lastCheckedAt.getTime() : null,
+    updatedAt: row.updatedAt ? row.updatedAt.getTime() : 0,
+  };
 }
 
 export interface UpsertInput {
@@ -141,15 +234,37 @@ export interface UpsertInput {
   baseUrl?: string;
   /** Omit to leave the stored key untouched; "" to clear it. */
   apiKey?: string;
+  /** Non-secret dynamic fields (merge semantics: ""=delete key, omit=keep). */
+  plainFields?: Record<string, string>;
+  /** Secret dynamic fields — merged into the encrypted secrets bag with the
+   *  same ""=delete / omit=keep semantics. Values only live in memory here. */
+  secretFields?: Record<string, string>;
   enabled?: boolean;
   createdBy?: string | null;
+}
+
+/** Merge dynamic-field updates into an existing record: empty string deletes,
+ *  other values overwrite, untouched keys survive. */
+function mergeFields(
+  existing: Record<string, string>,
+  updates: Record<string, string>,
+): Record<string, string> {
+  const out = { ...existing };
+  for (const [k, v] of Object.entries(updates)) {
+    const key = k.trim();
+    if (!key) continue;
+    if (v.trim().length === 0) delete out[key];
+    else out[key] = v;
+  }
+  return out;
 }
 
 export function upsertIntegration(input: UpsertInput): IntegrationPublic {
   const db = getDb();
   const existing = getIntegrationRow(input.tenantId, input.provider);
   const catalogName =
-    INTEGRATION_PROVIDERS.find((p) => p.id === input.provider)?.name ?? input.provider;
+    INTEGRATION_PROVIDERS.find((p) => p.id === input.provider)?.name ??
+    input.provider;
   const now = new Date();
 
   // Key handling: undefined → keep; "" → clear; non-empty → (re)encrypt.
@@ -171,19 +286,65 @@ export function upsertIntegration(input: UpsertInput): IntegrationPublic {
     }
   }
 
+  // Dynamic bags: merge onto what the row already stores.
+  let configFields: { configJson: string | null } | null = null;
+  if (input.plainFields && Object.keys(input.plainFields).length > 0) {
+    const merged = mergeFields(
+      existing ? parseJsonRecord(existing.configJson) : {},
+      input.plainFields,
+    );
+    configFields = {
+      configJson: Object.keys(merged).length ? JSON.stringify(merged) : null,
+    };
+  }
+  let secretsFields: {
+    secretsCipher: string | null;
+    secretsIv: string | null;
+    secretsTag: string | null;
+    secretsSalt: string | null;
+  } | null = null;
+  if (input.secretFields && Object.keys(input.secretFields).length > 0) {
+    const merged = mergeFields(
+      existing ? readSecretsBag(existing) : {},
+      input.secretFields,
+    );
+    if (Object.keys(merged).length === 0) {
+      secretsFields = {
+        secretsCipher: null,
+        secretsIv: null,
+        secretsTag: null,
+        secretsSalt: null,
+      };
+    } else {
+      const m = encryptKey(JSON.stringify(merged));
+      secretsFields = {
+        secretsCipher: m.keyCipher,
+        secretsIv: m.keyIv,
+        secretsTag: m.keyTag,
+        secretsSalt: m.keySalt,
+      };
+    }
+  }
+  const fieldsChanged = configFields !== null || secretsFields !== null;
+
   if (existing) {
     const update: Record<string, unknown> = { updatedAt: now };
     if (input.name !== undefined) update.name = input.name;
     if (input.baseUrl !== undefined) update.baseUrl = input.baseUrl;
     if (input.enabled !== undefined) update.enabled = input.enabled;
-    if (keyChanged) {
-      Object.assign(update, keyFields);
-      // A credential change invalidates the cached health result.
+    if (configFields) update.configJson = configFields.configJson;
+    if (secretsFields) Object.assign(update, secretsFields);
+    if (keyChanged || fieldsChanged) {
+      if (keyChanged) Object.assign(update, keyFields);
+      // A credential/config change invalidates the cached health result.
       update.status = "unconfigured";
       update.lastError = null;
       update.lastCheckedAt = null;
     }
-    db.update(integrations).set(update).where(eq(integrations.id, existing.id)).run();
+    db.update(integrations)
+      .set(update)
+      .where(eq(integrations.id, existing.id))
+      .run();
     return toPublic(getIntegrationRow(input.tenantId, input.provider)!);
   }
 
@@ -200,6 +361,11 @@ export function upsertIntegration(input: UpsertInput): IntegrationPublic {
       keyTag: keyFields.keyTag ?? null,
       keySalt: keyFields.keySalt ?? null,
       keyMasked: keyFields.keyMasked ?? null,
+      configJson: configFields?.configJson ?? null,
+      secretsCipher: secretsFields?.secretsCipher ?? null,
+      secretsIv: secretsFields?.secretsIv ?? null,
+      secretsTag: secretsFields?.secretsTag ?? null,
+      secretsSalt: secretsFields?.secretsSalt ?? null,
       status: "unconfigured",
       enabled: input.enabled ?? true,
       createdBy: input.createdBy ?? null,
@@ -226,8 +392,18 @@ export function setIntegrationHealth(
 ): void {
   const db = getDb();
   db.update(integrations)
-    .set({ status, lastError: error, lastCheckedAt: new Date(), updatedAt: new Date() })
-    .where(and(eq(integrations.tenantId, tenantId), eq(integrations.provider, provider)))
+    .set({
+      status,
+      lastError: error,
+      lastCheckedAt: new Date(),
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(integrations.tenantId, tenantId),
+        eq(integrations.provider, provider),
+      ),
+    )
     .run();
 }
 
@@ -240,8 +416,11 @@ export function getDecryptedCreds(
   if (!row || !row.enabled) return null;
   const api_key = decryptKey(row) ?? undefined;
   const base_url = row.baseUrl ?? undefined;
-  if (!api_key && !base_url) return null;
-  return { base_url, api_key };
+  // Dynamic fields: plain config + decrypted extra secrets, secrets win on clash.
+  const fields = { ...parseJsonRecord(row.configJson), ...readSecretsBag(row) };
+  const hasFields = Object.keys(fields).length > 0;
+  if (!api_key && !base_url && !hasFields) return null;
+  return { base_url, api_key, ...(hasFields ? { fields } : {}) };
 }
 
 /**

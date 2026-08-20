@@ -196,7 +196,9 @@ export function buildFactoryProductionRegressionInventory(args: {
       `production regression inventory blocked: ${coverageIssues.join("; ")}`,
     );
   const records = args.ledger.committed.map((entry) => entry.record!);
-  for (const deployment of args.deployments) {
+  for (const deployment of args.deployments.filter(
+    (row) => row.target === "workflow",
+  )) {
     if (
       deployment.workflowTenantId !== undefined &&
       deployment.workflowTenantId !== deployment.tenantId
@@ -359,5 +361,6 @@ export function readFactoryProductionDeploymentRows(): FactoryProductionDeployme
     .leftJoin(workflowVersions, eq(workflowVersions.id, deployments.versionId))
     .leftJoin(workflows, eq(workflows.id, workflowVersions.workflowId))
     .innerJoin(tenants, eq(tenants.id, deployments.tenantId))
+    .where(eq(deployments.target, "workflow"))
     .all();
 }

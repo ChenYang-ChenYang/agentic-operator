@@ -14,6 +14,8 @@
 export const ROLE_OF_TOOL: Record<string, string> = {
   // 读业务
   read_ontology: "业务分析师",
+  query_links: "业务分析师",
+  read_action_contract: "业务分析师",
   inspect_action_readiness: "就绪检查员",
   inspect_all_action_readiness: "就绪检查员",
   revise_ontology: "本体修订提案员",
@@ -54,6 +56,8 @@ export const ROLE_OF_TOOL: Record<string, string> = {
   sandbox_run: "沙箱工程师",
   run_regression: "回归测试员",
   inspect_run: "沙箱工程师",
+  // #RUN-EVIDENCE — 只读盘上真源、给可引用位置的取证工位（与「故障诊断师」分工：取证不下结论）。
+  read_run_evidence: "运行取证员",
   analyze_failure: "故障诊断师",
   // 交付
   finish: "交付负责人",
@@ -72,7 +76,9 @@ export const ROLE_OF_TOOL: Record<string, string> = {
   confirm_integration_profile: "集成配置协调员",
   probe_tool: "集成验证工程师",
   create_signed_fixture: "沙箱证据协调员",
+  prepare_sandbox_evidence_plan: "沙箱证据协调员",
   search_tools: "工具工程师",
+  describe_tool: "工具工程师",
   extract_api_schema: "工具工程师",
   create_skill: "技能工程师",
   use_skill: "技能工程师",

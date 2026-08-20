@@ -4,6 +4,7 @@ import {
   activeHumanInteraction,
   bindHumanInteractionEvent,
   closeHumanInteraction,
+  humanInteractionMatchesSubject,
 } from "./human-interaction";
 
 function ctx(): BrainCtx {
@@ -68,5 +69,31 @@ describe("addressed human interactions", () => {
     state.awaitingClarify = false;
     expect(activeHumanInteraction(state)?.kind).toBe("test_approval");
     expect(state.humanInteractions?.boundary).toBeTruthy();
+  });
+
+  it("binds a durable interaction to the exact prompt subject", () => {
+    const state = ctx();
+    state.awaitingClarify = true;
+    const prompt = {
+      question: "选择哪个连接？",
+      context: "requirement=req-1",
+      options: [{ label: "Allmeta", value: "option-token" }],
+    };
+    bindHumanInteractionEvent(state, {
+      t: "clarify",
+      ...prompt,
+      awaitingAnswer: true,
+    });
+    const interaction = activeHumanInteraction(state)!;
+
+    expect(humanInteractionMatchesSubject(interaction, "clarify", prompt)).toBe(
+      true,
+    );
+    expect(
+      humanInteractionMatchesSubject(interaction, "clarify", {
+        ...prompt,
+        question: "已被替换的旧问题",
+      }),
+    ).toBe(false);
   });
 });

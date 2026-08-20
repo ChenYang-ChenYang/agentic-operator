@@ -18,6 +18,26 @@ describe("builtin skills — seeded library + deterministic recall", () => {
     expect(m.length).toBeLessThanOrEqual(2); // capped
   });
 
+  it("recalls non-blocking authoring guidance when an external API is temporarily unavailable", () => {
+    const matches = matchBuiltinSkills(
+      "GoHire API 暂时不通，但请继续生成 function 代码，最后列出缺失 profile 和 probe",
+      { pipeline: "full" },
+    );
+    expect(matches.map((match) => match.slug)).toContain(
+      "external-api-resilient-authoring",
+    );
+  });
+
+  it("recalls evidence-grounded Analyst guidance for an Allmeta Ontology analysis", () => {
+    const matches = matchBuiltinSkills(
+      "深入分析 Allmeta Ontology 的关系图、事件链，并把实例数据用表格展现",
+      { pipeline: "analyze" },
+    );
+    expect(matches.map((match) => match.slug)).toContain(
+      "ontology-evidence-analyst",
+    );
+  });
+
   it("recalls the rule-gate pattern for a 规则校验 goal and the chain playbook for 断链", () => {
     expect(matchBuiltinSkills("生成规则校验 agent 做合规审核", { pipeline: "full" }).map((x) => x.slug)).toContain("rule-gate-agent-pattern");
     expect(matchBuiltinSkills("事件链不通，好像断链了帮我看看", { pipeline: "analyze" }).map((x) => x.slug)).toContain("broken-chain-diagnosis");

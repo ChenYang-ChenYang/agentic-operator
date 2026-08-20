@@ -61,6 +61,13 @@ export const Tenant = z.object({
   createdAt: z.number(),
   updatedAt: z.number(),
   archivedAt: z.number().nullable(),
+  /** Product taxonomy. Runtime namespaces retain history/execution adapters
+   * but are hidden from the default Business Domain switcher. */
+  productKind: z
+    .enum(["business_domain", "runtime_namespace"])
+    .default("business_domain"),
+  /** Desired manifest-workflow deployment state on this process's Inngest. */
+  inngestEnabled: z.boolean(),
 });
 export type Tenant = z.infer<typeof Tenant>;
 
@@ -70,6 +77,8 @@ export const TenantListItem = Tenant.extend({
   runs24h: z.number(),
   openTasks: z.number(),
   membership: z.enum(["admin", "operator", "viewer"]).nullable(),
+  /** False when AGENTIC_ENABLED_TENANTS assigns this tenant elsewhere. */
+  inngestProcessScoped: z.boolean(),
 });
 export type TenantListItem = z.infer<typeof TenantListItem>;
 
@@ -81,6 +90,7 @@ export const TenantDetail = Tenant.extend({
   workflowCount: z.number(),
   deploymentLiveCount: z.number(),
   membership: z.enum(["admin", "operator", "viewer"]).nullable(),
+  inngestProcessScoped: z.boolean(),
   budgets: z
     .object({
       monthlyTokenCap: z.number().nullable(),
@@ -169,6 +179,31 @@ export const TenantRestoreBody = z.object({
   reason: z.string().max(512).optional(),
 });
 export type TenantRestoreBody = z.infer<typeof TenantRestoreBody>;
+
+/** PUT /v1/tenants/:slug/inngest-deployment body. */
+export const TenantInngestDeploymentBody = z
+  .object({
+    enabled: z.boolean(),
+  })
+  .strict();
+export type TenantInngestDeploymentBody = z.infer<
+  typeof TenantInngestDeploymentBody
+>;
+
+/** Broker-verified result of changing one tenant's deployment selection. */
+export const TenantInngestDeploymentResponse = z.object({
+  slug: z.string(),
+  enabled: z.boolean(),
+  changed: z.boolean(),
+  appId: z.string(),
+  servePath: z.string(),
+  functionCount: z.number().int().nonnegative(),
+  status: z.enum(["deployed", "empty", "stopped"]),
+  brokerVerified: z.boolean(),
+});
+export type TenantInngestDeploymentResponse = z.infer<
+  typeof TenantInngestDeploymentResponse
+>;
 
 /** P5-TEN-01 — POST /v1/tenants response. */
 export const TenantCreateResponse = z.object({

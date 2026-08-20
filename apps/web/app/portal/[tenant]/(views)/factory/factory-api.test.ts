@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { translate } from "@/lib/i18n";
-import { buildHumanInteractionSubmission, decodeFactoryResponse, factoryNetworkFailure } from "./factory-api";
+import {
+  buildGeneratedToolDeactivationPath,
+  buildHumanInteractionSubmission,
+  decodeFactoryResponse,
+  factoryNetworkFailure,
+} from "./factory-api";
 
 const t = (key: string, vars?: Record<string, string | number>) => translate("zh", key, vars);
 
@@ -68,6 +73,19 @@ describe("decodeFactoryResponse", () => {
     }))).resolves.toEqual({ ok: false, status: 204, message: "HTTP 204 返回了无效 JSON" });
   });
 
+  it("turns a non-JSON proxy 5xx into an actionable API restart error", async () => {
+    await expect(decodeFactoryResponse(t, response({
+      httpOk: false,
+      status: 500,
+      jsonError: true,
+    }))).resolves.toEqual({
+      ok: false,
+      status: 500,
+      code: "api_restarting",
+      message: "OntoCode 服务正在重启，请稍候重试",
+    });
+  });
+
   it("rejects an incomplete success envelope with no data", async () => {
     await expect(decodeFactoryResponse(t, response({
       httpOk: true,
@@ -109,5 +127,36 @@ describe("buildHumanInteractionSubmission", () => {
       kind: "boundary",
       text: "[边界事件决策] []",
     })).toThrow(/不能安全提交/);
+  });
+});
+
+describe("buildGeneratedToolDeactivationPath", () => {
+  it("carries the exact active revision and revision domain for CAS", () => {
+    expect(
+      buildGeneratedToolDeactivationPath({
+        name: "gohire.generate/jd",
+        expectedActiveRevisionId: "ftr-active-7",
+        revisionDomainId: "Agents-generation",
+      }),
+    ).toBe(
+      "/v1/agent-factory/generated-tools/gohire.generate%2Fjd?expectedActiveRevisionId=ftr-active-7&revisionDomainId=Agents-generation",
+    );
+  });
+
+  it("uses the explicit unbound sentinel but rejects a legacy projection", () => {
+    expect(
+      buildGeneratedToolDeactivationPath({
+        name: "gohire.generateJd",
+        expectedActiveRevisionId: "ftr-1",
+        revisionDomainId: null,
+      }),
+    ).toContain("revisionDomainId=__unbound__");
+    expect(() =>
+      buildGeneratedToolDeactivationPath({
+        name: "gohire.generateJd",
+        expectedActiveRevisionId: "",
+        revisionDomainId: null,
+      }),
+    ).toThrow(/exact tool name and active revision/);
   });
 });

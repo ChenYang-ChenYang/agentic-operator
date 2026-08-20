@@ -39,9 +39,14 @@ import { and, eq, isNull } from "drizzle-orm";
 import {
   apiTokens,
   auditLog,
+  deployments,
   getDb,
+  isTenantInngestDeploymentEnabled,
   memberships,
+  TENANT_INNGEST_DEPLOYMENT_NOTE,
+  TENANT_INNGEST_DISABLED_VERSION,
   tenantBudgets,
+  tenantInngestDeploymentMarkerId,
   tenants,
 } from "@agentic/db";
 import { makeId } from "@agentic/shared";
@@ -49,6 +54,7 @@ import {
   TENANT_SLUG_REGEX,
   TenantArchiveBody,
   TenantCreateBody,
+  TenantInngestDeploymentBody,
   TenantRestoreBody,
   TenantUpdateBody,
   isReservedSlug,
@@ -71,6 +77,12 @@ import {
   readIdempotencyKey,
   releaseIdempotency,
 } from "../../services/idempotency";
+import {
+  TenantInngestDeploymentError,
+  transitionTenantInngestDeployment,
+  type TenantInngestRuntimeReceipt,
+} from "../../services/tenant-inngest-deployment";
+import { isTenantInProcessDeploymentScope } from "../../services/tenant-deployment-scope";
 // P5-TEN-01 — a tenant mutation is not complete until its rebuilt app has been
 // accepted by the real Inngest control plane. Never report a deferred success.
 async function reregisterInngestRequired(slug: string): Promise<number> {
@@ -81,12 +93,67 @@ async function reregisterInngestRequired(slug: string): Promise<number> {
   const out = await reregisterInngest({ tenantSlug: slug, scope: "tenant" });
   const sync = await syncTenantApp(slug);
   if (!sync.ok) {
-    throw new Error(`Inngest app registration failed for ${slug}: ${sync.error ?? `HTTP ${sync.status ?? "unknown"}`}`);
+    throw new Error(
+      `Inngest app registration failed for ${slug}: ${sync.error ?? `HTTP ${sync.status ?? "unknown"}`}`,
+    );
   }
   if (out.appFnCount === undefined) {
-    throw new Error(`Inngest registry did not return a scoped function count for ${slug}`);
+    throw new Error(
+      `Inngest registry did not return a scoped function count for ${slug}`,
+    );
   }
   return out.appFnCount;
+}
+
+async function synchronizeTenantInngestDeployment(
+  slug: string,
+): Promise<TenantInngestRuntimeReceipt> {
+  const [
+    { appIdForTenant },
+    { reregisterInngest, servePathForSlug },
+    { syncTenantApp, verifyTenantAppRegistration },
+  ] = await Promise.all([
+    import("@agentic/runtime"),
+    import("../../services/inngest-registry"),
+    import("../../services/inngest-sync"),
+  ]);
+  const registered = await reregisterInngest({
+    tenantSlug: slug,
+    scope: "tenant",
+  });
+  if (registered.appFnCount === undefined) {
+    throw new Error(
+      `Inngest registry did not return a scoped function count for ${slug}`,
+    );
+  }
+  const sync = await syncTenantApp(slug);
+  if (!sync.ok) {
+    throw new Error(
+      `Inngest app registration failed for ${slug}: ${sync.error ?? `HTTP ${sync.status ?? "unknown"}`}`,
+    );
+  }
+
+  // Empty apps intentionally have no dispatch connection; the accepted PUT is
+  // the broker receipt that removes all functions. Non-empty deployments also
+  // require the independent function-count probe to converge exactly.
+  if (registered.appFnCount > 0) {
+    const verification = await verifyTenantAppRegistration(
+      slug,
+      registered.appFnCount,
+    );
+    if (!verification.verified) {
+      throw new Error(
+        `Inngest function count verification failed for ${slug}: ${verification.error ?? `expected ${registered.appFnCount}, observed ${verification.observedFunctionCount ?? "unknown"}`}`,
+      );
+    }
+  }
+
+  return {
+    appId: registered.appId ?? appIdForTenant(slug),
+    servePath: servePathForSlug(slug),
+    functionCount: registered.appFnCount,
+    brokerVerified: true,
+  };
 }
 
 /**
@@ -110,7 +177,12 @@ function canReadTenant(
   return !!getDb()
     .select({ userId: memberships.userId })
     .from(memberships)
-    .where(and(eq(memberships.userId, auth.userId), eq(memberships.tenantId, tenantId)))
+    .where(
+      and(
+        eq(memberships.userId, auth.userId),
+        eq(memberships.tenantId, tenantId),
+      ),
+    )
     .all()[0];
 }
 
@@ -139,8 +211,7 @@ function tenantProvisionRoots(slug: string): string[] {
   const repoRoot = process.cwd();
   // Walk up to find the data/ directory the same way db/client.ts does.
   // For correctness we use process.env.AGENTIC_DATA_ROOT when set.
-  const dataRoot =
-    process.env.AGENTIC_DATA_ROOT ?? path.join(repoRoot, "data");
+  const dataRoot = process.env.AGENTIC_DATA_ROOT ?? path.join(repoRoot, "data");
   return [
     path.join(dataRoot, "logs", slug),
     path.join(dataRoot, "artifacts", slug),
@@ -177,7 +248,9 @@ async function rollbackProvisioning(
     getDb().delete(tenants).where(eq(tenants.id, tenantId)).run();
     databaseRemoved = true;
   } catch (error) {
-    cleanupErrors.push(error instanceof Error ? error : new Error(String(error)));
+    cleanupErrors.push(
+      error instanceof Error ? error : new Error(String(error)),
+    );
   }
 
   if (databaseRemoved) {
@@ -188,11 +261,15 @@ async function rollbackProvisioning(
       ]);
       unregisterApp(appIdForTenant(slug));
     } catch (error) {
-      cleanupErrors.push(error instanceof Error ? error : new Error(String(error)));
+      cleanupErrors.push(
+        error instanceof Error ? error : new Error(String(error)),
+      );
     }
 
     const settled = await Promise.allSettled(
-      provisionedRoots.map((root) => fs.rm(root, { recursive: true, force: true })),
+      provisionedRoots.map((root) =>
+        fs.rm(root, { recursive: true, force: true }),
+      ),
     );
     for (const result of settled) {
       if (result.status === "rejected") {
@@ -280,76 +357,97 @@ async function performCreate(
   // a durable idempotency claim may find this exact tenant already committed;
   // in that case the transaction is known to have completed atomically and we
   // resume only filesystem/broker provisioning with the original stable ids.
-  if (!existing) db.transaction((tx) => {
-    tx.insert(tenants)
-      .values({
-        id: tenantId,
-        slug: body.slug,
-        name: body.name,
-        subtitle: body.subtitle ?? null,
-        color: body.color ?? null,
-        createdAt: now,
-        updatedAt: now,
-      })
-      .run();
-
-    tx.insert(tenantBudgets)
-      .values({
-        tenantId,
-        monthlyTokenCap: body.budget?.monthlyTokenCap ?? null,
-        monthlyUsdCap: body.budget?.monthlyUsdCap ?? null,
-        usedTokensMonth: 0,
-        usedUsdMonth: 0,
-        periodStart: now,
-        updatedAt: now,
-      })
-      .run();
-
-    if (operatorUserId) {
-      tx.insert(memberships)
+  if (!existing)
+    db.transaction((tx) => {
+      tx.insert(tenants)
         .values({
-          userId: operatorUserId,
-          tenantId,
-          role: "admin",
-        })
-        .onConflictDoNothing({
-          target: [memberships.userId, memberships.tenantId],
-        })
-        .run();
-    }
-
-    if (tokenMaterial) {
-      tx.insert(apiTokens)
-        .values({
-          id: tokenId,
-          tenantId,
-          hash: tokenMaterial.hash,
-          name: "bootstrap",
-          scopes: ["tenant:read", "tenant:write", "agents:invoke", "runs:read"],
-          createdAt: now,
-        })
-        .run();
-    }
-
-    tx.insert(auditLog)
-      .values({
-        id: auditId,
-        tenantId,
-        actorUserId: operatorUserId ?? null,
-        action: "tenant.create",
-        targetType: "tenant",
-        targetId: tenantId,
-        at: now,
-        metaJson: {
+          id: tenantId,
           slug: body.slug,
           name: body.name,
-          starter: body.starter,
-          mintToken: body.mintToken,
-          by_tenant: operation.callerSlug,
-        } as never,
-      })
-      .run();
-  });
+          subtitle: body.subtitle ?? null,
+          color: body.color ?? null,
+          createdAt: now,
+          updatedAt: now,
+        })
+        .run();
+
+      // New empty tenants start stopped. Legacy tenants without a runtime
+      // marker remain enabled for upgrade compatibility.
+      tx.insert(deployments)
+        .values({
+          id: tenantInngestDeploymentMarkerId(tenantId),
+          tenantId,
+          target: "runtime",
+          versionId: TENANT_INNGEST_DISABLED_VERSION,
+          status: "live",
+          deployedBy: operatorUserId,
+          deployedAt: now,
+          note: TENANT_INNGEST_DEPLOYMENT_NOTE,
+        })
+        .run();
+
+      tx.insert(tenantBudgets)
+        .values({
+          tenantId,
+          monthlyTokenCap: body.budget?.monthlyTokenCap ?? null,
+          monthlyUsdCap: body.budget?.monthlyUsdCap ?? null,
+          usedTokensMonth: 0,
+          usedUsdMonth: 0,
+          periodStart: now,
+          updatedAt: now,
+        })
+        .run();
+
+      if (operatorUserId) {
+        tx.insert(memberships)
+          .values({
+            userId: operatorUserId,
+            tenantId,
+            role: "admin",
+          })
+          .onConflictDoNothing({
+            target: [memberships.userId, memberships.tenantId],
+          })
+          .run();
+      }
+
+      if (tokenMaterial) {
+        tx.insert(apiTokens)
+          .values({
+            id: tokenId,
+            tenantId,
+            hash: tokenMaterial.hash,
+            name: "bootstrap",
+            scopes: [
+              "tenant:read",
+              "tenant:write",
+              "agents:invoke",
+              "runs:read",
+            ],
+            createdAt: now,
+          })
+          .run();
+      }
+
+      tx.insert(auditLog)
+        .values({
+          id: auditId,
+          tenantId,
+          actorUserId: operatorUserId ?? null,
+          action: "tenant.create",
+          targetType: "tenant",
+          targetId: tenantId,
+          at: now,
+          metaJson: {
+            slug: body.slug,
+            name: body.name,
+            starter: body.starter,
+            mintToken: body.mintToken,
+            by_tenant: operation.callerSlug,
+          } as never,
+        })
+        .run();
+    });
 
   const provisionedRoots = tenantProvisionRoots(body.slug);
   let inngestFnCount: number;
@@ -358,7 +456,8 @@ async function performCreate(
     await ensureTenantDirs(provisionedRoots);
     inngestFnCount = await reregisterInngestRequired(body.slug);
     detail = await getTenantDetail(body.slug, { forUserId: operatorUserId });
-    if (!detail) throw new Error(`tenant ${body.slug} disappeared after provisioning`);
+    if (!detail)
+      throw new Error(`tenant ${body.slug} disappeared after provisioning`);
   } catch (error) {
     return rollbackProvisioning(tenantId, body.slug, provisionedRoots, error);
   }
@@ -386,21 +485,31 @@ async function performCreate(
 
 export async function tenantsRoutes(app: FastifyInstance): Promise<void> {
   // ── GET /v1/tenants ────────────────────────────────────────────────────
-  app.get<{ Querystring: { include_archived?: string } }>(
+  app.get<{
+    Querystring: {
+      include_archived?: string;
+      include_runtime_namespaces?: string;
+    };
+  }>(
     "/tenants",
     async (req, reply) => {
       const auth = requireAuth(req);
       const includeArchived =
         req.query?.include_archived === "1" ||
         req.query?.include_archived === "true";
+      const includeRuntimeNamespaces =
+        req.query?.include_runtime_namespaces === "1" ||
+        req.query?.include_runtime_namespaces === "true";
 
       const allItems = await listTenantsWithCounts({
         includeArchived,
+        includeRuntimeNamespaces,
         forUserId: auth.platformRole === "superadmin" ? null : auth.userId,
       });
-      const items = auth.platformRole === "superadmin" || auth.userId
-        ? allItems
-        : allItems.filter((item) => item.slug === auth.tenantSlug);
+      const items =
+        auth.platformRole === "superadmin" || auth.userId
+          ? allItems
+          : allItems.filter((item) => item.slug === auth.tenantSlug);
 
       return reply.ok({
         items,
@@ -427,35 +536,40 @@ export async function tenantsRoutes(app: FastifyInstance): Promise<void> {
       if (!TENANT_SLUG_REGEX.test(slug)) {
         return reply.fail("invalid_slug", `slug "${slug}" is malformed`, 400);
       }
-      const { appIdForTenant, tenantInngestConfigStatus } = await import("@agentic/runtime");
+      const { appIdForTenant, tenantInngestConfigStatus } =
+        await import("@agentic/runtime");
       const reg = await import("../../services/inngest-registry");
       const sync = await import("../../services/inngest-sync");
       const appId = appIdForTenant(slug);
-      const tenant = getDb().select().from(tenants).where(eq(tenants.slug, slug)).all()[0];
-      if (!tenant) return reply.fail("tenant_not_found", `no tenant with slug "${slug}"`, 404);
-      if (!canReadTenant(auth, tenant.id)) return reply.fail("forbidden", "not a member of this tenant", 403);
-      const local = reg
-        .listRegisteredApps()
-        .find((a) => a.appId === appId);
-      if (!local) {
+      const tenant = getDb()
+        .select()
+        .from(tenants)
+        .where(eq(tenants.slug, slug))
+        .all()[0];
+      if (!tenant)
         return reply.fail(
-          "app_not_registered",
-          `no Inngest app registered for tenant "${slug}"`,
+          "tenant_not_found",
+          `no tenant with slug "${slug}"`,
           404,
         );
-      }
-      const probe = await sync.probeApp(appId, slug);
+      if (!canReadTenant(auth, tenant.id))
+        return reply.fail("forbidden", "not a member of this tenant", 403);
+      const inngestEnabled = isTenantInngestDeploymentEnabled(tenant.id);
+      const local = reg.listRegisteredApps().find((a) => a.appId === appId);
+      const probe = local ? await sync.probeApp(appId, slug) : null;
       const config = tenantInngestConfigStatus(slug);
       return reply.ok({
         slug,
         appId,
-        servePath: local.servePath,
+        enabled: inngestEnabled,
+        processScoped: isTenantInProcessDeploymentScope(slug),
+        servePath: local?.servePath ?? reg.servePathForSlug(slug),
         serveOrigin: config.serveOrigin,
-        localFnCount: local.fnCount,
+        localFnCount: local?.fnCount ?? 0,
         status:
           config.readiness === "blocked"
             ? "blocked"
-            : local.fnCount > 0
+            : inngestEnabled && (local?.fnCount ?? 0) > 0
               ? "online"
               : "offline",
         config,
@@ -464,23 +578,136 @@ export async function tenantsRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
-  // ── GET /v1/tenants/:slug ──────────────────────────────────────────────
-  app.get<{ Params: { slug: string } }>("/tenants/:slug", async (req, reply) => {
+  // ── PUT /v1/tenants/:slug/inngest-deployment ─────────────────────────
+  // Select whether this tenant's live manifest workflow is served to Inngest.
+  // The state transition is durable, lease-serialized, broker-verified, and
+  // compensated back to the previous state on any synchronization failure.
+  app.put<{
+    Params: { slug: string };
+    Body: { enabled?: unknown };
+  }>("/tenants/:slug/inngest-deployment", async (req, reply) => {
     const auth = requireAuth(req);
     const slug = req.params.slug;
     if (!TENANT_SLUG_REGEX.test(slug)) {
       return reply.fail("invalid_slug", `slug "${slug}" is malformed`, 400);
     }
-    const row = getDb().select().from(tenants).where(eq(tenants.slug, slug)).all()[0];
-    if (row && !canReadTenant(auth, row.id)) {
-      return reply.fail("forbidden", "not a member of this tenant", 403);
+    if (slug === "__system" || isReservedSlug(slug)) {
+      return reply.fail(
+        "system_app_managed_separately",
+        "the platform Inngest app is managed separately from tenant workflows",
+        400,
+      );
     }
-    const detail = await getTenantDetail(slug, { forUserId: auth.userId });
-    if (!detail) {
-      return reply.fail("tenant_not_found", `no tenant with slug "${slug}"`, 404);
+    const body = TenantInngestDeploymentBody.parse(req.body ?? {});
+
+    const db = getDb();
+    const row = db
+      .select()
+      .from(tenants)
+      .where(eq(tenants.slug, slug))
+      .all()[0];
+    if (!row) {
+      return reply.fail(
+        "tenant_not_found",
+        `no tenant with slug "${slug}"`,
+        404,
+      );
     }
-    return reply.ok(detail);
+
+    let canManage = auth.platformRole === "superadmin";
+    if (!canManage && auth.tenantId === row.id && auth.role === "admin") {
+      canManage = true;
+    }
+    if (!canManage && auth.userId) {
+      canManage =
+        db
+          .select({ role: memberships.role })
+          .from(memberships)
+          .where(
+            and(
+              eq(memberships.userId, auth.userId),
+              eq(memberships.tenantId, row.id),
+              eq(memberships.role, "admin"),
+            ),
+          )
+          .all().length > 0;
+    }
+    if (!canManage) {
+      return reply.fail(
+        "forbidden",
+        "must be an admin of this tenant to change its Inngest deployment",
+        403,
+      );
+    }
+    if (!isTenantInProcessDeploymentScope(slug)) {
+      return reply.fail(
+        "tenant_outside_process_scope",
+        `tenant "${slug}" is assigned outside this API process by AGENTIC_ENABLED_TENANTS`,
+        409,
+      );
+    }
+
+    try {
+      const result = await transitionTenantInngestDeployment(
+        {
+          tenantId: row.id,
+          slug,
+          enabled: body.enabled,
+          actorUserId: auth.userId,
+          callerSlug: auth.tenantSlug,
+        },
+        synchronizeTenantInngestDeployment,
+      );
+      return reply.ok({
+        slug,
+        enabled: body.enabled,
+        changed: result.changed,
+        appId: result.receipt.appId,
+        servePath: result.receipt.servePath,
+        functionCount: result.receipt.functionCount,
+        status: body.enabled
+          ? result.receipt.functionCount > 0
+            ? "deployed"
+            : "empty"
+          : "stopped",
+        brokerVerified: result.receipt.brokerVerified,
+      });
+    } catch (error) {
+      if (error instanceof TenantInngestDeploymentError) {
+        return reply.fail(error.code, error.message, error.statusCode);
+      }
+      throw error;
+    }
   });
+
+  // ── GET /v1/tenants/:slug ──────────────────────────────────────────────
+  app.get<{ Params: { slug: string } }>(
+    "/tenants/:slug",
+    async (req, reply) => {
+      const auth = requireAuth(req);
+      const slug = req.params.slug;
+      if (!TENANT_SLUG_REGEX.test(slug)) {
+        return reply.fail("invalid_slug", `slug "${slug}" is malformed`, 400);
+      }
+      const row = getDb()
+        .select()
+        .from(tenants)
+        .where(eq(tenants.slug, slug))
+        .all()[0];
+      if (row && !canReadTenant(auth, row.id)) {
+        return reply.fail("forbidden", "not a member of this tenant", 403);
+      }
+      const detail = await getTenantDetail(slug, { forUserId: auth.userId });
+      if (!detail) {
+        return reply.fail(
+          "tenant_not_found",
+          `no tenant with slug "${slug}"`,
+          404,
+        );
+      }
+      return reply.ok(detail);
+    },
+  );
 
   // ── POST /v1/tenants ───────────────────────────────────────────────────
   app.post("/tenants", async (req, reply) => {
@@ -626,7 +853,11 @@ export async function tenantsRoutes(app: FastifyInstance): Promise<void> {
         .where(eq(tenants.slug, slug))
         .all()[0];
       if (!row) {
-        return reply.fail("tenant_not_found", `no tenant with slug "${slug}"`, 404);
+        return reply.fail(
+          "tenant_not_found",
+          `no tenant with slug "${slug}"`,
+          404,
+        );
       }
 
       // P6-AUTH — updating tenant attributes requires admin of THIS tenant or
@@ -636,10 +867,19 @@ export async function tenantsRoutes(app: FastifyInstance): Promise<void> {
         const m = db
           .select({ role: memberships.role })
           .from(memberships)
-          .where(and(eq(memberships.userId, auth.userId ?? ""), eq(memberships.tenantId, row.id)))
+          .where(
+            and(
+              eq(memberships.userId, auth.userId ?? ""),
+              eq(memberships.tenantId, row.id),
+            ),
+          )
           .all()[0];
         if (m?.role !== "admin") {
-          return reply.fail("forbidden", "must be an admin of this tenant", 403);
+          return reply.fail(
+            "forbidden",
+            "must be an admin of this tenant",
+            403,
+          );
         }
       }
 
@@ -650,10 +890,7 @@ export async function tenantsRoutes(app: FastifyInstance): Promise<void> {
       if (body.color !== undefined) update.color = body.color;
 
       db.transaction(() => {
-        db.update(tenants)
-          .set(update)
-          .where(eq(tenants.id, row.id))
-          .run();
+        db.update(tenants).set(update).where(eq(tenants.id, row.id)).run();
         db.insert(auditLog)
           .values({
             id: makeId("aud"),
@@ -714,7 +951,11 @@ export async function tenantsRoutes(app: FastifyInstance): Promise<void> {
         .where(eq(tenants.slug, slug))
         .all()[0];
       if (!row) {
-        return reply.fail("tenant_not_found", `no tenant with slug "${slug}"`, 404);
+        return reply.fail(
+          "tenant_not_found",
+          `no tenant with slug "${slug}"`,
+          404,
+        );
       }
       if (row.archivedAt) {
         return reply.fail(
@@ -776,7 +1017,11 @@ export async function tenantsRoutes(app: FastifyInstance): Promise<void> {
         .where(eq(tenants.slug, slug))
         .all()[0];
       if (!row) {
-        return reply.fail("tenant_not_found", `no tenant with slug "${slug}"`, 404);
+        return reply.fail(
+          "tenant_not_found",
+          `no tenant with slug "${slug}"`,
+          404,
+        );
       }
       if (!row.archivedAt) {
         return reply.fail(

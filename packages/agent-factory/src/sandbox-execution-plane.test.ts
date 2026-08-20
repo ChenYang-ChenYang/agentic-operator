@@ -2,13 +2,55 @@ import { describe, expect, it } from "vitest";
 
 import {
   SANDBOX_EXECUTION_RECEIPT_SCHEMA,
+  SANDBOX_CANDIDATE_BUNDLE_VERIFICATION_SCHEMA,
+  sandboxCandidateBundleVerificationEvidenceHash,
   sandboxInfrastructureCleanupEvidenceHash,
   sandboxExecutionReceiptHash,
   sandboxExecutionReceiptIssues,
   type SandboxExecutionPlaneReceipt,
 } from "./sandbox-execution-plane";
+import {
+  SANDBOX_EXECUTION_PLANE_ATTESTATION_SCHEMA,
+  sandboxExecutionPlaneAttestationHash,
+  sandboxExecutionPlaneCapabilities,
+} from "./sandbox-platform-attestation";
 
 function receipt(): SandboxExecutionPlaneReceipt {
+  const platformBody = {
+    schema: SANDBOX_EXECUTION_PLANE_ATTESTATION_SCHEMA,
+    planeId: "plane-1",
+    trustDomain: "sandbox.example",
+    runnerId: "runner-1",
+    runnerBuildId: "build-1",
+    runtimeImageDigest: `sha256:${"a".repeat(64)}`,
+    isolationTier: "remote_container" as const,
+    controlHostIdentityHash: `sha256:${"6".repeat(64)}`,
+    workloadHostIdentityHash: `sha256:${"7".repeat(64)}`,
+    dockerDaemonIdentityHash: `sha256:${"8".repeat(64)}`,
+    capabilities: sandboxExecutionPlaneCapabilities(),
+    issuedAt: new Date(0).toISOString(),
+    expiresAt: new Date(60_000).toISOString(),
+    attestorKeyId: "attestor-1",
+    signatureAlgorithm: "ed25519" as const,
+  };
+  const platformAttestation = {
+    ...platformBody,
+    attestationHash: sandboxExecutionPlaneAttestationHash(platformBody),
+    signature: "A".repeat(86),
+  };
+  const bundleVerificationBody = {
+    schema: SANDBOX_CANDIDATE_BUNDLE_VERIFICATION_SCHEMA,
+    candidateBundleSchema:
+      "agent-factory-sandbox-candidate-bundle/v2" as const,
+    sandboxAttemptId: "attempt-1",
+    candidateFingerprint: "candidate-1",
+    bundleHash: `sandbox-bundle:v2:${"9".repeat(64)}`,
+    specsFingerprint: `specs:v2:${"a".repeat(64)}`,
+    manifestHash: `manifest:v1:${"b".repeat(64)}`,
+    testSuiteHash: `test-suite:v1:${"c".repeat(64)}`,
+    toolSnapshotHash: `tool-snapshot:v1:${"d".repeat(64)}`,
+    verifiedAt: new Date(2_000).toISOString(),
+  };
   const cleanupBody = {
     schema: "agent-factory-sandbox-infrastructure-cleanup/v1" as const,
     candidateExecutionAbsent: true as const,
@@ -45,11 +87,19 @@ function receipt(): SandboxExecutionPlaneReceipt {
     targetTenantId: "tenant-1",
     targetTenantSlug: "agents-generation",
     sandboxAttemptId: "attempt-1",
-    bundleHash: "bundle-1",
+    bundleHash: bundleVerificationBody.bundleHash,
     resultHash: "result-1",
     runnerId: "runner-1",
     runnerBuildId: "build-1",
     runtimeImageDigest: `sha256:${"a".repeat(64)}`,
+    platformAttestation,
+    candidateBundleVerification: {
+      ...bundleVerificationBody,
+      evidenceHash:
+        sandboxCandidateBundleVerificationEvidenceHash(
+          bundleVerificationBody,
+        ),
+    },
     brokerOriginHash: "sha256:broker",
     serveOriginHash: "sha256:serve",
     policyHash: "sha256:policy",
@@ -80,7 +130,7 @@ describe("sandbox execution-plane promotion receipt", () => {
       targetTenantId: "tenant-1",
       targetTenantSlug: "agents-generation",
       sandboxAttemptId: "attempt-1",
-      bundleHash: "bundle-1",
+      bundleHash: value.bundleHash,
       resultHash: "result-1",
     })).toEqual([]);
   });

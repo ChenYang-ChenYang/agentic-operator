@@ -87,43 +87,35 @@ Each tool reads `ctx.config?.<key> ?? <env default>`. The runtime never inspects
 
 ## Frontend layout note
 
-**Two UIs coexist.** Since P5-TEN-01b (2026-05-21) the production UI is the Next.js App Router portal at `apps/web/app/portal/[tenant]/(views)/*` — TypeScript, react-query, the canonical implementation. The Babel/React SPA prototype now lives at **`/demo`** (files under `apps/web/public/demo/`) and serves as a design reference only — never edit it expecting production behavior.
+**One UI.** The production UI is the Next.js App Router portal at
+`apps/web/app/portal/[tenant]/(views)/*` — TypeScript, react-query, the only
+application surface. The historical Babel/React SPA prototype that once lived
+at `/demo` (`apps/web/public/demo/`) was **deleted for good** in 663eca0
+(2026-07-20) per `docs/merge/2026-07-20-kenny-merge-playbook.md`; it must not be
+restored, and `apps/web/public/` intentionally does not exist. (The web
+Dockerfile creates that directory at build time — see the note there and
+`apps/api/test/dockerfile-copy-paths.test.ts`.)
 
 Routing:
 
 - `/` → App Router redirect (`apps/web/app/page.tsx`) → `/portal`.
 - `/portal` → `apps/web/app/portal/page.tsx` redirects to `/portal/<tenant>/dashboard`.
 - `/portal/<tenant>/*` → real production UI.
-- `/demo` → SPA prototype (`/public/demo/index.html` via `next.config.mjs` rewrite).
 - `/v1/*`, `/health` → proxied to apps/api on :3501.
 
 **CSS tokens.** `apps/web` uses inline CSS-in-JS with CSS custom properties from `apps/web/styles/tokens.css` (+ `apps/web/app/global.css` for pseudo-selectors / media queries / `@keyframes`). The real token names are `--bg`, `--panel`, `--panel-2`, `--panel-3`, `--border`, `--border-2`, `--text`, `--text-2`, `--text-3`, `--signal`, `--red`, etc. There is **no** `--surface-1`/`--border-1`/`--text-1`/`--danger` — referencing an undefined `var()` makes the browser fall back to `transparent`/inherited, which surfaces as a "see-through modal" bug. Match an existing component's tokens when styling new UI.
 
-**SPA prototype gotcha (only relevant if editing `/demo`).** All `<script type="text/babel">` view files share one global scope. A top-level `function Foo()` in one view file shadows the same name in any other view loaded earlier — last load wins (e.g. `views/logs.jsx` and `views/schema-editor.jsx` both declaring `function TreeNode`). Convention: **prefix internal components with the view name** (`SchemaTreeNode`, `LogsTreeNode`). Only the top-level view component (`SchemaEditor`, `Workflows`, …) uses a bare name. Cross-view shared components live in `components.jsx` and attach to `window.*` once at the bottom of that file.
+## Demo mode（已删除）
 
-## Demo mode
+**demo 模式不存在了。** `AGENTIC_DEMO_MODE`、`apps/api/src/config/demo-mode.ts`、
+`apps/api/src/routes/v1/demo.ts`、`apps/api/src/services/demo-runner.ts` 与
+`apps/web/public/demo/` 都在 2026-07-20 前后被整体删除，理由见
+`docs/merge/2026-07-20-kenny-merge-playbook.md`（"DEMO-MODE MUST STAY DELETED
+EVERYWHERE"）。此处保留标题只为拦住「文档里写着、就去把它加回来」这条路。
 
-**Architectural rule (locked 2026-05-26):** production mode = **ZERO** mock/seed/synthetic data. Demo mode = seed + loop. Two clean states only — no "looks like demo, actually mock fallback" ambiguity.
-
-Switch via the single env flag `AGENTIC_DEMO_MODE` (default `false`; enabled only by the explicit value `true`):
-
-- `AGENTIC_DEMO_MODE=false` (production): bootstrap skips `seed:rich` and never starts the demo-runner. Dashboard reflects only real events fired through `POST /v1/events`. When `/v1/tenants` is unreachable the portal renders an inline "api unreachable" banner — it does NOT fall back to the deleted `SAMPLE_TENANTS` fixture.
-- `AGENTIC_DEMO_MODE=true` (demo): bootstrap runs `runSeedRich()` programmatically (idempotent — every helper skips rows that already exist by primary key) and starts `apps/api/src/services/demo-runner.ts`. The sidebar renders a lime "DEMO" pill near the logo. `/health` exposes `demoMode: true`.
-
-**Demo-runner cadence** (all env-overridable):
-
-| Env var                         | Default | Behavior                                                                               |
-| ------------------------------- | ------- | -------------------------------------------------------------------------------------- |
-| `AGENTIC_DEMO_TICK_MS`          | 30 000  | Publish one random event on a random tenant w/ a live workflow + declared event types. |
-| `AGENTIC_DEMO_TASK_RESOLVE_MS`  | 90 000  | Resolve one open HITL task with a random approve/reject + emit `task.resolved`.        |
-| `AGENTIC_DEMO_HEARTBEAT_MS`     | 300 000 | Log `[demo-runner] tick — N events fired, K tasks resolved`.                           |
-| `AGENTIC_DEMO_RUN_BACKPRESSURE` | 25      | Skip a tick when the picked tenant already has ≥ N runs in flight.                     |
-
-**Auto-applied demo env overrides** (in-process only — the on-disk `.env` is never touched). When `AGENTIC_DEMO_MODE=true`, `apps/api/src/config/demo-mode.ts → applyDemoModeOverrides()` runs BEFORE the LLM gateway is constructed and swaps `LLM_DEFAULT_PROVIDER`→`mock` + `LLM_DEFAULT_MODEL`→`mock-model-v1` (so the 30s event loop doesn't bleed real $ through your normal provider — mock returns canned deterministic responses so workflows still complete + the dashboard animates). Escape hatches keep a real provider under demo mode: `AGENTIC_DEMO_LLM_PROVIDER` / `AGENTIC_DEMO_LLM_MODEL`. Restore is automatic — flip the flag off + restart (the override only mutated `process.env` in-process). Boot log surfaces the swap exactly: `[bootstrap] demo overrides — LLM_DEFAULT_PROVIDER=mock (was openrouter), …`.
-
-**Safety gates** (`apps/api/src/services/demo-runner.ts`): hard no-op when `NODE_ENV === "test"` (regardless of the flag — vitest never sees background traffic) and when `AGENTIC_DEMO_MODE !== true`. Every tick is try/caught; interval timers `.unref()` so Ctrl-C exits cleanly; SIGTERM/SIGINT route through `installGracefulShutdown` → Fastify `onClose` → `stopDemoRunner()`.
-
-**Clean-slate primitive:** `pnpm db:wipe-runtime` truncates runtime-traffic tables (`runs`, `steps`, `events`, `tasks`, `audit_log`, `artifacts`, `event_listeners`, `agent_memory_*`) and keeps identity + workflow + agent-config rows. Run it once before flipping between modes.
+仍然有效的那条架构规则：**生产模式零 mock / 零种子 / 零合成数据**。看板上出现的
+每一行都必须来自真实事件。要造演示数据，就发真实事件（`POST /v1/events`），
+不要重新引入一个会静默兜底的模式开关。
 
 ## Adding a tenant
 

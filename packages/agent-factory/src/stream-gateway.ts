@@ -1,19 +1,28 @@
 // Streaming, tool-calling LLM turn against an OpenAI-compatible gateway.
 //
 // The new @agentic/llm-gateway chat() is NON-streaming, but the factory brain's
-// whole ReAct experience is token-streaming. So (per the migration design) we keep
+// whole assistant turn is token-streaming. So (per the migration design) we keep
 // a direct OpenAI-SDK streaming path here, resolving baseURL/apiKey from the new
 // monorepo's env conventions (CUSTOM_LLM_* for a custom OpenAI-compatible endpoint,
 // or OPENAI_*), plus FACTORY_* overrides. This is the streaming primitive the loop
-// is built on: one assistant turn, yielding think deltas, then tool calls or final.
+// is built on: one assistant turn, yielding legacy `think`-named assistant-content
+// deltas, then tool calls or final. The name is historical; these deltas are not
+// provider-private chain-of-thought and must never be presented as such.
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import OpenAI from "openai";
 import { extractBalancedJson } from "./json-extract";
+import { tierForPreference } from "./model-tiers";
 
 export type ChatMsg = {
   role: "system" | "user" | "assistant" | "tool";
   content: string | null;
   tool_call_id?: string;
+  /**
+   * Provider-private replay state for the immediately following tool turn.
+   * It is intentionally stripped from every durable checkpoint.
+   */
+  reasoning_content?: string;
   tool_calls?: Array<{
     id: string;
     type: "function";
@@ -33,11 +42,118 @@ export type ToolSchema = {
 export type AccTool = { id: string; name: string; args: string };
 
 export type TurnEvent =
+  /** Legacy wire name for ordinary streamed assistant content. */
   | { t: "think"; delta: string }
-  | { t: "usage"; promptTokens: number; completionTokens: number }
-  | { t: "tool_calls"; content: string; calls: AccTool[] }
-  | { t: "model"; model: string } // #7 — which model actually served this turn (after fallback)
+  | {
+      t: "usage";
+      promptTokens: number;
+      completionTokens: number;
+      tokenSource?: "provider" | "estimated_chars";
+    }
+  | {
+      t: "tool_calls";
+      content: string;
+      calls: AccTool[];
+      /** Ephemeral only; conductor checkpoints must strip it. */
+      reasoningContent?: string;
+    }
+  | {
+      t: "model";
+      model: string;
+      provider?: string;
+      route?: string;
+      /** Was this turn's difficulty preference met by the tenant's routes? */
+      preferenceSatisfied?: boolean;
+      preferenceReason?: string;
+    } // #7 — which model actually served this turn (after fallback)
   | { t: "done"; content: string; finishReason?: string };
+
+export interface FactoryLlmCallContext {
+  conversationId?: string;
+  domain?: string;
+  tenantId?: string;
+  tenantSlug?: string;
+  /**
+   * Canonical runtime run (`runs.id`). Both `llm_calls.run_id` and
+   * `llm_call_telemetry.run_id` are foreign keys to that table, so only an id
+   * from that namespace may be routed here.
+   */
+  runId?: string;
+  /**
+   * Factory run (`factory_runs.id`) — a separate id namespace with no `runs`
+   * row. Declared as its own field so it cannot reach a `runs`-keyed column:
+   * writing one there fails the foreign key, which the billing ledger reports
+   * as `accounting_error` (killing the call) and the telemetry sink would spool
+   * forever. Consumers correlate it instead (ledger:
+   * `attribution.correlationId`; telemetry: `conversation_id`).
+   */
+  factoryRunId?: string;
+}
+
+export interface FactoryModelAdapterInput {
+  messages: ChatMsg[];
+  tools: ToolSchema[];
+  temperature?: number;
+  maxTokens?: number | null;
+  signal?: AbortSignal;
+  purpose?: string;
+  /**
+   * Ordered model PREFERENCE for this turn's task difficulty, strongest first.
+   * The central gateway ranks the tenant's allowed routes with it; it is never
+   * a model override, so it cannot reach outside that allowed set.
+   */
+  requestedModels?: string[];
+  /** The difficulty tier that produced `requestedModels`, for telemetry. */
+  requestedTier?: string;
+  context: FactoryLlmCallContext;
+}
+
+export interface FactoryModelAdapterResult {
+  text: string;
+  provider: string;
+  model: string;
+  route?: string;
+  /**
+   * What became of the requested difficulty preference. `satisfied:false` means
+   * the tenant's allowed routes could not offer the requested difficulty and
+   * an allowed alternative ran instead — surfaced, never silently swapped.
+   */
+  preference?: {
+    requested: string[];
+    satisfied: boolean;
+    reason: string;
+  };
+  tokensIn: number | null;
+  tokensOut: number | null;
+  finishReason?: string;
+  reasoningContent?: string;
+  toolCalls?: Array<{
+    id: string;
+    name: string;
+    input: Record<string, unknown>;
+  }>;
+}
+
+export type FactoryModelAdapter = (
+  input: FactoryModelAdapterInput,
+) => Promise<FactoryModelAdapterResult>;
+
+let factoryModelAdapter: FactoryModelAdapter | null = null;
+
+/**
+ * API-host injection seam. The package keeps its direct OpenAI-compatible
+ * transport only for standalone/test use; the API installs the tenant-aware
+ * central gateway here during bootstrap.
+ */
+export function setFactoryModelAdapter(
+  adapter: FactoryModelAdapter | null,
+): void {
+  factoryModelAdapter = adapter;
+}
+
+export function hasFactoryModelAdapter(): boolean {
+  return factoryModelAdapter !== null;
+}
 
 /** Resolve the OpenAI-compatible endpoint the factory streams against. Reuses the
  *  new monorepo's CUSTOM_LLM_* / OPENAI_* env (and FACTORY_* overrides) so it slots
@@ -74,6 +190,7 @@ export function resolveFactoryGateway(
 export function isGatewayConfigured(
   env: Record<string, string | undefined> = process.env,
 ): boolean {
+  if (factoryModelAdapter) return true;
   const apiKey = (
     env.FACTORY_GATEWAY_API_KEY ||
     env.CUSTOM_LLM_API_KEY ||
@@ -91,19 +208,37 @@ export function isGatewayConfigured(
 }
 
 // #P0-3 — LLM telemetry sink. The brain runs in-process (apps/api); a caller wires a DB writer via
-// setLlmCallSink so every chatOnce records model/routing/latency/size (was ephemeral). The per-run
-// context (conversation/domain/tenant) is set once by the conductor — single-instance assumption
-// (typically one brain run at a time); documented as such.
+// setLlmCallSink so every chatOnce records model/routing/latency/size (was ephemeral).
+//
+// Attribution is an AsyncLocalStorage SCOPE, not a module global. The multi-slot
+// harness worker runs several brains in one process, and a last-writer-wins
+// global attributed one run's spend (and its SSE fan-out) to another tenant.
+// `runWithLlmCallContext` is the correct-under-concurrency entry point: the store
+// reaches into the async generator the conductor is, survives its yields, and —
+// verified on Node 26 — contains any nested `enterWith` refinement inside the
+// owning run's scope so it cannot escape into a sibling run.
 export interface LlmCallRecord {
   conversationId?: string;
   domain?: string;
   tenantId?: string;
+  /** Canonical runtime run (`runs.id`) — the only value a foreign-keyed
+   *  `run_id` column may receive. */
   runId?: string;
+  /** Factory run (`factory_runs.id`); never a canonical `runs.id`. */
+  factoryRunId?: string;
   purpose?: string;
   requestedModel?: string;
   servedModel?: string;
   provider?: string;
   fallback?: boolean;
+  /** Difficulty tier the caller asked for (fast | default | hard | review). */
+  requestedTier?: string;
+  /** Ordered model preference that tier expressed. */
+  modelPreference?: string[];
+  /** Could the tenant-allowed candidate set satisfy that preference? */
+  preferenceSatisfied?: boolean;
+  /** Why it was (not) satisfied — an unmet preference is never left implicit. */
+  preferenceReason?: string;
   promptChars: number;
   completionChars: number;
   approxTokensIn: number;
@@ -114,22 +249,55 @@ export interface LlmCallRecord {
   failureReason?: string;
 }
 let llmCallSink: ((rec: LlmCallRecord) => void) | null = null;
-let llmCallCtx: {
-  conversationId?: string;
-  domain?: string;
-  tenantId?: string;
-} = {};
+const llmCallContextStorage = new AsyncLocalStorage<FactoryLlmCallContext>();
 export function setLlmCallSink(
   fn: ((rec: LlmCallRecord) => void) | null,
 ): void {
   llmCallSink = fn;
 }
-export function setLlmCallContext(c: {
-  conversationId?: string;
-  domain?: string;
-  tenantId?: string;
-}): void {
-  llmCallCtx = c ?? {};
+
+/**
+ * Own the attribution scope for one whole Factory run. Every LLM call made
+ * inside `fn` — including calls from inside the async generator that `runBrain`
+ * returns — attributes to THIS context, and nothing inside it can reach a
+ * sibling run's.
+ */
+export function runWithLlmCallContext<T>(
+  ctx: FactoryLlmCallContext,
+  fn: () => T,
+): T {
+  return llmCallContextStorage.run({ ...(ctx ?? {}) }, fn);
+}
+
+/**
+ * Refine the attribution of the CURRENT async chain (the conductor re-asserts
+ * its run every turn, and restores the parent's after a sub-brain). `enterWith`
+ * deliberately affects only this chain and its descendants: there is no module
+ * global to clobber, so a call made outside any scope reports NO tenant rather
+ * than inheriting whichever run happened to set one last.
+ */
+export function setLlmCallContext(c: FactoryLlmCallContext): void {
+  llmCallContextStorage.enterWith({ ...(c ?? {}) });
+}
+
+export function getLlmCallContext(): FactoryLlmCallContext {
+  return llmCallContextStorage.getStore() ?? {};
+}
+
+/**
+ * Does durable usage accounting require a tenant before the provider is called?
+ * Reads the SAME env key and the SAME default as
+ * `packages/llm-gateway/src/config.ts` so there is one policy, not two: opt-in
+ * anywhere, mandatory in production. Kept declarative because making it
+ * unconditional would break every standalone/test consumer of the direct
+ * transport, which has no tenant to declare.
+ */
+export function factoryRequiresUsageAttribution(
+  env: Record<string, string | undefined> = process.env,
+): boolean {
+  return env.LLM_REQUIRE_USAGE_ATTRIBUTION === undefined
+    ? env.NODE_ENV === "production"
+    : env.LLM_REQUIRE_USAGE_ATTRIBUTION === "true";
 }
 
 /** One-shot, non-streaming completion (collects a streamTurn's text). For focused
@@ -144,19 +312,21 @@ export async function chatOnce(
     models?: string[];
     onModel?: (model: string) => void;
     purpose?: string;
+    context?: FactoryLlmCallContext;
   } = {},
 ): Promise<string> {
   let text = "";
   const started = Date.now();
-  // #W1-1 — attribution snapshot AT ENTRY: a concurrent brain run overwriting the module-global
-  // context mid-call can no longer re-attribute THIS call. Combined with the conductor re-asserting
-  // its context every turn, cross-run bleed shrinks from "rest of the run" to a same-instant race.
-  const ctxAtEntry = { ...llmCallCtx };
+  const ctxAtEntry = { ...(opts.context ?? getLlmCallContext()) };
   const requested = opts.models?.[0];
   let served = requested;
   let ok = true;
   let failure: string | undefined;
   const emit = () => {
+    // The central gateway already writes the canonical usage ledger and the
+    // shared durable telemetry sink. Emitting the legacy Factory record here
+    // would create a duplicate row for the same logical call.
+    if (factoryModelAdapter) return;
     if (!llmCallSink) return;
     const promptChars = system.length + user.length;
     llmCallSink({
@@ -188,6 +358,8 @@ export async function chatOnce(
         maxTokens: opts.maxTokens,
         signal: opts.signal,
         models: opts.models,
+        purpose: opts.purpose,
+        context: ctxAtEntry,
       },
     )) {
       if (ev.t === "think") text += ev.delta;
@@ -223,7 +395,9 @@ export async function chatOnce(
 /** #TRANSIENT — 上游算力波动/限流/网络抖动 vs 真实的逻辑错误。用于把"重试就好"的故障与
  *  "输入有问题"的故障分开——两者对用户的含义完全不同（前者不该惊动用户）。 */
 export function isTransientLlmError(message: string): boolean {
-  return /overload|\b50[234]\b|temporarily|unavailable|timeout|timed out|too many requests|rate.?limit|econn|socket hang/i.test(message);
+  return /overload|\b50[234]\b|temporarily|unavailable|timeout|timed out|too many requests|rate.?limit|econn|socket hang/i.test(
+    message,
+  );
 }
 
 /** #JSON-DIAG — chatJson 为什么没拿到 JSON。旧版把【基础设施故障】和【模型没写出 JSON】
@@ -240,7 +414,9 @@ export type ChatJsonFailure =
   /** 提取到了 JSON 片段但解析失败（典型：被 max_tokens 截断）。 */
   | { kind: "invalid_json"; sample: string };
 
-export type ChatJsonResult<T> = { ok: true; value: T } | { ok: false; failure: ChatJsonFailure };
+export type ChatJsonResult<T> =
+  | { ok: true; value: T }
+  | { ok: false; failure: ChatJsonFailure };
 
 /** #JSON-FIX — structured-output helper: chatOnce → BALANCED extraction → parse, with ONE
  *  truncation-aware retry at a much bigger budget + a stricter "complete JSON only" instruction.
@@ -335,15 +511,29 @@ export async function chatJsonResult<T>(
       } catch {
         /* best-effort */
       }
-      return { ok: false, failure: { kind: "llm_error", message, transient: isTransientLlmError(message) } };
+      return {
+        ok: false,
+        failure: {
+          kind: "llm_error",
+          message,
+          transient: isTransientLlmError(message),
+        },
+      };
     }
     if (!text.trim()) return { ok: false, failure: { kind: "empty_output" } };
     const slice = extractBalancedJson(text);
-    if (!slice) return { ok: false, failure: { kind: "no_json", sample: text.slice(0, 200) } };
+    if (!slice)
+      return {
+        ok: false,
+        failure: { kind: "no_json", sample: text.slice(0, 200) },
+      };
     try {
       return { ok: true, value: JSON.parse(slice) as T };
     } catch {
-      return { ok: false, failure: { kind: "invalid_json", sample: slice.slice(0, 200) } };
+      return {
+        ok: false,
+        failure: { kind: "invalid_json", sample: slice.slice(0, 200) },
+      };
     }
   };
   // 控制流与旧版 chatJson 逐字一致（第一次失败 → 加大预算重试一次），只是把"为什么失败"
@@ -359,11 +549,17 @@ export async function chatJsonResult<T>(
   );
   // 两次都失败 → 报第二次（更大预算下）的原因：它更能说明真实卡点。但若第二次是网关故障、
   // 而第一次是模型输出问题，第一次的原因反而更有信息量（网关是在重试时才挂的）。
-  if (!second.ok && second.failure.kind === "llm_error" && !first.ok && first.failure.kind !== "llm_error") return first;
+  if (
+    !second.ok &&
+    second.failure.kind === "llm_error" &&
+    !first.ok &&
+    first.failure.kind !== "llm_error"
+  )
+    return first;
   return second;
 }
 
-function isTelemetryDurabilityFailure(error: unknown): boolean {
+export function isTelemetryDurabilityFailure(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
   if (
     "code" in error &&
@@ -375,6 +571,27 @@ function isTelemetryDurabilityFailure(error: unknown): boolean {
     return error.errors.some(isTelemetryDurabilityFailure);
   }
   return false;
+}
+
+function conservativeTokenEstimate(value: string): number {
+  let ascii = 0;
+  let nonAscii = 0;
+  for (const char of value) {
+    if (char.codePointAt(0)! <= 0x7f) ascii += 1;
+    else nonAscii += 1;
+  }
+  return Math.max(1, Math.ceil(ascii / 4 + nonAscii));
+}
+
+function factoryPromptTokenEstimate(
+  messages: ChatMsg[],
+  tools: ToolSchema[],
+): number {
+  return conservativeTokenEstimate(
+    JSON.stringify({ messages, tools }, (_key, value) =>
+      _key === "reasoning_content" ? undefined : value,
+    ),
+  );
 }
 
 /**
@@ -391,8 +608,101 @@ export async function* streamTurn(
     temperature?: number;
     maxTokens?: number | null;
     signal?: AbortSignal;
+    purpose?: string;
+    context?: FactoryLlmCallContext;
   } = {},
 ): AsyncGenerator<TurnEvent> {
+  const callContext = { ...(opts.context ?? getLlmCallContext()) };
+  if (factoryModelAdapter) {
+    const response = await factoryModelAdapter({
+      messages,
+      tools,
+      temperature: opts.temperature,
+      maxTokens: opts.maxTokens,
+      signal: opts.signal,
+      purpose: opts.purpose,
+      requestedModels: opts.models?.length
+        ? opts.models
+        : opts.model
+          ? [opts.model]
+          : undefined,
+      ...(opts.models?.length
+        ? (() => {
+            const tier = tierForPreference(opts.models);
+            return tier ? { requestedTier: tier } : {};
+          })()
+        : {}),
+      context: callContext,
+    });
+    const calls = (response.toolCalls ?? []).map((call) => ({
+      id: call.id,
+      name: call.name,
+      args: JSON.stringify(call.input),
+    }));
+    const promptTokens =
+      response.tokensIn ??
+      factoryPromptTokenEstimate(messages, tools);
+    const completionTokens =
+      response.tokensOut ??
+      conservativeTokenEstimate(
+        [
+          response.text,
+          response.reasoningContent ?? "",
+          ...calls.map((call) => call.args),
+        ].join("\n"),
+      );
+    const tokenSource =
+      response.tokensIn == null || response.tokensOut == null
+        ? "estimated_chars"
+        : "provider";
+    yield {
+      t: "model",
+      model: response.model,
+      provider: response.provider,
+      ...(response.route ? { route: response.route } : {}),
+      ...(response.preference
+        ? {
+            preferenceSatisfied: response.preference.satisfied,
+            ...(response.preference.reason
+              ? { preferenceReason: response.preference.reason }
+              : {}),
+          }
+        : {}),
+    };
+    yield {
+      t: "usage",
+      promptTokens,
+      completionTokens,
+      tokenSource,
+    };
+    if (calls.length > 0) {
+      yield {
+        t: "tool_calls",
+        content: response.text,
+        calls,
+        ...(response.reasoningContent
+          ? { reasoningContent: response.reasoningContent }
+          : {}),
+      };
+      return;
+    }
+    yield {
+      t: "done",
+      content: response.text,
+      finishReason: response.finishReason,
+    };
+    return;
+  }
+
+  // The direct transport bypasses the central gateway, so nothing downstream
+  // can write a billing-ledger row for it. When durable usage accounting is
+  // required, an unattributable turn must not reach the provider at all —
+  // otherwise the spend exists and the ledger does not.
+  if (factoryRequiresUsageAttribution() && !callContext.tenantId?.trim()) {
+    throw new Error(
+      "Agent Factory direct transport refused: LLM usage attribution is required but this turn carries no tenantId (install the central gateway adapter, or run inside runWithLlmCallContext)",
+    );
+  }
   const gw = resolveFactoryGateway();
   const client = new OpenAI({ baseURL: gw.baseURL, apiKey: gw.apiKey });
 
@@ -446,8 +756,9 @@ export async function* streamTurn(
         ...(effectiveMaxTokens != null
           ? { max_tokens: effectiveMaxTokens }
           : {}),
-        messages:
-          messages as unknown as OpenAI.Chat.ChatCompletionMessageParam[],
+        messages: messages.map(
+          ({ reasoning_content: _reasoningContent, ...message }) => message,
+        ) as unknown as OpenAI.Chat.ChatCompletionMessageParam[],
         ...(tools.length ? { tools, tool_choice: "auto" as const } : {}),
         stream: true,
         stream_options: { include_usage: true },
@@ -459,7 +770,10 @@ export async function* streamTurn(
   let lastErr: unknown;
   let usedModel = models[0]!;
   // Connection retries per model in the chain (chain length × this = total provider attempts).
-  const MAX_ATTEMPTS = Math.max(1, Number(process.env.FACTORY_LLM_MAX_ATTEMPTS) || 5);
+  const MAX_ATTEMPTS = Math.max(
+    1,
+    Number(process.env.FACTORY_LLM_MAX_ATTEMPTS) || 5,
+  );
   modelLoop: for (let mi = 0; mi < models.length; mi++) {
     usedModel = models[mi]!;
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
