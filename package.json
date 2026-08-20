@@ -2,7 +2,7 @@
   "name": "agentic-operator",
   "version": "0.1.0",
   "private": true,
-  "description": "Agentic Operator — event-driven agentic workflow runtime + admin portal",
+  "description": "Agentic Operator \u2014 event-driven agentic workflow runtime + admin portal",
   "engines": {
     "node": "26.5.0"
   },
@@ -54,8 +54,12 @@
     "db:recover-writer-lease": "node scripts/run-db-command.mjs recover-writer-lease",
     "preseed:rich": "pnpm run ensure:native",
     "seed:rich": "pnpm --filter @agentic/api run seed:rich",
-    "postinstall": "pnpm run ensure:native"
-
+    "postinstall": "pnpm run ensure:native",
+    "demo": "node scripts/demo-power-scm.mjs",
+    "demo:up": "node scripts/demo-power-scm.mjs up",
+    "demo:run": "node scripts/demo-power-scm.mjs run",
+    "demo:status": "node scripts/demo-power-scm.mjs status",
+    "demo:down": "node scripts/demo-power-scm.mjs down"
   },
   "devDependencies": {
     "@types/node": "^26.1.1",

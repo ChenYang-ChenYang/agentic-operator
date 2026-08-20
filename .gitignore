@@ -113,3 +113,6 @@ models/*-sb-v*/
 # data/logs above — local-only, never committed.
 apps/api/artifacts/
 apps/api/logs/
+
+# Local demo driver: detached service logs + pids (scripts/demo-power-scm.mjs)
+.demo/
