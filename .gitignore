@@ -104,3 +104,12 @@ models/*-sb-v*/
 
 # brainstorm visual companion
 .superpowers/
+# Claude Code worktrees (isolated branches; never tracked)
+.claude/worktrees/
+*.zip
+
+# Run artifacts and logs written when the api runs with cwd=apps/api (the dev
+# script's working dir). Same class of generated run data as data/artifacts and
+# data/logs above — local-only, never committed.
+apps/api/artifacts/
+apps/api/logs/

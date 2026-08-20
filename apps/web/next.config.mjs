@@ -34,7 +34,8 @@ if (parsedApiUrl.protocol !== "http:" && parsedApiUrl.protocol !== "https:") {
  */
 /**
  * BUILD NOTE — the `build` script passes `--experimental-build-mode compile`.
- * Next.js 16 (all versions through 16.3 canary) crashes while statically
+ * Next.js 16 (every version through 16.3.0 stable — re-verified on the 16.3.0
+ * upgrade) crashes while statically
  * prerendering its internal `/_not-found` and `/_global-error` pages with
  * "Cannot read properties of null (reading 'useContext')" inside the framework's
  * OuterLayoutRouter — an unresolved upstream bug (vercel/next.js #85668, #86178,

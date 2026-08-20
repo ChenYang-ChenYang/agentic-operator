@@ -11,6 +11,7 @@ export default defineConfig({
       "src/agent-execution.test.ts",
       "src/event-envelope.test.ts",
       "src/execution-trace.test.ts",
+      "src/generated-agent-prompt.test.ts",
       "src/lint.test.ts",
       "src/manifest-v2.test.ts",
       "src/manual-task-payload.test.ts",

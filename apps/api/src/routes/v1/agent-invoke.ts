@@ -238,19 +238,23 @@ export async function agentInvokeRoutes(app: FastifyInstance): Promise<void> {
           400,
         );
       }
+      // Policy refusal first: the answer for mock outside a test process is
+      // always the explicit 409, never a generic "not registered" 400 — in
+      // real-runtime builds the mock adapter is deliberately unregistered, so
+      // the registration check below would otherwise shadow this guard.
+      if (body.provider === "mock" && process.env.NODE_ENV !== "test") {
+        return reply.fail(
+          "mock_provider_forbidden",
+          "The mock provider is test-process-only; portal test runs still execute the configured real provider.",
+          409,
+        );
+      }
       const gateway = getLLMGateway();
       if (!gateway.hasProvider(body.provider)) {
         return reply.fail(
           "bad_request",
           `Provider not registered: ${body.provider}`,
           400,
-        );
-      }
-      if (body.provider === "mock" && process.env.NODE_ENV !== "test") {
-        return reply.fail(
-          "mock_provider_forbidden",
-          "The mock provider is test-process-only; portal test runs still execute the configured real provider.",
-          409,
         );
       }
     }

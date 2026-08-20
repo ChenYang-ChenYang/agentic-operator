@@ -6,6 +6,9 @@ export const RunStatus = z.enum([
   "ok",
   "failed",
   "waiting",
+  // §G4 — operator hold; the runtime parks before its next action until
+  // POST /v1/runs/:id/resume emits the tenant run.resume event.
+  "paused",
   "cancelled",
 ]);
 export type RunStatus = z.infer<typeof RunStatus>;

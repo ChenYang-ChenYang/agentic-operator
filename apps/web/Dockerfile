@@ -31,7 +31,7 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates tini python3 make g++ \
  && rm -rf /var/lib/apt/lists/*
 # node:26.5.0-slim does NOT ship corepack; install pnpm via npm.
-RUN npm install --global pnpm@11.3.0
+RUN npm install --global pnpm@11.21.0
 WORKDIR /app
 
 # --- build ---------------------------------------------------------------

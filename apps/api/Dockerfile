@@ -53,7 +53,7 @@ RUN apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=60 update \
  && rm -rf /var/lib/apt/lists/*
 # node:26.5.0-slim does NOT ship corepack; install pnpm via npm to keep the
 # layer reproducible (avoids `corepack: not found`).
-RUN npm install --global pnpm@11.3.0
+RUN npm install --global pnpm@11.21.0
 WORKDIR /app
 
 # --- build ---------------------------------------------------------------
@@ -129,7 +129,7 @@ RUN apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=60 update \
  && groupadd --system --gid 1001 agentic \
  && useradd  --system --uid 1001 --gid agentic --home /app --shell /usr/sbin/nologin agentic
 
-RUN npm install --global pnpm@11.3.0
+RUN npm install --global pnpm@11.21.0
 
 WORKDIR /app
 

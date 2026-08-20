@@ -1,0 +1,1583 @@
+{
+  "schema_version": "1.0.0",
+  "target_system": "Meta ERP",
+  "base_path": "/metaerp/openapi/v1",
+  "generated_at": "2026-08-19T00:00:00.000Z",
+  "principles": [
+    "本体零存储：对象数据按需经 Meta ERP OpenAPI 读取（object_maps.fetch）。",
+    "本体不是镜像：每个对象只映射决策所需最小字段（field_map 刻意小于 ERP 列集）。",
+    "行动即写回：全部 external 类行动一一映射 Meta ERP 写 API（action_maps）。",
+    "映射三通道与产品原生机制一致：property.source（字段血缘）、action.implementation（API 绑定）、links（关系语义）。"
+  ],
+  "object_maps": [
+    {
+      "object_id": "LegalEntity",
+      "object_name": "法人单位 (LegalEntity)",
+      "system": "Meta ERP",
+      "erp_entity": "org_legal_entity_t",
+      "fetch": {
+        "method": "POST",
+        "path": "/metaerp/openapi/v1/queryLegalEntities"
+      },
+      "freshness": {
+        "strategy": "on_demand",
+        "ttl_seconds": 300
+      },
+      "field_map": [
+        {
+          "property": "legal_entity_id",
+          "erp_field": "org_legal_entity_t.ORG_ID"
+        },
+        {
+          "property": "entity_name",
+          "erp_field": "org_legal_entity_t.ORG_NAME"
+        },
+        {
+          "property": "level",
+          "erp_field": "org_legal_entity_t.ORG_LEVEL"
+        },
+        {
+          "property": "region_name",
+          "erp_field": "org_legal_entity_t.REGION_NAME"
+        },
+        {
+          "property": "parent_entity_id",
+          "erp_field": "org_legal_entity_t.PARENT_ORG_ID"
+        }
+      ],
+      "computed": [],
+      "ontology_native": [],
+      "unmapped_policy": "其余 ERP 字段不进入本体；需要时按需经同一 fetch API 读取。"
+    },
+    {
+      "object_id": "Department",
+      "object_name": "部门 (Department)",
+      "system": "Meta ERP",
+      "erp_entity": "org_department_t",
+      "fetch": {
+        "method": "POST",
+        "path": "/metaerp/openapi/v1/queryDepartments"
+      },
+      "freshness": {
+        "strategy": "on_demand",
+        "ttl_seconds": 300
+      },
+      "field_map": [
+        {
+          "property": "department_id",
+          "erp_field": "org_department_t.DEPT_ID"
+        },
+        {
+          "property": "dept_name",
+          "erp_field": "org_department_t.DEPT_NAME"
+        },
+        {
+          "property": "dept_function",
+          "erp_field": "org_department_t.DEPT_FUNCTION"
+        },
+        {
+          "property": "legal_entity_id",
+          "erp_field": "org_department_t.ORG_ID"
+        }
+      ],
+      "computed": [],
+      "ontology_native": [],
+      "unmapped_policy": "其余 ERP 字段不进入本体；需要时按需经同一 fetch API 读取。"
+    },
+    {
+      "object_id": "Employee",
+      "object_name": "人员 (Employee)",
+      "system": "Meta ERP",
+      "erp_entity": "hr_employee_t",
+      "fetch": {
+        "method": "POST",
+        "path": "/metaerp/openapi/v1/queryEmployees"
+      },
+      "freshness": {
+        "strategy": "on_demand",
+        "ttl_seconds": 300
+      },
+      "field_map": [
+        {
+          "property": "employee_id",
+          "erp_field": "hr_employee_t.EMP_ID"
+        },
+        {
+          "property": "emp_name",
+          "erp_field": "hr_employee_t.EMP_NAME"
+        },
+        {
+          "property": "roles",
+          "erp_field": "hr_employee_t.ROLE_CODES"
+        },
+        {
+          "property": "phone",
+          "erp_field": "hr_employee_t.MOBILE"
+        },
+        {
+          "property": "department_id",
+          "erp_field": "hr_employee_t.DEPT_ID"
+        }
+      ],
+      "computed": [],
+      "ontology_native": [],
+      "unmapped_policy": "其余 ERP 字段不进入本体；需要时按需经同一 fetch API 读取。"
+    },
+    {
+      "object_id": "Material",
+      "object_name": "物资 (Material)",
+      "system": "Meta ERP",
+      "erp_entity": "mm_material_master_t",
+      "fetch": {
+        "method": "POST",
+        "path": "/metaerp/openapi/v1/queryMaterials"
+      },
+      "freshness": {
+        "strategy": "on_demand",
+        "ttl_seconds": 300
+      },
+      "field_map": [
+        {
+          "property": "material_id",
+          "erp_field": "mm_material_master_t.MATERIAL_CODE"
+        },
+        {
+          "property": "material_name",
+          "erp_field": "mm_material_master_t.MATERIAL_NAME"
+        },
+        {
+          "property": "spec_model",
+          "erp_field": "mm_material_master_t.SPEC_MODEL"
+        },
+        {
+          "property": "category",
+          "erp_field": "mm_material_master_t.CATEGORY_CODE"
+        },
+        {
+          "property": "unit",
+          "erp_field": "mm_material_master_t.UNIT"
+        },
+        {
+          "property": "unit_price",
+          "erp_field": "mm_material_master_t.REF_PRICE"
+        },
+        {
+          "property": "shelf_life_months",
+          "erp_field": "mm_material_master_t.SHELF_LIFE_M"
+        },
+        {
+          "property": "tech_status",
+          "erp_field": "mm_material_master_t.TECH_STATUS"
+        }
+      ],
+      "computed": [],
+      "ontology_native": [
+        "equivalent_group_id",
+        "substitute_material_id",
+        "applicable_asset_type"
+      ],
+      "unmapped_policy": "其余 ERP 字段不进入本体；需要时按需经同一 fetch API 读取。"
+    },
+    {
+      "object_id": "InventoryLot",
+      "object_name": "库存批次 (InventoryLot)",
+      "system": "Meta ERP",
+      "erp_entity": "wm_inventory_lot_t",
+      "fetch": {
+        "method": "POST",
+        "path": "/metaerp/openapi/v1/queryInventoryLots"
+      },
+      "freshness": {
+        "strategy": "on_demand",
+        "ttl_seconds": 60
+      },
+      "field_map": [
+        {
+          "property": "lot_id",
+          "erp_field": "wm_inventory_lot_t.LOT_ID"
+        },
+        {
+          "property": "material_id",
+          "erp_field": "wm_inventory_lot_t.MATERIAL_CODE"
+        },
+        {
+          "property": "warehouse_id",
+          "erp_field": "wm_inventory_lot_t.WAREHOUSE_ID"
+        },
+        {
+          "property": "owner_entity_id",
+          "erp_field": "wm_inventory_lot_t.OWNER_ORG_ID"
+        },
+        {
+          "property": "qty_on_hand",
+          "erp_field": "wm_inventory_lot_t.QTY_ON_HAND"
+        },
+        {
+          "property": "unit_cost",
+          "erp_field": "wm_inventory_lot_t.UNIT_COST"
+        },
+        {
+          "property": "inbound_date",
+          "erp_field": "wm_inventory_lot_t.INBOUND_DATE"
+        },
+        {
+          "property": "status",
+          "erp_field": "wm_inventory_lot_t.STATUS"
+        }
+      ],
+      "computed": [
+        {
+          "property": "age_days",
+          "expression": "today() - inbound_date"
+        }
+      ],
+      "ontology_native": [],
+      "unmapped_policy": "其余 ERP 字段不进入本体；需要时按需经同一 fetch API 读取。"
+    },
+    {
+      "object_id": "Warehouse",
+      "object_name": "仓库 (Warehouse)",
+      "system": "Meta ERP",
+      "erp_entity": "wm_warehouse_t",
+      "fetch": {
+        "method": "POST",
+        "path": "/metaerp/openapi/v1/queryWarehouses"
+      },
+      "freshness": {
+        "strategy": "on_demand",
+        "ttl_seconds": 300
+      },
+      "field_map": [
+        {
+          "property": "warehouse_id",
+          "erp_field": "wm_warehouse_t.WAREHOUSE_ID"
+        },
+        {
+          "property": "warehouse_name",
+          "erp_field": "wm_warehouse_t.WAREHOUSE_NAME"
+        },
+        {
+          "property": "latitude",
+          "erp_field": "wm_warehouse_t.LAT"
+        },
+        {
+          "property": "longitude",
+          "erp_field": "wm_warehouse_t.LNG"
+        },
+        {
+          "property": "coastal",
+          "erp_field": "wm_warehouse_t.COASTAL_FLAG"
+        },
+        {
+          "property": "legal_entity_id",
+          "erp_field": "wm_warehouse_t.ORG_ID"
+        }
+      ],
+      "computed": [],
+      "ontology_native": [],
+      "unmapped_policy": "其余 ERP 字段不进入本体；需要时按需经同一 fetch API 读取。"
+    },
+    {
+      "object_id": "PurchaseRequisition",
+      "object_name": "采购需求 (PurchaseRequisition)",
+      "system": "Meta ERP",
+      "erp_entity": "po_requisition_t",
+      "fetch": {
+        "method": "POST",
+        "path": "/metaerp/openapi/v1/queryRequisitions"
+      },
+      "freshness": {
+        "strategy": "on_demand",
+        "ttl_seconds": 300
+      },
+      "field_map": [
+        {
+          "property": "requisition_id",
+          "erp_field": "po_requisition_t.REQ_ID"
+        },
+        {
+          "property": "material_id",
+          "erp_field": "po_requisition_t.MATERIAL_CODE"
+        },
+        {
+          "property": "requesting_entity_id",
+          "erp_field": "po_requisition_t.REQ_ORG_ID"
+        },
+        {
+          "property": "requested_by",
+          "erp_field": "po_requisition_t.REQ_BY"
+        },
+        {
+          "property": "req_qty",
+          "erp_field": "po_requisition_t.REQ_QTY"
+        },
+        {
+          "property": "budget_amount",
+          "erp_field": "po_requisition_t.BUDGET_AMT"
+        },
+        {
+          "property": "need_by_date",
+          "erp_field": "po_requisition_t.NEED_BY_DATE"
+        },
+        {
+          "property": "status",
+          "erp_field": "po_requisition_t.STATUS"
+        },
+        {
+          "property": "justification",
+          "erp_field": "po_requisition_t.REASON"
+        }
+      ],
+      "computed": [],
+      "ontology_native": [],
+      "unmapped_policy": "其余 ERP 字段不进入本体；需要时按需经同一 fetch API 读取。"
+    },
+    {
+      "object_id": "PurchaseOrder",
+      "object_name": "采购订单 (PurchaseOrder)",
+      "system": "Meta ERP",
+      "erp_entity": "po_order_header_t",
+      "fetch": {
+        "method": "POST",
+        "path": "/metaerp/openapi/v1/queryPurchaseOrders"
+      },
+      "freshness": {
+        "strategy": "on_demand",
+        "ttl_seconds": 300
+      },
+      "field_map": [
+        {
+          "property": "purchase_order_id",
+          "erp_field": "po_order_header_t.PO_ID"
+        },
+        {
+          "property": "requisition_id",
+          "erp_field": "po_order_header_t.REQ_ID"
+        },
+        {
+          "property": "supplier_id",
+          "erp_field": "po_order_header_t.SUPPLIER_ID"
+        },
+        {
+          "property": "agreement_id",
+          "erp_field": "po_order_header_t.AGREEMENT_ID"
+        },
+        {
+          "property": "material_id",
+          "erp_field": "po_order_header_t.MATERIAL_CODE"
+        },
+        {
+          "property": "order_qty",
+          "erp_field": "po_order_header_t.ORDER_QTY"
+        },
+        {
+          "property": "order_amount",
+          "erp_field": "po_order_header_t.ORDER_AMT"
+        },
+        {
+          "property": "promised_date",
+          "erp_field": "po_order_header_t.PROMISED_DATE"
+        },
+        {
+          "property": "is_emergency",
+          "erp_field": "po_order_header_t.EMERGENCY_FLAG"
+        },
+        {
+          "property": "status",
+          "erp_field": "po_order_header_t.STATUS"
+        }
+      ],
+      "computed": [],
+      "ontology_native": [],
+      "unmapped_policy": "其余 ERP 字段不进入本体；需要时按需经同一 fetch API 读取。"
+    },
+    {
+      "object_id": "FrameworkAgreement",
+      "object_name": "框架协议 (FrameworkAgreement)",
+      "system": "Meta ERP",
+      "erp_entity": "srm_agreement_t",
+      "fetch": {
+        "method": "POST",
+        "path": "/metaerp/openapi/v1/queryAgreements"
+      },
+      "freshness": {
+        "strategy": "on_demand",
+        "ttl_seconds": 300
+      },
+      "field_map": [
+        {
+          "property": "agreement_id",
+          "erp_field": "srm_agreement_t.AGREEMENT_ID"
+        },
+        {
+          "property": "supplier_id",
+          "erp_field": "srm_agreement_t.SUPPLIER_ID"
+        },
+        {
+          "property": "covered_material_id",
+          "erp_field": "srm_agreement_t.MATERIAL_CODE"
+        },
+        {
+          "property": "valid_from",
+          "erp_field": "srm_agreement_t.VALID_FROM"
+        },
+        {
+          "property": "valid_to",
+          "erp_field": "srm_agreement_t.VALID_TO"
+        },
+        {
+          "property": "price_ceiling",
+          "erp_field": "srm_agreement_t.PRICE_CEILING"
+        },
+        {
+          "property": "emergency_clause",
+          "erp_field": "srm_agreement_t.EMERGENCY_CLAUSE"
+        }
+      ],
+      "computed": [],
+      "ontology_native": [],
+      "unmapped_policy": "其余 ERP 字段不进入本体；需要时按需经同一 fetch API 读取。"
+    },
+    {
+      "object_id": "Contract",
+      "object_name": "合同 (Contract)",
+      "system": "Meta ERP",
+      "erp_entity": "srm_contract_t",
+      "fetch": {
+        "method": "POST",
+        "path": "/metaerp/openapi/v1/queryContracts"
+      },
+      "freshness": {
+        "strategy": "on_demand",
+        "ttl_seconds": 300
+      },
+      "field_map": [
+        {
+          "property": "contract_id",
+          "erp_field": "srm_contract_t.CONTRACT_ID"
+        },
+        {
+          "property": "supplier_id",
+          "erp_field": "srm_contract_t.SUPPLIER_ID"
+        },
+        {
+          "property": "project_id",
+          "erp_field": "srm_contract_t.PROJECT_ID"
+        },
+        {
+          "property": "contract_amount",
+          "erp_field": "srm_contract_t.CONTRACT_AMT"
+        },
+        {
+          "property": "signed_date",
+          "erp_field": "srm_contract_t.SIGNED_DATE"
+        },
+        {
+          "property": "contract_type",
+          "erp_field": "srm_contract_t.CONTRACT_TYPE"
+        },
+        {
+          "property": "status",
+          "erp_field": "srm_contract_t.STATUS"
+        }
+      ],
+      "computed": [],
+      "ontology_native": [],
+      "unmapped_policy": "其余 ERP 字段不进入本体；需要时按需经同一 fetch API 读取。"
+    },
+    {
+      "object_id": "DeliverySchedule",
+      "object_name": "交付节点 (DeliverySchedule)",
+      "system": "Meta ERP",
+      "erp_entity": "po_delivery_schedule_t",
+      "fetch": {
+        "method": "POST",
+        "path": "/metaerp/openapi/v1/queryDeliverySchedules"
+      },
+      "freshness": {
+        "strategy": "on_demand",
+        "ttl_seconds": 300
+      },
+      "field_map": [
+        {
+          "property": "schedule_id",
+          "erp_field": "po_delivery_schedule_t.SCHEDULE_ID"
+        },
+        {
+          "property": "purchase_order_id",
+          "erp_field": "po_delivery_schedule_t.PO_ID"
+        },
+        {
+          "property": "milestone_id",
+          "erp_field": "po_delivery_schedule_t.MILESTONE_ID"
+        },
+        {
+          "property": "due_date",
+          "erp_field": "po_delivery_schedule_t.DUE_DATE"
+        },
+        {
+          "property": "planned_qty",
+          "erp_field": "po_delivery_schedule_t.PLAN_QTY"
+        },
+        {
+          "property": "status",
+          "erp_field": "po_delivery_schedule_t.STATUS"
+        }
+      ],
+      "computed": [],
+      "ontology_native": [],
+      "unmapped_policy": "其余 ERP 字段不进入本体；需要时按需经同一 fetch API 读取。"
+    },
+    {
+      "object_id": "Supplier",
+      "object_name": "供应商 (Supplier)",
+      "system": "Meta ERP",
+      "erp_entity": "srm_supplier_t",
+      "fetch": {
+        "method": "POST",
+        "path": "/metaerp/openapi/v1/querySuppliers"
+      },
+      "freshness": {
+        "strategy": "on_demand",
+        "ttl_seconds": 300
+      },
+      "field_map": [
+        {
+          "property": "supplier_id",
+          "erp_field": "srm_supplier_t.SUPPLIER_ID"
+        },
+        {
+          "property": "supplier_name",
+          "erp_field": "srm_supplier_t.SUPPLIER_NAME"
+        },
+        {
+          "property": "credit_code",
+          "erp_field": "srm_supplier_t.CREDIT_CODE"
+        },
+        {
+          "property": "on_time_rate",
+          "erp_field": "srm_supplier_t.ON_TIME_RATE"
+        },
+        {
+          "property": "quality_score",
+          "erp_field": "srm_supplier_t.QUALITY_SCORE"
+        }
+      ],
+      "computed": [
+        {
+          "property": "risk_level",
+          "expression": "supplier_risk_score(on_time_rate, quality_score, is_dishonest)"
+        }
+      ],
+      "ontology_native": [
+        "controller_id",
+        "is_dishonest"
+      ],
+      "unmapped_policy": "其余 ERP 字段不进入本体；需要时按需经同一 fetch API 读取。"
+    },
+    {
+      "object_id": "UltimateController",
+      "object_name": "实控人 (UltimateController)",
+      "system": null,
+      "note": "本体独有对象（外部数据），Meta ERP 中不存在。",
+      "field_map": []
+    },
+    {
+      "object_id": "InspectionReport",
+      "object_name": "检验/监造任务 (InspectionReport)",
+      "system": "Meta ERP",
+      "erp_entity": "qm_inspection_t",
+      "fetch": {
+        "method": "POST",
+        "path": "/metaerp/openapi/v1/queryInspections"
+      },
+      "freshness": {
+        "strategy": "on_demand",
+        "ttl_seconds": 300
+      },
+      "field_map": [
+        {
+          "property": "inspection_id",
+          "erp_field": "qm_inspection_t.INSPECTION_ID"
+        },
+        {
+          "property": "purchase_order_id",
+          "erp_field": "qm_inspection_t.PO_ID"
+        },
+        {
+          "property": "supplier_id",
+          "erp_field": "qm_inspection_t.SUPPLIER_ID"
+        },
+        {
+          "property": "status",
+          "erp_field": "qm_inspection_t.STATUS"
+        },
+        {
+          "property": "result",
+          "erp_field": "qm_inspection_t.RESULT"
+        },
+        {
+          "property": "inspected_at",
+          "erp_field": "qm_inspection_t.INSPECTED_AT"
+        }
+      ],
+      "computed": [],
+      "ontology_native": [],
+      "unmapped_policy": "其余 ERP 字段不进入本体；需要时按需经同一 fetch API 读取。"
+    },
+    {
+      "object_id": "Project",
+      "object_name": "项目 (Project)",
+      "system": "Meta ERP",
+      "erp_entity": "ps_project_t",
+      "fetch": {
+        "method": "POST",
+        "path": "/metaerp/openapi/v1/queryProjects"
+      },
+      "freshness": {
+        "strategy": "on_demand",
+        "ttl_seconds": 300
+      },
+      "field_map": [
+        {
+          "property": "project_id",
+          "erp_field": "ps_project_t.PROJECT_ID"
+        },
+        {
+          "property": "project_name",
+          "erp_field": "ps_project_t.PROJECT_NAME"
+        },
+        {
+          "property": "project_type",
+          "erp_field": "ps_project_t.PROJECT_TYPE"
+        },
+        {
+          "property": "owner_entity_id",
+          "erp_field": "ps_project_t.ORG_ID"
+        },
+        {
+          "property": "is_key_project",
+          "erp_field": "ps_project_t.KEY_FLAG"
+        },
+        {
+          "property": "status",
+          "erp_field": "ps_project_t.STATUS"
+        }
+      ],
+      "computed": [],
+      "ontology_native": [],
+      "unmapped_policy": "其余 ERP 字段不进入本体；需要时按需经同一 fetch API 读取。"
+    },
+    {
+      "object_id": "Milestone",
+      "object_name": "里程碑 (Milestone)",
+      "system": "Meta ERP",
+      "erp_entity": "ps_milestone_t",
+      "fetch": {
+        "method": "POST",
+        "path": "/metaerp/openapi/v1/queryMilestones"
+      },
+      "freshness": {
+        "strategy": "on_demand",
+        "ttl_seconds": 300
+      },
+      "field_map": [
+        {
+          "property": "milestone_id",
+          "erp_field": "ps_milestone_t.MILESTONE_ID"
+        },
+        {
+          "property": "project_id",
+          "erp_field": "ps_milestone_t.PROJECT_ID"
+        },
+        {
+          "property": "milestone_name",
+          "erp_field": "ps_milestone_t.MILESTONE_NAME"
+        },
+        {
+          "property": "due_date",
+          "erp_field": "ps_milestone_t.DUE_DATE"
+        },
+        {
+          "property": "status",
+          "erp_field": "ps_milestone_t.STATUS"
+        },
+        {
+          "property": "slack_days",
+          "erp_field": "ps_milestone_t.SLACK_DAYS"
+        }
+      ],
+      "computed": [],
+      "ontology_native": [],
+      "unmapped_policy": "其余 ERP 字段不进入本体；需要时按需经同一 fetch API 读取。"
+    },
+    {
+      "object_id": "GridRegion",
+      "object_name": "供电网格 (GridRegion)",
+      "system": "Meta ERP",
+      "erp_entity": "gis_region_t",
+      "fetch": {
+        "method": "POST",
+        "path": "/metaerp/openapi/v1/queryGridRegions"
+      },
+      "freshness": {
+        "strategy": "on_demand",
+        "ttl_seconds": 300
+      },
+      "field_map": [
+        {
+          "property": "region_id",
+          "erp_field": "gis_region_t.REGION_ID"
+        },
+        {
+          "property": "region_name",
+          "erp_field": "gis_region_t.REGION_NAME"
+        },
+        {
+          "property": "latitude",
+          "erp_field": "gis_region_t.LAT"
+        },
+        {
+          "property": "longitude",
+          "erp_field": "gis_region_t.LNG"
+        },
+        {
+          "property": "customers_count",
+          "erp_field": "gis_region_t.CUSTOMER_CNT"
+        },
+        {
+          "property": "legal_entity_id",
+          "erp_field": "gis_region_t.ORG_ID"
+        }
+      ],
+      "computed": [],
+      "ontology_native": [],
+      "unmapped_policy": "其余 ERP 字段不进入本体；需要时按需经同一 fetch API 读取。"
+    },
+    {
+      "object_id": "GridAsset",
+      "object_name": "电网资产 (GridAsset)",
+      "system": "Meta ERP",
+      "erp_entity": "pm_asset_t",
+      "fetch": {
+        "method": "POST",
+        "path": "/metaerp/openapi/v1/queryGridAssets"
+      },
+      "freshness": {
+        "strategy": "on_demand",
+        "ttl_seconds": 300
+      },
+      "field_map": [
+        {
+          "property": "asset_id",
+          "erp_field": "pm_asset_t.ASSET_ID"
+        },
+        {
+          "property": "asset_name",
+          "erp_field": "pm_asset_t.ASSET_NAME"
+        },
+        {
+          "property": "asset_type",
+          "erp_field": "pm_asset_t.ASSET_TYPE"
+        },
+        {
+          "property": "region_id",
+          "erp_field": "pm_asset_t.REGION_ID"
+        },
+        {
+          "property": "capacity_or_length",
+          "erp_field": "pm_asset_t.CAP_OR_LEN"
+        }
+      ],
+      "computed": [],
+      "ontology_native": [],
+      "unmapped_policy": "其余 ERP 字段不进入本体；需要时按需经同一 fetch API 读取。"
+    },
+    {
+      "object_id": "RepairWorkOrder",
+      "object_name": "抢修工单 (RepairWorkOrder)",
+      "system": "Meta ERP",
+      "erp_entity": "om_repair_order_t",
+      "fetch": {
+        "method": "POST",
+        "path": "/metaerp/openapi/v1/queryRepairOrders"
+      },
+      "freshness": {
+        "strategy": "on_demand",
+        "ttl_seconds": 300
+      },
+      "field_map": [
+        {
+          "property": "work_order_id",
+          "erp_field": "om_repair_order_t.WO_ID"
+        },
+        {
+          "property": "asset_id",
+          "erp_field": "om_repair_order_t.ASSET_ID"
+        },
+        {
+          "property": "material_id",
+          "erp_field": "om_repair_order_t.MATERIAL_CODE"
+        },
+        {
+          "property": "executing_entity_id",
+          "erp_field": "om_repair_order_t.ORG_ID"
+        },
+        {
+          "property": "required_qty",
+          "erp_field": "om_repair_order_t.REQ_QTY"
+        },
+        {
+          "property": "priority",
+          "erp_field": "om_repair_order_t.PRIORITY"
+        },
+        {
+          "property": "status",
+          "erp_field": "om_repair_order_t.STATUS"
+        },
+        {
+          "property": "eta_hours",
+          "erp_field": "om_repair_order_t.ETA_HOURS"
+        }
+      ],
+      "computed": [],
+      "ontology_native": [],
+      "unmapped_policy": "其余 ERP 字段不进入本体；需要时按需经同一 fetch API 读取。"
+    },
+    {
+      "object_id": "StockTransferOrder",
+      "object_name": "调拨单 (StockTransferOrder)",
+      "system": "Meta ERP",
+      "erp_entity": "wm_transfer_order_t",
+      "fetch": {
+        "method": "POST",
+        "path": "/metaerp/openapi/v1/queryTransferOrders"
+      },
+      "freshness": {
+        "strategy": "on_demand",
+        "ttl_seconds": 300
+      },
+      "field_map": [
+        {
+          "property": "transfer_id",
+          "erp_field": "wm_transfer_order_t.TRANSFER_ID"
+        },
+        {
+          "property": "material_id",
+          "erp_field": "wm_transfer_order_t.MATERIAL_CODE"
+        },
+        {
+          "property": "from_warehouse_id",
+          "erp_field": "wm_transfer_order_t.FROM_WH"
+        },
+        {
+          "property": "to_warehouse_id",
+          "erp_field": "wm_transfer_order_t.TO_WH"
+        },
+        {
+          "property": "work_order_id",
+          "erp_field": "wm_transfer_order_t.WO_ID"
+        },
+        {
+          "property": "transfer_qty",
+          "erp_field": "wm_transfer_order_t.QTY"
+        },
+        {
+          "property": "status",
+          "erp_field": "wm_transfer_order_t.STATUS"
+        },
+        {
+          "property": "eta_hours",
+          "erp_field": "wm_transfer_order_t.ETA_HOURS"
+        }
+      ],
+      "computed": [],
+      "ontology_native": [],
+      "unmapped_policy": "其余 ERP 字段不进入本体；需要时按需经同一 fetch API 读取。"
+    },
+    {
+      "object_id": "AllocationOrder",
+      "object_name": "跨单位调剂单 (AllocationOrder)",
+      "system": "Meta ERP",
+      "erp_entity": "wm_allocation_order_t",
+      "fetch": {
+        "method": "POST",
+        "path": "/metaerp/openapi/v1/queryAllocations"
+      },
+      "freshness": {
+        "strategy": "on_demand",
+        "ttl_seconds": 300
+      },
+      "field_map": [
+        {
+          "property": "allocation_id",
+          "erp_field": "wm_allocation_order_t.ALLOC_ID"
+        },
+        {
+          "property": "requisition_id",
+          "erp_field": "wm_allocation_order_t.REQ_ID"
+        },
+        {
+          "property": "lot_id",
+          "erp_field": "wm_allocation_order_t.LOT_ID"
+        },
+        {
+          "property": "from_entity_id",
+          "erp_field": "wm_allocation_order_t.FROM_ORG"
+        },
+        {
+          "property": "to_entity_id",
+          "erp_field": "wm_allocation_order_t.TO_ORG"
+        },
+        {
+          "property": "alloc_qty",
+          "erp_field": "wm_allocation_order_t.QTY"
+        },
+        {
+          "property": "savings_amount",
+          "erp_field": "wm_allocation_order_t.SAVINGS_AMT"
+        },
+        {
+          "property": "status",
+          "erp_field": "wm_allocation_order_t.STATUS"
+        }
+      ],
+      "computed": [],
+      "ontology_native": [],
+      "unmapped_policy": "其余 ERP 字段不进入本体；需要时按需经同一 fetch API 读取。"
+    },
+    {
+      "object_id": "DisposalOrder",
+      "object_name": "处置单 (DisposalOrder)",
+      "system": "Meta ERP",
+      "erp_entity": "wm_disposal_order_t",
+      "fetch": {
+        "method": "POST",
+        "path": "/metaerp/openapi/v1/queryDisposals"
+      },
+      "freshness": {
+        "strategy": "on_demand",
+        "ttl_seconds": 300
+      },
+      "field_map": [
+        {
+          "property": "disposal_id",
+          "erp_field": "wm_disposal_order_t.DISPOSAL_ID"
+        },
+        {
+          "property": "lot_id",
+          "erp_field": "wm_disposal_order_t.LOT_ID"
+        },
+        {
+          "property": "initiating_entity_id",
+          "erp_field": "wm_disposal_order_t.ORG_ID"
+        },
+        {
+          "property": "method",
+          "erp_field": "wm_disposal_order_t.METHOD"
+        },
+        {
+          "property": "est_value",
+          "erp_field": "wm_disposal_order_t.EST_VALUE"
+        },
+        {
+          "property": "status",
+          "erp_field": "wm_disposal_order_t.STATUS"
+        }
+      ],
+      "computed": [],
+      "ontology_native": [],
+      "unmapped_policy": "其余 ERP 字段不进入本体；需要时按需经同一 fetch API 读取。"
+    },
+    {
+      "object_id": "ExpediteNotice",
+      "object_name": "催交函 (ExpediteNotice)",
+      "system": "Meta ERP",
+      "erp_entity": "po_expedite_notice_t",
+      "fetch": {
+        "method": "POST",
+        "path": "/metaerp/openapi/v1/queryExpediteNotices"
+      },
+      "freshness": {
+        "strategy": "on_demand",
+        "ttl_seconds": 300
+      },
+      "field_map": [
+        {
+          "property": "notice_id",
+          "erp_field": "po_expedite_notice_t.NOTICE_ID"
+        },
+        {
+          "property": "purchase_order_id",
+          "erp_field": "po_expedite_notice_t.PO_ID"
+        },
+        {
+          "property": "supplier_id",
+          "erp_field": "po_expedite_notice_t.SUPPLIER_ID"
+        },
+        {
+          "property": "status",
+          "erp_field": "po_expedite_notice_t.STATUS"
+        },
+        {
+          "property": "legal_template",
+          "erp_field": "po_expedite_notice_t.LEGAL_FLAG"
+        },
+        {
+          "property": "sent_at",
+          "erp_field": "po_expedite_notice_t.SENT_AT"
+        }
+      ],
+      "computed": [],
+      "ontology_native": [],
+      "unmapped_policy": "其余 ERP 字段不进入本体；需要时按需经同一 fetch API 读取。"
+    },
+    {
+      "object_id": "Rfq",
+      "object_name": "询价单 (Rfq)",
+      "system": "Meta ERP",
+      "erp_entity": "srm_rfq_t",
+      "fetch": {
+        "method": "POST",
+        "path": "/metaerp/openapi/v1/queryRfqs"
+      },
+      "freshness": {
+        "strategy": "on_demand",
+        "ttl_seconds": 300
+      },
+      "field_map": [
+        {
+          "property": "rfq_id",
+          "erp_field": "srm_rfq_t.RFQ_ID"
+        },
+        {
+          "property": "supplier_id",
+          "erp_field": "srm_rfq_t.SUPPLIER_ID"
+        },
+        {
+          "property": "material_id",
+          "erp_field": "srm_rfq_t.MATERIAL_CODE"
+        },
+        {
+          "property": "rfq_qty",
+          "erp_field": "srm_rfq_t.QTY"
+        },
+        {
+          "property": "deadline",
+          "erp_field": "srm_rfq_t.DEADLINE"
+        },
+        {
+          "property": "status",
+          "erp_field": "srm_rfq_t.STATUS"
+        }
+      ],
+      "computed": [],
+      "ontology_native": [],
+      "unmapped_policy": "其余 ERP 字段不进入本体；需要时按需经同一 fetch API 读取。"
+    },
+    {
+      "object_id": "RiskFlag",
+      "object_name": "风险标记 (RiskFlag)",
+      "system": "Meta ERP",
+      "erp_entity": "srm_risk_flag_t",
+      "fetch": {
+        "method": "POST",
+        "path": "/metaerp/openapi/v1/queryRiskFlags"
+      },
+      "freshness": {
+        "strategy": "on_demand",
+        "ttl_seconds": 300
+      },
+      "field_map": [
+        {
+          "property": "flag_id",
+          "erp_field": "srm_risk_flag_t.FLAG_ID"
+        },
+        {
+          "property": "supplier_id",
+          "erp_field": "srm_risk_flag_t.SUPPLIER_ID"
+        },
+        {
+          "property": "flag_type",
+          "erp_field": "srm_risk_flag_t.FLAG_TYPE"
+        },
+        {
+          "property": "severity",
+          "erp_field": "srm_risk_flag_t.SEVERITY"
+        },
+        {
+          "property": "evidence",
+          "erp_field": "srm_risk_flag_t.EVIDENCE"
+        },
+        {
+          "property": "flagged_at",
+          "erp_field": "srm_risk_flag_t.FLAGGED_AT"
+        }
+      ],
+      "computed": [],
+      "ontology_native": [],
+      "unmapped_policy": "其余 ERP 字段不进入本体；需要时按需经同一 fetch API 读取。"
+    },
+    {
+      "object_id": "ExternalEvent",
+      "object_name": "外部事件 (ExternalEvent)",
+      "system": null,
+      "note": "本体独有对象（外部数据），Meta ERP 中不存在。",
+      "field_map": []
+    },
+    {
+      "object_id": "MetaERP",
+      "object_name": "Meta ERP (记录系统)",
+      "system": null,
+      "note": "系统对象，本身即 Meta ERP 的登记。",
+      "field_map": []
+    }
+  ],
+  "action_maps": [
+    {
+      "action_id": "action-forecast-typhoon-impact",
+      "action_name": "台风影响与物资需求推演",
+      "kind": "prompt",
+      "note": "Agent 分析行动：只读，经 external_calls 声明的查询 API 取数。",
+      "external_calls": [
+        {
+          "system": "Meta ERP",
+          "endpoint": "/metaerp/openapi/v1/queryGridAssets",
+          "method": "POST",
+          "description": "按网格拉取资产台账"
+        },
+        {
+          "system": "Meta ERP",
+          "endpoint": "/metaerp/openapi/v1/queryInventoryLots",
+          "method": "POST",
+          "description": "按区域拉取实时库存"
+        },
+        {
+          "system": "Meta ERP",
+          "endpoint": "/metaerp/openapi/v1/queryRepairHistory",
+          "method": "POST",
+          "description": "拉取历史台风抢修工单用于故障率"
+        }
+      ],
+      "data_changes": []
+    },
+    {
+      "action_id": "action-scan-supplier-risk",
+      "action_name": "供应商风险扫描与图谱穿透",
+      "kind": "prompt",
+      "note": "Agent 分析行动：只读，经 external_calls 声明的查询 API 取数。",
+      "external_calls": [
+        {
+          "system": "Meta ERP",
+          "endpoint": "/metaerp/openapi/v1/queryContracts",
+          "method": "POST",
+          "description": "拉取该供应商在执行合同"
+        },
+        {
+          "system": "Meta ERP",
+          "endpoint": "/metaerp/openapi/v1/queryPurchaseOrders",
+          "method": "POST",
+          "description": "拉取未到货订单"
+        },
+        {
+          "system": "Meta ERP",
+          "endpoint": "/metaerp/openapi/v1/queryDeliverySchedules",
+          "method": "POST",
+          "description": "拉取未来 90 天交付节点"
+        }
+      ],
+      "data_changes": []
+    },
+    {
+      "action_id": "action-match-dormant-stock",
+      "action_name": "同物匹配与呆滞盘点",
+      "kind": "prompt",
+      "note": "Agent 分析行动：只读，经 external_calls 声明的查询 API 取数。",
+      "external_calls": [
+        {
+          "system": "Meta ERP",
+          "endpoint": "/metaerp/openapi/v1/queryInventoryLots",
+          "method": "POST",
+          "description": "拉取全集团库存批次（含库龄）"
+        },
+        {
+          "system": "Meta ERP",
+          "endpoint": "/metaerp/openapi/v1/queryRequisitions",
+          "method": "POST",
+          "description": "拉取已批待执行采购需求"
+        }
+      ],
+      "data_changes": []
+    },
+    {
+      "action_id": "action-review-emergency-response",
+      "action_name": "应急保供复盘",
+      "kind": "prompt",
+      "note": "Agent 分析行动：只读，经 external_calls 声明的查询 API 取数。",
+      "external_calls": [
+        {
+          "system": "Meta ERP",
+          "endpoint": "/metaerp/openapi/v1/queryTransferOrders",
+          "method": "POST",
+          "description": "拉取应急期调拨执行情况"
+        },
+        {
+          "system": "Meta ERP",
+          "endpoint": "/metaerp/openapi/v1/queryRepairOrders",
+          "method": "POST",
+          "description": "拉取抢修工单消耗"
+        }
+      ],
+      "data_changes": []
+    },
+    {
+      "action_id": "action-lock-inventory",
+      "action_name": "锁定库存",
+      "kind": "external",
+      "operation_id": "lockInventoryLot",
+      "endpoint": "/metaerp/openapi/v1/lockInventoryLot",
+      "method": "POST",
+      "external_calls": [
+        {
+          "system": "Meta ERP",
+          "endpoint": "/metaerp/openapi/v1/lockInventoryLot",
+          "method": "POST",
+          "description": "调用 Meta ERP 锁定库存批次"
+        }
+      ],
+      "data_changes": [
+        {
+          "target_object": "InventoryLot",
+          "mutation_type": "MODIFY",
+          "impacted_properties": [
+            "status"
+          ]
+        }
+      ]
+    },
+    {
+      "action_id": "action-release-inventory",
+      "action_name": "释放库存",
+      "kind": "external",
+      "operation_id": "releaseInventoryLot",
+      "endpoint": "/metaerp/openapi/v1/releaseInventoryLot",
+      "method": "POST",
+      "external_calls": [
+        {
+          "system": "Meta ERP",
+          "endpoint": "/metaerp/openapi/v1/releaseInventoryLot",
+          "method": "POST",
+          "description": "调用 Meta ERP 释放库存批次"
+        }
+      ],
+      "data_changes": [
+        {
+          "target_object": "InventoryLot",
+          "mutation_type": "MODIFY",
+          "impacted_properties": [
+            "status"
+          ]
+        }
+      ]
+    },
+    {
+      "action_id": "action-create-stock-transfer",
+      "action_name": "创建跨仓调拨单",
+      "kind": "external",
+      "operation_id": "createTransferOrder",
+      "endpoint": "/metaerp/openapi/v1/createTransferOrder",
+      "method": "POST",
+      "external_calls": [
+        {
+          "system": "Meta ERP",
+          "endpoint": "/metaerp/openapi/v1/createTransferOrder",
+          "method": "POST",
+          "description": "调用 Meta ERP 创建调拨单"
+        }
+      ],
+      "data_changes": [
+        {
+          "target_object": "StockTransferOrder",
+          "mutation_type": "CREATE",
+          "impacted_properties": []
+        }
+      ]
+    },
+    {
+      "action_id": "action-create-emergency-po",
+      "action_name": "创建紧急采购订单",
+      "kind": "external",
+      "operation_id": "createEmergencyPo",
+      "endpoint": "/metaerp/openapi/v1/createEmergencyPo",
+      "method": "POST",
+      "external_calls": [
+        {
+          "system": "Meta ERP",
+          "endpoint": "/metaerp/openapi/v1/createEmergencyPo",
+          "method": "POST",
+          "description": "调用 Meta ERP 创建紧急采购订单"
+        }
+      ],
+      "data_changes": [
+        {
+          "target_object": "PurchaseOrder",
+          "mutation_type": "CREATE",
+          "impacted_properties": []
+        }
+      ]
+    },
+    {
+      "action_id": "action-dispatch-logistics",
+      "action_name": "下达运输任务",
+      "kind": "external",
+      "operation_id": "createShipmentTask",
+      "endpoint": "/metaerp/openapi/v1/createShipmentTask",
+      "method": "POST",
+      "external_calls": [
+        {
+          "system": "Meta ERP",
+          "endpoint": "/metaerp/openapi/v1/createShipmentTask",
+          "method": "POST",
+          "description": "调用 Meta ERP 物流模块下达运输任务"
+        }
+      ],
+      "data_changes": [
+        {
+          "target_object": "StockTransferOrder",
+          "mutation_type": "MODIFY",
+          "impacted_properties": [
+            "status"
+          ]
+        }
+      ]
+    },
+    {
+      "action_id": "action-create-collab-request",
+      "action_name": "发起跨单位协同请求",
+      "kind": "external",
+      "operation_id": "createCollabRequest",
+      "endpoint": "/metaerp/openapi/v1/createCollabRequest",
+      "method": "POST",
+      "external_calls": [
+        {
+          "system": "Meta ERP",
+          "endpoint": "/metaerp/openapi/v1/createCollabRequest",
+          "method": "POST",
+          "description": "调用 Meta ERP 协同模块发起跨单位请求"
+        }
+      ],
+      "data_changes": []
+    },
+    {
+      "action_id": "action-generate-replenishment-plan",
+      "action_name": "生成补库采购计划",
+      "kind": "external",
+      "operation_id": "createRequisitionBatch",
+      "endpoint": "/metaerp/openapi/v1/createRequisitionBatch",
+      "method": "POST",
+      "external_calls": [
+        {
+          "system": "Meta ERP",
+          "endpoint": "/metaerp/openapi/v1/createRequisitionBatch",
+          "method": "POST",
+          "description": "调用 Meta ERP 批量创建采购需求"
+        }
+      ],
+      "data_changes": [
+        {
+          "target_object": "PurchaseRequisition",
+          "mutation_type": "CREATE",
+          "impacted_properties": []
+        }
+      ]
+    },
+    {
+      "action_id": "action-issue-expedite-notice",
+      "action_name": "发出催交函",
+      "kind": "external",
+      "operation_id": "sendExpediteNotice",
+      "endpoint": "/metaerp/openapi/v1/sendExpediteNotice",
+      "method": "POST",
+      "external_calls": [
+        {
+          "system": "Meta ERP",
+          "endpoint": "/metaerp/openapi/v1/sendExpediteNotice",
+          "method": "POST",
+          "description": "调用 Meta ERP 发出催交函"
+        }
+      ],
+      "data_changes": [
+        {
+          "target_object": "ExpediteNotice",
+          "mutation_type": "CREATE",
+          "impacted_properties": []
+        }
+      ]
+    },
+    {
+      "action_id": "action-create-onsite-inspection",
+      "action_name": "创建驻厂监造任务",
+      "kind": "external",
+      "operation_id": "createInspectionTask",
+      "endpoint": "/metaerp/openapi/v1/createInspectionTask",
+      "method": "POST",
+      "external_calls": [
+        {
+          "system": "Meta ERP",
+          "endpoint": "/metaerp/openapi/v1/createInspectionTask",
+          "method": "POST",
+          "description": "调用 Meta ERP 质量模块创建驻厂监造任务"
+        }
+      ],
+      "data_changes": [
+        {
+          "target_object": "InspectionReport",
+          "mutation_type": "CREATE",
+          "impacted_properties": []
+        }
+      ]
+    },
+    {
+      "action_id": "action-send-rfq",
+      "action_name": "向替代供应商询价",
+      "kind": "external",
+      "operation_id": "createRfq",
+      "endpoint": "/metaerp/openapi/v1/createRfq",
+      "method": "POST",
+      "external_calls": [
+        {
+          "system": "Meta ERP",
+          "endpoint": "/metaerp/openapi/v1/createRfq",
+          "method": "POST",
+          "description": "调用 Meta ERP 寻源模块发出询价"
+        }
+      ],
+      "data_changes": [
+        {
+          "target_object": "Rfq",
+          "mutation_type": "CREATE",
+          "impacted_properties": []
+        }
+      ]
+    },
+    {
+      "action_id": "action-add-supplier-risk-flag",
+      "action_name": "标记供应商风险名单",
+      "kind": "external",
+      "operation_id": "addRiskFlag",
+      "endpoint": "/metaerp/openapi/v1/addRiskFlag",
+      "method": "POST",
+      "external_calls": [
+        {
+          "system": "Meta ERP",
+          "endpoint": "/metaerp/openapi/v1/addRiskFlag",
+          "method": "POST",
+          "description": "调用 Meta ERP SRM 写入风险标记"
+        }
+      ],
+      "data_changes": [
+        {
+          "target_object": "RiskFlag",
+          "mutation_type": "CREATE",
+          "impacted_properties": []
+        }
+      ]
+    },
+    {
+      "action_id": "action-suspend-requisition",
+      "action_name": "暂停采购申请",
+      "kind": "external",
+      "operation_id": "suspendRequisition",
+      "endpoint": "/metaerp/openapi/v1/suspendRequisition",
+      "method": "POST",
+      "external_calls": [
+        {
+          "system": "Meta ERP",
+          "endpoint": "/metaerp/openapi/v1/suspendRequisition",
+          "method": "POST",
+          "description": "调用 Meta ERP 暂停采购需求"
+        }
+      ],
+      "data_changes": [
+        {
+          "target_object": "PurchaseRequisition",
+          "mutation_type": "MODIFY",
+          "impacted_properties": [
+            "status"
+          ]
+        }
+      ]
+    },
+    {
+      "action_id": "action-create-allocation-order",
+      "action_name": "创建跨单位调剂单",
+      "kind": "external",
+      "operation_id": "createAllocation",
+      "endpoint": "/metaerp/openapi/v1/createAllocation",
+      "method": "POST",
+      "external_calls": [
+        {
+          "system": "Meta ERP",
+          "endpoint": "/metaerp/openapi/v1/createAllocation",
+          "method": "POST",
+          "description": "调用 Meta ERP 创建跨单位调剂单"
+        }
+      ],
+      "data_changes": [
+        {
+          "target_object": "AllocationOrder",
+          "mutation_type": "CREATE",
+          "impacted_properties": []
+        }
+      ]
+    },
+    {
+      "action_id": "action-confirm-allocation",
+      "action_name": "双边确认调剂",
+      "kind": "external",
+      "operation_id": "confirmAllocation",
+      "endpoint": "/metaerp/openapi/v1/confirmAllocation",
+      "method": "POST",
+      "external_calls": [
+        {
+          "system": "Meta ERP",
+          "endpoint": "/metaerp/openapi/v1/confirmAllocation",
+          "method": "POST",
+          "description": "调用 Meta ERP 确认并执行调剂"
+        }
+      ],
+      "data_changes": [
+        {
+          "target_object": "AllocationOrder",
+          "mutation_type": "MODIFY",
+          "impacted_properties": [
+            "status"
+          ]
+        }
+      ]
+    },
+    {
+      "action_id": "action-create-disposal-package",
+      "action_name": "生成处置审批包",
+      "kind": "external",
+      "operation_id": "createDisposal",
+      "endpoint": "/metaerp/openapi/v1/createDisposal",
+      "method": "POST",
+      "external_calls": [
+        {
+          "system": "Meta ERP",
+          "endpoint": "/metaerp/openapi/v1/createDisposal",
+          "method": "POST",
+          "description": "调用 Meta ERP 创建处置单"
+        }
+      ],
+      "data_changes": [
+        {
+          "target_object": "DisposalOrder",
+          "mutation_type": "CREATE",
+          "impacted_properties": []
+        }
+      ]
+    }
+  ]
+}

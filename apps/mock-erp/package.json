@@ -1,0 +1,27 @@
+{
+  "name": "@agentic/mock-erp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Mock Meta ERP service for the power-scm demo — in-memory tables loaded from allmetaOntology query stubs, 24 query ops + 15 write ops with an NDJSON journal, plus a minimal server-rendered UI as a browser-automation target.",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "start": "tsx src/server.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "clean": "rm -rf dist .turbo"
+  },
+  "dependencies": {
+    "fastify": "^5.8.5"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.1",
+    "tsx": "^4.22.0",
+    "typescript": "^6.0.3",
+    "vitest": "^3.0.5"
+  },
+  "main": "./src/app.ts",
+  "exports": {
+    ".": "./src/app.ts"
+  }
+}

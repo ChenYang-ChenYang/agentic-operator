@@ -90,6 +90,12 @@ process.env.AGENTIC_IMPORTS_DIR = path.join(
 process.env.AGENTIC_KEY_VAULT_PATH = path.join(testRunRoot, "provider-keys.json");
 process.env.AGENTIC_MODEL_FLEET_PATH = path.join(testRunRoot, "model-fleet.json");
 process.env.AGENTIC_LLM_TELEMETRY_SPOOL_PATH = path.join(testRunRoot, "llm-telemetry.ndjson");
+// AI settings and their .env.local mirror stay inside the test run root. The
+// store's own test-mode guard additionally refuses the real apps/api/.env.local
+// fallback: a 2026-08-20 run left a managed block there that silently rerouted
+// the dev runtime's model routing to a deleted data/test-runs path.
+process.env.AGENTIC_LLM_SETTINGS_PATH = path.join(testRunRoot, "llm-settings.json");
+process.env.AGENTIC_LLM_ENV_MIRROR_PATH = path.join(testRunRoot, ".env.local");
 
 // Clone the migrated database once per Vitest worker. better-sqlite3's backup
 // API includes committed WAL pages, so the snapshot is consistent even while

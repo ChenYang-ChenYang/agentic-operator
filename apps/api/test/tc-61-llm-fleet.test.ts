@@ -348,7 +348,10 @@ describe("TC-61: /v1/llm/fleet model-fleet CRUD", () => {
   // to add them through the Settings picker. Guard the catalog so the
   // entries don't get pruned by a future cleanup.
   it.each([
-    "openai/gpt-oss-120b",
+    // NOTE: catalogModelPolicy retires models older than 365 days from
+    // selectable status — pick entries with runway, or this list rots with
+    // the calendar (openai/gpt-oss-120b aged out on 2026-08-05).
+    "openai/gpt-5.6-sol",
     "google/gemini-3-flash-preview",
     "deepseek/deepseek-v4-pro",
     "deepseek/deepseek-v4-flash",

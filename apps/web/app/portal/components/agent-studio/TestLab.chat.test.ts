@@ -20,7 +20,6 @@ const css = readFileSync(
   resolve(__dirname, "..", "..", "..", "global.css"),
   "utf8",
 );
-const splitter = readFileSync(resolve(__dirname, "..", "Splitter.tsx"), "utf8");
 
 describe("Test Lab chat wiring", () => {
   it("opens on the chat result and loads a pollable run session", () => {

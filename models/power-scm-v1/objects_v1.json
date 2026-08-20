@@ -1,0 +1,2334 @@
+{
+  "metadata": {
+    "ai_involved": false,
+    "created_at": "2026-08-19T00:00:00.000Z",
+    "created_by": "power-scm-builder",
+    "description": "电力/央国企供应链 actionable ontology：风暴72小时 / 一眼穿透 / 拦下一张采购单。",
+    "document_type": "本体定义 (Ontology Schema)",
+    "last_updated": "2026-08-19",
+    "message": "power-scm 1.0.0 authored package",
+    "parent_version": null,
+    "project_name": "电力供应链数字孪生 (power-scm)",
+    "source": "import-json",
+    "version": "0.1",
+    "version_number": 1
+  },
+  "payload": [
+    {
+      "description": "集团/省/地市法人单位。数字孪生只保留层级与地域两个决策键；工商与财务全量信息留存 Meta ERP。",
+      "extensions": {
+        "allmeta.erp": {
+          "entity": "org_legal_entity_t",
+          "fetch_operation": "queryLegalEntities",
+          "freshness": {
+            "strategy": "on_demand",
+            "ttl_seconds": 300
+          },
+          "system": "Meta ERP"
+        },
+        "allmeta.twin": {
+          "minimal_state": true,
+          "note": "决策所需最小状态；全量字段留存 Meta ERP，按需经 API 取。"
+        }
+      },
+      "id": "LegalEntity",
+      "name": "法人单位 (LegalEntity)",
+      "primary_key": "legal_entity_id",
+      "properties": [
+        {
+          "description": "法人单位唯一编号",
+          "is_required": true,
+          "is_unique": true,
+          "name": "legal_entity_id",
+          "source": "org_legal_entity_t.ORG_ID",
+          "type": "String"
+        },
+        {
+          "description": "单位名称",
+          "name": "entity_name",
+          "source": "org_legal_entity_t.ORG_NAME",
+          "type": "String"
+        },
+        {
+          "description": "单位层级：集团/省/地市/区县",
+          "enum_values": [
+            "group",
+            "provincial",
+            "municipal",
+            "county"
+          ],
+          "name": "level",
+          "source": "org_legal_entity_t.ORG_LEVEL",
+          "type": "Enum"
+        },
+        {
+          "description": "所在地域",
+          "name": "region_name",
+          "source": "org_legal_entity_t.REGION_NAME",
+          "type": "String"
+        },
+        {
+          "description": "上级法人单位编号",
+          "extensions": {
+            "link_name": "隶属于"
+          },
+          "is_foreign_key": true,
+          "name": "parent_entity_id",
+          "nullable": true,
+          "references": "LegalEntity",
+          "source": "org_legal_entity_t.PARENT_ORG_ID",
+          "type": "String"
+        }
+      ],
+      "relationship_description": "【法人单位】通过 parent_entity_id 形成集团层级树；运营【仓库】、提报【采购需求】、持有【库存批次】。",
+      "type": "data"
+    },
+    {
+      "description": "法人单位内的职能部门（物资/审计/基建/财务/调度）。",
+      "extensions": {
+        "allmeta.erp": {
+          "entity": "org_department_t",
+          "fetch_operation": "queryDepartments",
+          "freshness": {
+            "strategy": "on_demand",
+            "ttl_seconds": 300
+          },
+          "system": "Meta ERP"
+        },
+        "allmeta.twin": {
+          "minimal_state": true,
+          "note": "决策所需最小状态；全量字段留存 Meta ERP，按需经 API 取。"
+        }
+      },
+      "id": "Department",
+      "name": "部门 (Department)",
+      "primary_key": "department_id",
+      "properties": [
+        {
+          "description": "部门唯一编号",
+          "is_required": true,
+          "is_unique": true,
+          "name": "department_id",
+          "source": "org_department_t.DEPT_ID",
+          "type": "String"
+        },
+        {
+          "description": "部门名称",
+          "name": "dept_name",
+          "source": "org_department_t.DEPT_NAME",
+          "type": "String"
+        },
+        {
+          "description": "部门职能",
+          "enum_values": [
+            "materials",
+            "audit",
+            "construction",
+            "finance",
+            "dispatch",
+            "project"
+          ],
+          "name": "dept_function",
+          "source": "org_department_t.DEPT_FUNCTION",
+          "type": "Enum"
+        },
+        {
+          "description": "所属法人单位",
+          "extensions": {
+            "link_name": "隶属于"
+          },
+          "is_foreign_key": true,
+          "name": "legal_entity_id",
+          "references": "LegalEntity",
+          "source": "org_department_t.ORG_ID",
+          "type": "String"
+        }
+      ],
+      "relationship_description": "【部门】隶属【法人单位】，【人员】归属【部门】。",
+      "type": "data"
+    },
+    {
+      "description": "演示所用的业务角色载体：物资部主任、物资专责、仓库管理员、审计专员、项目经理、调度员。角色以属性表达（RAAS 惯例），不建 Role 对象。",
+      "extensions": {
+        "allmeta.erp": {
+          "entity": "hr_employee_t",
+          "fetch_operation": "queryEmployees",
+          "freshness": {
+            "strategy": "on_demand",
+            "ttl_seconds": 300
+          },
+          "system": "Meta ERP"
+        },
+        "allmeta.twin": {
+          "minimal_state": true,
+          "note": "决策所需最小状态；全量字段留存 Meta ERP，按需经 API 取。"
+        }
+      },
+      "id": "Employee",
+      "name": "人员 (Employee)",
+      "primary_key": "employee_id",
+      "properties": [
+        {
+          "description": "人员唯一编号",
+          "is_required": true,
+          "is_unique": true,
+          "name": "employee_id",
+          "source": "hr_employee_t.EMP_ID",
+          "type": "String"
+        },
+        {
+          "description": "姓名",
+          "is_pii": true,
+          "name": "emp_name",
+          "source": "hr_employee_t.EMP_NAME",
+          "type": "String"
+        },
+        {
+          "description": "业务角色（materials_director/materials_officer/warehouse_keeper/auditor/project_manager/dispatcher）",
+          "name": "roles",
+          "source": "hr_employee_t.ROLE_CODES",
+          "type": "List<String>"
+        },
+        {
+          "description": "联系电话（合成数据）",
+          "is_pii": true,
+          "name": "phone",
+          "source": "hr_employee_t.MOBILE",
+          "type": "String"
+        },
+        {
+          "description": "所属部门",
+          "extensions": {
+            "link_name": "任职于"
+          },
+          "is_foreign_key": true,
+          "name": "department_id",
+          "references": "Department",
+          "source": "hr_employee_t.DEPT_ID",
+          "type": "String"
+        }
+      ],
+      "relationship_description": "【人员】归属【部门】，是行动审批与协同确认的执行者。",
+      "type": "data"
+    },
+    {
+      "description": "物资 SKU。equivalent_group_id 承载“同物不同码”语义等效组——集团各单位编码不一致时，本体的语义层负责对齐。",
+      "extensions": {
+        "allmeta.erp": {
+          "entity": "mm_material_master_t",
+          "fetch_operation": "queryMaterials",
+          "freshness": {
+            "strategy": "on_demand",
+            "ttl_seconds": 300
+          },
+          "system": "Meta ERP"
+        },
+        "allmeta.twin": {
+          "minimal_state": true,
+          "note": "决策所需最小状态；全量字段留存 Meta ERP，按需经 API 取。"
+        }
+      },
+      "id": "Material",
+      "name": "物资 (Material)",
+      "primary_key": "material_id",
+      "properties": [
+        {
+          "description": "物资编码（各法人单位编码可能不同）",
+          "is_required": true,
+          "is_unique": true,
+          "name": "material_id",
+          "source": "mm_material_master_t.MATERIAL_CODE",
+          "type": "String"
+        },
+        {
+          "description": "物资名称",
+          "name": "material_name",
+          "source": "mm_material_master_t.MATERIAL_NAME",
+          "type": "String"
+        },
+        {
+          "description": "规格型号",
+          "name": "spec_model",
+          "source": "mm_material_master_t.SPEC_MODEL",
+          "type": "String"
+        },
+        {
+          "description": "物资大类：电杆/导线/配变/绝缘子/金具/电缆",
+          "enum_values": [
+            "pole",
+            "conductor",
+            "transformer",
+            "insulator",
+            "fitting",
+            "cable"
+          ],
+          "name": "category",
+          "source": "mm_material_master_t.CATEGORY_CODE",
+          "type": "Enum"
+        },
+        {
+          "description": "计量单位",
+          "name": "unit",
+          "source": "mm_material_master_t.UNIT",
+          "type": "String"
+        },
+        {
+          "description": "参考单价（元）",
+          "name": "unit_price",
+          "source": "mm_material_master_t.REF_PRICE",
+          "type": "Float"
+        },
+        {
+          "description": "保质期（月），0 表示不限",
+          "name": "shelf_life_months",
+          "source": "mm_material_master_t.SHELF_LIFE_M",
+          "type": "Integer"
+        },
+        {
+          "description": "技术状态：现行/淘汰",
+          "enum_values": [
+            "current",
+            "obsolete"
+          ],
+          "name": "tech_status",
+          "source": "mm_material_master_t.TECH_STATUS",
+          "type": "Enum"
+        },
+        {
+          "description": "语义等效组编号：同组即“同物不同码”",
+          "name": "equivalent_group_id",
+          "nullable": true,
+          "type": "String"
+        },
+        {
+          "description": "技术利库替代物资（有向）",
+          "extensions": {
+            "link_name": "可替代"
+          },
+          "is_foreign_key": true,
+          "name": "substitute_material_id",
+          "nullable": true,
+          "references": "Material",
+          "type": "String"
+        },
+        {
+          "description": "适配的电网资产类型",
+          "enum_values": [
+            "line_110kv",
+            "line_10kv",
+            "dist_transformer",
+            "substation",
+            "generic"
+          ],
+          "name": "applicable_asset_type",
+          "type": "Enum"
+        }
+      ],
+      "relationship_description": "【物资】被【库存批次】持有、被【采购需求/订单】引用、适配【电网资产】、可被另一【物资】替代。",
+      "synonyms": [
+        "物料",
+        "SKU",
+        "库存物资"
+      ],
+      "type": "data"
+    },
+    {
+      "description": "库存批次的决策镜像：数量、库龄、状态。account 级成本明细留存 Meta ERP。",
+      "extensions": {
+        "allmeta.erp": {
+          "entity": "wm_inventory_lot_t",
+          "fetch_operation": "queryInventoryLots",
+          "freshness": {
+            "strategy": "on_demand",
+            "ttl_seconds": 60
+          },
+          "system": "Meta ERP"
+        },
+        "allmeta.twin": {
+          "minimal_state": true,
+          "note": "决策所需最小状态；全量字段留存 Meta ERP，按需经 API 取。"
+        }
+      },
+      "id": "InventoryLot",
+      "name": "库存批次 (InventoryLot)",
+      "primary_key": "lot_id",
+      "properties": [
+        {
+          "description": "库存批次唯一编号",
+          "is_required": true,
+          "is_unique": true,
+          "name": "lot_id",
+          "source": "wm_inventory_lot_t.LOT_ID",
+          "type": "String"
+        },
+        {
+          "description": "物资编码",
+          "extensions": {
+            "link_name": "库存物资"
+          },
+          "is_foreign_key": true,
+          "name": "material_id",
+          "references": "Material",
+          "source": "wm_inventory_lot_t.MATERIAL_CODE",
+          "type": "String"
+        },
+        {
+          "description": "所在仓库",
+          "extensions": {
+            "link_name": "存放于"
+          },
+          "is_foreign_key": true,
+          "name": "warehouse_id",
+          "references": "Warehouse",
+          "source": "wm_inventory_lot_t.WAREHOUSE_ID",
+          "type": "String"
+        },
+        {
+          "description": "货权归属法人单位",
+          "extensions": {
+            "link_name": "货权归属"
+          },
+          "is_foreign_key": true,
+          "name": "owner_entity_id",
+          "references": "LegalEntity",
+          "source": "wm_inventory_lot_t.OWNER_ORG_ID",
+          "type": "String"
+        },
+        {
+          "description": "现存数量",
+          "name": "qty_on_hand",
+          "source": "wm_inventory_lot_t.QTY_ON_HAND",
+          "type": "Float"
+        },
+        {
+          "description": "单位成本（元）",
+          "name": "unit_cost",
+          "source": "wm_inventory_lot_t.UNIT_COST",
+          "type": "Float"
+        },
+        {
+          "description": "入库日期",
+          "name": "inbound_date",
+          "source": "wm_inventory_lot_t.INBOUND_DATE",
+          "type": "Date"
+        },
+        {
+          "computed_expression": "today() - inbound_date",
+          "description": "库龄（天）",
+          "is_computed": true,
+          "name": "age_days",
+          "type": "Integer"
+        },
+        {
+          "description": "批次状态：可用/预留/锁定",
+          "enum_values": [
+            "available",
+            "reserved",
+            "locked"
+          ],
+          "name": "status",
+          "source": "wm_inventory_lot_t.STATUS",
+          "type": "Enum"
+        }
+      ],
+      "relationship_description": "【库存批次】属于某【物资】、存放于【仓库】、归属【法人单位】；库龄超限即成呆滞。",
+      "type": "data"
+    },
+    {
+      "description": "仓库与其地理坐标（应急调拨的时效计算依赖坐标与沿海标记）。",
+      "extensions": {
+        "allmeta.erp": {
+          "entity": "wm_warehouse_t",
+          "fetch_operation": "queryWarehouses",
+          "freshness": {
+            "strategy": "on_demand",
+            "ttl_seconds": 300
+          },
+          "system": "Meta ERP"
+        },
+        "allmeta.twin": {
+          "minimal_state": true,
+          "note": "决策所需最小状态；全量字段留存 Meta ERP，按需经 API 取。"
+        }
+      },
+      "id": "Warehouse",
+      "name": "仓库 (Warehouse)",
+      "primary_key": "warehouse_id",
+      "properties": [
+        {
+          "description": "仓库唯一编号",
+          "is_required": true,
+          "is_unique": true,
+          "name": "warehouse_id",
+          "source": "wm_warehouse_t.WAREHOUSE_ID",
+          "type": "String"
+        },
+        {
+          "description": "仓库名称",
+          "name": "warehouse_name",
+          "source": "wm_warehouse_t.WAREHOUSE_NAME",
+          "type": "String"
+        },
+        {
+          "description": "纬度",
+          "name": "latitude",
+          "source": "wm_warehouse_t.LAT",
+          "type": "Float"
+        },
+        {
+          "description": "经度",
+          "name": "longitude",
+          "source": "wm_warehouse_t.LNG",
+          "type": "Float"
+        },
+        {
+          "description": "是否沿海仓（台风风险区）",
+          "name": "coastal",
+          "source": "wm_warehouse_t.COASTAL_FLAG",
+          "type": "Boolean"
+        },
+        {
+          "description": "运营法人单位",
+          "extensions": {
+            "link_name": "运营方"
+          },
+          "is_foreign_key": true,
+          "name": "legal_entity_id",
+          "references": "LegalEntity",
+          "source": "wm_warehouse_t.ORG_ID",
+          "type": "String"
+        }
+      ],
+      "relationship_description": "【仓库】由【法人单位】运营，持有【库存批次】，是【调拨单】的起讫点。",
+      "type": "data"
+    },
+    {
+      "description": "采购需求的行动镜像。suspend 是本体的招牌动作：与呆滞库存同物的需求会被拦截暂停。",
+      "extensions": {
+        "allmeta.erp": {
+          "entity": "po_requisition_t",
+          "fetch_operation": "queryRequisitions",
+          "freshness": {
+            "strategy": "on_demand",
+            "ttl_seconds": 300
+          },
+          "system": "Meta ERP"
+        },
+        "allmeta.twin": {
+          "minimal_state": true,
+          "note": "决策所需最小状态；全量字段留存 Meta ERP，按需经 API 取。"
+        }
+      },
+      "id": "PurchaseRequisition",
+      "lifecycle_initial_state": "draft",
+      "lifecycle_state_property": "status",
+      "lifecycle_states": [
+        {
+          "description": "草拟",
+          "name": "draft"
+        },
+        {
+          "description": "已批准待执行",
+          "name": "approved"
+        },
+        {
+          "description": "已暂停（同物拦截）",
+          "name": "suspended"
+        },
+        {
+          "description": "已转采购订单",
+          "name": "converted"
+        },
+        {
+          "description": "已关闭",
+          "name": "closed",
+          "terminal": true
+        }
+      ],
+      "lifecycle_transitions": [
+        {
+          "from": "draft",
+          "to": "approved",
+          "trigger": "审批通过"
+        },
+        {
+          "action": "action-suspend-requisition",
+          "from": "approved",
+          "to": "suspended",
+          "trigger": "同物匹配拦截"
+        },
+        {
+          "from": "approved",
+          "to": "converted",
+          "trigger": "转订单"
+        },
+        {
+          "from": "suspended",
+          "to": "closed",
+          "trigger": "调剂执行完成"
+        },
+        {
+          "from": "converted",
+          "to": "closed",
+          "trigger": "订单闭环"
+        }
+      ],
+      "name": "采购需求 (PurchaseRequisition)",
+      "primary_key": "requisition_id",
+      "properties": [
+        {
+          "description": "采购需求唯一编号",
+          "is_required": true,
+          "is_unique": true,
+          "name": "requisition_id",
+          "source": "po_requisition_t.REQ_ID",
+          "type": "String"
+        },
+        {
+          "description": "需求物资编码",
+          "extensions": {
+            "link_name": "需求物资"
+          },
+          "is_foreign_key": true,
+          "name": "material_id",
+          "references": "Material",
+          "source": "po_requisition_t.MATERIAL_CODE",
+          "type": "String"
+        },
+        {
+          "description": "提报法人单位",
+          "extensions": {
+            "link_name": "提报单位"
+          },
+          "is_foreign_key": true,
+          "name": "requesting_entity_id",
+          "references": "LegalEntity",
+          "source": "po_requisition_t.REQ_ORG_ID",
+          "type": "String"
+        },
+        {
+          "description": "提报人",
+          "extensions": {
+            "link_name": "提报人"
+          },
+          "is_foreign_key": true,
+          "name": "requested_by",
+          "references": "Employee",
+          "source": "po_requisition_t.REQ_BY",
+          "type": "String"
+        },
+        {
+          "description": "需求数量",
+          "name": "req_qty",
+          "source": "po_requisition_t.REQ_QTY",
+          "type": "Float"
+        },
+        {
+          "description": "预算金额（元）",
+          "name": "budget_amount",
+          "source": "po_requisition_t.BUDGET_AMT",
+          "type": "Float"
+        },
+        {
+          "description": "要求到货日期",
+          "name": "need_by_date",
+          "source": "po_requisition_t.NEED_BY_DATE",
+          "type": "Date"
+        },
+        {
+          "description": "需求状态",
+          "enum_values": [
+            "draft",
+            "approved",
+            "suspended",
+            "converted",
+            "closed"
+          ],
+          "name": "status",
+          "source": "po_requisition_t.STATUS",
+          "type": "Enum"
+        },
+        {
+          "description": "需求理由",
+          "name": "justification",
+          "source": "po_requisition_t.REASON",
+          "type": "String"
+        }
+      ],
+      "relationship_description": "【采购需求】由【法人单位】提报、针对某【物资】；可被【调剂单】覆盖、被【采购订单】承接。",
+      "type": "data"
+    },
+    {
+      "description": "采购订单的履约镜像：数量、承诺日期、是否应急。价格明细与付款条款留存 Meta ERP。",
+      "extensions": {
+        "allmeta.erp": {
+          "entity": "po_order_header_t",
+          "fetch_operation": "queryPurchaseOrders",
+          "freshness": {
+            "strategy": "on_demand",
+            "ttl_seconds": 300
+          },
+          "system": "Meta ERP"
+        },
+        "allmeta.twin": {
+          "minimal_state": true,
+          "note": "决策所需最小状态；全量字段留存 Meta ERP，按需经 API 取。"
+        }
+      },
+      "id": "PurchaseOrder",
+      "name": "采购订单 (PurchaseOrder)",
+      "primary_key": "purchase_order_id",
+      "properties": [
+        {
+          "description": "采购订单唯一编号",
+          "is_required": true,
+          "is_unique": true,
+          "name": "purchase_order_id",
+          "source": "po_order_header_t.PO_ID",
+          "type": "String"
+        },
+        {
+          "description": "来源采购需求",
+          "extensions": {
+            "link_name": "承接需求"
+          },
+          "is_foreign_key": true,
+          "name": "requisition_id",
+          "nullable": true,
+          "references": "PurchaseRequisition",
+          "source": "po_order_header_t.REQ_ID",
+          "type": "String"
+        },
+        {
+          "description": "供应商",
+          "extensions": {
+            "link_name": "签订供应商"
+          },
+          "is_foreign_key": true,
+          "name": "supplier_id",
+          "references": "Supplier",
+          "source": "po_order_header_t.SUPPLIER_ID",
+          "type": "String"
+        },
+        {
+          "description": "挂靠框架协议",
+          "extensions": {
+            "link_name": "挂靠协议"
+          },
+          "is_foreign_key": true,
+          "name": "agreement_id",
+          "nullable": true,
+          "references": "FrameworkAgreement",
+          "source": "po_order_header_t.AGREEMENT_ID",
+          "type": "String"
+        },
+        {
+          "description": "采购物资",
+          "extensions": {
+            "link_name": "采购物资"
+          },
+          "is_foreign_key": true,
+          "name": "material_id",
+          "references": "Material",
+          "source": "po_order_header_t.MATERIAL_CODE",
+          "type": "String"
+        },
+        {
+          "description": "订单数量",
+          "name": "order_qty",
+          "source": "po_order_header_t.ORDER_QTY",
+          "type": "Float"
+        },
+        {
+          "description": "订单金额（元）",
+          "name": "order_amount",
+          "source": "po_order_header_t.ORDER_AMT",
+          "type": "Float"
+        },
+        {
+          "description": "承诺交付日期",
+          "name": "promised_date",
+          "source": "po_order_header_t.PROMISED_DATE",
+          "type": "Date"
+        },
+        {
+          "description": "是否应急采购",
+          "name": "is_emergency",
+          "source": "po_order_header_t.EMERGENCY_FLAG",
+          "type": "Boolean"
+        },
+        {
+          "description": "订单状态",
+          "enum_values": [
+            "open",
+            "in_transit",
+            "received",
+            "cancelled"
+          ],
+          "name": "status",
+          "source": "po_order_header_t.STATUS",
+          "type": "Enum"
+        }
+      ],
+      "relationship_description": "【采购订单】承接【采购需求】、与【供应商】签订、可挂靠【框架协议】。",
+      "type": "data"
+    },
+    {
+      "description": "框架协议：应急条款（emergency_clause）是“风暴 72 小时”紧急下单的合规前提。",
+      "extensions": {
+        "allmeta.erp": {
+          "entity": "srm_agreement_t",
+          "fetch_operation": "queryAgreements",
+          "freshness": {
+            "strategy": "on_demand",
+            "ttl_seconds": 300
+          },
+          "system": "Meta ERP"
+        },
+        "allmeta.twin": {
+          "minimal_state": true,
+          "note": "决策所需最小状态；全量字段留存 Meta ERP，按需经 API 取。"
+        }
+      },
+      "id": "FrameworkAgreement",
+      "name": "框架协议 (FrameworkAgreement)",
+      "primary_key": "agreement_id",
+      "properties": [
+        {
+          "description": "框架协议唯一编号",
+          "is_required": true,
+          "is_unique": true,
+          "name": "agreement_id",
+          "source": "srm_agreement_t.AGREEMENT_ID",
+          "type": "String"
+        },
+        {
+          "description": "协议供应商",
+          "extensions": {
+            "link_name": "协议供应商"
+          },
+          "is_foreign_key": true,
+          "name": "supplier_id",
+          "references": "Supplier",
+          "source": "srm_agreement_t.SUPPLIER_ID",
+          "type": "String"
+        },
+        {
+          "description": "覆盖物资",
+          "extensions": {
+            "link_name": "覆盖物资"
+          },
+          "is_foreign_key": true,
+          "name": "covered_material_id",
+          "references": "Material",
+          "source": "srm_agreement_t.MATERIAL_CODE",
+          "type": "String"
+        },
+        {
+          "description": "生效日期",
+          "name": "valid_from",
+          "source": "srm_agreement_t.VALID_FROM",
+          "type": "Date"
+        },
+        {
+          "description": "失效日期",
+          "name": "valid_to",
+          "source": "srm_agreement_t.VALID_TO",
+          "type": "Date"
+        },
+        {
+          "description": "协议限价（元）",
+          "name": "price_ceiling",
+          "source": "srm_agreement_t.PRICE_CEILING",
+          "type": "Float"
+        },
+        {
+          "description": "是否含应急供货条款",
+          "name": "emergency_clause",
+          "source": "srm_agreement_t.EMERGENCY_CLAUSE",
+          "type": "Boolean"
+        }
+      ],
+      "relationship_description": "【框架协议】与【供应商】签订、覆盖某类【物资】；应急采购订单挂靠协议下达。",
+      "type": "data"
+    },
+    {
+      "description": "合同的风险镜像：金额、状态、支撑的项目。合同全文与条款留存 Meta ERP。",
+      "extensions": {
+        "allmeta.erp": {
+          "entity": "srm_contract_t",
+          "fetch_operation": "queryContracts",
+          "freshness": {
+            "strategy": "on_demand",
+            "ttl_seconds": 300
+          },
+          "system": "Meta ERP"
+        },
+        "allmeta.twin": {
+          "minimal_state": true,
+          "note": "决策所需最小状态；全量字段留存 Meta ERP，按需经 API 取。"
+        }
+      },
+      "id": "Contract",
+      "name": "合同 (Contract)",
+      "primary_key": "contract_id",
+      "properties": [
+        {
+          "description": "合同唯一编号",
+          "is_required": true,
+          "is_unique": true,
+          "name": "contract_id",
+          "source": "srm_contract_t.CONTRACT_ID",
+          "type": "String"
+        },
+        {
+          "description": "签订供应商",
+          "extensions": {
+            "link_name": "签订方"
+          },
+          "is_foreign_key": true,
+          "name": "supplier_id",
+          "references": "Supplier",
+          "source": "srm_contract_t.SUPPLIER_ID",
+          "type": "String"
+        },
+        {
+          "description": "支撑项目",
+          "extensions": {
+            "link_name": "支撑项目"
+          },
+          "is_foreign_key": true,
+          "name": "project_id",
+          "nullable": true,
+          "references": "Project",
+          "source": "srm_contract_t.PROJECT_ID",
+          "type": "String"
+        },
+        {
+          "description": "合同金额（元）",
+          "name": "contract_amount",
+          "source": "srm_contract_t.CONTRACT_AMT",
+          "type": "Float"
+        },
+        {
+          "description": "签订日期",
+          "name": "signed_date",
+          "source": "srm_contract_t.SIGNED_DATE",
+          "type": "Date"
+        },
+        {
+          "description": "合同类型",
+          "enum_values": [
+            "material",
+            "construction",
+            "service"
+          ],
+          "name": "contract_type",
+          "source": "srm_contract_t.CONTRACT_TYPE",
+          "type": "Enum"
+        },
+        {
+          "description": "合同状态",
+          "enum_values": [
+            "executing",
+            "completed",
+            "terminated"
+          ],
+          "name": "status",
+          "source": "srm_contract_t.STATUS",
+          "type": "Enum"
+        }
+      ],
+      "relationship_description": "【合同】与【供应商】签订、支撑【项目】——供应商暴雷时沿此链穿透影响面。",
+      "type": "data"
+    },
+    {
+      "description": "订单交付节点。feeds 项目里程碑——交付延误沿此链推演到工期。",
+      "extensions": {
+        "allmeta.erp": {
+          "entity": "po_delivery_schedule_t",
+          "fetch_operation": "queryDeliverySchedules",
+          "freshness": {
+            "strategy": "on_demand",
+            "ttl_seconds": 300
+          },
+          "system": "Meta ERP"
+        },
+        "allmeta.twin": {
+          "minimal_state": true,
+          "note": "决策所需最小状态；全量字段留存 Meta ERP，按需经 API 取。"
+        }
+      },
+      "id": "DeliverySchedule",
+      "name": "交付节点 (DeliverySchedule)",
+      "primary_key": "schedule_id",
+      "properties": [
+        {
+          "description": "交付节点唯一编号",
+          "is_required": true,
+          "is_unique": true,
+          "name": "schedule_id",
+          "source": "po_delivery_schedule_t.SCHEDULE_ID",
+          "type": "String"
+        },
+        {
+          "description": "所属采购订单",
+          "extensions": {
+            "link_name": "所属订单"
+          },
+          "is_foreign_key": true,
+          "name": "purchase_order_id",
+          "references": "PurchaseOrder",
+          "source": "po_delivery_schedule_t.PO_ID",
+          "type": "String"
+        },
+        {
+          "description": "支撑的项目里程碑",
+          "extensions": {
+            "link_name": "支撑里程碑"
+          },
+          "is_foreign_key": true,
+          "name": "milestone_id",
+          "nullable": true,
+          "references": "Milestone",
+          "source": "po_delivery_schedule_t.MILESTONE_ID",
+          "type": "String"
+        },
+        {
+          "description": "计划交付日期",
+          "name": "due_date",
+          "source": "po_delivery_schedule_t.DUE_DATE",
+          "type": "Date"
+        },
+        {
+          "description": "计划交付数量",
+          "name": "planned_qty",
+          "source": "po_delivery_schedule_t.PLAN_QTY",
+          "type": "Float"
+        },
+        {
+          "description": "节点状态",
+          "enum_values": [
+            "pending",
+            "at_risk",
+            "delivered",
+            "late"
+          ],
+          "name": "status",
+          "source": "po_delivery_schedule_t.STATUS",
+          "type": "Enum"
+        }
+      ],
+      "relationship_description": "【交付节点】属于【采购订单】、喂给【项目里程碑】。",
+      "type": "data"
+    },
+    {
+      "description": "供应商的风险镜像：准时率、质量分、失信标记、实控人。资质证照全量留存 Meta ERP。",
+      "extensions": {
+        "allmeta.erp": {
+          "entity": "srm_supplier_t",
+          "fetch_operation": "querySuppliers",
+          "freshness": {
+            "strategy": "on_demand",
+            "ttl_seconds": 300
+          },
+          "system": "Meta ERP"
+        },
+        "allmeta.twin": {
+          "minimal_state": true,
+          "note": "决策所需最小状态；全量字段留存 Meta ERP，按需经 API 取。"
+        }
+      },
+      "id": "Supplier",
+      "name": "供应商 (Supplier)",
+      "primary_key": "supplier_id",
+      "properties": [
+        {
+          "description": "供应商唯一编号",
+          "is_required": true,
+          "is_unique": true,
+          "name": "supplier_id",
+          "source": "srm_supplier_t.SUPPLIER_ID",
+          "type": "String"
+        },
+        {
+          "description": "供应商名称",
+          "name": "supplier_name",
+          "source": "srm_supplier_t.SUPPLIER_NAME",
+          "type": "String"
+        },
+        {
+          "description": "统一社会信用代码（合成）",
+          "name": "credit_code",
+          "source": "srm_supplier_t.CREDIT_CODE",
+          "type": "String"
+        },
+        {
+          "description": "实际控制人",
+          "extensions": {
+            "link_name": "受控于"
+          },
+          "is_foreign_key": true,
+          "name": "controller_id",
+          "nullable": true,
+          "references": "UltimateController",
+          "type": "String"
+        },
+        {
+          "description": "近 6 个月交付准时率（0-1）",
+          "name": "on_time_rate",
+          "source": "srm_supplier_t.ON_TIME_RATE",
+          "type": "Float"
+        },
+        {
+          "description": "质量评分（0-100）",
+          "name": "quality_score",
+          "source": "srm_supplier_t.QUALITY_SCORE",
+          "type": "Float"
+        },
+        {
+          "computed_expression": "supplier_risk_score(on_time_rate, quality_score, is_dishonest)",
+          "description": "综合风险等级",
+          "enum_values": [
+            "low",
+            "medium",
+            "high"
+          ],
+          "is_computed": true,
+          "name": "risk_level",
+          "type": "Enum"
+        },
+        {
+          "description": "是否被列失信被执行人（司法数据）",
+          "name": "is_dishonest",
+          "nullable": true,
+          "type": "Boolean"
+        }
+      ],
+      "relationship_description": "【供应商】由【实控人】控制——共享实控人的投标人即“假备选”；签订【合同】【框架协议】、承接【采购订单】。",
+      "type": "data"
+    },
+    {
+      "description": "供应商实际控制人。此对象在 Meta ERP 中不存在——来自工商股权外部数据，是图谱穿透“假备选”的关键。",
+      "extensions": {
+        "allmeta.erp": null,
+        "allmeta.twin": {
+          "minimal_state": true,
+          "note": "决策所需最小状态；全量字段留存 Meta ERP，按需经 API 取。"
+        }
+      },
+      "id": "UltimateController",
+      "name": "实控人 (UltimateController)",
+      "primary_key": "controller_id",
+      "properties": [
+        {
+          "description": "实控人唯一编号",
+          "is_required": true,
+          "is_unique": true,
+          "name": "controller_id",
+          "type": "String"
+        },
+        {
+          "description": "实控人姓名/机构名（合成数据）",
+          "is_pii": true,
+          "name": "controller_name",
+          "type": "String"
+        }
+      ],
+      "relationship_description": "【实控人】控制一个或多个【供应商】。",
+      "type": "data"
+    },
+    {
+      "description": "到货检验与驻厂监造的任务及结论：创建时是任务（planned），出具结论后携带 result。连续不合格触发供应商风险扫描。",
+      "extensions": {
+        "allmeta.erp": {
+          "entity": "qm_inspection_t",
+          "fetch_operation": "queryInspections",
+          "freshness": {
+            "strategy": "on_demand",
+            "ttl_seconds": 300
+          },
+          "system": "Meta ERP"
+        },
+        "allmeta.twin": {
+          "minimal_state": true,
+          "note": "决策所需最小状态；全量字段留存 Meta ERP，按需经 API 取。"
+        }
+      },
+      "id": "InspectionReport",
+      "name": "检验/监造任务 (InspectionReport)",
+      "primary_key": "inspection_id",
+      "properties": [
+        {
+          "description": "检验/监造任务唯一编号",
+          "is_required": true,
+          "is_unique": true,
+          "name": "inspection_id",
+          "source": "qm_inspection_t.INSPECTION_ID",
+          "type": "String"
+        },
+        {
+          "description": "受检采购订单",
+          "extensions": {
+            "link_name": "受检订单"
+          },
+          "is_foreign_key": true,
+          "name": "purchase_order_id",
+          "references": "PurchaseOrder",
+          "source": "qm_inspection_t.PO_ID",
+          "type": "String"
+        },
+        {
+          "description": "受检供应商",
+          "extensions": {
+            "link_name": "受检供应商"
+          },
+          "is_foreign_key": true,
+          "name": "supplier_id",
+          "references": "Supplier",
+          "source": "qm_inspection_t.SUPPLIER_ID",
+          "type": "String"
+        },
+        {
+          "description": "任务状态：已派/进行中/已出结论",
+          "enum_values": [
+            "planned",
+            "in_progress",
+            "concluded"
+          ],
+          "name": "status",
+          "source": "qm_inspection_t.STATUS",
+          "type": "Enum"
+        },
+        {
+          "description": "检验结论（未出具时为空）",
+          "enum_values": [
+            "pass",
+            "fail"
+          ],
+          "name": "result",
+          "nullable": true,
+          "source": "qm_inspection_t.RESULT",
+          "type": "Enum"
+        },
+        {
+          "description": "检验/结论日期（未出具时为空）",
+          "name": "inspected_at",
+          "nullable": true,
+          "source": "qm_inspection_t.INSPECTED_AT",
+          "type": "Date"
+        }
+      ],
+      "relationship_description": "【检验/监造任务】针对【采购订单】与【供应商】。",
+      "type": "data"
+    },
+    {
+      "description": "基建/技改项目。is_key_project 标记重点工程——供应商风险处置优先保它。",
+      "extensions": {
+        "allmeta.erp": {
+          "entity": "ps_project_t",
+          "fetch_operation": "queryProjects",
+          "freshness": {
+            "strategy": "on_demand",
+            "ttl_seconds": 300
+          },
+          "system": "Meta ERP"
+        },
+        "allmeta.twin": {
+          "minimal_state": true,
+          "note": "决策所需最小状态；全量字段留存 Meta ERP，按需经 API 取。"
+        }
+      },
+      "id": "Project",
+      "name": "项目 (Project)",
+      "primary_key": "project_id",
+      "properties": [
+        {
+          "description": "项目唯一编号",
+          "is_required": true,
+          "is_unique": true,
+          "name": "project_id",
+          "source": "ps_project_t.PROJECT_ID",
+          "type": "String"
+        },
+        {
+          "description": "项目名称",
+          "name": "project_name",
+          "source": "ps_project_t.PROJECT_NAME",
+          "type": "String"
+        },
+        {
+          "description": "项目类型：基建/技改/迁改",
+          "enum_values": [
+            "capital",
+            "tech_upgrade",
+            "relocation"
+          ],
+          "name": "project_type",
+          "source": "ps_project_t.PROJECT_TYPE",
+          "type": "Enum"
+        },
+        {
+          "description": "承建法人单位",
+          "extensions": {
+            "link_name": "承建单位"
+          },
+          "is_foreign_key": true,
+          "name": "owner_entity_id",
+          "references": "LegalEntity",
+          "source": "ps_project_t.ORG_ID",
+          "type": "String"
+        },
+        {
+          "description": "是否重点工程",
+          "name": "is_key_project",
+          "source": "ps_project_t.KEY_FLAG",
+          "type": "Boolean"
+        },
+        {
+          "description": "项目状态",
+          "enum_values": [
+            "planning",
+            "executing",
+            "completed"
+          ],
+          "name": "status",
+          "source": "ps_project_t.STATUS",
+          "type": "Enum"
+        }
+      ],
+      "relationship_description": "【项目】由【法人单位】承建，被【合同】支撑，含多个【里程碑】。",
+      "type": "data"
+    },
+    {
+      "description": "项目里程碑：交付延误沿【交付节点】传导到这里，slack_days 是缓冲。",
+      "extensions": {
+        "allmeta.erp": {
+          "entity": "ps_milestone_t",
+          "fetch_operation": "queryMilestones",
+          "freshness": {
+            "strategy": "on_demand",
+            "ttl_seconds": 300
+          },
+          "system": "Meta ERP"
+        },
+        "allmeta.twin": {
+          "minimal_state": true,
+          "note": "决策所需最小状态；全量字段留存 Meta ERP，按需经 API 取。"
+        }
+      },
+      "id": "Milestone",
+      "name": "里程碑 (Milestone)",
+      "primary_key": "milestone_id",
+      "properties": [
+        {
+          "description": "里程碑唯一编号",
+          "is_required": true,
+          "is_unique": true,
+          "name": "milestone_id",
+          "source": "ps_milestone_t.MILESTONE_ID",
+          "type": "String"
+        },
+        {
+          "description": "所属项目",
+          "extensions": {
+            "link_name": "所属项目"
+          },
+          "is_foreign_key": true,
+          "name": "project_id",
+          "references": "Project",
+          "source": "ps_milestone_t.PROJECT_ID",
+          "type": "String"
+        },
+        {
+          "description": "里程碑名称",
+          "name": "milestone_name",
+          "source": "ps_milestone_t.MILESTONE_NAME",
+          "type": "String"
+        },
+        {
+          "description": "计划完成日期",
+          "name": "due_date",
+          "source": "ps_milestone_t.DUE_DATE",
+          "type": "Date"
+        },
+        {
+          "description": "里程碑状态",
+          "enum_values": [
+            "on_track",
+            "at_risk",
+            "delayed",
+            "done"
+          ],
+          "name": "status",
+          "source": "ps_milestone_t.STATUS",
+          "type": "Enum"
+        },
+        {
+          "description": "剩余缓冲天数",
+          "name": "slack_days",
+          "source": "ps_milestone_t.SLACK_DAYS",
+          "type": "Integer"
+        }
+      ],
+      "relationship_description": "【里程碑】属于【项目】，被【交付节点】支撑。",
+      "type": "data"
+    },
+    {
+      "description": "供电网格/台区。台风路径与网格求交得到受影响范围。",
+      "extensions": {
+        "allmeta.erp": {
+          "entity": "gis_region_t",
+          "fetch_operation": "queryGridRegions",
+          "freshness": {
+            "strategy": "on_demand",
+            "ttl_seconds": 300
+          },
+          "system": "Meta ERP"
+        },
+        "allmeta.twin": {
+          "minimal_state": true,
+          "note": "决策所需最小状态；全量字段留存 Meta ERP，按需经 API 取。"
+        }
+      },
+      "id": "GridRegion",
+      "name": "供电网格 (GridRegion)",
+      "primary_key": "region_id",
+      "properties": [
+        {
+          "description": "网格唯一编号",
+          "is_required": true,
+          "is_unique": true,
+          "name": "region_id",
+          "source": "gis_region_t.REGION_ID",
+          "type": "String"
+        },
+        {
+          "description": "网格名称",
+          "name": "region_name",
+          "source": "gis_region_t.REGION_NAME",
+          "type": "String"
+        },
+        {
+          "description": "中心纬度",
+          "name": "latitude",
+          "source": "gis_region_t.LAT",
+          "type": "Float"
+        },
+        {
+          "description": "中心经度",
+          "name": "longitude",
+          "source": "gis_region_t.LNG",
+          "type": "Float"
+        },
+        {
+          "description": "供电客户数",
+          "name": "customers_count",
+          "source": "gis_region_t.CUSTOMER_CNT",
+          "type": "Integer"
+        },
+        {
+          "description": "责任法人单位",
+          "extensions": {
+            "link_name": "责任单位"
+          },
+          "is_foreign_key": true,
+          "name": "legal_entity_id",
+          "references": "LegalEntity",
+          "source": "gis_region_t.ORG_ID",
+          "type": "String"
+        }
+      ],
+      "relationship_description": "【供电网格】由【法人单位】负责，包含【电网资产】，被【外部事件】影响。",
+      "type": "data"
+    },
+    {
+      "description": "线路/配变/变电站的最小镜像。台账全量在 PMS/Meta ERP，本体只留推演所需的类型与规模。",
+      "extensions": {
+        "allmeta.erp": {
+          "entity": "pm_asset_t",
+          "fetch_operation": "queryGridAssets",
+          "freshness": {
+            "strategy": "on_demand",
+            "ttl_seconds": 300
+          },
+          "system": "Meta ERP"
+        },
+        "allmeta.twin": {
+          "minimal_state": true,
+          "note": "决策所需最小状态；全量字段留存 Meta ERP，按需经 API 取。"
+        }
+      },
+      "id": "GridAsset",
+      "name": "电网资产 (GridAsset)",
+      "primary_key": "asset_id",
+      "properties": [
+        {
+          "description": "资产唯一编号",
+          "is_required": true,
+          "is_unique": true,
+          "name": "asset_id",
+          "source": "pm_asset_t.ASSET_ID",
+          "type": "String"
+        },
+        {
+          "description": "资产名称",
+          "name": "asset_name",
+          "source": "pm_asset_t.ASSET_NAME",
+          "type": "String"
+        },
+        {
+          "description": "资产类型",
+          "enum_values": [
+            "line_110kv",
+            "line_10kv",
+            "dist_transformer",
+            "substation"
+          ],
+          "name": "asset_type",
+          "source": "pm_asset_t.ASSET_TYPE",
+          "type": "Enum"
+        },
+        {
+          "description": "所在网格",
+          "extensions": {
+            "link_name": "位于网格"
+          },
+          "is_foreign_key": true,
+          "name": "region_id",
+          "references": "GridRegion",
+          "source": "pm_asset_t.REGION_ID",
+          "type": "String"
+        },
+        {
+          "description": "容量(kVA)或长度(km)",
+          "name": "capacity_or_length",
+          "source": "pm_asset_t.CAP_OR_LEN",
+          "type": "Float"
+        }
+      ],
+      "relationship_description": "【电网资产】位于【供电网格】，损坏后由【抢修工单】修复，修复消耗适配的【物资】。",
+      "type": "data"
+    },
+    {
+      "description": "抢修工单：把“资产受损”翻译成“物资需求”的桥。",
+      "extensions": {
+        "allmeta.erp": {
+          "entity": "om_repair_order_t",
+          "fetch_operation": "queryRepairOrders",
+          "freshness": {
+            "strategy": "on_demand",
+            "ttl_seconds": 300
+          },
+          "system": "Meta ERP"
+        },
+        "allmeta.twin": {
+          "minimal_state": true,
+          "note": "决策所需最小状态；全量字段留存 Meta ERP，按需经 API 取。"
+        }
+      },
+      "id": "RepairWorkOrder",
+      "name": "抢修工单 (RepairWorkOrder)",
+      "primary_key": "work_order_id",
+      "properties": [
+        {
+          "description": "工单唯一编号",
+          "is_required": true,
+          "is_unique": true,
+          "name": "work_order_id",
+          "source": "om_repair_order_t.WO_ID",
+          "type": "String"
+        },
+        {
+          "description": "受损资产",
+          "extensions": {
+            "link_name": "修复资产"
+          },
+          "is_foreign_key": true,
+          "name": "asset_id",
+          "references": "GridAsset",
+          "source": "om_repair_order_t.ASSET_ID",
+          "type": "String"
+        },
+        {
+          "description": "所需物资",
+          "extensions": {
+            "link_name": "消耗物资"
+          },
+          "is_foreign_key": true,
+          "name": "material_id",
+          "references": "Material",
+          "source": "om_repair_order_t.MATERIAL_CODE",
+          "type": "String"
+        },
+        {
+          "description": "执行法人单位",
+          "extensions": {
+            "link_name": "执行单位"
+          },
+          "is_foreign_key": true,
+          "name": "executing_entity_id",
+          "references": "LegalEntity",
+          "source": "om_repair_order_t.ORG_ID",
+          "type": "String"
+        },
+        {
+          "description": "需求数量",
+          "name": "required_qty",
+          "source": "om_repair_order_t.REQ_QTY",
+          "type": "Float"
+        },
+        {
+          "description": "优先级",
+          "enum_values": [
+            "normal",
+            "urgent",
+            "emergency"
+          ],
+          "name": "priority",
+          "source": "om_repair_order_t.PRIORITY",
+          "type": "Enum"
+        },
+        {
+          "description": "工单状态",
+          "enum_values": [
+            "created",
+            "dispatched",
+            "completed"
+          ],
+          "name": "status",
+          "source": "om_repair_order_t.STATUS",
+          "type": "Enum"
+        },
+        {
+          "description": "预计完成时长（小时）",
+          "name": "eta_hours",
+          "source": "om_repair_order_t.ETA_HOURS",
+          "type": "Integer"
+        }
+      ],
+      "relationship_description": "【抢修工单】修复【电网资产】、消耗【物资】、由【法人单位】执行。",
+      "type": "data"
+    },
+    {
+      "description": "跨仓调拨单——action-create-stock-transfer 的产物，写回 Meta ERP。",
+      "extensions": {
+        "allmeta.erp": {
+          "entity": "wm_transfer_order_t",
+          "fetch_operation": "queryTransferOrders",
+          "freshness": {
+            "strategy": "on_demand",
+            "ttl_seconds": 300
+          },
+          "system": "Meta ERP"
+        },
+        "allmeta.twin": {
+          "minimal_state": true,
+          "note": "决策所需最小状态；全量字段留存 Meta ERP，按需经 API 取。"
+        }
+      },
+      "id": "StockTransferOrder",
+      "lifecycle_initial_state": "proposed",
+      "lifecycle_state_property": "status",
+      "lifecycle_states": [
+        {
+          "description": "已提出待批",
+          "name": "proposed"
+        },
+        {
+          "description": "已批准",
+          "name": "approved"
+        },
+        {
+          "description": "在途",
+          "name": "in_transit"
+        },
+        {
+          "description": "已收货",
+          "name": "received",
+          "terminal": true
+        }
+      ],
+      "lifecycle_transitions": [
+        {
+          "from": "proposed",
+          "requires_human_approval": true,
+          "to": "approved",
+          "trigger": "应急审批"
+        },
+        {
+          "action": "action-dispatch-logistics",
+          "from": "approved",
+          "to": "in_transit",
+          "trigger": "物流发运"
+        },
+        {
+          "from": "in_transit",
+          "to": "received",
+          "trigger": "到货确认"
+        }
+      ],
+      "name": "调拨单 (StockTransferOrder)",
+      "primary_key": "transfer_id",
+      "properties": [
+        {
+          "description": "调拨单唯一编号",
+          "is_required": true,
+          "is_unique": true,
+          "name": "transfer_id",
+          "source": "wm_transfer_order_t.TRANSFER_ID",
+          "type": "String"
+        },
+        {
+          "description": "调拨物资",
+          "extensions": {
+            "link_name": "调拨物资"
+          },
+          "is_foreign_key": true,
+          "name": "material_id",
+          "references": "Material",
+          "source": "wm_transfer_order_t.MATERIAL_CODE",
+          "type": "String"
+        },
+        {
+          "description": "调出仓库",
+          "extensions": {
+            "link_name": "调出仓"
+          },
+          "is_foreign_key": true,
+          "name": "from_warehouse_id",
+          "references": "Warehouse",
+          "source": "wm_transfer_order_t.FROM_WH",
+          "type": "String"
+        },
+        {
+          "description": "调入仓库",
+          "extensions": {
+            "link_name": "调入仓"
+          },
+          "is_foreign_key": true,
+          "name": "to_warehouse_id",
+          "references": "Warehouse",
+          "source": "wm_transfer_order_t.TO_WH",
+          "type": "String"
+        },
+        {
+          "description": "关联抢修工单",
+          "extensions": {
+            "link_name": "支援工单"
+          },
+          "is_foreign_key": true,
+          "name": "work_order_id",
+          "nullable": true,
+          "references": "RepairWorkOrder",
+          "source": "wm_transfer_order_t.WO_ID",
+          "type": "String"
+        },
+        {
+          "description": "调拨数量",
+          "name": "transfer_qty",
+          "source": "wm_transfer_order_t.QTY",
+          "type": "Float"
+        },
+        {
+          "description": "调拨状态",
+          "enum_values": [
+            "proposed",
+            "approved",
+            "in_transit",
+            "received"
+          ],
+          "name": "status",
+          "source": "wm_transfer_order_t.STATUS",
+          "type": "Enum"
+        },
+        {
+          "description": "预计送达时长（小时）",
+          "name": "eta_hours",
+          "source": "wm_transfer_order_t.ETA_HOURS",
+          "type": "Integer"
+        }
+      ],
+      "relationship_description": "【调拨单】把【物资】从一个【仓库】调往另一个【仓库】，可关联【抢修工单】。",
+      "type": "data"
+    },
+    {
+      "description": "两金压降的核心行动产物：用 B 单位的呆滞库存覆盖 A 单位的采购需求，双边确认后执行。",
+      "extensions": {
+        "allmeta.erp": {
+          "entity": "wm_allocation_order_t",
+          "fetch_operation": "queryAllocations",
+          "freshness": {
+            "strategy": "on_demand",
+            "ttl_seconds": 300
+          },
+          "system": "Meta ERP"
+        },
+        "allmeta.twin": {
+          "minimal_state": true,
+          "note": "决策所需最小状态；全量字段留存 Meta ERP，按需经 API 取。"
+        }
+      },
+      "id": "AllocationOrder",
+      "lifecycle_initial_state": "proposed",
+      "lifecycle_state_property": "status",
+      "lifecycle_states": [
+        {
+          "description": "已提议",
+          "name": "proposed"
+        },
+        {
+          "description": "双边已确认",
+          "name": "confirmed_both"
+        },
+        {
+          "description": "已执行",
+          "name": "executed",
+          "terminal": true
+        },
+        {
+          "description": "已取消",
+          "name": "cancelled",
+          "terminal": true
+        }
+      ],
+      "lifecycle_transitions": [
+        {
+          "action": "action-confirm-allocation",
+          "from": "proposed",
+          "requires_human_approval": true,
+          "to": "confirmed_both",
+          "trigger": "双边确认"
+        },
+        {
+          "from": "confirmed_both",
+          "to": "executed",
+          "trigger": "调剂执行"
+        },
+        {
+          "from": "proposed",
+          "to": "cancelled",
+          "trigger": "任一方拒绝"
+        }
+      ],
+      "name": "跨单位调剂单 (AllocationOrder)",
+      "primary_key": "allocation_id",
+      "properties": [
+        {
+          "description": "调剂单唯一编号",
+          "is_required": true,
+          "is_unique": true,
+          "name": "allocation_id",
+          "source": "wm_allocation_order_t.ALLOC_ID",
+          "type": "String"
+        },
+        {
+          "description": "被覆盖的采购需求",
+          "extensions": {
+            "link_name": "覆盖需求"
+          },
+          "is_foreign_key": true,
+          "name": "requisition_id",
+          "references": "PurchaseRequisition",
+          "source": "wm_allocation_order_t.REQ_ID",
+          "type": "String"
+        },
+        {
+          "description": "动用的呆滞批次",
+          "extensions": {
+            "link_name": "动用批次"
+          },
+          "is_foreign_key": true,
+          "name": "lot_id",
+          "references": "InventoryLot",
+          "source": "wm_allocation_order_t.LOT_ID",
+          "type": "String"
+        },
+        {
+          "description": "调出法人单位",
+          "extensions": {
+            "link_name": "调出方"
+          },
+          "is_foreign_key": true,
+          "name": "from_entity_id",
+          "references": "LegalEntity",
+          "source": "wm_allocation_order_t.FROM_ORG",
+          "type": "String"
+        },
+        {
+          "description": "调入法人单位",
+          "extensions": {
+            "link_name": "调入方"
+          },
+          "is_foreign_key": true,
+          "name": "to_entity_id",
+          "references": "LegalEntity",
+          "source": "wm_allocation_order_t.TO_ORG",
+          "type": "String"
+        },
+        {
+          "description": "调剂数量",
+          "name": "alloc_qty",
+          "source": "wm_allocation_order_t.QTY",
+          "type": "Float"
+        },
+        {
+          "description": "节约采购资金（元）",
+          "name": "savings_amount",
+          "source": "wm_allocation_order_t.SAVINGS_AMT",
+          "type": "Float"
+        },
+        {
+          "description": "调剂状态",
+          "enum_values": [
+            "proposed",
+            "confirmed_both",
+            "executed",
+            "cancelled"
+          ],
+          "name": "status",
+          "source": "wm_allocation_order_t.STATUS",
+          "type": "Enum"
+        }
+      ],
+      "relationship_description": "【调剂单】覆盖一张【采购需求】、动用一个【库存批次】，在两个【法人单位】间双边确认。",
+      "type": "data"
+    },
+    {
+      "description": "呆滞/临期物资处置单：报废、竞价转让或退回供应商。",
+      "extensions": {
+        "allmeta.erp": {
+          "entity": "wm_disposal_order_t",
+          "fetch_operation": "queryDisposals",
+          "freshness": {
+            "strategy": "on_demand",
+            "ttl_seconds": 300
+          },
+          "system": "Meta ERP"
+        },
+        "allmeta.twin": {
+          "minimal_state": true,
+          "note": "决策所需最小状态；全量字段留存 Meta ERP，按需经 API 取。"
+        }
+      },
+      "id": "DisposalOrder",
+      "name": "处置单 (DisposalOrder)",
+      "primary_key": "disposal_id",
+      "properties": [
+        {
+          "description": "处置单唯一编号",
+          "is_required": true,
+          "is_unique": true,
+          "name": "disposal_id",
+          "source": "wm_disposal_order_t.DISPOSAL_ID",
+          "type": "String"
+        },
+        {
+          "description": "处置批次",
+          "extensions": {
+            "link_name": "处置批次"
+          },
+          "is_foreign_key": true,
+          "name": "lot_id",
+          "references": "InventoryLot",
+          "source": "wm_disposal_order_t.LOT_ID",
+          "type": "String"
+        },
+        {
+          "description": "发起法人单位",
+          "extensions": {
+            "link_name": "发起单位"
+          },
+          "is_foreign_key": true,
+          "name": "initiating_entity_id",
+          "references": "LegalEntity",
+          "source": "wm_disposal_order_t.ORG_ID",
+          "type": "String"
+        },
+        {
+          "description": "处置方式：报废/竞价转让/退回供应商",
+          "enum_values": [
+            "scrap",
+            "auction",
+            "return_supplier"
+          ],
+          "name": "method",
+          "source": "wm_disposal_order_t.METHOD",
+          "type": "Enum"
+        },
+        {
+          "description": "预计回收价值（元）",
+          "name": "est_value",
+          "source": "wm_disposal_order_t.EST_VALUE",
+          "type": "Float"
+        },
+        {
+          "description": "处置状态",
+          "enum_values": [
+            "draft",
+            "approved",
+            "done"
+          ],
+          "name": "status",
+          "source": "wm_disposal_order_t.STATUS",
+          "type": "Enum"
+        }
+      ],
+      "relationship_description": "【处置单】处置一个【库存批次】，由【法人单位】发起。",
+      "type": "data"
+    },
+    {
+      "description": "催交函：供应商风险处置的第一记行动，legal_template 表示套用法务模板。",
+      "extensions": {
+        "allmeta.erp": {
+          "entity": "po_expedite_notice_t",
+          "fetch_operation": "queryExpediteNotices",
+          "freshness": {
+            "strategy": "on_demand",
+            "ttl_seconds": 300
+          },
+          "system": "Meta ERP"
+        },
+        "allmeta.twin": {
+          "minimal_state": true,
+          "note": "决策所需最小状态；全量字段留存 Meta ERP，按需经 API 取。"
+        }
+      },
+      "id": "ExpediteNotice",
+      "name": "催交函 (ExpediteNotice)",
+      "primary_key": "notice_id",
+      "properties": [
+        {
+          "description": "催交函唯一编号",
+          "is_required": true,
+          "is_unique": true,
+          "name": "notice_id",
+          "source": "po_expedite_notice_t.NOTICE_ID",
+          "type": "String"
+        },
+        {
+          "description": "被催交订单",
+          "extensions": {
+            "link_name": "催交订单"
+          },
+          "is_foreign_key": true,
+          "name": "purchase_order_id",
+          "references": "PurchaseOrder",
+          "source": "po_expedite_notice_t.PO_ID",
+          "type": "String"
+        },
+        {
+          "description": "受函供应商",
+          "extensions": {
+            "link_name": "受函方"
+          },
+          "is_foreign_key": true,
+          "name": "supplier_id",
+          "references": "Supplier",
+          "source": "po_expedite_notice_t.SUPPLIER_ID",
+          "type": "String"
+        },
+        {
+          "description": "催交函状态",
+          "enum_values": [
+            "draft",
+            "sent",
+            "acknowledged"
+          ],
+          "name": "status",
+          "source": "po_expedite_notice_t.STATUS",
+          "type": "Enum"
+        },
+        {
+          "description": "是否法务模板",
+          "name": "legal_template",
+          "source": "po_expedite_notice_t.LEGAL_FLAG",
+          "type": "Boolean"
+        },
+        {
+          "description": "发出日期",
+          "name": "sent_at",
+          "source": "po_expedite_notice_t.SENT_AT",
+          "type": "Date"
+        }
+      ],
+      "relationship_description": "【催交函】针对【采购订单】发给【供应商】。",
+      "type": "data"
+    },
+    {
+      "description": "向替代供应商发出的询价单。发出前必须通过关联方识别——同实控人的“假备选”会被拦下。",
+      "extensions": {
+        "allmeta.erp": {
+          "entity": "srm_rfq_t",
+          "fetch_operation": "queryRfqs",
+          "freshness": {
+            "strategy": "on_demand",
+            "ttl_seconds": 300
+          },
+          "system": "Meta ERP"
+        },
+        "allmeta.twin": {
+          "minimal_state": true,
+          "note": "决策所需最小状态；全量字段留存 Meta ERP，按需经 API 取。"
+        }
+      },
+      "id": "Rfq",
+      "name": "询价单 (Rfq)",
+      "primary_key": "rfq_id",
+      "properties": [
+        {
+          "description": "询价单唯一编号",
+          "is_required": true,
+          "is_unique": true,
+          "name": "rfq_id",
+          "source": "srm_rfq_t.RFQ_ID",
+          "type": "String"
+        },
+        {
+          "description": "询价对象供应商",
+          "extensions": {
+            "link_name": "询价对象"
+          },
+          "is_foreign_key": true,
+          "name": "supplier_id",
+          "references": "Supplier",
+          "source": "srm_rfq_t.SUPPLIER_ID",
+          "type": "String"
+        },
+        {
+          "description": "询价物资",
+          "extensions": {
+            "link_name": "询价物资"
+          },
+          "is_foreign_key": true,
+          "name": "material_id",
+          "references": "Material",
+          "source": "srm_rfq_t.MATERIAL_CODE",
+          "type": "String"
+        },
+        {
+          "description": "询价数量",
+          "name": "rfq_qty",
+          "source": "srm_rfq_t.QTY",
+          "type": "Float"
+        },
+        {
+          "description": "报价截止日期",
+          "name": "deadline",
+          "source": "srm_rfq_t.DEADLINE",
+          "type": "Date"
+        },
+        {
+          "description": "询价状态",
+          "enum_values": [
+            "sent",
+            "quoted",
+            "awarded",
+            "closed"
+          ],
+          "name": "status",
+          "source": "srm_rfq_t.STATUS",
+          "type": "Enum"
+        }
+      ],
+      "relationship_description": "【询价单】面向【供应商】、针对【物资】。",
+      "type": "data"
+    },
+    {
+      "description": "供应商风险/廉洁名单条目。标记后推送审计部，是审计巡视的抓手。",
+      "extensions": {
+        "allmeta.erp": {
+          "entity": "srm_risk_flag_t",
+          "fetch_operation": "queryRiskFlags",
+          "freshness": {
+            "strategy": "on_demand",
+            "ttl_seconds": 300
+          },
+          "system": "Meta ERP"
+        },
+        "allmeta.twin": {
+          "minimal_state": true,
+          "note": "决策所需最小状态；全量字段留存 Meta ERP，按需经 API 取。"
+        }
+      },
+      "id": "RiskFlag",
+      "name": "风险标记 (RiskFlag)",
+      "primary_key": "flag_id",
+      "properties": [
+        {
+          "description": "风险标记唯一编号",
+          "is_required": true,
+          "is_unique": true,
+          "name": "flag_id",
+          "source": "srm_risk_flag_t.FLAG_ID",
+          "type": "String"
+        },
+        {
+          "description": "被标记供应商",
+          "extensions": {
+            "link_name": "标记对象"
+          },
+          "is_foreign_key": true,
+          "name": "supplier_id",
+          "references": "Supplier",
+          "source": "srm_risk_flag_t.SUPPLIER_ID",
+          "type": "String"
+        },
+        {
+          "description": "标记类型：廉洁/履约/关联方",
+          "enum_values": [
+            "integrity",
+            "performance",
+            "related_party"
+          ],
+          "name": "flag_type",
+          "source": "srm_risk_flag_t.FLAG_TYPE",
+          "type": "Enum"
+        },
+        {
+          "description": "严重程度",
+          "enum_values": [
+            "low",
+            "medium",
+            "high",
+            "critical"
+          ],
+          "name": "severity",
+          "source": "srm_risk_flag_t.SEVERITY",
+          "type": "Enum"
+        },
+        {
+          "description": "证据摘要",
+          "name": "evidence",
+          "source": "srm_risk_flag_t.EVIDENCE",
+          "type": "String"
+        },
+        {
+          "description": "标记日期",
+          "name": "flagged_at",
+          "source": "srm_risk_flag_t.FLAGGED_AT",
+          "type": "Date"
+        }
+      ],
+      "relationship_description": "【风险标记】挂在【供应商】上。",
+      "type": "data"
+    },
+    {
+      "description": "台风预警/司法失信/火灾舆情等外部事件载体。Meta ERP 中不存在——本体独有的跨域触发器。",
+      "extensions": {
+        "allmeta.erp": null,
+        "allmeta.twin": {
+          "minimal_state": true,
+          "note": "决策所需最小状态；全量字段留存 Meta ERP，按需经 API 取。"
+        }
+      },
+      "id": "ExternalEvent",
+      "name": "外部事件 (ExternalEvent)",
+      "primary_key": "event_id",
+      "properties": [
+        {
+          "description": "外部事件唯一编号",
+          "is_required": true,
+          "is_unique": true,
+          "name": "event_id",
+          "type": "String"
+        },
+        {
+          "description": "事件类型：台风/司法失信/火灾/舆情",
+          "enum_values": [
+            "typhoon",
+            "legal_dishonest",
+            "fire",
+            "news"
+          ],
+          "name": "event_type",
+          "type": "Enum"
+        },
+        {
+          "description": "严重等级",
+          "enum_values": [
+            "info",
+            "warning",
+            "severe",
+            "red"
+          ],
+          "name": "severity",
+          "type": "Enum"
+        },
+        {
+          "description": "发生时间",
+          "name": "occurred_at",
+          "type": "Timestamp"
+        },
+        {
+          "description": "影响的供电网格",
+          "extensions": {
+            "link_name": "影响网格"
+          },
+          "is_foreign_key": true,
+          "name": "region_id",
+          "nullable": true,
+          "references": "GridRegion",
+          "type": "String"
+        },
+        {
+          "description": "涉及的供应商",
+          "extensions": {
+            "link_name": "涉及供应商"
+          },
+          "is_foreign_key": true,
+          "name": "supplier_id",
+          "nullable": true,
+          "references": "Supplier",
+          "type": "String"
+        },
+        {
+          "description": "事件载荷（台风路径帧/司法文书号等）",
+          "name": "payload",
+          "type": "JSON"
+        }
+      ],
+      "relationship_description": "【外部事件】影响【供电网格】或指向【供应商】，唤醒对应的分析行动。",
+      "type": "event-sourced"
+    },
+    {
+      "description": "记录系统（System of Record）。本体零存储：所有对象数据按需经 openapi 读取，所有行动经 openapi 写回。本体是行动系统（System of Action），不是它的镜像。",
+      "extensions": {
+        "allmeta.erp": null,
+        "allmeta.twin": {
+          "minimal_state": true,
+          "note": "决策所需最小状态；全量字段留存 Meta ERP，按需经 API 取。"
+        }
+      },
+      "id": "MetaERP",
+      "name": "Meta ERP (记录系统)",
+      "primary_key": "system_id",
+      "properties": [
+        {
+          "description": "系统标识",
+          "is_required": true,
+          "is_unique": true,
+          "name": "system_id",
+          "type": "String"
+        },
+        {
+          "description": "系统名称",
+          "name": "system_name",
+          "type": "String"
+        },
+        {
+          "description": "OpenAPI 基地址（/metaerp/openapi/v1）",
+          "name": "base_url",
+          "type": "String"
+        },
+        {
+          "description": "接口版本",
+          "name": "api_version",
+          "type": "String"
+        }
+      ],
+      "relationship_description": "全部带 source 血缘的对象属性指向【Meta ERP】的物理表；全部 external 类行动调用它的写 API。",
+      "type": "system"
+    }
+  ]
+}

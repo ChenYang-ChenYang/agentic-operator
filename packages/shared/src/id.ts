@@ -42,7 +42,8 @@ export type IdPrefix =
   | "whk"
   | "intg"
   | "llc"
-  | "use";
+  | "use"
+  | "exe";
 
 export function makeId(prefix: IdPrefix): string {
   const uuid = crypto.randomUUID().replace(/-/g, "");

@@ -83,6 +83,17 @@ import {
 } from "./postgres";
 import { cryptoSha256 } from "./crypto";
 import { documentConvert } from "./document";
+import { metaerpInvoke } from "./metaerp";
+import {
+  browserOpenSession,
+  browserNavigate,
+  browserRead,
+  browserClick,
+  browserFill,
+  browserScreenshot,
+  browserCloseSession,
+} from "./browser";
+import { commsSendToAgent } from "./comms";
 
 /** Per-field metadata used to render args / returns tables. */
 export interface ToolFieldSchema {
@@ -923,6 +934,89 @@ const REGISTRATIONS: ToolRegistration[] = [
       },
       aliases: ["writeWorkflowLog"],
       sourcePath: "packages/tools/src/fs/append-to-log.ts",
+    },
+  },
+
+  // ── metaerp.* ───────────────────────────────────────────────────────────
+  {
+    descriptor: metaerpInvoke,
+    catalog: {
+      name: "metaerp.invoke",
+      category: "metaerp",
+      summary:
+        "Invoke one Meta ERP OpenAPI operation from the tenant's compiled erp-operations.json catalog; unknown ops, unset base-URL env, and non-2xx/non-JSON responses fail closed.",
+      // Statement-catalog idiom (like postgres.executeStatement): the exact
+      // operation is selected by trusted manifest config / the catalog file,
+      // and the catalog mixes read (`query`) and mutating (`write`) ops, so
+      // the reviewed policy is conservatively read_write + attempt-grant.
+      // Per-call kind is surfaced in the result meta (`kind: query|write`).
+      sideEffect: "dual",
+      operation: "read_write",
+      effectScope: "external",
+      sandboxPolicy: "requires_attempt_grant",
+      credentialPosture: "none",
+      description:
+        "The ontology compiler emits models/<tenant>-v1/erp-operations.json listing every Meta ERP operation an agent may call (name, POST path, kind: query|write). The model supplies only { operation, payload } — never a URL. Trusted config names the catalog file and the base-URL env var (default METAERP_BASE_URL), and compiled external actions pin config.operation so a drifted call cannot invoke a different ERP op. Requests POST JSON with a 15s default timeout; non-2xx and non-JSON responses throw so the runtime sees a real tool error.",
+      argsSchema: {
+        operation: {
+          type: "string",
+          description:
+            "Catalog operation name (e.g. 'queryInventoryLots', 'createTransferOrder'). Optional when config.operation pins it; when both are present they must match.",
+        },
+        payload: {
+          type: "object",
+          description:
+            "JSON body for the operation — query filters for query ops, the write payload for write ops. Defaults to {}.",
+        },
+      },
+      argsExample: {
+        operation: "queryInventoryLots",
+        payload: { REGION_NAME: "华东" },
+      },
+      configSchema: {
+        catalog_path: {
+          type: "string",
+          required: true,
+          description:
+            "Repo-relative path to the compiled erp-operations.json (e.g. 'models/power-scm-v1/erp-operations.json').",
+        },
+        base_url_env: {
+          type: "string",
+          default: "METAERP_BASE_URL",
+          description:
+            "Env var NAME holding the Meta ERP origin (e.g. http://localhost:3620). Fail-closed when unset; literal URLs are never accepted.",
+        },
+        operation: {
+          type: "string",
+          description:
+            "Pin this binding to one catalog operation. Overrides args.operation; a conflicting args.operation throws.",
+        },
+        timeout_ms: { type: "number", default: 15000 },
+      },
+      configExample: {
+        catalog_path: "models/power-scm-v1/erp-operations.json",
+        base_url_env: "METAERP_BASE_URL",
+        operation: "createTransferOrder",
+      },
+      credentialEnv: ["METAERP_BASE_URL"],
+      capabilities: [{
+        systems: ["Meta ERP", "MetaERP", "Meta_ERP_System"],
+        kinds: ["external_api", "erp"],
+        roles: ["reads", "calls", "write", "writes"],
+        operations: ["*"],
+        objectTypes: ["*"],
+      }],
+      returnsSchema: {
+        data: {
+          type: "object",
+          description:
+            "Parsed upstream JSON — `{rows}` for query ops, `{ok, id}`-style receipts for write ops.",
+        },
+      },
+      returnsExample: {
+        data: { rows: [{ LOT_ID: "LOT-2026-0001", STATUS: "AVAILABLE" }] },
+      },
+      sourcePath: "packages/tools/src/metaerp/invoke.ts",
     },
   },
 
@@ -2277,6 +2371,332 @@ const REGISTRATIONS: ToolRegistration[] = [
       sourcePath: "packages/tools/src/ontology/query.ts",
       sideEffect: "read",
       testPolicy: "allow",
+    },
+  },
+
+  // ── browser.* — session-based computer-use over system Chrome/Chromium ──
+  // (design §G5). One shared config vocabulary: sessions are created by
+  // browser.openSession and addressed by sessionId. Read-only page inspection
+  // is live_external; anything that can trigger state change on the visited
+  // site (opening/navigating INTO a workflow, clicking, filling) is treated
+  // as an external write behind requires_attempt_grant so sandbox mode
+  // records instead of firing.
+  {
+    descriptor: browserOpenSession,
+    catalog: {
+      name: "browser.openSession",
+      category: "browser",
+      summary:
+        "Open a headless Chrome/Chromium session (optionally at {url}); returns the sessionId for subsequent browser.* calls.",
+      sideEffect: "dual",
+      operation: "write",
+      effectScope: "external",
+      sandboxPolicy: "requires_attempt_grant",
+      credentialPosture: "none",
+      description:
+        "Launches the SYSTEM Chrome/Chromium via playwright-core (no bundled browser). Executable resolution: BROWSER_TOOLS_EXECUTABLE env → Playwright channel 'chrome' → /Applications/Google Chrome.app → /usr/bin/chromium*; fails closed with a fix instruction when none exists. Max 4 concurrent sessions; idle sessions are reaped after 5 minutes.",
+      argsSchema: {
+        url: {
+          type: "string",
+          description: "Optional http/https URL to open immediately.",
+        },
+      },
+      argsExample: { url: "http://localhost:3620/ui/transfers" },
+      configSchema: {},
+      returnsSchema: {
+        sessionId: { type: "string", description: "Opaque handle for subsequent calls." },
+        title: { type: "string" },
+        url: { type: "string" },
+      },
+      returnsExample: {
+        sessionId: "bses-9f2c1a0b4d6e8a01",
+        title: "调拨单 · Meta ERP",
+        url: "http://localhost:3620/ui/transfers",
+      },
+      chainsWith: ["browser.read", "browser.fill", "browser.click"],
+      sourcePath: "packages/tools/src/browser/tools.ts",
+    },
+  },
+  {
+    descriptor: browserNavigate,
+    catalog: {
+      name: "browser.navigate",
+      category: "browser",
+      summary: "Navigate an open browser session to a new http/https URL.",
+      sideEffect: "read",
+      operation: "read",
+      effectScope: "external",
+      sandboxPolicy: "live_external",
+      description:
+        "GET-semantics navigation of an existing session; waits for DOMContentLoaded (10s timeout) and returns the landed {title,url}.",
+      argsSchema: {
+        sessionId: { type: "string", required: true },
+        url: { type: "string", required: true },
+      },
+      argsExample: { sessionId: "bses-9f2c1a0b4d6e8a01", url: "http://localhost:3620/ui/requisitions" },
+      configSchema: {},
+      returnsSchema: {
+        sessionId: { type: "string" },
+        title: { type: "string" },
+        url: { type: "string" },
+      },
+      returnsExample: {
+        sessionId: "bses-9f2c1a0b4d6e8a01",
+        title: "采购需求 · Meta ERP",
+        url: "http://localhost:3620/ui/requisitions",
+      },
+      chainsWith: ["browser.read"],
+      sourcePath: "packages/tools/src/browser/tools.ts",
+    },
+  },
+  {
+    descriptor: browserRead,
+    catalog: {
+      name: "browser.read",
+      category: "browser",
+      summary:
+        "Read the session's current page: rendered text (mode 'text') or ARIA snapshot (mode 'a11y'). Capped at 30KB.",
+      sideEffect: "read",
+      operation: "read",
+      effectScope: "external",
+      sandboxPolicy: "live_external",
+      description:
+        "mode 'a11y' returns the accessibility tree (roles + accessible names) — the stable way to discover click/fill targets before acting; mode 'text' returns document.body.innerText. Both are truncated at 30KB with truncated:true.",
+      argsSchema: {
+        sessionId: { type: "string", required: true },
+        mode: { type: "'text'|'a11y'", default: "text" },
+      },
+      argsExample: { sessionId: "bses-9f2c1a0b4d6e8a01", mode: "a11y" },
+      configSchema: {},
+      returnsSchema: {
+        sessionId: { type: "string" },
+        mode: { type: "string" },
+        title: { type: "string" },
+        url: { type: "string" },
+        content: { type: "string", description: "Page text or ARIA snapshot, ≤30KB." },
+        truncated: { type: "boolean" },
+      },
+      returnsExample: {
+        sessionId: "bses-9f2c1a0b4d6e8a01",
+        mode: "a11y",
+        title: "调拨单 · Meta ERP",
+        url: "http://localhost:3620/ui/transfers",
+        content: "- heading \"跨仓调拨单\" [level=2]\n- table: …",
+        truncated: false,
+      },
+      chainsWith: ["browser.click", "browser.fill"],
+      sourcePath: "packages/tools/src/browser/tools.ts",
+    },
+  },
+  {
+    descriptor: browserClick,
+    catalog: {
+      name: "browser.click",
+      category: "browser",
+      summary:
+        "Click an element by CSS {selector} or ARIA {role,name} in an open session.",
+      sideEffect: "write",
+      operation: "write",
+      effectScope: "external",
+      sandboxPolicy: "requires_attempt_grant",
+      description:
+        "A click can submit forms / trigger business writes on the visited system, so it is an external write behind an attempt grant. Waits for actionability (10s timeout); prefer role+name targets discovered via browser.read mode 'a11y'.",
+      argsSchema: {
+        sessionId: { type: "string", required: true },
+        selector: { type: "string", description: "CSS selector. Provide this OR role." },
+        role: { type: "string", description: "ARIA role (e.g. 'button')." },
+        name: { type: "string", description: "Accessible name filter used with role." },
+      },
+      argsExample: { sessionId: "bses-9f2c1a0b4d6e8a01", role: "button", name: "创建调拨单" },
+      configSchema: {},
+      returnsSchema: {
+        sessionId: { type: "string" },
+        clicked: { type: "true" },
+        title: { type: "string" },
+        url: { type: "string" },
+      },
+      returnsExample: {
+        sessionId: "bses-9f2c1a0b4d6e8a01",
+        clicked: true,
+        title: "调拨单 · Meta ERP",
+        url: "http://localhost:3620/ui/transfers",
+      },
+      chainsWith: ["browser.read", "browser.screenshot"],
+      sourcePath: "packages/tools/src/browser/tools.ts",
+    },
+  },
+  {
+    descriptor: browserFill,
+    catalog: {
+      name: "browser.fill",
+      category: "browser",
+      summary: "Fill a form control (CSS {selector}) with {value} in an open session.",
+      sideEffect: "write",
+      operation: "write",
+      effectScope: "external",
+      sandboxPolicy: "requires_attempt_grant",
+      description:
+        "Playwright fill semantics: clears the control, then types the value. Form mutation on an external system ⇒ attempt-grant write policy.",
+      argsSchema: {
+        sessionId: { type: "string", required: true },
+        selector: { type: "string", required: true },
+        value: { type: "string", required: true },
+      },
+      argsExample: {
+        sessionId: "bses-9f2c1a0b4d6e8a01",
+        selector: "#create-transfer input[name='material_id']",
+        value: "MAT-ST-P12",
+      },
+      configSchema: {},
+      returnsSchema: {
+        sessionId: { type: "string" },
+        filled: { type: "true" },
+        selector: { type: "string" },
+      },
+      returnsExample: {
+        sessionId: "bses-9f2c1a0b4d6e8a01",
+        filled: true,
+        selector: "#create-transfer input[name='material_id']",
+      },
+      chainsWith: ["browser.click"],
+      sourcePath: "packages/tools/src/browser/tools.ts",
+    },
+  },
+  {
+    descriptor: browserScreenshot,
+    catalog: {
+      name: "browser.screenshot",
+      category: "browser",
+      summary:
+        "Capture a PNG of the session's current viewport to data/browser-shots/<tenant>/ and return the file path.",
+      sideEffect: "read",
+      operation: "read",
+      effectScope: "external",
+      sandboxPolicy: "live_external",
+      description:
+        "Captures pixels only (no page mutation); the PNG is persisted server-side as an artifact sidecar and returned as an absolute path so the image never round-trips through the model as base64.",
+      argsSchema: {
+        sessionId: { type: "string", required: true },
+      },
+      argsExample: { sessionId: "bses-9f2c1a0b4d6e8a01" },
+      configSchema: {},
+      returnsSchema: {
+        sessionId: { type: "string" },
+        path: { type: "string", description: "Absolute PNG path on the api host." },
+        bytes: { type: "number" },
+        url: { type: "string", description: "Page URL at capture time." },
+      },
+      returnsExample: {
+        sessionId: "bses-9f2c1a0b4d6e8a01",
+        path: "/abs/data/browser-shots/power-scm/shot-2026-08-20T09-00-00-000Z-a1b2c3.png",
+        bytes: 48213,
+        url: "http://localhost:3620/ui/transfers",
+      },
+      sourcePath: "packages/tools/src/browser/tools.ts",
+    },
+  },
+  {
+    descriptor: browserCloseSession,
+    catalog: {
+      name: "browser.closeSession",
+      category: "browser",
+      summary: "Close a browser session and release its Chrome process (idempotent).",
+      sideEffect: "read",
+      operation: "compute",
+      effectScope: "none",
+      sandboxPolicy: "pure",
+      description:
+        "Releases the local browser process for the given sessionId. Closing an unknown or already-reaped session returns {closed:false} rather than throwing, so cleanup steps are safe to retry.",
+      argsSchema: {
+        sessionId: { type: "string", required: true },
+      },
+      argsExample: { sessionId: "bses-9f2c1a0b4d6e8a01" },
+      configSchema: {},
+      returnsSchema: {
+        sessionId: { type: "string" },
+        closed: { type: "boolean" },
+      },
+      returnsExample: { sessionId: "bses-9f2c1a0b4d6e8a01", closed: true },
+      sourcePath: "packages/tools/src/browser/tools.ts",
+    },
+  },
+
+  // ── comms.* — agent-to-agent messaging ──────────────────────────────────
+  {
+    descriptor: commsSendToAgent,
+    catalog: {
+      name: "comms.sendToAgent",
+      category: "comms",
+      summary:
+        "Durable A2A message: publish a tenant event through the operator's own POST /v1/events, scoped to one live target agent.",
+      sideEffect: "write",
+      operation: "write",
+      effectScope: "external",
+      sandboxPolicy: "requires_attempt_grant",
+      credentialPosture: "environment_reference_only",
+      description:
+        "Loopback-HTTP into the API's durable ingest: the events row + event ledger + audit are persisted before the idempotent broker enqueue, and targetAgent is verified against the LIVE manifest registry (unknown/disabled agents fail closed). The origin and bearer credential come only from env vars named in trusted config (defaults AGENTIC_SELF_BASE_URL / AGENTIC_SELF_API_TOKEN — a tenant-scoped Settings → Tokens API token). A deterministic Idempotency-Key derived from the correlationId makes step retries replay instead of duplicate.",
+      argsSchema: {
+        agent: {
+          type: "string",
+          required: true,
+          description: "Manifest agent name in the SAME tenant (e.g. 'action-create-stock-transfer').",
+        },
+        event: {
+          type: "string",
+          description:
+            "Event name to publish. Defaults to the synthetic manual trigger MANUAL_<AGENT_UPPER_SNAKE> (compiler convention).",
+        },
+        payload: {
+          type: "object",
+          description: "Event payload (keys starting with '__' are rejected). Defaults to {}.",
+        },
+        subject: {
+          type: "string",
+          description: "Subject/correlation key. Defaults to the current run's subject.",
+        },
+        idempotency_key: {
+          type: "string",
+          description: "Override the deterministic Idempotency-Key when the caller manages dedup itself.",
+        },
+      },
+      argsExample: {
+        agent: "action-create-stock-transfer",
+        event: "PSCM_STOCK_GAP_CONFIRMED",
+        payload: { material_id: "MAT-ST-P12", gap_qty: 1200 },
+        subject: "WO-2026-0812",
+      },
+      configSchema: {
+        base_url_env: {
+          type: "string",
+          default: "AGENTIC_SELF_BASE_URL",
+          description: "Env var NAME holding this API's own origin (e.g. http://localhost:3540). Fail-closed when unset.",
+        },
+        api_key_env: {
+          type: "string",
+          default: "AGENTIC_SELF_API_TOKEN",
+          description: "Env var NAME holding a tenant-scoped API token with events.publish permission. Fail-closed when unset.",
+        },
+        timeout_ms: { type: "number", default: 15000 },
+      },
+      configExample: {
+        base_url_env: "AGENTIC_SELF_BASE_URL",
+        api_key_env: "AGENTIC_SELF_API_TOKEN",
+      },
+      credentialEnv: ["AGENTIC_SELF_BASE_URL", "AGENTIC_SELF_API_TOKEN"],
+      returnsSchema: {
+        eventId: { type: "string", description: "Durably persisted event id (evt-…)." },
+        name: { type: "string", description: "Wire event name as accepted by the ingest." },
+        agent: { type: "string" },
+        subject: { type: "string | null" },
+      },
+      returnsExample: {
+        eventId: "evt-01J9ZC0YV3",
+        name: "PSCM_STOCK_GAP_CONFIRMED",
+        agent: "action-create-stock-transfer",
+        subject: "WO-2026-0812",
+      },
+      sourcePath: "packages/tools/src/comms/send-to-agent.ts",
     },
   },
 

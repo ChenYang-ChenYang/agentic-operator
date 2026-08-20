@@ -20,7 +20,7 @@
     "gen:schema": "tsx src/generate-workflow-schema.ts",
     "gen:schema:check": "tsx src/generate-workflow-schema.ts --check",
     "clean": "rm -rf dist .turbo",
-    "test:node": "node --test --import tsx src/action-model-overrides.test.ts src/agent-execution.test.ts src/event-envelope.test.ts src/execution-trace.test.ts src/lint.test.ts src/manifest-v2.test.ts src/manual-task-payload.test.ts src/register-config.test.ts src/step-engine-v2.test.ts src/usage-attribution-envelope.test.ts"
+    "test:node": "node --test --import tsx src/action-model-overrides.test.ts src/agent-execution.test.ts src/event-envelope.test.ts src/execution-trace.test.ts src/generated-agent-prompt.test.ts src/lint.test.ts src/manifest-v2.test.ts src/manual-task-payload.test.ts src/register-config.test.ts src/step-engine-v2.test.ts src/usage-attribution-envelope.test.ts"
   },
   "dependencies": {
     "@agentic/agent-kit": "workspace:*",

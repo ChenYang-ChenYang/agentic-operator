@@ -1,0 +1,1419 @@
+{
+    "metadata": {
+        "version_number": 1001,
+        "created_at": "2026-08-19T00:00:00.000Z",
+        "created_by": "power-scm-builder",
+        "source": "seed",
+        "parent_version": null,
+        "message": "power-scm 1.0.0",
+        "last_updated": "2026-08-19",
+        "schema_version": "2.0.0",
+        "artifact_type": "workflows",
+        "domain": "allmeta-power-scm",
+        "snapshot_version": 1001,
+        "ontology_version": "2.0.0",
+        "updated_at": "2026-08-19T00:00:00.000Z"
+    },
+    "workflows": [
+        {
+            "id": "workflow-emergency-supply-response",
+            "name": "Emergency Supply Response (72h Storm)",
+            "nameZh": "风暴 72 小时 · 应急保供作战",
+            "description": "台风预警触发：影响推演→缺口决策→锁库/调拨/紧急采购/协同并行→物流在途→复盘→自动补库。采购计划是闭环的产物。",
+            "schema_version": "2.0.0",
+            "workflow_version": "1.0.0",
+            "actor": [
+                "Agent",
+                "Human"
+            ],
+            "trigger": [
+                "PSCM_TYPHOON_ALERT_RECEIVED"
+            ],
+            "actions": [
+                {
+                    "order": "1",
+                    "name": "action-forecast-typhoon-impact",
+                    "description": "台风路径×资产×故障率推演缺口。",
+                    "type": "tool",
+                    "condition": ""
+                },
+                {
+                    "order": "2",
+                    "name": "action-lock-inventory",
+                    "description": "锁定沿海仓可用批次。",
+                    "type": "tool",
+                    "condition": ""
+                },
+                {
+                    "order": "3",
+                    "name": "action-create-stock-transfer",
+                    "description": "内陆仓→沿海仓跨仓调拨（应急审批）。",
+                    "type": "tool",
+                    "condition": ""
+                },
+                {
+                    "order": "4",
+                    "name": "action-create-emergency-po",
+                    "description": "应急框架协议紧急下单补缺。",
+                    "type": "tool",
+                    "condition": ""
+                },
+                {
+                    "order": "5",
+                    "name": "action-create-collab-request",
+                    "description": "向兄弟单位发起借调请求。",
+                    "type": "tool",
+                    "condition": ""
+                },
+                {
+                    "order": "6",
+                    "name": "action-dispatch-logistics",
+                    "description": "下达运输任务，轨迹回流作战地图。",
+                    "type": "tool",
+                    "condition": ""
+                },
+                {
+                    "order": "7",
+                    "name": "action-review-emergency-response",
+                    "description": "台风过境后复盘偏差与消耗。",
+                    "type": "manual",
+                    "condition": ""
+                },
+                {
+                    "order": "8",
+                    "name": "action-generate-replenishment-plan",
+                    "description": "按复盘结论自动生成补库采购计划。",
+                    "type": "tool",
+                    "condition": ""
+                }
+            ],
+            "triggered_event": [
+                "PSCM_STOCK_GAP_IDENTIFIED",
+                "PSCM_INVENTORY_LOCKED",
+                "PSCM_STOCK_TRANSFER_CREATED",
+                "PSCM_EMERGENCY_PO_CREATED",
+                "PSCM_COLLAB_REQUESTED",
+                "PSCM_LOGISTICS_DISPATCHED",
+                "PSCM_EMERGENCY_REVIEW_COMPLETED",
+                "PSCM_REPLENISHMENT_PLANNED"
+            ],
+            "roles": [
+                {
+                    "id": "role-materials-director",
+                    "type": "Human",
+                    "role": "物资部主任",
+                    "display_name": "物资部主任"
+                },
+                {
+                    "id": "role-materials-officer",
+                    "type": "Human",
+                    "role": "物资专责",
+                    "display_name": "物资专责"
+                },
+                {
+                    "id": "role-dispatcher",
+                    "type": "Human",
+                    "role": "调度员",
+                    "display_name": "调度员"
+                },
+                {
+                    "id": "role-supply-agent",
+                    "type": "Agent",
+                    "role": "保供智能体",
+                    "display_name": "保供智能体"
+                }
+            ],
+            "triggers": [
+                {
+                    "id": "trg-workflow-emergency-supply-response-event",
+                    "kind": "event",
+                    "event_id": "PSCM_TYPHOON_ALERT_RECEIVED"
+                }
+            ],
+            "entry_step_ids": [
+                "workflow-emergency-supply-response:step:1"
+            ],
+            "steps": [
+                {
+                    "id": "workflow-emergency-supply-response:step:1",
+                    "order": 1,
+                    "name": "影响推演",
+                    "description": "台风路径×资产×故障率推演缺口。",
+                    "node_kind": "action",
+                    "action_id": "action-forecast-typhoon-impact",
+                    "execution": {
+                        "mode": "agent",
+                        "autonomy_level": "A2",
+                        "reversible": true
+                    },
+                    "guard_rule_ids": [
+                        "PSCM-EMG-001"
+                    ],
+                    "emitted_event_ids": [
+                        "PSCM_STOCK_GAP_IDENTIFIED"
+                    ],
+                    "next": [
+                        {
+                            "id": "edge-workflow-emergency-supply-response:step:1-2",
+                            "to_step_id": "workflow-emergency-supply-response:step:2",
+                            "edge_type": "sequence"
+                        }
+                    ]
+                },
+                {
+                    "id": "workflow-emergency-supply-response:step:2",
+                    "order": 2,
+                    "name": "缺口决策",
+                    "description": "是否存在缺口？给出方案 A/B/C 与推荐。",
+                    "node_kind": "decision",
+                    "execution": {
+                        "mode": "hybrid",
+                        "autonomy_level": "A2",
+                        "reversible": true
+                    },
+                    "next": [
+                        {
+                            "id": "edge-workflow-emergency-supply-response:step:2-3-cond",
+                            "to_step_id": "workflow-emergency-supply-response:step:3",
+                            "edge_type": "conditional",
+                            "label": "存在缺口·按方案执行",
+                            "condition": "gap_exists == true",
+                            "rule_ids": [
+                                "PSCM-EMG-002"
+                            ]
+                        },
+                        {
+                            "id": "edge-workflow-emergency-supply-response:step:2-8-cond",
+                            "to_step_id": "workflow-emergency-supply-response:step:8",
+                            "edge_type": "conditional",
+                            "label": "无缺口·持续监测至过境复盘",
+                            "condition": "gap_exists == false"
+                        }
+                    ]
+                },
+                {
+                    "id": "workflow-emergency-supply-response:step:3",
+                    "order": 3,
+                    "name": "锁定库存",
+                    "description": "锁定沿海仓可用批次。",
+                    "node_kind": "action",
+                    "action_id": "action-lock-inventory",
+                    "execution": {
+                        "mode": "agent",
+                        "autonomy_level": "A2",
+                        "reversible": true
+                    },
+                    "emitted_event_ids": [
+                        "PSCM_INVENTORY_LOCKED"
+                    ],
+                    "next": [
+                        {
+                            "id": "edge-workflow-emergency-supply-response:step:3-4",
+                            "to_step_id": "workflow-emergency-supply-response:step:4",
+                            "edge_type": "sequence"
+                        },
+                        {
+                            "id": "edge-workflow-emergency-supply-response:step:3-5",
+                            "to_step_id": "workflow-emergency-supply-response:step:5",
+                            "edge_type": "sequence"
+                        },
+                        {
+                            "id": "edge-workflow-emergency-supply-response:step:3-6",
+                            "to_step_id": "workflow-emergency-supply-response:step:6",
+                            "edge_type": "sequence"
+                        }
+                    ]
+                },
+                {
+                    "id": "workflow-emergency-supply-response:step:4",
+                    "order": 4,
+                    "name": "创建调拨",
+                    "description": "内陆仓→沿海仓跨仓调拨（应急审批）。",
+                    "node_kind": "action",
+                    "action_id": "action-create-stock-transfer",
+                    "execution": {
+                        "mode": "hybrid",
+                        "autonomy_level": "A2",
+                        "reversible": true,
+                        "human_gate": {
+                            "mode": "approve"
+                        }
+                    },
+                    "guard_rule_ids": [
+                        "PSCM-EMG-003"
+                    ],
+                    "emitted_event_ids": [
+                        "PSCM_STOCK_TRANSFER_CREATED"
+                    ],
+                    "next": [
+                        {
+                            "id": "edge-workflow-emergency-supply-response:step:4-7",
+                            "to_step_id": "workflow-emergency-supply-response:step:7",
+                            "edge_type": "sequence"
+                        }
+                    ]
+                },
+                {
+                    "id": "workflow-emergency-supply-response:step:5",
+                    "order": 5,
+                    "name": "紧急采购",
+                    "description": "应急框架协议紧急下单补缺。",
+                    "node_kind": "action",
+                    "action_id": "action-create-emergency-po",
+                    "execution": {
+                        "mode": "hybrid",
+                        "autonomy_level": "A2",
+                        "reversible": true,
+                        "human_gate": {
+                            "mode": "approve"
+                        }
+                    },
+                    "guard_rule_ids": [
+                        "PSCM-EMG-004"
+                    ],
+                    "emitted_event_ids": [
+                        "PSCM_EMERGENCY_PO_CREATED"
+                    ],
+                    "next": [
+                        {
+                            "id": "edge-workflow-emergency-supply-response:step:5-8",
+                            "to_step_id": "workflow-emergency-supply-response:step:8",
+                            "edge_type": "sequence"
+                        }
+                    ]
+                },
+                {
+                    "id": "workflow-emergency-supply-response:step:6",
+                    "order": 6,
+                    "name": "跨单位协同",
+                    "description": "向兄弟单位发起借调请求。",
+                    "node_kind": "action",
+                    "action_id": "action-create-collab-request",
+                    "execution": {
+                        "mode": "agent",
+                        "autonomy_level": "A2",
+                        "reversible": true
+                    },
+                    "emitted_event_ids": [
+                        "PSCM_COLLAB_REQUESTED"
+                    ],
+                    "next": [
+                        {
+                            "id": "edge-workflow-emergency-supply-response:step:6-8",
+                            "to_step_id": "workflow-emergency-supply-response:step:8",
+                            "edge_type": "sequence"
+                        }
+                    ]
+                },
+                {
+                    "id": "workflow-emergency-supply-response:step:7",
+                    "order": 7,
+                    "name": "物流在途",
+                    "description": "下达运输任务，轨迹回流作战地图。",
+                    "node_kind": "action",
+                    "action_id": "action-dispatch-logistics",
+                    "execution": {
+                        "mode": "agent",
+                        "autonomy_level": "A2",
+                        "reversible": true
+                    },
+                    "emitted_event_ids": [
+                        "PSCM_LOGISTICS_DISPATCHED"
+                    ],
+                    "next": [
+                        {
+                            "id": "edge-workflow-emergency-supply-response:step:7-8",
+                            "to_step_id": "workflow-emergency-supply-response:step:8",
+                            "edge_type": "sequence"
+                        }
+                    ]
+                },
+                {
+                    "id": "workflow-emergency-supply-response:step:8",
+                    "order": 8,
+                    "name": "应急复盘",
+                    "description": "台风过境后复盘偏差与消耗。",
+                    "node_kind": "action",
+                    "action_id": "action-review-emergency-response",
+                    "execution": {
+                        "mode": "human",
+                        "autonomy_level": "A0",
+                        "reversible": true
+                    },
+                    "emitted_event_ids": [
+                        "PSCM_EMERGENCY_REVIEW_COMPLETED"
+                    ],
+                    "next": [
+                        {
+                            "id": "edge-workflow-emergency-supply-response:step:8-9",
+                            "to_step_id": "workflow-emergency-supply-response:step:9",
+                            "edge_type": "sequence"
+                        }
+                    ]
+                },
+                {
+                    "id": "workflow-emergency-supply-response:step:9",
+                    "order": 9,
+                    "name": "自动补库",
+                    "description": "按复盘结论自动生成补库采购计划。",
+                    "node_kind": "action",
+                    "action_id": "action-generate-replenishment-plan",
+                    "execution": {
+                        "mode": "agent",
+                        "autonomy_level": "A2",
+                        "reversible": true
+                    },
+                    "emitted_event_ids": [
+                        "PSCM_REPLENISHMENT_PLANNED"
+                    ],
+                    "next": []
+                }
+            ],
+            "object_refs": [
+                "ExternalEvent",
+                "GridRegion",
+                "GridAsset",
+                "Material",
+                "InventoryLot",
+                "Warehouse",
+                "StockTransferOrder",
+                "PurchaseOrder",
+                "FrameworkAgreement",
+                "PurchaseRequisition"
+            ],
+            "rule_refs": [
+                "PSCM-EMG-001",
+                "PSCM-EMG-002",
+                "PSCM-EMG-003",
+                "PSCM-EMG-004"
+            ],
+            "rule_bindings": [],
+            "artifacts": [],
+            "output_contracts": [],
+            "emitted_events": [
+                {
+                    "id": "emit-workflow-emergency-supply-response:step:1-PSCM_STOCK_GAP_IDENTIFIED",
+                    "event_id": "PSCM_STOCK_GAP_IDENTIFIED",
+                    "source_step_id": "workflow-emergency-supply-response:step:1",
+                    "when": "success"
+                },
+                {
+                    "id": "emit-workflow-emergency-supply-response:step:3-PSCM_INVENTORY_LOCKED",
+                    "event_id": "PSCM_INVENTORY_LOCKED",
+                    "source_step_id": "workflow-emergency-supply-response:step:3",
+                    "when": "success"
+                },
+                {
+                    "id": "emit-workflow-emergency-supply-response:step:4-PSCM_STOCK_TRANSFER_CREATED",
+                    "event_id": "PSCM_STOCK_TRANSFER_CREATED",
+                    "source_step_id": "workflow-emergency-supply-response:step:4",
+                    "when": "success"
+                },
+                {
+                    "id": "emit-workflow-emergency-supply-response:step:5-PSCM_EMERGENCY_PO_CREATED",
+                    "event_id": "PSCM_EMERGENCY_PO_CREATED",
+                    "source_step_id": "workflow-emergency-supply-response:step:5",
+                    "when": "success"
+                },
+                {
+                    "id": "emit-workflow-emergency-supply-response:step:6-PSCM_COLLAB_REQUESTED",
+                    "event_id": "PSCM_COLLAB_REQUESTED",
+                    "source_step_id": "workflow-emergency-supply-response:step:6",
+                    "when": "success"
+                },
+                {
+                    "id": "emit-workflow-emergency-supply-response:step:7-PSCM_LOGISTICS_DISPATCHED",
+                    "event_id": "PSCM_LOGISTICS_DISPATCHED",
+                    "source_step_id": "workflow-emergency-supply-response:step:7",
+                    "when": "success"
+                },
+                {
+                    "id": "emit-workflow-emergency-supply-response:step:8-PSCM_EMERGENCY_REVIEW_COMPLETED",
+                    "event_id": "PSCM_EMERGENCY_REVIEW_COMPLETED",
+                    "source_step_id": "workflow-emergency-supply-response:step:8",
+                    "when": "success"
+                },
+                {
+                    "id": "emit-workflow-emergency-supply-response:step:9-PSCM_REPLENISHMENT_PLANNED",
+                    "event_id": "PSCM_REPLENISHMENT_PLANNED",
+                    "source_step_id": "workflow-emergency-supply-response:step:9",
+                    "when": "success"
+                }
+            ],
+            "orchestration": {
+                "strategy": "event_driven",
+                "agent_orchestrated": true,
+                "on_failure": "escalate",
+                "max_concurrency": 4
+            },
+            "layout": {
+                "direction": "LR",
+                "auto_generated": false,
+                "positions": {
+                    "step:workflow-emergency-supply-response:step:1": {
+                        "x": 0,
+                        "y": 0
+                    },
+                    "step:workflow-emergency-supply-response:step:2": {
+                        "x": 260,
+                        "y": 0
+                    },
+                    "step:workflow-emergency-supply-response:step:3": {
+                        "x": 520,
+                        "y": 0
+                    },
+                    "step:workflow-emergency-supply-response:step:4": {
+                        "x": 780,
+                        "y": 0
+                    },
+                    "step:workflow-emergency-supply-response:step:5": {
+                        "x": 1040,
+                        "y": 0
+                    },
+                    "step:workflow-emergency-supply-response:step:6": {
+                        "x": 0,
+                        "y": 160
+                    },
+                    "step:workflow-emergency-supply-response:step:7": {
+                        "x": 260,
+                        "y": 160
+                    },
+                    "step:workflow-emergency-supply-response:step:8": {
+                        "x": 520,
+                        "y": 160
+                    },
+                    "step:workflow-emergency-supply-response:step:9": {
+                        "x": 780,
+                        "y": 160
+                    }
+                },
+                "viewport": {
+                    "x": 40,
+                    "y": 80,
+                    "zoom": 0.8
+                }
+            },
+            "extensions": {
+                "package_id": "power-scm",
+                "release": "1.0.0",
+                "scenario": "风暴 72 小时 · 应急保供作战"
+            }
+        },
+        {
+            "id": "workflow-supplier-risk-response",
+            "name": "Supplier Risk Response (X-Ray)",
+            "nameZh": "一眼穿透 · 供应商风险处置",
+            "description": "司法失信触发：图谱穿透→风险决策→催交/监造/替代询价/风险名单并行处置，关联方假备选在询价前被拦截。",
+            "schema_version": "2.0.0",
+            "workflow_version": "1.0.0",
+            "actor": [
+                "Agent"
+            ],
+            "trigger": [
+                "PSCM_LEGAL_DISHONEST_RECEIVED"
+            ],
+            "actions": [
+                {
+                    "order": "1",
+                    "name": "action-scan-supplier-risk",
+                    "description": "供应商→合同→订单→项目多跳点亮影响面。",
+                    "type": "tool",
+                    "condition": ""
+                },
+                {
+                    "order": "2",
+                    "name": "action-issue-expedite-notice",
+                    "description": "法务模板催交关键订单。",
+                    "type": "tool",
+                    "condition": ""
+                },
+                {
+                    "order": "3",
+                    "name": "action-create-onsite-inspection",
+                    "description": "对保重点项目订单派驻监造。",
+                    "type": "tool",
+                    "condition": ""
+                },
+                {
+                    "order": "4",
+                    "name": "action-send-rfq",
+                    "description": "向框架内替代供应商询价（关联方拦截）。",
+                    "type": "tool",
+                    "condition": ""
+                },
+                {
+                    "order": "5",
+                    "name": "action-add-supplier-risk-flag",
+                    "description": "风险供应商及关联方标入名单推送审计部。",
+                    "type": "tool",
+                    "condition": ""
+                }
+            ],
+            "triggered_event": [
+                "PSCM_SUPPLIER_RISK_FLAGGED",
+                "PSCM_EXPEDITE_ISSUED",
+                "PSCM_ONSITE_INSPECTION_CREATED",
+                "PSCM_RFQ_SENT",
+                "PSCM_RISK_FLAG_ADDED"
+            ],
+            "roles": [
+                {
+                    "id": "role-materials-officer",
+                    "type": "Human",
+                    "role": "物资专责",
+                    "display_name": "物资专责"
+                },
+                {
+                    "id": "role-auditor",
+                    "type": "Human",
+                    "role": "审计专员",
+                    "display_name": "审计专员"
+                },
+                {
+                    "id": "role-project-manager",
+                    "type": "Human",
+                    "role": "项目经理",
+                    "display_name": "项目经理"
+                },
+                {
+                    "id": "role-risk-agent",
+                    "type": "Agent",
+                    "role": "风控智能体",
+                    "display_name": "风控智能体"
+                }
+            ],
+            "triggers": [
+                {
+                    "id": "trg-workflow-supplier-risk-response-event",
+                    "kind": "event",
+                    "event_id": "PSCM_LEGAL_DISHONEST_RECEIVED"
+                }
+            ],
+            "entry_step_ids": [
+                "workflow-supplier-risk-response:step:1"
+            ],
+            "steps": [
+                {
+                    "id": "workflow-supplier-risk-response:step:1",
+                    "order": 1,
+                    "name": "图谱穿透",
+                    "description": "供应商→合同→订单→项目多跳点亮影响面。",
+                    "node_kind": "action",
+                    "action_id": "action-scan-supplier-risk",
+                    "execution": {
+                        "mode": "agent",
+                        "autonomy_level": "A2",
+                        "reversible": true
+                    },
+                    "guard_rule_ids": [
+                        "PSCM-RSK-001"
+                    ],
+                    "emitted_event_ids": [
+                        "PSCM_SUPPLIER_RISK_FLAGGED"
+                    ],
+                    "next": [
+                        {
+                            "id": "edge-workflow-supplier-risk-response:step:1-2",
+                            "to_step_id": "workflow-supplier-risk-response:step:2",
+                            "edge_type": "sequence"
+                        }
+                    ]
+                },
+                {
+                    "id": "workflow-supplier-risk-response:step:2",
+                    "order": 2,
+                    "name": "处置决策",
+                    "description": "A 催交+驻厂监造保重点节点 / B 非关键订单转移替代供应商——推荐 A+B 组合执行。",
+                    "node_kind": "decision",
+                    "execution": {
+                        "mode": "hybrid",
+                        "autonomy_level": "A2",
+                        "reversible": true
+                    },
+                    "next": [
+                        {
+                            "id": "edge-workflow-supplier-risk-response:step:2-3-cond",
+                            "to_step_id": "workflow-supplier-risk-response:step:3",
+                            "edge_type": "conditional",
+                            "label": "保重点节点",
+                            "condition": "strategy in ['A','AB']"
+                        },
+                        {
+                            "id": "edge-workflow-supplier-risk-response:step:2-5-cond",
+                            "to_step_id": "workflow-supplier-risk-response:step:5",
+                            "edge_type": "conditional",
+                            "label": "订单转移",
+                            "condition": "strategy in ['B','AB']",
+                            "rule_ids": [
+                                "PSCM-RSK-002"
+                            ]
+                        }
+                    ]
+                },
+                {
+                    "id": "workflow-supplier-risk-response:step:3",
+                    "order": 3,
+                    "name": "发出催交函",
+                    "description": "法务模板催交关键订单。",
+                    "node_kind": "action",
+                    "action_id": "action-issue-expedite-notice",
+                    "execution": {
+                        "mode": "agent",
+                        "autonomy_level": "A2",
+                        "reversible": true
+                    },
+                    "emitted_event_ids": [
+                        "PSCM_EXPEDITE_ISSUED"
+                    ],
+                    "next": [
+                        {
+                            "id": "edge-workflow-supplier-risk-response:step:3-4",
+                            "to_step_id": "workflow-supplier-risk-response:step:4",
+                            "edge_type": "sequence"
+                        }
+                    ]
+                },
+                {
+                    "id": "workflow-supplier-risk-response:step:4",
+                    "order": 4,
+                    "name": "驻厂监造",
+                    "description": "对保重点项目订单派驻监造。",
+                    "node_kind": "action",
+                    "action_id": "action-create-onsite-inspection",
+                    "execution": {
+                        "mode": "agent",
+                        "autonomy_level": "A2",
+                        "reversible": true
+                    },
+                    "emitted_event_ids": [
+                        "PSCM_ONSITE_INSPECTION_CREATED"
+                    ],
+                    "next": [
+                        {
+                            "id": "edge-workflow-supplier-risk-response:step:4-6",
+                            "to_step_id": "workflow-supplier-risk-response:step:6",
+                            "edge_type": "sequence"
+                        }
+                    ]
+                },
+                {
+                    "id": "workflow-supplier-risk-response:step:5",
+                    "order": 5,
+                    "name": "替代询价",
+                    "description": "向框架内替代供应商询价（关联方拦截）。",
+                    "node_kind": "action",
+                    "action_id": "action-send-rfq",
+                    "execution": {
+                        "mode": "hybrid",
+                        "autonomy_level": "A2",
+                        "reversible": true
+                    },
+                    "guard_rule_ids": [
+                        "PSCM-RSK-002"
+                    ],
+                    "emitted_event_ids": [
+                        "PSCM_RFQ_SENT"
+                    ],
+                    "next": [
+                        {
+                            "id": "edge-workflow-supplier-risk-response:step:5-6",
+                            "to_step_id": "workflow-supplier-risk-response:step:6",
+                            "edge_type": "sequence"
+                        }
+                    ]
+                },
+                {
+                    "id": "workflow-supplier-risk-response:step:6",
+                    "order": 6,
+                    "name": "风险名单",
+                    "description": "风险供应商及关联方标入名单推送审计部。",
+                    "node_kind": "action",
+                    "action_id": "action-add-supplier-risk-flag",
+                    "execution": {
+                        "mode": "agent",
+                        "autonomy_level": "A2",
+                        "reversible": true
+                    },
+                    "emitted_event_ids": [
+                        "PSCM_RISK_FLAG_ADDED"
+                    ],
+                    "next": []
+                }
+            ],
+            "object_refs": [
+                "ExternalEvent",
+                "Supplier",
+                "UltimateController",
+                "Contract",
+                "PurchaseOrder",
+                "DeliverySchedule",
+                "Project",
+                "Milestone",
+                "ExpediteNotice",
+                "Rfq",
+                "RiskFlag",
+                "InspectionReport"
+            ],
+            "rule_refs": [
+                "PSCM-RSK-001",
+                "PSCM-RSK-002",
+                "PSCM-RSK-003"
+            ],
+            "rule_bindings": [],
+            "artifacts": [],
+            "output_contracts": [],
+            "emitted_events": [
+                {
+                    "id": "emit-workflow-supplier-risk-response:step:1-PSCM_SUPPLIER_RISK_FLAGGED",
+                    "event_id": "PSCM_SUPPLIER_RISK_FLAGGED",
+                    "source_step_id": "workflow-supplier-risk-response:step:1",
+                    "when": "success"
+                },
+                {
+                    "id": "emit-workflow-supplier-risk-response:step:3-PSCM_EXPEDITE_ISSUED",
+                    "event_id": "PSCM_EXPEDITE_ISSUED",
+                    "source_step_id": "workflow-supplier-risk-response:step:3",
+                    "when": "success"
+                },
+                {
+                    "id": "emit-workflow-supplier-risk-response:step:4-PSCM_ONSITE_INSPECTION_CREATED",
+                    "event_id": "PSCM_ONSITE_INSPECTION_CREATED",
+                    "source_step_id": "workflow-supplier-risk-response:step:4",
+                    "when": "success"
+                },
+                {
+                    "id": "emit-workflow-supplier-risk-response:step:5-PSCM_RFQ_SENT",
+                    "event_id": "PSCM_RFQ_SENT",
+                    "source_step_id": "workflow-supplier-risk-response:step:5",
+                    "when": "success"
+                },
+                {
+                    "id": "emit-workflow-supplier-risk-response:step:6-PSCM_RISK_FLAG_ADDED",
+                    "event_id": "PSCM_RISK_FLAG_ADDED",
+                    "source_step_id": "workflow-supplier-risk-response:step:6",
+                    "when": "success"
+                }
+            ],
+            "orchestration": {
+                "strategy": "event_driven",
+                "agent_orchestrated": true,
+                "on_failure": "escalate",
+                "max_concurrency": 4
+            },
+            "layout": {
+                "direction": "LR",
+                "auto_generated": false,
+                "positions": {
+                    "step:workflow-supplier-risk-response:step:1": {
+                        "x": 0,
+                        "y": 0
+                    },
+                    "step:workflow-supplier-risk-response:step:2": {
+                        "x": 260,
+                        "y": 0
+                    },
+                    "step:workflow-supplier-risk-response:step:3": {
+                        "x": 520,
+                        "y": 0
+                    },
+                    "step:workflow-supplier-risk-response:step:4": {
+                        "x": 780,
+                        "y": 0
+                    },
+                    "step:workflow-supplier-risk-response:step:5": {
+                        "x": 1040,
+                        "y": 0
+                    },
+                    "step:workflow-supplier-risk-response:step:6": {
+                        "x": 0,
+                        "y": 160
+                    }
+                },
+                "viewport": {
+                    "x": 40,
+                    "y": 80,
+                    "zoom": 0.8
+                }
+            },
+            "extensions": {
+                "package_id": "power-scm",
+                "release": "1.0.0",
+                "scenario": "一眼穿透 · 供应商风险处置"
+            }
+        },
+        {
+            "id": "workflow-stock-revitalization",
+            "name": "Stock Revitalization (Intercept)",
+            "nameZh": "拦下一张采购单 · 呆滞盘活",
+            "description": "新采购需求提交触发：同物匹配（含同物不同码）→拦截暂停→跨单位调剂→双边确认执行→两金指标更新。",
+            "schema_version": "2.0.0",
+            "workflow_version": "1.0.0",
+            "actor": [
+                "Agent",
+                "Human"
+            ],
+            "trigger": [
+                "PSCM_REQUISITION_SUBMITTED"
+            ],
+            "actions": [
+                {
+                    "order": "1",
+                    "name": "action-match-dormant-stock",
+                    "description": "跨法人单位匹配需求与呆滞批次（语义等效组对齐编码）。",
+                    "type": "tool",
+                    "condition": ""
+                },
+                {
+                    "order": "2",
+                    "name": "action-suspend-requisition",
+                    "description": "暂停被匹配的采购需求并留痕。",
+                    "type": "tool",
+                    "condition": ""
+                },
+                {
+                    "order": "3",
+                    "name": "action-create-allocation-order",
+                    "description": "生成跨单位调剂单并计算节约金额。",
+                    "type": "tool",
+                    "condition": ""
+                },
+                {
+                    "order": "4",
+                    "name": "action-confirm-allocation",
+                    "description": "两个单位物资员移动端确认，执行并更新两金指标。",
+                    "type": "manual",
+                    "condition": ""
+                }
+            ],
+            "triggered_event": [
+                "PSCM_DORMANT_MATCH_FOUND",
+                "PSCM_REQUISITION_SUSPENDED",
+                "PSCM_ALLOCATION_PROPOSED",
+                "PSCM_ALLOCATION_CONFIRMED"
+            ],
+            "roles": [
+                {
+                    "id": "role-materials-officer",
+                    "type": "Human",
+                    "role": "物资专责",
+                    "display_name": "物资专责"
+                },
+                {
+                    "id": "role-warehouse-keeper-from",
+                    "type": "Human",
+                    "role": "调出方物资员",
+                    "display_name": "调出方物资员"
+                },
+                {
+                    "id": "role-warehouse-keeper-to",
+                    "type": "Human",
+                    "role": "调入方物资员",
+                    "display_name": "调入方物资员"
+                },
+                {
+                    "id": "role-revitalize-agent",
+                    "type": "Agent",
+                    "role": "盘活智能体",
+                    "display_name": "盘活智能体"
+                }
+            ],
+            "triggers": [
+                {
+                    "id": "trg-workflow-stock-revitalization-event",
+                    "kind": "event",
+                    "event_id": "PSCM_REQUISITION_SUBMITTED"
+                }
+            ],
+            "entry_step_ids": [
+                "workflow-stock-revitalization:step:1"
+            ],
+            "steps": [
+                {
+                    "id": "workflow-stock-revitalization:step:1",
+                    "order": 1,
+                    "name": "同物匹配",
+                    "description": "跨法人单位匹配需求与呆滞批次（语义等效组对齐编码）。",
+                    "node_kind": "action",
+                    "action_id": "action-match-dormant-stock",
+                    "execution": {
+                        "mode": "agent",
+                        "autonomy_level": "A2",
+                        "reversible": true
+                    },
+                    "guard_rule_ids": [
+                        "PSCM-INV-001",
+                        "PSCM-INV-002"
+                    ],
+                    "emitted_event_ids": [
+                        "PSCM_DORMANT_MATCH_FOUND"
+                    ],
+                    "next": [
+                        {
+                            "id": "edge-workflow-stock-revitalization:step:1-2",
+                            "to_step_id": "workflow-stock-revitalization:step:2",
+                            "edge_type": "sequence"
+                        }
+                    ]
+                },
+                {
+                    "id": "workflow-stock-revitalization:step:2",
+                    "order": 2,
+                    "name": "拦截决策",
+                    "description": "命中同物：拦截采购、发起调剂？",
+                    "node_kind": "decision",
+                    "execution": {
+                        "mode": "hybrid",
+                        "autonomy_level": "A2",
+                        "reversible": true
+                    },
+                    "next": [
+                        {
+                            "id": "edge-workflow-stock-revitalization:step:2-3-cond",
+                            "to_step_id": "workflow-stock-revitalization:step:3",
+                            "edge_type": "conditional",
+                            "label": "命中·拦截并调剂",
+                            "condition": "match_found == true",
+                            "rule_ids": [
+                                "PSCM-INV-002"
+                            ]
+                        },
+                        {
+                            "id": "edge-workflow-stock-revitalization:step:2-6-cond",
+                            "to_step_id": "workflow-stock-revitalization:step:6",
+                            "edge_type": "conditional",
+                            "label": "未命中·正常放行",
+                            "condition": "match_found == false"
+                        }
+                    ]
+                },
+                {
+                    "id": "workflow-stock-revitalization:step:3",
+                    "order": 3,
+                    "name": "暂停采购",
+                    "description": "暂停被匹配的采购需求并留痕。",
+                    "node_kind": "action",
+                    "action_id": "action-suspend-requisition",
+                    "execution": {
+                        "mode": "agent",
+                        "autonomy_level": "A2",
+                        "reversible": true
+                    },
+                    "emitted_event_ids": [
+                        "PSCM_REQUISITION_SUSPENDED"
+                    ],
+                    "next": [
+                        {
+                            "id": "edge-workflow-stock-revitalization:step:3-4",
+                            "to_step_id": "workflow-stock-revitalization:step:4",
+                            "edge_type": "sequence"
+                        }
+                    ]
+                },
+                {
+                    "id": "workflow-stock-revitalization:step:4",
+                    "order": 4,
+                    "name": "创建调剂单",
+                    "description": "生成跨单位调剂单并计算节约金额。",
+                    "node_kind": "action",
+                    "action_id": "action-create-allocation-order",
+                    "execution": {
+                        "mode": "agent",
+                        "autonomy_level": "A2",
+                        "reversible": true
+                    },
+                    "emitted_event_ids": [
+                        "PSCM_ALLOCATION_PROPOSED"
+                    ],
+                    "next": [
+                        {
+                            "id": "edge-workflow-stock-revitalization:step:4-5",
+                            "to_step_id": "workflow-stock-revitalization:step:5",
+                            "edge_type": "sequence"
+                        }
+                    ]
+                },
+                {
+                    "id": "workflow-stock-revitalization:step:5",
+                    "order": 5,
+                    "name": "双边确认执行",
+                    "description": "两个单位物资员移动端确认，执行并更新两金指标。",
+                    "node_kind": "action",
+                    "action_id": "action-confirm-allocation",
+                    "execution": {
+                        "mode": "human",
+                        "autonomy_level": "A0",
+                        "reversible": true,
+                        "human_gate": {
+                            "mode": "approve"
+                        }
+                    },
+                    "emitted_event_ids": [
+                        "PSCM_ALLOCATION_CONFIRMED"
+                    ],
+                    "next": []
+                },
+                {
+                    "id": "workflow-stock-revitalization:step:6",
+                    "order": 6,
+                    "name": "放行归档",
+                    "description": "未命中同物：需求正常放行执行，匹配结论留痕归档。",
+                    "node_kind": "wait",
+                    "execution": {
+                        "mode": "agent",
+                        "autonomy_level": "A2",
+                        "reversible": true
+                    },
+                    "next": []
+                }
+            ],
+            "object_refs": [
+                "PurchaseRequisition",
+                "Material",
+                "InventoryLot",
+                "LegalEntity",
+                "AllocationOrder"
+            ],
+            "rule_refs": [
+                "PSCM-INV-001",
+                "PSCM-INV-002",
+                "PSCM-INV-004"
+            ],
+            "rule_bindings": [],
+            "artifacts": [],
+            "output_contracts": [],
+            "emitted_events": [
+                {
+                    "id": "emit-workflow-stock-revitalization:step:1-PSCM_DORMANT_MATCH_FOUND",
+                    "event_id": "PSCM_DORMANT_MATCH_FOUND",
+                    "source_step_id": "workflow-stock-revitalization:step:1",
+                    "when": "success"
+                },
+                {
+                    "id": "emit-workflow-stock-revitalization:step:3-PSCM_REQUISITION_SUSPENDED",
+                    "event_id": "PSCM_REQUISITION_SUSPENDED",
+                    "source_step_id": "workflow-stock-revitalization:step:3",
+                    "when": "success"
+                },
+                {
+                    "id": "emit-workflow-stock-revitalization:step:4-PSCM_ALLOCATION_PROPOSED",
+                    "event_id": "PSCM_ALLOCATION_PROPOSED",
+                    "source_step_id": "workflow-stock-revitalization:step:4",
+                    "when": "success"
+                },
+                {
+                    "id": "emit-workflow-stock-revitalization:step:5-PSCM_ALLOCATION_CONFIRMED",
+                    "event_id": "PSCM_ALLOCATION_CONFIRMED",
+                    "source_step_id": "workflow-stock-revitalization:step:5",
+                    "when": "success"
+                }
+            ],
+            "orchestration": {
+                "strategy": "event_driven",
+                "agent_orchestrated": true,
+                "on_failure": "escalate",
+                "max_concurrency": 4
+            },
+            "layout": {
+                "direction": "LR",
+                "auto_generated": false,
+                "positions": {
+                    "step:workflow-stock-revitalization:step:1": {
+                        "x": 0,
+                        "y": 0
+                    },
+                    "step:workflow-stock-revitalization:step:2": {
+                        "x": 260,
+                        "y": 0
+                    },
+                    "step:workflow-stock-revitalization:step:3": {
+                        "x": 520,
+                        "y": 0
+                    },
+                    "step:workflow-stock-revitalization:step:4": {
+                        "x": 780,
+                        "y": 0
+                    },
+                    "step:workflow-stock-revitalization:step:5": {
+                        "x": 1040,
+                        "y": 0
+                    },
+                    "step:workflow-stock-revitalization:step:6": {
+                        "x": 0,
+                        "y": 160
+                    }
+                },
+                "viewport": {
+                    "x": 40,
+                    "y": 80,
+                    "zoom": 0.8
+                }
+            },
+            "extensions": {
+                "package_id": "power-scm",
+                "release": "1.0.0",
+                "scenario": "拦下一张采购单 · 呆滞盘活"
+            }
+        },
+        {
+            "id": "workflow-impairment-disposal",
+            "name": "Impairment Disposal",
+            "nameZh": "减值处置支线",
+            "description": "临期/淘汰批次减值预警触发：生成处置审批包，减值计提前完成决策。",
+            "schema_version": "2.0.0",
+            "workflow_version": "1.0.0",
+            "actor": [
+                "Agent",
+                "Human"
+            ],
+            "trigger": [
+                "PSCM_IMPAIRMENT_WARNING_RAISED"
+            ],
+            "actions": [
+                {
+                    "order": "1",
+                    "name": "action-create-disposal-package",
+                    "description": "按回收价值测算处置方式并生成审批包。",
+                    "type": "tool",
+                    "condition": ""
+                }
+            ],
+            "triggered_event": [
+                "PSCM_DISPOSAL_PACKAGE_CREATED"
+            ],
+            "roles": [
+                {
+                    "id": "role-materials-officer",
+                    "type": "Human",
+                    "role": "物资专责",
+                    "display_name": "物资专责"
+                },
+                {
+                    "id": "role-finance-officer",
+                    "type": "Human",
+                    "role": "财务专责",
+                    "display_name": "财务专责"
+                },
+                {
+                    "id": "role-revitalize-agent",
+                    "type": "Agent",
+                    "role": "盘活智能体",
+                    "display_name": "盘活智能体"
+                }
+            ],
+            "triggers": [
+                {
+                    "id": "trg-workflow-impairment-disposal-event",
+                    "kind": "event",
+                    "event_id": "PSCM_IMPAIRMENT_WARNING_RAISED"
+                }
+            ],
+            "entry_step_ids": [
+                "workflow-impairment-disposal:step:1"
+            ],
+            "steps": [
+                {
+                    "id": "workflow-impairment-disposal:step:1",
+                    "order": 1,
+                    "name": "生成处置包",
+                    "description": "按回收价值测算处置方式并生成审批包。",
+                    "node_kind": "action",
+                    "action_id": "action-create-disposal-package",
+                    "execution": {
+                        "mode": "agent",
+                        "autonomy_level": "A2",
+                        "reversible": true
+                    },
+                    "guard_rule_ids": [
+                        "PSCM-INV-003"
+                    ],
+                    "emitted_event_ids": [
+                        "PSCM_DISPOSAL_PACKAGE_CREATED"
+                    ],
+                    "next": [
+                        {
+                            "id": "edge-workflow-impairment-disposal:step:1-2",
+                            "to_step_id": "workflow-impairment-disposal:step:2",
+                            "edge_type": "sequence"
+                        }
+                    ]
+                },
+                {
+                    "id": "workflow-impairment-disposal:step:2",
+                    "order": 2,
+                    "name": "处置审批",
+                    "description": "财务与物资联合审批处置方案。",
+                    "node_kind": "wait",
+                    "execution": {
+                        "mode": "human",
+                        "autonomy_level": "A0",
+                        "reversible": true
+                    },
+                    "next": []
+                }
+            ],
+            "object_refs": [
+                "InventoryLot",
+                "Material",
+                "DisposalOrder",
+                "LegalEntity"
+            ],
+            "rule_refs": [
+                "PSCM-INV-003"
+            ],
+            "rule_bindings": [],
+            "artifacts": [],
+            "output_contracts": [],
+            "emitted_events": [
+                {
+                    "id": "emit-workflow-impairment-disposal:step:1-PSCM_DISPOSAL_PACKAGE_CREATED",
+                    "event_id": "PSCM_DISPOSAL_PACKAGE_CREATED",
+                    "source_step_id": "workflow-impairment-disposal:step:1",
+                    "when": "success"
+                }
+            ],
+            "orchestration": {
+                "strategy": "event_driven",
+                "agent_orchestrated": true,
+                "on_failure": "escalate",
+                "max_concurrency": 4
+            },
+            "layout": {
+                "direction": "LR",
+                "auto_generated": false,
+                "positions": {
+                    "step:workflow-impairment-disposal:step:1": {
+                        "x": 0,
+                        "y": 0
+                    },
+                    "step:workflow-impairment-disposal:step:2": {
+                        "x": 260,
+                        "y": 0
+                    }
+                },
+                "viewport": {
+                    "x": 40,
+                    "y": 80,
+                    "zoom": 0.8
+                }
+            },
+            "extensions": {
+                "package_id": "power-scm",
+                "release": "1.0.0",
+                "scenario": "减值处置支线"
+            }
+        },
+        {
+            "id": "workflow-emergency-release",
+            "name": "Emergency Lock Release",
+            "nameZh": "应急解除支线",
+            "description": "应急解除或方案变更后，人工发起释放已锁定库存。",
+            "schema_version": "2.0.0",
+            "workflow_version": "1.0.0",
+            "actor": [
+                "Agent"
+            ],
+            "trigger": [
+                "MANUAL"
+            ],
+            "actions": [
+                {
+                    "order": "1",
+                    "name": "action-release-inventory",
+                    "description": "释放应急锁定批次，恢复正常业务占用。",
+                    "type": "tool",
+                    "condition": ""
+                }
+            ],
+            "triggered_event": [
+                "PSCM_INVENTORY_RELEASED"
+            ],
+            "roles": [
+                {
+                    "id": "role-materials-officer",
+                    "type": "Human",
+                    "role": "物资专责",
+                    "display_name": "物资专责"
+                },
+                {
+                    "id": "role-supply-agent",
+                    "type": "Agent",
+                    "role": "保供智能体",
+                    "display_name": "保供智能体"
+                }
+            ],
+            "triggers": [
+                {
+                    "id": "trg-workflow-emergency-release-manual",
+                    "kind": "manual"
+                }
+            ],
+            "entry_step_ids": [
+                "workflow-emergency-release:step:1"
+            ],
+            "steps": [
+                {
+                    "id": "workflow-emergency-release:step:1",
+                    "order": 1,
+                    "name": "释放库存",
+                    "description": "释放应急锁定批次，恢复正常业务占用。",
+                    "node_kind": "action",
+                    "action_id": "action-release-inventory",
+                    "execution": {
+                        "mode": "hybrid",
+                        "autonomy_level": "A2",
+                        "reversible": true,
+                        "human_gate": {
+                            "mode": "approve"
+                        }
+                    },
+                    "emitted_event_ids": [
+                        "PSCM_INVENTORY_RELEASED"
+                    ],
+                    "next": []
+                }
+            ],
+            "object_refs": [
+                "InventoryLot",
+                "Warehouse"
+            ],
+            "rule_refs": [],
+            "rule_bindings": [],
+            "artifacts": [],
+            "output_contracts": [],
+            "emitted_events": [
+                {
+                    "id": "emit-workflow-emergency-release:step:1-PSCM_INVENTORY_RELEASED",
+                    "event_id": "PSCM_INVENTORY_RELEASED",
+                    "source_step_id": "workflow-emergency-release:step:1",
+                    "when": "success"
+                }
+            ],
+            "orchestration": {
+                "strategy": "event_driven",
+                "agent_orchestrated": true,
+                "on_failure": "escalate",
+                "max_concurrency": 4
+            },
+            "layout": {
+                "direction": "LR",
+                "auto_generated": false,
+                "positions": {
+                    "step:workflow-emergency-release:step:1": {
+                        "x": 0,
+                        "y": 0
+                    }
+                },
+                "viewport": {
+                    "x": 40,
+                    "y": 80,
+                    "zoom": 0.8
+                }
+            },
+            "extensions": {
+                "package_id": "power-scm",
+                "release": "1.0.0",
+                "scenario": "应急解除支线"
+            }
+        }
+    ]
+}

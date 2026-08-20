@@ -29,7 +29,7 @@ env:
   # Pinned to .nvmrc — the native sqlite binding is compiled per Node
   # major. Any bump here also requires regenerating better-sqlite3.
   NODE_VERSION: "26.5.0"
-  PNPM_VERSION: "11.3.0"
+  PNPM_VERSION: "11.21.0"
   # Tests assume the mock provider so no real API keys are needed.
   LLM_DEFAULT_PROVIDER: mock
   LLM_DEFAULT_MODEL: mock-model-v1

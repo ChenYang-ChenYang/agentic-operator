@@ -1386,6 +1386,60 @@ export function registerAgent(
         const ord = i + 1;
         const actionKey =
           (action as { result_key?: string }).result_key ?? action.name;
+
+        // §G4 pause/resume — before each action, a memoized DB read decides
+        // whether this run parks. The decision derives ONLY from the read
+        // inside step.run (never ambient state), so it is identical on every
+        // Inngest replay; the park itself is a durable waitForEvent keyed on
+        // this runId. POST /v1/runs/:id/pause flips runs.status to "paused";
+        // POST /v1/runs/:id/resume emits `${slug}/run.resume` {runId,subject}.
+        const pausedAtGate = await step.run(`pause-check-${ord}`, async () => {
+          const statusRow = getDb()
+            .select({ status: runs.status })
+            .from(runs)
+            .where(eq(runs.id, runId))
+            .all()[0];
+          return statusRow?.status === "paused";
+        });
+        if (pausedAtGate) {
+          await writeRunLog(logCtx, "INFO", "run.pause", {
+            ord,
+            name: action.name,
+          });
+          const resumeSignal = await step.waitForEvent(`pause-wait-${ord}`, {
+            event: tenantEventName(
+              tenantSlug,
+              "run.resume",
+              eventAdapter,
+            ) as `${string}/${string}`,
+            if: `async.data.runId == "${runId}"`,
+            timeout: "7d",
+          });
+          if (!resumeSignal) {
+            // 7d without a resume: fail closed instead of silently resuming.
+            await failRun(
+              runId,
+              `run paused before action ${ord} (${action.name}) and no resume arrived within 7d`,
+              startedAt,
+            );
+            throw new Error("pause timeout");
+          }
+          // The resume route already flips paused→running before this wait
+          // wakes; the guarded update below makes the engine converge when
+          // the row was paused out-of-band (tests, direct DB edits).
+          await step.run(`pause-resume-${ord}`, async () => {
+            getDb()
+              .update(runs)
+              .set({ status: "running" })
+              .where(and(eq(runs.id, runId), eq(runs.status, "paused")))
+              .run();
+            return true;
+          });
+          await writeRunLog(logCtx, "INFO", "run.resume", {
+            ord,
+            name: action.name,
+          });
+        }
         const availableStepBindings = resolveAvailableStepOutputBindings(
           inputBindingState,
           factoryInputBindings,
@@ -3503,10 +3557,29 @@ export function registerAgent(
         return { emittedEventId, emittedEvents, emittedRecordRows, persistedAtMs };
       });
 
+      // §G2 suppressDownstream (eval): when the TRIGGER event payload carries
+      // __eval_suppress_downstream === true, all persistence above stays
+      // (ledger, events, event_store, run_emitted_events rows), but the
+      // step.sendEvent fan-out below is skipped so downstream subscribers
+      // never fire. The decision derives ONLY from event.data, so it is
+      // identical on every Inngest replay.
+      const suppressDownstreamForEval =
+        data.__eval_suppress_downstream === true ||
+        rehydratedData.__eval_suppress_downstream === true;
+      if (suppressDownstreamForEval && finalize.emittedEvents.length > 0) {
+        await writeRunLog(logCtx, "INFO", "emissions suppressed (eval)", {
+          suppressed: finalize.emittedEvents.map(
+            (emitted: { name: string }) => emitted.name,
+          ),
+        });
+      }
+
       // The actual inngest.send must be outside step.run (step results are
       // memoized; sending an event inside a step would re-send on replay).
       // We use step.sendEvent which is Inngest's idempotent send primitive.
-      for (const persisted of finalize.emittedEvents) {
+      for (const persisted of suppressDownstreamForEval
+        ? []
+        : finalize.emittedEvents) {
         const item = outbound[persisted.index];
         if (!item) continue;
         const emittedName = persisted.name;

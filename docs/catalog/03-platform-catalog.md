@@ -505,7 +505,7 @@ The portal uses `@tanstack/react-query` for all `/v1/*` data fetching. Query key
 Turbo is the orchestrator; each workspace owns its own `tsc --noEmit`, lint, and test scripts. `turbo.json` declares pipeline dependencies (`build` depends on `^build`; `test` depends on `^build`; `dev` is non-cacheable + persistent).
 
 ### PF-BUILD-01 — `pnpm install` + native modules ✅
-pnpm 11 with `package.json#packageManager` pinned at `pnpm@11.3.0`. The `pnpm-workspace.yaml#allowBuilds` allow-list lets `better-sqlite3`, `esbuild`, `protobufjs`, `sharp`, and `unrs-resolver` run their postinstall scripts. Without that allow-list, pnpm 11 halts the install with `ERR_PNPM_IGNORED_BUILDS`. The native `better-sqlite3` binding is compiled per Node major — `.nvmrc` pins Node 26.5.0; mismatches surface as `ERR_DLOPEN_FAILED` at boot. Bumping the Node major requires a dedicated PR that regenerates the binding.
+pnpm 11 with `package.json#packageManager` pinned at `pnpm@11.21.0`. The `pnpm-workspace.yaml#allowBuilds` allow-list lets `better-sqlite3`, `esbuild`, `protobufjs`, `sharp`, and `unrs-resolver` run their postinstall scripts. Without that allow-list, pnpm 11 halts the install with `ERR_PNPM_IGNORED_BUILDS`. The native `better-sqlite3` binding is compiled per Node major — `.nvmrc` pins Node 26.5.0; mismatches surface as `ERR_DLOPEN_FAILED` at boot. Bumping the Node major requires a dedicated PR that regenerates the binding.
 
 ### PF-BUILD-02 — `pnpm dev` orchestration ✅
 Root script. Predev hook kills any process squatting on `3599,3501,8288,8289,50052,50053` (Inngest's internal gRPC ports plus the web + api + broker ports), then `concurrently` boots three children labelled `web,api,inngest`. The api dev script (`apps/api/package.json:7`) is `tsx watch --env-file=../../.env --env-file=.env.local src/server.ts` — both env files load (later wins). The Inngest CLI is fetched via `npx -y inngest-cli@latest dev -u http://localhost:3501/inngest`.
@@ -553,7 +553,7 @@ RAAS historical fixtures + English ontology overlay (idempotent). Run after `db:
 Two GitHub Actions workflows under `.github/workflows/`. Branch protection: only the meta `ci` job is required — it's green only when every leaf below is green, so adding a new leaf automatically tightens protection once it's listed in `needs:`.
 
 ### PF-CI-01 — `ci.yml` ✅
-Triggers: push to `main`, PR targeting `main`, manual dispatch. Concurrency group `ci-${{ github.ref }}` with `cancel-in-progress: true` so force-pushes to a PR branch don't burn CI minutes. Env pins: `NODE_VERSION=26.5.0`, `PNPM_VERSION=11.1.2`, `LLM_DEFAULT_PROVIDER=mock`, `LLM_DEFAULT_MODEL=mock-model-v1`, `NODE_ENV=test`. Jobs (DAG):
+Triggers: push to `main`, PR targeting `main`, manual dispatch. Concurrency group `ci-${{ github.ref }}` with `cancel-in-progress: true` so force-pushes to a PR branch don't burn CI minutes. Env pins: `NODE_VERSION=26.5.0`, `PNPM_VERSION=11.21.0`, `LLM_DEFAULT_PROVIDER=mock`, `LLM_DEFAULT_MODEL=mock-model-v1`, `NODE_ENV=test`. Jobs (DAG):
 - `install` — cache pnpm store; `pnpm install --frozen-lockfile`.
 - `typecheck` — `pnpm -r typecheck`.
 - `lint` — `pnpm -r lint`.

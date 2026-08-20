@@ -60,6 +60,7 @@ export * as gohire from "./gohire";
 export * as fs from "./fs";
 export * as http from "./http";
 export * as meta from "./meta";
+export * as metaerp from "./metaerp";
 export * as search from "./search";
 export * as ontology from "./ontology";
 export * as records from "./records";
@@ -69,6 +70,8 @@ export * as objectStore from "./object-store";
 export * as postgres from "./postgres";
 export * as crypto from "./crypto";
 export * as document from "./document";
+export * as browser from "./browser";
+export * as comms from "./comms";
 
 // DI seam: apps/api injects a resolver at boot so DB-backed integration
 // credentials (configured in Settings → Integrations) reach the GoHire tool

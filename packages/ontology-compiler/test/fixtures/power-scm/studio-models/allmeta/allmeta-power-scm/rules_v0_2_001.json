@@ -1,0 +1,569 @@
+{
+  "metadata": {
+    "version_number": 1,
+    "created_at": "2026-08-19T00:00:00.000Z",
+    "source": "import-json",
+    "parent_version": null,
+    "ai_involved": false,
+    "created_by": "power-scm-builder",
+    "message": "power-scm 1.0.0 authored package",
+    "project_name": "电力供应链数字孪生 (power-scm)",
+    "document_type": "本体定义 (Ontology Schema)",
+    "version": "0.1",
+    "last_updated": "2026-08-19",
+    "description": "电力/央国企供应链 actionable ontology：风暴72小时 / 一眼穿透 / 拦下一张采购单。"
+  },
+  "payload": [
+    {
+      "id": "PSCM-EMG-001",
+      "name": "台风影响与物资需求推演",
+      "category": "应急保供",
+      "belongsToClient": "通用",
+      "belongsToDepartment": "物资部",
+      "description": "台风预警发布后，按预测路径与供电网格求交得到受影响资产清单，再按同级台风历史故障率推演各类抢修物资需求量。",
+      "executor": "Agent",
+      "priority": 80,
+      "complexity": "complex",
+      "kind": "derivation",
+      "knowledgeOrigin": "domain_expert",
+      "confidence": 0.95,
+      "provenance": "human",
+      "reviewState": "accepted",
+      "scope": {
+        "objectTypeIds": [
+          "ExternalEvent",
+          "GridRegion",
+          "GridAsset",
+          "Material"
+        ]
+      },
+      "machine_expression": {
+        "language": "natural",
+        "source": "受影响资产 = 台风路径缓冲区 ∩ 网格内资产；物资需求量 = Σ(资产数 × 同级台风历史故障率 × 单台资产物资定额)",
+        "version": "power-scm-1.0.0",
+        "bindings": [
+          {
+            "name": "subject",
+            "object_id": "ExternalEvent",
+            "required": true
+          },
+          {
+            "name": "ref_gridregion",
+            "object_id": "GridRegion",
+            "required": false
+          },
+          {
+            "name": "ref_gridasset",
+            "object_id": "GridAsset",
+            "required": false
+          },
+          {
+            "name": "ref_material",
+            "object_id": "Material",
+            "required": false
+          }
+        ]
+      },
+      "outcome": {
+        "on_pass": "calculate",
+        "on_fail": "notify",
+        "emit_event": "PSCM_STOCK_GAP_IDENTIFIED",
+        "requires_explanation": true
+      }
+    },
+    {
+      "id": "PSCM-EMG-002",
+      "name": "库存缺口判定",
+      "category": "应急保供",
+      "belongsToClient": "通用",
+      "belongsToDepartment": "物资部",
+      "description": "预测物资需求量超过区域内可用库存（扣除预留与锁定）即判定缺口，缺口物资必须给出补足方案后才能创建调拨或紧急采购。",
+      "executor": "Agent",
+      "priority": 90,
+      "complexity": "medium",
+      "kind": "validation",
+      "knowledgeOrigin": "domain_expert",
+      "confidence": 0.95,
+      "provenance": "human",
+      "reviewState": "accepted",
+      "scope": {
+        "objectTypeIds": [
+          "InventoryLot",
+          "Material",
+          "RepairWorkOrder"
+        ]
+      },
+      "machine_expression": {
+        "language": "jsonlogic",
+        "source": "{\"<\": [{\"var\": \"available_qty\"}, {\"var\": \"forecast_qty\"}]}",
+        "version": "power-scm-1.0.0",
+        "bindings": [
+          {
+            "name": "subject",
+            "object_id": "InventoryLot",
+            "required": true
+          },
+          {
+            "name": "ref_material",
+            "object_id": "Material",
+            "required": false
+          },
+          {
+            "name": "ref_repairworkorder",
+            "object_id": "RepairWorkOrder",
+            "required": false
+          }
+        ]
+      },
+      "outcome": {
+        "on_pass": "route",
+        "on_fail": "no_op",
+        "message": "可用库存不足以覆盖预测需求，存在缺口。",
+        "route_to": "materials_director",
+        "requires_explanation": true
+      }
+    },
+    {
+      "id": "PSCM-EMG-003",
+      "name": "应急供应空窗预警",
+      "category": "应急保供",
+      "belongsToClient": "通用",
+      "belongsToDepartment": "物资部",
+      "description": "若调拨在途时长加装卸时间晚于台风登陆前 24 小时，则该区域将出现物资空窗，必须升级为紧急采购或跨单位借调。",
+      "executor": "Agent",
+      "priority": 95,
+      "complexity": "medium",
+      "kind": "temporal",
+      "knowledgeOrigin": "domain_expert",
+      "confidence": 0.95,
+      "provenance": "human",
+      "reviewState": "accepted",
+      "scope": {
+        "objectTypeIds": [
+          "StockTransferOrder",
+          "ExternalEvent",
+          "Warehouse"
+        ]
+      },
+      "machine_expression": {
+        "language": "natural",
+        "source": "跨仓调拨必须在台风登陆前 24 小时送达：若 调拨ETA小时 + 装卸缓冲(4h) 晚于该时限，即构成供应空窗，违反本义务。",
+        "version": "power-scm-1.0.0",
+        "bindings": [
+          {
+            "name": "subject",
+            "object_id": "StockTransferOrder",
+            "required": true
+          },
+          {
+            "name": "ref_externalevent",
+            "object_id": "ExternalEvent",
+            "required": false
+          },
+          {
+            "name": "ref_warehouse",
+            "object_id": "Warehouse",
+            "required": false
+          }
+        ]
+      },
+      "outcome": {
+        "on_pass": "continue",
+        "on_fail": "require_human_review",
+        "message": "调拨时效无法赶在台风登陆前完成，存在供应空窗。",
+        "requires_explanation": true
+      }
+    },
+    {
+      "id": "PSCM-EMG-004",
+      "name": "应急框架协议合规",
+      "category": "应急保供",
+      "belongsToClient": "通用",
+      "belongsToDepartment": "物资部",
+      "description": "紧急采购订单必须挂靠在效且含应急供货条款的框架协议；协议过期或无应急条款则不得下达紧急订单——「风暴 72 小时」紧急下单的合规前提。",
+      "executor": "Agent",
+      "priority": 95,
+      "complexity": "medium",
+      "kind": "constraint",
+      "knowledgeOrigin": "domain_expert",
+      "confidence": 0.95,
+      "provenance": "human",
+      "reviewState": "accepted",
+      "scope": {
+        "objectTypeIds": [
+          "FrameworkAgreement",
+          "PurchaseOrder"
+        ]
+      },
+      "machine_expression": {
+        "language": "natural",
+        "source": "紧急采购必须满足：协议.valid_from ≤ 今日 ≤ 协议.valid_to 且 协议.emergency_clause == true；否则违反本约束。",
+        "version": "power-scm-1.0.0",
+        "bindings": [
+          {
+            "name": "subject",
+            "object_id": "FrameworkAgreement",
+            "required": true
+          },
+          {
+            "name": "ref_purchaseorder",
+            "object_id": "PurchaseOrder",
+            "required": false
+          }
+        ]
+      },
+      "outcome": {
+        "on_pass": "continue",
+        "on_fail": "block",
+        "message": "所选框架协议已失效或不含应急供货条款，禁止下达紧急采购订单。",
+        "requires_explanation": true
+      }
+    },
+    {
+      "id": "PSCM-RSK-001",
+      "name": "供应商履约风险评分",
+      "category": "供应商风险",
+      "belongsToClient": "通用",
+      "belongsToDepartment": "物资部",
+      "description": "综合近 6 个月交付准时率趋势、质量抽检结论与司法失信事件计算履约风险等级；高风险供应商的全部在执行合同进入穿透分析。",
+      "executor": "Agent",
+      "priority": 80,
+      "complexity": "complex",
+      "kind": "derivation",
+      "knowledgeOrigin": "domain_expert",
+      "confidence": 0.95,
+      "provenance": "human",
+      "reviewState": "accepted",
+      "scope": {
+        "objectTypeIds": [
+          "Supplier",
+          "DeliverySchedule",
+          "InspectionReport",
+          "ExternalEvent"
+        ]
+      },
+      "machine_expression": {
+        "language": "natural",
+        "source": "风险等级 = f(准时率下滑幅度, 抽检不合格次数, 是否失信被执行)；准时率<80% 或 失信 → high。",
+        "version": "power-scm-1.0.0",
+        "bindings": [
+          {
+            "name": "subject",
+            "object_id": "Supplier",
+            "required": true
+          },
+          {
+            "name": "ref_deliveryschedule",
+            "object_id": "DeliverySchedule",
+            "required": false
+          },
+          {
+            "name": "ref_inspectionreport",
+            "object_id": "InspectionReport",
+            "required": false
+          },
+          {
+            "name": "ref_externalevent",
+            "object_id": "ExternalEvent",
+            "required": false
+          }
+        ]
+      },
+      "outcome": {
+        "on_pass": "calculate",
+        "on_fail": "notify",
+        "emit_event": "PSCM_SUPPLIER_RISK_FLAGGED",
+        "requires_explanation": true
+      }
+    },
+    {
+      "id": "PSCM-RSK-002",
+      "name": "关联方识别（假备选拦截）",
+      "category": "供应商风险",
+      "belongsToClient": "通用",
+      "belongsToDepartment": "审计部",
+      "description": "替代供应商若与风险供应商共享同一实控人，即为关联方“假备选”，不得作为替代来源接收询价，并同步推送审计部。",
+      "executor": "Agent",
+      "priority": 100,
+      "complexity": "medium",
+      "kind": "constraint",
+      "knowledgeOrigin": "domain_expert",
+      "confidence": 0.95,
+      "provenance": "human",
+      "reviewState": "accepted",
+      "scope": {
+        "objectTypeIds": [
+          "Supplier",
+          "UltimateController",
+          "Rfq"
+        ]
+      },
+      "machine_expression": {
+        "language": "natural",
+        "source": "替代询价对象不得与风险供应商同属一个实控人：若 候选供应商.controller_id == 风险供应商.controller_id，即构成关联方假备选，违反本约束。",
+        "version": "power-scm-1.0.0",
+        "bindings": [
+          {
+            "name": "subject",
+            "object_id": "Supplier",
+            "required": true
+          },
+          {
+            "name": "ref_ultimatecontroller",
+            "object_id": "UltimateController",
+            "required": false
+          },
+          {
+            "name": "ref_rfq",
+            "object_id": "Rfq",
+            "required": false
+          }
+        ]
+      },
+      "outcome": {
+        "on_pass": "continue",
+        "on_fail": "block",
+        "message": "候选供应商与风险供应商同一实控人，属关联方假备选，禁止替代询价。",
+        "requires_explanation": true
+      }
+    },
+    {
+      "id": "PSCM-RSK-003",
+      "name": "交付延误推演",
+      "category": "供应商风险",
+      "belongsToClient": "通用",
+      "belongsToDepartment": "项目管理部",
+      "description": "按供应商当前交付曲线外推未来节点完成时间，延误传导至项目里程碑；侵蚀缓冲天数即置为 at_risk 并通知项目经理。",
+      "executor": "Agent",
+      "priority": 80,
+      "complexity": "medium",
+      "kind": "temporal",
+      "knowledgeOrigin": "domain_expert",
+      "confidence": 0.95,
+      "provenance": "human",
+      "reviewState": "accepted",
+      "scope": {
+        "objectTypeIds": [
+          "DeliverySchedule",
+          "Milestone",
+          "Project"
+        ]
+      },
+      "machine_expression": {
+        "language": "natural",
+        "source": "预计延误天数 = 外推交付日 - 节点计划日；若 预计延误 > 里程碑.slack_days，则里程碑 at_risk。",
+        "version": "power-scm-1.0.0",
+        "bindings": [
+          {
+            "name": "subject",
+            "object_id": "DeliverySchedule",
+            "required": true
+          },
+          {
+            "name": "ref_milestone",
+            "object_id": "Milestone",
+            "required": false
+          },
+          {
+            "name": "ref_project",
+            "object_id": "Project",
+            "required": false
+          }
+        ]
+      },
+      "outcome": {
+        "on_pass": "continue",
+        "on_fail": "notify",
+        "message": "交付延误将侵蚀项目里程碑缓冲。",
+        "requires_explanation": true
+      }
+    },
+    {
+      "id": "PSCM-INV-001",
+      "name": "呆滞库存判定",
+      "category": "两金压降",
+      "belongsToClient": "通用",
+      "belongsToDepartment": "物资部",
+      "description": "库龄超过 720 天且无预留、无锁定的可用批次判定为呆滞库存，纳入盘活池。",
+      "executor": "Agent",
+      "priority": 80,
+      "complexity": "medium",
+      "kind": "validation",
+      "knowledgeOrigin": "domain_expert",
+      "confidence": 0.95,
+      "provenance": "human",
+      "reviewState": "accepted",
+      "scope": {
+        "objectTypeIds": [
+          "InventoryLot"
+        ]
+      },
+      "machine_expression": {
+        "language": "jsonlogic",
+        "source": "{\"and\": [{\">\": [{\"var\": \"age_days\"}, 720]}, {\"==\": [{\"var\": \"status\"}, \"available\"]}]}",
+        "version": "power-scm-1.0.0",
+        "bindings": [
+          {
+            "name": "subject",
+            "object_id": "InventoryLot",
+            "required": true
+          }
+        ]
+      },
+      "outcome": {
+        "on_pass": "route",
+        "on_fail": "no_op",
+        "route_to": "revitalization_pool",
+        "requires_explanation": false
+      }
+    },
+    {
+      "id": "PSCM-INV-002",
+      "name": "同物匹配拦截",
+      "category": "两金压降",
+      "belongsToClient": "通用",
+      "belongsToDepartment": "物资部",
+      "description": "新提报或已批待执行的采购需求，若与集团任一单位的呆滞库存同物（同 equivalent_group 语义等效组，含“同物不同码”），必须暂停采购、优先跨单位调剂。",
+      "executor": "Hybrid",
+      "priority": 100,
+      "complexity": "complex",
+      "kind": "constraint",
+      "knowledgeOrigin": "domain_expert",
+      "confidence": 0.95,
+      "provenance": "human",
+      "reviewState": "accepted",
+      "scope": {
+        "objectTypeIds": [
+          "PurchaseRequisition",
+          "Material",
+          "InventoryLot"
+        ]
+      },
+      "machine_expression": {
+        "language": "natural",
+        "source": "采购需求不得与集团呆滞库存同物：若 存在呆滞批次 b 满足 equivalent_group(需求.物资) == equivalent_group(b.物资)（含同物不同码）且 b.qty_on_hand ≥ 需求量×50%，则该需求违反直接采购约束，须拦截并转跨单位调剂。",
+        "version": "power-scm-1.0.0",
+        "bindings": [
+          {
+            "name": "subject",
+            "object_id": "PurchaseRequisition",
+            "required": true
+          },
+          {
+            "name": "ref_material",
+            "object_id": "Material",
+            "required": false
+          },
+          {
+            "name": "ref_inventorylot",
+            "object_id": "InventoryLot",
+            "required": false
+          }
+        ]
+      },
+      "outcome": {
+        "on_pass": "continue",
+        "on_fail": "block",
+        "message": "该需求与集团呆滞库存同物，已拦截：请优先跨单位调剂。",
+        "emit_event": "PSCM_DORMANT_MATCH_FOUND",
+        "requires_explanation": true
+      }
+    },
+    {
+      "id": "PSCM-INV-003",
+      "name": "减值临期预警",
+      "category": "两金压降",
+      "belongsToClient": "通用",
+      "belongsToDepartment": "财务部",
+      "description": "剩余保质期不足 180 天或技术状态已淘汰的库存批次，须在减值计提前完成处置决策（调剂/竞价/退回/报废）。",
+      "executor": "Agent",
+      "priority": 80,
+      "complexity": "medium",
+      "kind": "temporal",
+      "knowledgeOrigin": "domain_expert",
+      "confidence": 0.95,
+      "provenance": "human",
+      "reviewState": "accepted",
+      "scope": {
+        "objectTypeIds": [
+          "InventoryLot",
+          "Material"
+        ]
+      },
+      "machine_expression": {
+        "language": "natural",
+        "source": "若 剩余保质期天数 < 180 或 物资.tech_status == obsolete，则触发减值预警。",
+        "version": "power-scm-1.0.0",
+        "bindings": [
+          {
+            "name": "subject",
+            "object_id": "InventoryLot",
+            "required": true
+          },
+          {
+            "name": "ref_material",
+            "object_id": "Material",
+            "required": false
+          }
+        ]
+      },
+      "outcome": {
+        "on_pass": "continue",
+        "on_fail": "notify",
+        "message": "批次面临减值风险，须在计提前完成处置决策。",
+        "emit_event": "PSCM_IMPAIRMENT_WARNING_RAISED",
+        "requires_explanation": true
+      }
+    },
+    {
+      "id": "PSCM-INV-004",
+      "name": "两金压降指标核算",
+      "category": "两金压降",
+      "belongsToClient": "通用",
+      "belongsToDepartment": "财务部",
+      "description": "按法人单位汇总存货占用、呆滞金额与本期盘活金额，计算两金压降完成度，向集团看板供数。",
+      "executor": "Agent",
+      "priority": 80,
+      "complexity": "medium",
+      "kind": "derivation",
+      "knowledgeOrigin": "domain_expert",
+      "confidence": 0.95,
+      "provenance": "human",
+      "reviewState": "accepted",
+      "scope": {
+        "objectTypeIds": [
+          "InventoryLot",
+          "LegalEntity",
+          "AllocationOrder"
+        ]
+      },
+      "machine_expression": {
+        "language": "natural",
+        "source": "压降完成度 = (期初呆滞金额 - 期末呆滞金额 + 盘活金额) / 年度压降目标。",
+        "version": "power-scm-1.0.0",
+        "bindings": [
+          {
+            "name": "subject",
+            "object_id": "InventoryLot",
+            "required": true
+          },
+          {
+            "name": "ref_legalentity",
+            "object_id": "LegalEntity",
+            "required": false
+          },
+          {
+            "name": "ref_allocationorder",
+            "object_id": "AllocationOrder",
+            "required": false
+          }
+        ]
+      },
+      "outcome": {
+        "on_pass": "calculate",
+        "on_fail": "no_op",
+        "requires_explanation": false
+      }
+    }
+  ]
+}

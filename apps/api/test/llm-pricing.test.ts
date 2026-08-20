@@ -176,7 +176,7 @@ describe("model catalog pricing", () => {
   });
 
   it("selects current general-purpose defaults while retaining specialist models", () => {
-    expect(defaultModelFor("openrouter")).toBe("openai/gpt-oss-120b");
+    expect(defaultModelFor("openrouter")).toBe("openai/gpt-5.6-sol");
     expect(defaultModelFor("moonshot")).toBe("kimi-k3");
     expect(defaultModelFor("zai")).toBe("glm-5.2");
     expect(defaultModelFor("deepseek")).toBe("deepseek-v4-pro");

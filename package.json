@@ -6,7 +6,7 @@
   "engines": {
     "node": "26.5.0"
   },
-  "packageManager": "pnpm@11.3.0",
+  "packageManager": "pnpm@11.21.0",
   "scripts": {
     "ensure:node": "node scripts/ensure-node-version.mjs",
     "ensure:native": "pnpm run ensure:node && node scripts/ensure-native-modules.mjs",
@@ -30,6 +30,7 @@
     "validate:factory-external-sandbox": "node deploy/factory-sandbox/validate-external-sandbox.mjs",
     "init:factory-external-sandbox-secrets": "node deploy/factory-sandbox/init-secrets.mjs",
     "build:agents-generation-ontology": "node scripts/build-agents-generation-ontology.mjs",
+    "ontology:compile": "node scripts/ontology-compile.mjs",
     "preview:agents-generation-ontology-release": "node scripts/allmeta-full-domain-release-client.mjs",
     "test:agents-generation-ontology-release": "node --test scripts/allmeta-full-domain-release-client.test.mjs",
     "watch:factory-production-images": "pnpm --filter @agentic/api run watch:factory-production-images",

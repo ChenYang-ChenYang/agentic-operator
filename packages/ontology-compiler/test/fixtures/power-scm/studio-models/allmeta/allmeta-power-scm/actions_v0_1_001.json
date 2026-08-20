@@ -1,0 +1,2047 @@
+[
+    {
+        "id": "action-forecast-typhoon-impact",
+        "name": "台风影响与物资需求推演",
+        "description": "融合台风路径、网格资产与历史故障率，推演受影响资产与抢修物资需求，比对区域可用库存并识别缺口。",
+        "object_type": "action",
+        "category": "应急保供",
+        "actor": [
+            "Agent"
+        ],
+        "trigger": [
+            "PSCM_TYPHOON_ALERT_RECEIVED"
+        ],
+        "target_objects": [
+            "ExternalEvent",
+            "GridRegion",
+            "GridAsset",
+            "Material",
+            "InventoryLot"
+        ],
+        "inputs": [
+            {
+                "name": "typhoon_event",
+                "type": "application/json",
+                "description": "台风预警事件（含路径帧）",
+                "required": true,
+                "source_object": "ExternalEvent.payload"
+            }
+        ],
+        "outputs": [
+            {
+                "name": "gap_report",
+                "type": "application/json",
+                "description": "缺口报告：受影响资产、物资需求、库存缺口与建议方案",
+                "required": true,
+                "source_object": "Material"
+            }
+        ],
+        "action_steps": [
+            {
+                "id": "action-forecast-typhoon-impact:step:1",
+                "order": "1",
+                "name": "路径求交",
+                "description": "台风路径缓冲区与供电网格求交，得到受影响资产清单。",
+                "object_type": "logic"
+            },
+            {
+                "id": "action-forecast-typhoon-impact:step:2",
+                "order": "2",
+                "name": "需求推演",
+                "description": "按同级台风历史故障率推演各类物资需求量。",
+                "object_type": "logic"
+            },
+            {
+                "id": "action-forecast-typhoon-impact:step:3",
+                "order": "3",
+                "name": "缺口比对",
+                "description": "扣除预留与锁定后比对区域可用库存，输出缺口与方案选项。",
+                "object_type": "logic"
+            }
+        ],
+        "rule_bindings": [
+            {
+                "id": "ARB-PSCM-EMG-001-action-forecast-typhoon-impact-validation",
+                "rule_id": "PSCM-EMG-001",
+                "target": {
+                    "type": "action",
+                    "id": "action-forecast-typhoon-impact"
+                },
+                "phase": "validation",
+                "enforcement": "mandatory",
+                "failure_policy": "warn",
+                "provenance": "human"
+            },
+            {
+                "id": "ARB-PSCM-EMG-002-action-forecast-typhoon-impact-postcondition",
+                "rule_id": "PSCM-EMG-002",
+                "target": {
+                    "type": "action",
+                    "id": "action-forecast-typhoon-impact"
+                },
+                "phase": "postcondition",
+                "enforcement": "optional",
+                "failure_policy": "warn",
+                "provenance": "human"
+            }
+        ],
+        "side_effects": {
+            "data_changes": [],
+            "notifications": [],
+            "external_calls": [
+                {
+                    "system": "Meta ERP",
+                    "endpoint": "/metaerp/openapi/v1/queryGridAssets",
+                    "method": "POST",
+                    "description": "按网格拉取资产台账"
+                },
+                {
+                    "system": "Meta ERP",
+                    "endpoint": "/metaerp/openapi/v1/queryInventoryLots",
+                    "method": "POST",
+                    "description": "按区域拉取实时库存"
+                },
+                {
+                    "system": "Meta ERP",
+                    "endpoint": "/metaerp/openapi/v1/queryRepairHistory",
+                    "method": "POST",
+                    "description": "拉取历史台风抢修工单用于故障率"
+                }
+            ]
+        },
+        "triggered_event": [
+            "PSCM_STOCK_GAP_IDENTIFIED"
+        ],
+        "implementation": {
+            "kind": "prompt",
+            "executable": false,
+            "model_tier": "reasoning",
+            "prompt_template_id": "power-scm-action-forecast-typhoon-impact"
+        },
+        "provenance": "human",
+        "extensions": {
+            "package_id": "power-scm",
+            "release": "1.0.0",
+            "reads": []
+        }
+    },
+    {
+        "id": "action-scan-supplier-risk",
+        "name": "供应商风险扫描与图谱穿透",
+        "description": "司法失信或检验不合格触发：沿 供应商→合同→订单→交付节点→项目 穿透影响面，评分风险，识别共享实控人的关联备选。",
+        "object_type": "action",
+        "category": "供应商风险",
+        "actor": [
+            "Agent"
+        ],
+        "trigger": [
+            "PSCM_LEGAL_DISHONEST_RECEIVED",
+            "PSCM_INSPECTION_FAILED"
+        ],
+        "target_objects": [
+            "Supplier",
+            "UltimateController",
+            "Contract",
+            "PurchaseOrder",
+            "DeliverySchedule",
+            "Project",
+            "Milestone"
+        ],
+        "inputs": [
+            {
+                "name": "risk_event",
+                "type": "application/json",
+                "description": "司法/质量风险事件",
+                "required": true,
+                "source_object": "ExternalEvent.supplier_id"
+            }
+        ],
+        "outputs": [
+            {
+                "name": "exposure_report",
+                "type": "application/json",
+                "description": "穿透报告：受累合同/订单/项目、风险评分、关联方名单与处置选项",
+                "required": true,
+                "source_object": "Supplier"
+            }
+        ],
+        "action_steps": [
+            {
+                "id": "action-scan-supplier-risk:step:1",
+                "order": "1",
+                "name": "图谱穿透",
+                "description": "从风险供应商出发做多跳遍历，点亮受累合同、订单、项目。",
+                "object_type": "logic"
+            },
+            {
+                "id": "action-scan-supplier-risk:step:2",
+                "order": "2",
+                "name": "风险评分",
+                "description": "按准时率趋势、抽检结论与司法事件计算风险等级。",
+                "object_type": "logic"
+            },
+            {
+                "id": "action-scan-supplier-risk:step:3",
+                "order": "3",
+                "name": "关联方识别",
+                "description": "比对备选供应商实控人，标记假备选。",
+                "object_type": "logic"
+            }
+        ],
+        "rule_bindings": [
+            {
+                "id": "ARB-PSCM-RSK-001-action-scan-supplier-risk-validation",
+                "rule_id": "PSCM-RSK-001",
+                "target": {
+                    "type": "action",
+                    "id": "action-scan-supplier-risk"
+                },
+                "phase": "validation",
+                "enforcement": "mandatory",
+                "failure_policy": "warn",
+                "provenance": "human"
+            },
+            {
+                "id": "ARB-PSCM-RSK-003-action-scan-supplier-risk-postcondition",
+                "rule_id": "PSCM-RSK-003",
+                "target": {
+                    "type": "action",
+                    "id": "action-scan-supplier-risk"
+                },
+                "phase": "postcondition",
+                "enforcement": "optional",
+                "failure_policy": "warn",
+                "provenance": "human"
+            }
+        ],
+        "side_effects": {
+            "data_changes": [],
+            "notifications": [],
+            "external_calls": [
+                {
+                    "system": "Meta ERP",
+                    "endpoint": "/metaerp/openapi/v1/queryContracts",
+                    "method": "POST",
+                    "description": "拉取该供应商在执行合同"
+                },
+                {
+                    "system": "Meta ERP",
+                    "endpoint": "/metaerp/openapi/v1/queryPurchaseOrders",
+                    "method": "POST",
+                    "description": "拉取未到货订单"
+                },
+                {
+                    "system": "Meta ERP",
+                    "endpoint": "/metaerp/openapi/v1/queryDeliverySchedules",
+                    "method": "POST",
+                    "description": "拉取未来 90 天交付节点"
+                }
+            ]
+        },
+        "triggered_event": [
+            "PSCM_SUPPLIER_RISK_FLAGGED"
+        ],
+        "implementation": {
+            "kind": "prompt",
+            "executable": false,
+            "model_tier": "reasoning",
+            "prompt_template_id": "power-scm-action-scan-supplier-risk"
+        },
+        "provenance": "human",
+        "extensions": {
+            "package_id": "power-scm",
+            "release": "1.0.0",
+            "reads": []
+        }
+    },
+    {
+        "id": "action-match-dormant-stock",
+        "name": "同物匹配与呆滞盘点",
+        "description": "新采购需求提交或库存快照同步时运行：跨法人单位识别呆滞批次，用语义等效组匹配“同物不同码”，输出可拦截需求与调剂配对，并标记临期减值批次。",
+        "object_type": "action",
+        "category": "两金压降",
+        "actor": [
+            "Agent"
+        ],
+        "trigger": [
+            "PSCM_REQUISITION_SUBMITTED",
+            "PSCM_INVENTORY_SNAPSHOT_SYNCED",
+            "PSCM_REPLENISHMENT_PLANNED"
+        ],
+        "target_objects": [
+            "PurchaseRequisition",
+            "Material",
+            "InventoryLot",
+            "LegalEntity"
+        ],
+        "inputs": [
+            {
+                "name": "requisition",
+                "type": "application/json",
+                "description": "待检查的采购需求",
+                "required": false,
+                "source_object": "PurchaseRequisition.requisition_id"
+            }
+        ],
+        "outputs": [
+            {
+                "name": "match_report",
+                "type": "application/json",
+                "description": "匹配报告：需求↔呆滞批次配对、可盘活金额、临期批次清单",
+                "required": true,
+                "source_object": "InventoryLot"
+            }
+        ],
+        "action_steps": [
+            {
+                "id": "action-match-dormant-stock:step:1",
+                "order": "1",
+                "name": "呆滞识别",
+                "description": "按库龄与状态识别呆滞批次，汇总各单位呆滞金额。",
+                "object_type": "logic"
+            },
+            {
+                "id": "action-match-dormant-stock:step:2",
+                "order": "2",
+                "name": "同物匹配",
+                "description": "以语义等效组对齐不同单位编码，匹配“A 在买、B 在囤”。",
+                "object_type": "logic"
+            },
+            {
+                "id": "action-match-dormant-stock:step:3",
+                "order": "3",
+                "name": "临期扫描",
+                "description": "扫描剩余保质期与技术淘汰批次，输出减值预警。",
+                "object_type": "logic"
+            }
+        ],
+        "rule_bindings": [
+            {
+                "id": "ARB-PSCM-INV-001-action-match-dormant-stock-validation",
+                "rule_id": "PSCM-INV-001",
+                "target": {
+                    "type": "action",
+                    "id": "action-match-dormant-stock"
+                },
+                "phase": "validation",
+                "enforcement": "mandatory",
+                "failure_policy": "warn",
+                "provenance": "human"
+            },
+            {
+                "id": "ARB-PSCM-INV-002-action-match-dormant-stock-postcondition",
+                "rule_id": "PSCM-INV-002",
+                "target": {
+                    "type": "action",
+                    "id": "action-match-dormant-stock"
+                },
+                "phase": "postcondition",
+                "enforcement": "optional",
+                "failure_policy": "warn",
+                "provenance": "human"
+            },
+            {
+                "id": "ARB-PSCM-INV-003-action-match-dormant-stock-postcondition",
+                "rule_id": "PSCM-INV-003",
+                "target": {
+                    "type": "action",
+                    "id": "action-match-dormant-stock"
+                },
+                "phase": "postcondition",
+                "enforcement": "optional",
+                "failure_policy": "warn",
+                "provenance": "human"
+            }
+        ],
+        "side_effects": {
+            "data_changes": [],
+            "notifications": [],
+            "external_calls": [
+                {
+                    "system": "Meta ERP",
+                    "endpoint": "/metaerp/openapi/v1/queryInventoryLots",
+                    "method": "POST",
+                    "description": "拉取全集团库存批次（含库龄）"
+                },
+                {
+                    "system": "Meta ERP",
+                    "endpoint": "/metaerp/openapi/v1/queryRequisitions",
+                    "method": "POST",
+                    "description": "拉取已批待执行采购需求"
+                }
+            ]
+        },
+        "triggered_event": [
+            "PSCM_DORMANT_MATCH_FOUND",
+            "PSCM_IMPAIRMENT_WARNING_RAISED"
+        ],
+        "implementation": {
+            "kind": "prompt",
+            "executable": false,
+            "model_tier": "reasoning",
+            "prompt_template_id": "power-scm-action-match-dormant-stock"
+        },
+        "provenance": "human",
+        "extensions": {
+            "package_id": "power-scm",
+            "release": "1.0.0",
+            "reads": []
+        }
+    },
+    {
+        "id": "action-review-emergency-response",
+        "name": "应急保供复盘",
+        "description": "台风过境后复盘：预测偏差、物资消耗、时效达成，并给出补库建议——补库采购计划由此自动生成，而非人工填报。",
+        "object_type": "action",
+        "category": "应急保供",
+        "actor": [
+            "Agent",
+            "Human"
+        ],
+        "trigger": [
+            "MANUAL"
+        ],
+        "target_objects": [
+            "StockTransferOrder",
+            "PurchaseOrder",
+            "RepairWorkOrder",
+            "InventoryLot"
+        ],
+        "inputs": [
+            {
+                "name": "event_window",
+                "type": "application/json",
+                "description": "应急事件时间窗",
+                "required": true,
+                "source_object": "ExternalEvent.occurred_at"
+            }
+        ],
+        "outputs": [
+            {
+                "name": "review_report",
+                "type": "application/json",
+                "description": "复盘报告：偏差分析与补库建议清单",
+                "required": true,
+                "source_object": "Material"
+            }
+        ],
+        "action_steps": [
+            {
+                "id": "action-review-emergency-response:step:1",
+                "order": "1",
+                "name": "偏差分析",
+                "description": "预测需求 vs 实际消耗，逐类物资复盘。",
+                "object_type": "logic"
+            },
+            {
+                "id": "action-review-emergency-response:step:2",
+                "order": "2",
+                "name": "补库建议",
+                "description": "按安全库存缺口生成补库建议清单。",
+                "object_type": "logic"
+            },
+            {
+                "id": "action-review-emergency-response:step:3",
+                "order": "3",
+                "name": "人工确认",
+                "description": "物资部主任确认复盘结论与补库口径。",
+                "object_type": "manual"
+            }
+        ],
+        "rule_bindings": [],
+        "side_effects": {
+            "data_changes": [],
+            "notifications": [],
+            "external_calls": [
+                {
+                    "system": "Meta ERP",
+                    "endpoint": "/metaerp/openapi/v1/queryTransferOrders",
+                    "method": "POST",
+                    "description": "拉取应急期调拨执行情况"
+                },
+                {
+                    "system": "Meta ERP",
+                    "endpoint": "/metaerp/openapi/v1/queryRepairOrders",
+                    "method": "POST",
+                    "description": "拉取抢修工单消耗"
+                }
+            ]
+        },
+        "triggered_event": [
+            "PSCM_EMERGENCY_REVIEW_COMPLETED"
+        ],
+        "implementation": {
+            "kind": "prompt",
+            "executable": false,
+            "model_tier": "reasoning",
+            "prompt_template_id": "power-scm-action-review-emergency-response"
+        },
+        "provenance": "human",
+        "extensions": {
+            "package_id": "power-scm",
+            "release": "1.0.0",
+            "reads": []
+        }
+    },
+    {
+        "id": "action-lock-inventory",
+        "name": "锁定库存",
+        "description": "为应急需求锁定指定批次库存，防止被其他业务占用。",
+        "object_type": "action",
+        "category": "应急保供",
+        "actor": [
+            "Agent",
+            "Human"
+        ],
+        "trigger": [
+            "PSCM_STOCK_GAP_IDENTIFIED",
+            "MANUAL"
+        ],
+        "target_objects": [
+            "InventoryLot"
+        ],
+        "inputs": [
+            {
+                "name": "lot",
+                "type": "application/json",
+                "description": "待锁定批次",
+                "required": true,
+                "source_object": "InventoryLot.lot_id"
+            },
+            {
+                "name": "lock_reason",
+                "type": "application/json",
+                "description": "锁定原因",
+                "required": true
+            }
+        ],
+        "outputs": [
+            {
+                "name": "locked_lot",
+                "type": "application/json",
+                "description": "锁定后的批次",
+                "required": true,
+                "source_object": "InventoryLot"
+            }
+        ],
+        "action_steps": [
+            {
+                "id": "action-lock-inventory:step:1",
+                "order": "1",
+                "name": "校验批次",
+                "description": "确认批次可用且未被预留。",
+                "object_type": "logic"
+            },
+            {
+                "id": "action-lock-inventory:step:2",
+                "order": "2",
+                "name": "写回 ERP",
+                "description": "调用 lockInventoryLot 完成锁定。",
+                "object_type": "tool"
+            }
+        ],
+        "rule_bindings": [
+            {
+                "id": "ARB-PSCM-EMG-002-action-lock-inventory-precondition",
+                "rule_id": "PSCM-EMG-002",
+                "target": {
+                    "type": "action",
+                    "id": "action-lock-inventory"
+                },
+                "phase": "precondition",
+                "enforcement": "mandatory",
+                "failure_policy": "block",
+                "provenance": "human"
+            }
+        ],
+        "side_effects": {
+            "data_changes": [
+                {
+                    "target_object": "InventoryLot",
+                    "mutation_type": "MODIFY",
+                    "impacted_properties": [
+                        "status"
+                    ]
+                }
+            ],
+            "notifications": [],
+            "external_calls": [
+                {
+                    "system": "Meta ERP",
+                    "endpoint": "/metaerp/openapi/v1/lockInventoryLot",
+                    "method": "POST",
+                    "description": "调用 Meta ERP 锁定库存批次"
+                }
+            ]
+        },
+        "triggered_event": [
+            "PSCM_INVENTORY_LOCKED"
+        ],
+        "implementation": {
+            "kind": "external",
+            "executable": false,
+            "operation_id": "lockInventoryLot",
+            "endpoint": "/metaerp/openapi/v1/lockInventoryLot",
+            "method": "POST"
+        },
+        "provenance": "human",
+        "extensions": {
+            "package_id": "power-scm",
+            "release": "1.0.0",
+            "reads": []
+        }
+    },
+    {
+        "id": "action-release-inventory",
+        "name": "释放库存",
+        "description": "应急解除或方案变更后释放已锁定批次。",
+        "object_type": "action",
+        "category": "应急保供",
+        "actor": [
+            "Agent",
+            "Human"
+        ],
+        "trigger": [
+            "MANUAL"
+        ],
+        "target_objects": [
+            "InventoryLot"
+        ],
+        "inputs": [
+            {
+                "name": "lot",
+                "type": "application/json",
+                "description": "待释放批次",
+                "required": true,
+                "source_object": "InventoryLot.lot_id"
+            }
+        ],
+        "outputs": [
+            {
+                "name": "released_lot",
+                "type": "application/json",
+                "description": "释放后的批次",
+                "required": true,
+                "source_object": "InventoryLot"
+            }
+        ],
+        "action_steps": [
+            {
+                "id": "action-release-inventory:step:1",
+                "order": "1",
+                "name": "校验锁定",
+                "description": "确认批次处于锁定状态。",
+                "object_type": "logic"
+            },
+            {
+                "id": "action-release-inventory:step:2",
+                "order": "2",
+                "name": "写回 ERP",
+                "description": "调用 releaseInventoryLot 完成释放。",
+                "object_type": "tool"
+            }
+        ],
+        "rule_bindings": [],
+        "side_effects": {
+            "data_changes": [
+                {
+                    "target_object": "InventoryLot",
+                    "mutation_type": "MODIFY",
+                    "impacted_properties": [
+                        "status"
+                    ]
+                }
+            ],
+            "notifications": [],
+            "external_calls": [
+                {
+                    "system": "Meta ERP",
+                    "endpoint": "/metaerp/openapi/v1/releaseInventoryLot",
+                    "method": "POST",
+                    "description": "调用 Meta ERP 释放库存批次"
+                }
+            ]
+        },
+        "triggered_event": [
+            "PSCM_INVENTORY_RELEASED"
+        ],
+        "implementation": {
+            "kind": "external",
+            "executable": false,
+            "operation_id": "releaseInventoryLot",
+            "endpoint": "/metaerp/openapi/v1/releaseInventoryLot",
+            "method": "POST"
+        },
+        "provenance": "human",
+        "extensions": {
+            "package_id": "power-scm",
+            "release": "1.0.0",
+            "reads": []
+        }
+    },
+    {
+        "id": "action-create-stock-transfer",
+        "name": "创建跨仓调拨单",
+        "description": "按缺口方案创建跨仓调拨单（走应急审批流），写回 Meta ERP。",
+        "object_type": "action",
+        "category": "应急保供",
+        "actor": [
+            "Agent",
+            "Human"
+        ],
+        "trigger": [
+            "PSCM_STOCK_GAP_IDENTIFIED",
+            "MANUAL"
+        ],
+        "target_objects": [
+            "StockTransferOrder"
+        ],
+        "inputs": [
+            {
+                "name": "gap_line",
+                "type": "application/json",
+                "description": "缺口行：物资、数量、调出/调入仓",
+                "required": true,
+                "source_object": "Material.material_id"
+            }
+        ],
+        "outputs": [
+            {
+                "name": "transfer_order",
+                "type": "application/json",
+                "description": "调拨单",
+                "required": true,
+                "source_object": "StockTransferOrder"
+            }
+        ],
+        "action_steps": [
+            {
+                "id": "action-create-stock-transfer:step:1",
+                "order": "1",
+                "name": "方案校验",
+                "description": "确认缺口成立且调拨时效满足空窗约束。",
+                "object_type": "logic"
+            },
+            {
+                "id": "action-create-stock-transfer:step:2",
+                "order": "2",
+                "name": "写回 ERP",
+                "description": "调用 createTransferOrder 生成调拨单。",
+                "object_type": "tool"
+            },
+            {
+                "id": "action-create-stock-transfer:step:3",
+                "order": "3",
+                "name": "应急审批",
+                "description": "移动端一键审批（人工闸口）。",
+                "object_type": "manual"
+            }
+        ],
+        "rule_bindings": [
+            {
+                "id": "ARB-PSCM-EMG-002-action-create-stock-transfer-precondition",
+                "rule_id": "PSCM-EMG-002",
+                "target": {
+                    "type": "action",
+                    "id": "action-create-stock-transfer"
+                },
+                "phase": "precondition",
+                "enforcement": "mandatory",
+                "failure_policy": "block",
+                "provenance": "human"
+            },
+            {
+                "id": "ARB-PSCM-EMG-003-action-create-stock-transfer-guard",
+                "rule_id": "PSCM-EMG-003",
+                "target": {
+                    "type": "action",
+                    "id": "action-create-stock-transfer"
+                },
+                "phase": "guard",
+                "enforcement": "optional",
+                "failure_policy": "warn",
+                "provenance": "human"
+            }
+        ],
+        "side_effects": {
+            "data_changes": [
+                {
+                    "target_object": "StockTransferOrder",
+                    "mutation_type": "CREATE",
+                    "impacted_properties": []
+                }
+            ],
+            "notifications": [],
+            "external_calls": [
+                {
+                    "system": "Meta ERP",
+                    "endpoint": "/metaerp/openapi/v1/createTransferOrder",
+                    "method": "POST",
+                    "description": "调用 Meta ERP 创建调拨单"
+                }
+            ]
+        },
+        "triggered_event": [
+            "PSCM_STOCK_TRANSFER_CREATED"
+        ],
+        "implementation": {
+            "kind": "external",
+            "executable": false,
+            "operation_id": "createTransferOrder",
+            "endpoint": "/metaerp/openapi/v1/createTransferOrder",
+            "method": "POST"
+        },
+        "provenance": "human",
+        "extensions": {
+            "package_id": "power-scm",
+            "release": "1.0.0",
+            "reads": []
+        }
+    },
+    {
+        "id": "action-create-emergency-po",
+        "name": "创建紧急采购订单",
+        "description": "依据含应急条款的框架协议向供应商紧急下单，补足调拨无法覆盖的缺口。",
+        "object_type": "action",
+        "category": "应急保供",
+        "actor": [
+            "Agent",
+            "Human"
+        ],
+        "trigger": [
+            "PSCM_STOCK_GAP_IDENTIFIED",
+            "MANUAL"
+        ],
+        "target_objects": [
+            "PurchaseOrder"
+        ],
+        "inputs": [
+            {
+                "name": "gap_line",
+                "type": "application/json",
+                "description": "缺口行",
+                "required": true,
+                "source_object": "Material.material_id"
+            },
+            {
+                "name": "agreement",
+                "type": "application/json",
+                "description": "应急框架协议",
+                "required": true,
+                "source_object": "FrameworkAgreement.agreement_id"
+            }
+        ],
+        "outputs": [
+            {
+                "name": "purchase_order",
+                "type": "application/json",
+                "description": "紧急采购订单",
+                "required": true,
+                "source_object": "PurchaseOrder"
+            }
+        ],
+        "action_steps": [
+            {
+                "id": "action-create-emergency-po:step:1",
+                "order": "1",
+                "name": "协议校验",
+                "description": "确认框架协议在效且含应急供货条款。",
+                "object_type": "logic"
+            },
+            {
+                "id": "action-create-emergency-po:step:2",
+                "order": "2",
+                "name": "写回 ERP",
+                "description": "调用 createEmergencyPo 下达订单。",
+                "object_type": "tool"
+            },
+            {
+                "id": "action-create-emergency-po:step:3",
+                "order": "3",
+                "name": "应急审批",
+                "description": "移动端一键审批（人工闸口）。",
+                "object_type": "manual"
+            }
+        ],
+        "rule_bindings": [
+            {
+                "id": "ARB-PSCM-EMG-002-action-create-emergency-po-precondition",
+                "rule_id": "PSCM-EMG-002",
+                "target": {
+                    "type": "action",
+                    "id": "action-create-emergency-po"
+                },
+                "phase": "precondition",
+                "enforcement": "mandatory",
+                "failure_policy": "block",
+                "provenance": "human"
+            },
+            {
+                "id": "ARB-PSCM-EMG-004-action-create-emergency-po-precondition",
+                "rule_id": "PSCM-EMG-004",
+                "target": {
+                    "type": "action",
+                    "id": "action-create-emergency-po"
+                },
+                "phase": "precondition",
+                "enforcement": "mandatory",
+                "failure_policy": "block",
+                "provenance": "human"
+            }
+        ],
+        "side_effects": {
+            "data_changes": [
+                {
+                    "target_object": "PurchaseOrder",
+                    "mutation_type": "CREATE",
+                    "impacted_properties": []
+                }
+            ],
+            "notifications": [],
+            "external_calls": [
+                {
+                    "system": "Meta ERP",
+                    "endpoint": "/metaerp/openapi/v1/createEmergencyPo",
+                    "method": "POST",
+                    "description": "调用 Meta ERP 创建紧急采购订单"
+                }
+            ]
+        },
+        "triggered_event": [
+            "PSCM_EMERGENCY_PO_CREATED"
+        ],
+        "implementation": {
+            "kind": "external",
+            "executable": false,
+            "operation_id": "createEmergencyPo",
+            "endpoint": "/metaerp/openapi/v1/createEmergencyPo",
+            "method": "POST"
+        },
+        "provenance": "human",
+        "extensions": {
+            "package_id": "power-scm",
+            "release": "1.0.0",
+            "reads": []
+        }
+    },
+    {
+        "id": "action-dispatch-logistics",
+        "name": "下达运输任务",
+        "description": "为已批准调拨单下达运输任务，物资在途轨迹回流作战地图。",
+        "object_type": "action",
+        "category": "应急保供",
+        "actor": [
+            "Agent"
+        ],
+        "trigger": [
+            "PSCM_STOCK_TRANSFER_CREATED"
+        ],
+        "target_objects": [
+            "StockTransferOrder"
+        ],
+        "inputs": [
+            {
+                "name": "transfer_order",
+                "type": "application/json",
+                "description": "已批准调拨单",
+                "required": true,
+                "source_object": "StockTransferOrder.transfer_id"
+            }
+        ],
+        "outputs": [
+            {
+                "name": "shipment",
+                "type": "application/json",
+                "description": "运输任务单号",
+                "required": true
+            }
+        ],
+        "action_steps": [
+            {
+                "id": "action-dispatch-logistics:step:1",
+                "order": "1",
+                "name": "拼载排线",
+                "description": "按调拨单聚合装载与路线。",
+                "object_type": "logic"
+            },
+            {
+                "id": "action-dispatch-logistics:step:2",
+                "order": "2",
+                "name": "写回 ERP",
+                "description": "调用 createShipmentTask 下达任务。",
+                "object_type": "tool"
+            }
+        ],
+        "rule_bindings": [],
+        "side_effects": {
+            "data_changes": [
+                {
+                    "target_object": "StockTransferOrder",
+                    "mutation_type": "MODIFY",
+                    "impacted_properties": [
+                        "status"
+                    ]
+                }
+            ],
+            "notifications": [],
+            "external_calls": [
+                {
+                    "system": "Meta ERP",
+                    "endpoint": "/metaerp/openapi/v1/createShipmentTask",
+                    "method": "POST",
+                    "description": "调用 Meta ERP 物流模块下达运输任务"
+                }
+            ]
+        },
+        "triggered_event": [
+            "PSCM_LOGISTICS_DISPATCHED"
+        ],
+        "implementation": {
+            "kind": "external",
+            "executable": false,
+            "operation_id": "createShipmentTask",
+            "endpoint": "/metaerp/openapi/v1/createShipmentTask",
+            "method": "POST"
+        },
+        "provenance": "human",
+        "extensions": {
+            "package_id": "power-scm",
+            "release": "1.0.0",
+            "reads": []
+        }
+    },
+    {
+        "id": "action-create-collab-request",
+        "name": "发起跨单位协同请求",
+        "description": "向兄弟单位发起应急借调协同请求，附缺口依据与归还承诺。",
+        "object_type": "action",
+        "category": "应急保供",
+        "actor": [
+            "Agent",
+            "Human"
+        ],
+        "trigger": [
+            "PSCM_STOCK_GAP_IDENTIFIED",
+            "MANUAL"
+        ],
+        "target_objects": [],
+        "inputs": [
+            {
+                "name": "gap_line",
+                "type": "application/json",
+                "description": "缺口行",
+                "required": true,
+                "source_object": "Material.material_id"
+            },
+            {
+                "name": "target_entity",
+                "type": "application/json",
+                "description": "被请求法人单位",
+                "required": true,
+                "source_object": "LegalEntity.legal_entity_id"
+            }
+        ],
+        "outputs": [
+            {
+                "name": "collab_request",
+                "type": "application/json",
+                "description": "协同请求单",
+                "required": true
+            }
+        ],
+        "action_steps": [
+            {
+                "id": "action-create-collab-request:step:1",
+                "order": "1",
+                "name": "拟制请求",
+                "description": "生成借调请求与依据材料。",
+                "object_type": "logic"
+            },
+            {
+                "id": "action-create-collab-request:step:2",
+                "order": "2",
+                "name": "写回 ERP",
+                "description": "调用 createCollabRequest 发出请求。",
+                "object_type": "tool"
+            }
+        ],
+        "rule_bindings": [],
+        "side_effects": {
+            "data_changes": [],
+            "notifications": [],
+            "external_calls": [
+                {
+                    "system": "Meta ERP",
+                    "endpoint": "/metaerp/openapi/v1/createCollabRequest",
+                    "method": "POST",
+                    "description": "调用 Meta ERP 协同模块发起跨单位请求"
+                }
+            ]
+        },
+        "triggered_event": [
+            "PSCM_COLLAB_REQUESTED"
+        ],
+        "implementation": {
+            "kind": "external",
+            "executable": false,
+            "operation_id": "createCollabRequest",
+            "endpoint": "/metaerp/openapi/v1/createCollabRequest",
+            "method": "POST"
+        },
+        "provenance": "human",
+        "extensions": {
+            "package_id": "power-scm",
+            "release": "1.0.0",
+            "reads": []
+        }
+    },
+    {
+        "id": "action-generate-replenishment-plan",
+        "name": "生成补库采购计划",
+        "description": "复盘完成后按安全库存缺口批量生成补库采购需求——采购计划是闭环的产物，不是人工填的表。",
+        "object_type": "action",
+        "category": "应急保供",
+        "actor": [
+            "Agent"
+        ],
+        "trigger": [
+            "PSCM_EMERGENCY_REVIEW_COMPLETED"
+        ],
+        "target_objects": [
+            "PurchaseRequisition"
+        ],
+        "inputs": [
+            {
+                "name": "review_report",
+                "type": "application/json",
+                "description": "复盘报告",
+                "required": true,
+                "source_object": "Material.material_id"
+            }
+        ],
+        "outputs": [
+            {
+                "name": "requisitions",
+                "type": "application/json",
+                "description": "补库采购需求批次",
+                "required": true,
+                "source_object": "PurchaseRequisition"
+            }
+        ],
+        "action_steps": [
+            {
+                "id": "action-generate-replenishment-plan:step:1",
+                "order": "1",
+                "name": "缺口折算",
+                "description": "按安全库存与消耗折算补库数量。",
+                "object_type": "logic"
+            },
+            {
+                "id": "action-generate-replenishment-plan:step:2",
+                "order": "2",
+                "name": "写回 ERP",
+                "description": "调用 createRequisitionBatch 批量建需求。",
+                "object_type": "tool"
+            }
+        ],
+        "rule_bindings": [
+            {
+                "id": "ARB-PSCM-INV-002-action-generate-replenishment-plan-validation",
+                "rule_id": "PSCM-INV-002",
+                "target": {
+                    "type": "action",
+                    "id": "action-generate-replenishment-plan"
+                },
+                "phase": "validation",
+                "enforcement": "optional",
+                "failure_policy": "warn",
+                "provenance": "human"
+            }
+        ],
+        "side_effects": {
+            "data_changes": [
+                {
+                    "target_object": "PurchaseRequisition",
+                    "mutation_type": "CREATE",
+                    "impacted_properties": []
+                }
+            ],
+            "notifications": [],
+            "external_calls": [
+                {
+                    "system": "Meta ERP",
+                    "endpoint": "/metaerp/openapi/v1/createRequisitionBatch",
+                    "method": "POST",
+                    "description": "调用 Meta ERP 批量创建采购需求"
+                }
+            ]
+        },
+        "triggered_event": [
+            "PSCM_REPLENISHMENT_PLANNED"
+        ],
+        "implementation": {
+            "kind": "external",
+            "executable": false,
+            "operation_id": "createRequisitionBatch",
+            "endpoint": "/metaerp/openapi/v1/createRequisitionBatch",
+            "method": "POST"
+        },
+        "provenance": "human",
+        "extensions": {
+            "package_id": "power-scm",
+            "release": "1.0.0",
+            "reads": []
+        }
+    },
+    {
+        "id": "action-issue-expedite-notice",
+        "name": "发出催交函",
+        "description": "对高风险供应商的关键订单发出法务模板催交函。",
+        "object_type": "action",
+        "category": "供应商风险",
+        "actor": [
+            "Agent",
+            "Human"
+        ],
+        "trigger": [
+            "PSCM_SUPPLIER_RISK_FLAGGED",
+            "MANUAL"
+        ],
+        "target_objects": [
+            "ExpediteNotice"
+        ],
+        "inputs": [
+            {
+                "name": "purchase_order",
+                "type": "application/json",
+                "description": "被催交订单",
+                "required": true,
+                "source_object": "PurchaseOrder.purchase_order_id"
+            }
+        ],
+        "outputs": [
+            {
+                "name": "notice",
+                "type": "application/json",
+                "description": "催交函",
+                "required": true,
+                "source_object": "ExpediteNotice"
+            }
+        ],
+        "action_steps": [
+            {
+                "id": "action-issue-expedite-notice:step:1",
+                "order": "1",
+                "name": "拟函",
+                "description": "套用法务模板生成催交函。",
+                "object_type": "logic"
+            },
+            {
+                "id": "action-issue-expedite-notice:step:2",
+                "order": "2",
+                "name": "写回 ERP",
+                "description": "调用 sendExpediteNotice 发出并归档。",
+                "object_type": "tool"
+            }
+        ],
+        "rule_bindings": [
+            {
+                "id": "ARB-PSCM-RSK-001-action-issue-expedite-notice-precondition",
+                "rule_id": "PSCM-RSK-001",
+                "target": {
+                    "type": "action",
+                    "id": "action-issue-expedite-notice"
+                },
+                "phase": "precondition",
+                "enforcement": "optional",
+                "failure_policy": "warn",
+                "provenance": "human"
+            }
+        ],
+        "side_effects": {
+            "data_changes": [
+                {
+                    "target_object": "ExpediteNotice",
+                    "mutation_type": "CREATE",
+                    "impacted_properties": []
+                }
+            ],
+            "notifications": [],
+            "external_calls": [
+                {
+                    "system": "Meta ERP",
+                    "endpoint": "/metaerp/openapi/v1/sendExpediteNotice",
+                    "method": "POST",
+                    "description": "调用 Meta ERP 发出催交函"
+                }
+            ]
+        },
+        "triggered_event": [
+            "PSCM_EXPEDITE_ISSUED"
+        ],
+        "implementation": {
+            "kind": "external",
+            "executable": false,
+            "operation_id": "sendExpediteNotice",
+            "endpoint": "/metaerp/openapi/v1/sendExpediteNotice",
+            "method": "POST"
+        },
+        "provenance": "human",
+        "extensions": {
+            "package_id": "power-scm",
+            "release": "1.0.0",
+            "reads": []
+        }
+    },
+    {
+        "id": "action-create-onsite-inspection",
+        "name": "创建驻厂监造任务",
+        "description": "对保重点项目的在产订单派驻监造，锁住关键节点。",
+        "object_type": "action",
+        "category": "供应商风险",
+        "actor": [
+            "Agent",
+            "Human"
+        ],
+        "trigger": [
+            "PSCM_SUPPLIER_RISK_FLAGGED",
+            "MANUAL"
+        ],
+        "target_objects": [
+            "InspectionReport"
+        ],
+        "inputs": [
+            {
+                "name": "purchase_order",
+                "type": "application/json",
+                "description": "在产订单",
+                "required": true,
+                "source_object": "PurchaseOrder.purchase_order_id"
+            }
+        ],
+        "outputs": [
+            {
+                "name": "inspection_task",
+                "type": "application/json",
+                "description": "监造任务",
+                "required": true,
+                "source_object": "InspectionReport"
+            }
+        ],
+        "action_steps": [
+            {
+                "id": "action-create-onsite-inspection:step:1",
+                "order": "1",
+                "name": "选点",
+                "description": "按重点项目与节点风险选择监造订单。",
+                "object_type": "logic"
+            },
+            {
+                "id": "action-create-onsite-inspection:step:2",
+                "order": "2",
+                "name": "写回 ERP",
+                "description": "调用 createInspectionTask 建任务派人。",
+                "object_type": "tool"
+            }
+        ],
+        "rule_bindings": [],
+        "side_effects": {
+            "data_changes": [
+                {
+                    "target_object": "InspectionReport",
+                    "mutation_type": "CREATE",
+                    "impacted_properties": []
+                }
+            ],
+            "notifications": [],
+            "external_calls": [
+                {
+                    "system": "Meta ERP",
+                    "endpoint": "/metaerp/openapi/v1/createInspectionTask",
+                    "method": "POST",
+                    "description": "调用 Meta ERP 质量模块创建驻厂监造任务"
+                }
+            ]
+        },
+        "triggered_event": [
+            "PSCM_ONSITE_INSPECTION_CREATED"
+        ],
+        "implementation": {
+            "kind": "external",
+            "executable": false,
+            "operation_id": "createInspectionTask",
+            "endpoint": "/metaerp/openapi/v1/createInspectionTask",
+            "method": "POST"
+        },
+        "provenance": "human",
+        "extensions": {
+            "package_id": "power-scm",
+            "release": "1.0.0",
+            "reads": []
+        }
+    },
+    {
+        "id": "action-send-rfq",
+        "name": "向替代供应商询价",
+        "description": "把非关键订单转移给框架内替代供应商——发出前必须通过关联方识别，假备选直接拦截。",
+        "object_type": "action",
+        "category": "供应商风险",
+        "actor": [
+            "Agent",
+            "Human"
+        ],
+        "trigger": [
+            "PSCM_SUPPLIER_RISK_FLAGGED",
+            "MANUAL"
+        ],
+        "target_objects": [
+            "Rfq"
+        ],
+        "inputs": [
+            {
+                "name": "candidate_supplier",
+                "type": "application/json",
+                "description": "候选替代供应商",
+                "required": true,
+                "source_object": "Supplier.supplier_id"
+            },
+            {
+                "name": "material",
+                "type": "application/json",
+                "description": "询价物资",
+                "required": true,
+                "source_object": "Material.material_id"
+            }
+        ],
+        "outputs": [
+            {
+                "name": "rfq",
+                "type": "application/json",
+                "description": "询价单",
+                "required": true,
+                "source_object": "Rfq"
+            }
+        ],
+        "action_steps": [
+            {
+                "id": "action-send-rfq:step:1",
+                "order": "1",
+                "name": "关联方核查",
+                "description": "比对候选与风险供应商实控人。",
+                "object_type": "logic"
+            },
+            {
+                "id": "action-send-rfq:step:2",
+                "order": "2",
+                "name": "写回 ERP",
+                "description": "调用 createRfq 发出询价。",
+                "object_type": "tool"
+            }
+        ],
+        "rule_bindings": [
+            {
+                "id": "ARB-PSCM-RSK-002-action-send-rfq-precondition",
+                "rule_id": "PSCM-RSK-002",
+                "target": {
+                    "type": "action",
+                    "id": "action-send-rfq"
+                },
+                "phase": "precondition",
+                "enforcement": "mandatory",
+                "failure_policy": "block",
+                "provenance": "human"
+            }
+        ],
+        "side_effects": {
+            "data_changes": [
+                {
+                    "target_object": "Rfq",
+                    "mutation_type": "CREATE",
+                    "impacted_properties": []
+                }
+            ],
+            "notifications": [],
+            "external_calls": [
+                {
+                    "system": "Meta ERP",
+                    "endpoint": "/metaerp/openapi/v1/createRfq",
+                    "method": "POST",
+                    "description": "调用 Meta ERP 寻源模块发出询价"
+                }
+            ]
+        },
+        "triggered_event": [
+            "PSCM_RFQ_SENT"
+        ],
+        "implementation": {
+            "kind": "external",
+            "executable": false,
+            "operation_id": "createRfq",
+            "endpoint": "/metaerp/openapi/v1/createRfq",
+            "method": "POST"
+        },
+        "provenance": "human",
+        "extensions": {
+            "package_id": "power-scm",
+            "release": "1.0.0",
+            "reads": []
+        }
+    },
+    {
+        "id": "action-add-supplier-risk-flag",
+        "name": "标记供应商风险名单",
+        "description": "把风险供应商与其关联方标入风险/廉洁名单并推送审计部。",
+        "object_type": "action",
+        "category": "供应商风险",
+        "actor": [
+            "Agent"
+        ],
+        "trigger": [
+            "PSCM_SUPPLIER_RISK_FLAGGED"
+        ],
+        "target_objects": [
+            "RiskFlag"
+        ],
+        "inputs": [
+            {
+                "name": "supplier",
+                "type": "application/json",
+                "description": "被标记供应商",
+                "required": true,
+                "source_object": "Supplier.supplier_id"
+            },
+            {
+                "name": "audit_department",
+                "type": "application/json",
+                "description": "接收推送的审计部门",
+                "required": false,
+                "source_object": "Department.department_id"
+            },
+            {
+                "name": "evidence",
+                "type": "application/json",
+                "description": "证据摘要",
+                "required": true
+            }
+        ],
+        "outputs": [
+            {
+                "name": "risk_flag",
+                "type": "application/json",
+                "description": "风险标记",
+                "required": true,
+                "source_object": "RiskFlag"
+            }
+        ],
+        "action_steps": [
+            {
+                "id": "action-add-supplier-risk-flag:step:1",
+                "order": "1",
+                "name": "定级",
+                "description": "按风险类型与严重度定级。",
+                "object_type": "logic"
+            },
+            {
+                "id": "action-add-supplier-risk-flag:step:2",
+                "order": "2",
+                "name": "写回 ERP",
+                "description": "调用 addRiskFlag 入名单并通知审计部。",
+                "object_type": "tool"
+            }
+        ],
+        "rule_bindings": [
+            {
+                "id": "ARB-PSCM-RSK-001-action-add-supplier-risk-flag-precondition",
+                "rule_id": "PSCM-RSK-001",
+                "target": {
+                    "type": "action",
+                    "id": "action-add-supplier-risk-flag"
+                },
+                "phase": "precondition",
+                "enforcement": "optional",
+                "failure_policy": "warn",
+                "provenance": "human"
+            }
+        ],
+        "side_effects": {
+            "data_changes": [
+                {
+                    "target_object": "RiskFlag",
+                    "mutation_type": "CREATE",
+                    "impacted_properties": []
+                }
+            ],
+            "notifications": [],
+            "external_calls": [
+                {
+                    "system": "Meta ERP",
+                    "endpoint": "/metaerp/openapi/v1/addRiskFlag",
+                    "method": "POST",
+                    "description": "调用 Meta ERP SRM 写入风险标记"
+                }
+            ]
+        },
+        "triggered_event": [
+            "PSCM_RISK_FLAG_ADDED"
+        ],
+        "implementation": {
+            "kind": "external",
+            "executable": false,
+            "operation_id": "addRiskFlag",
+            "endpoint": "/metaerp/openapi/v1/addRiskFlag",
+            "method": "POST"
+        },
+        "provenance": "human",
+        "extensions": {
+            "package_id": "power-scm",
+            "release": "1.0.0",
+            "reads": []
+        }
+    },
+    {
+        "id": "action-suspend-requisition",
+        "name": "暂停采购申请",
+        "description": "同物匹配命中后暂停采购需求——“别人的 AI 帮你填采购单，我们的 AI 把不该买的拦下来。”",
+        "object_type": "action",
+        "category": "两金压降",
+        "actor": [
+            "Agent",
+            "Human"
+        ],
+        "trigger": [
+            "PSCM_DORMANT_MATCH_FOUND"
+        ],
+        "target_objects": [
+            "PurchaseRequisition"
+        ],
+        "inputs": [
+            {
+                "name": "requisition",
+                "type": "application/json",
+                "description": "被拦截采购需求",
+                "required": true,
+                "source_object": "PurchaseRequisition.requisition_id"
+            },
+            {
+                "name": "match_evidence",
+                "type": "application/json",
+                "description": "同物匹配依据",
+                "required": true,
+                "source_object": "InventoryLot.lot_id"
+            }
+        ],
+        "outputs": [
+            {
+                "name": "suspended_requisition",
+                "type": "application/json",
+                "description": "已暂停需求",
+                "required": true,
+                "source_object": "PurchaseRequisition"
+            }
+        ],
+        "action_steps": [
+            {
+                "id": "action-suspend-requisition:step:1",
+                "order": "1",
+                "name": "匹配复核",
+                "description": "复核语义等效组匹配依据（含同物不同码）。",
+                "object_type": "logic"
+            },
+            {
+                "id": "action-suspend-requisition:step:2",
+                "order": "2",
+                "name": "写回 ERP",
+                "description": "调用 suspendRequisition 暂停需求并留痕。",
+                "object_type": "tool"
+            }
+        ],
+        "rule_bindings": [
+            {
+                "id": "ARB-PSCM-INV-002-action-suspend-requisition-validation",
+                "rule_id": "PSCM-INV-002",
+                "target": {
+                    "type": "action",
+                    "id": "action-suspend-requisition"
+                },
+                "phase": "validation",
+                "enforcement": "optional",
+                "failure_policy": "warn",
+                "provenance": "human",
+                "extensions": {
+                    "entry_condition": "本行动在 PSCM-INV-002 判定命中（on_fail=拦截）后作为处置动作执行"
+                }
+            }
+        ],
+        "side_effects": {
+            "data_changes": [
+                {
+                    "target_object": "PurchaseRequisition",
+                    "mutation_type": "MODIFY",
+                    "impacted_properties": [
+                        "status"
+                    ]
+                }
+            ],
+            "notifications": [],
+            "external_calls": [
+                {
+                    "system": "Meta ERP",
+                    "endpoint": "/metaerp/openapi/v1/suspendRequisition",
+                    "method": "POST",
+                    "description": "调用 Meta ERP 暂停采购需求"
+                }
+            ]
+        },
+        "triggered_event": [
+            "PSCM_REQUISITION_SUSPENDED"
+        ],
+        "implementation": {
+            "kind": "external",
+            "executable": false,
+            "operation_id": "suspendRequisition",
+            "endpoint": "/metaerp/openapi/v1/suspendRequisition",
+            "method": "POST"
+        },
+        "provenance": "human",
+        "extensions": {
+            "package_id": "power-scm",
+            "release": "1.0.0",
+            "reads": []
+        }
+    },
+    {
+        "id": "action-create-allocation-order",
+        "name": "创建跨单位调剂单",
+        "description": "为匹配成功的“需求↔呆滞批次”生成跨单位调剂单，进入双边确认。",
+        "object_type": "action",
+        "category": "两金压降",
+        "actor": [
+            "Agent"
+        ],
+        "trigger": [
+            "PSCM_DORMANT_MATCH_FOUND"
+        ],
+        "target_objects": [
+            "AllocationOrder"
+        ],
+        "inputs": [
+            {
+                "name": "requisition",
+                "type": "application/json",
+                "description": "被覆盖需求",
+                "required": true,
+                "source_object": "PurchaseRequisition.requisition_id"
+            },
+            {
+                "name": "dormant_lot",
+                "type": "application/json",
+                "description": "呆滞批次",
+                "required": true,
+                "source_object": "InventoryLot.lot_id"
+            }
+        ],
+        "outputs": [
+            {
+                "name": "allocation",
+                "type": "application/json",
+                "description": "调剂单",
+                "required": true,
+                "source_object": "AllocationOrder"
+            }
+        ],
+        "action_steps": [
+            {
+                "id": "action-create-allocation-order:step:1",
+                "order": "1",
+                "name": "配对成单",
+                "description": "按匹配结果生成调剂单并计算节约金额。",
+                "object_type": "logic"
+            },
+            {
+                "id": "action-create-allocation-order:step:2",
+                "order": "2",
+                "name": "写回 ERP",
+                "description": "调用 createAllocation 建单并通知双边。",
+                "object_type": "tool"
+            }
+        ],
+        "rule_bindings": [
+            {
+                "id": "ARB-PSCM-INV-001-action-create-allocation-order-precondition",
+                "rule_id": "PSCM-INV-001",
+                "target": {
+                    "type": "action",
+                    "id": "action-create-allocation-order"
+                },
+                "phase": "precondition",
+                "enforcement": "mandatory",
+                "failure_policy": "block",
+                "provenance": "human"
+            },
+            {
+                "id": "ARB-PSCM-INV-002-action-create-allocation-order-validation",
+                "rule_id": "PSCM-INV-002",
+                "target": {
+                    "type": "action",
+                    "id": "action-create-allocation-order"
+                },
+                "phase": "validation",
+                "enforcement": "optional",
+                "failure_policy": "warn",
+                "provenance": "human",
+                "extensions": {
+                    "entry_condition": "本行动在 PSCM-INV-002 判定命中（on_fail=拦截）后作为处置动作执行"
+                }
+            }
+        ],
+        "side_effects": {
+            "data_changes": [
+                {
+                    "target_object": "AllocationOrder",
+                    "mutation_type": "CREATE",
+                    "impacted_properties": []
+                }
+            ],
+            "notifications": [],
+            "external_calls": [
+                {
+                    "system": "Meta ERP",
+                    "endpoint": "/metaerp/openapi/v1/createAllocation",
+                    "method": "POST",
+                    "description": "调用 Meta ERP 创建跨单位调剂单"
+                }
+            ]
+        },
+        "triggered_event": [
+            "PSCM_ALLOCATION_PROPOSED"
+        ],
+        "implementation": {
+            "kind": "external",
+            "executable": false,
+            "operation_id": "createAllocation",
+            "endpoint": "/metaerp/openapi/v1/createAllocation",
+            "method": "POST"
+        },
+        "provenance": "human",
+        "extensions": {
+            "package_id": "power-scm",
+            "release": "1.0.0",
+            "reads": []
+        }
+    },
+    {
+        "id": "action-confirm-allocation",
+        "name": "双边确认调剂",
+        "description": "调出/调入两个法人单位的物资员分别确认，确认齐即执行调剂并更新两金指标。",
+        "object_type": "action",
+        "category": "两金压降",
+        "actor": [
+            "Human",
+            "Agent"
+        ],
+        "trigger": [
+            "PSCM_ALLOCATION_PROPOSED"
+        ],
+        "target_objects": [
+            "AllocationOrder"
+        ],
+        "inputs": [
+            {
+                "name": "allocation",
+                "type": "application/json",
+                "description": "待确认调剂单",
+                "required": true,
+                "source_object": "AllocationOrder.allocation_id"
+            },
+            {
+                "name": "confirmer",
+                "type": "application/json",
+                "description": "双边确认物资员",
+                "required": true,
+                "source_object": "Employee.employee_id"
+            }
+        ],
+        "outputs": [
+            {
+                "name": "confirmed_allocation",
+                "type": "application/json",
+                "description": "已确认调剂单",
+                "required": true,
+                "source_object": "AllocationOrder"
+            }
+        ],
+        "action_steps": [
+            {
+                "id": "action-confirm-allocation:step:1",
+                "order": "1",
+                "name": "调出方确认",
+                "description": "调出单位物资员移动端确认。",
+                "object_type": "manual"
+            },
+            {
+                "id": "action-confirm-allocation:step:2",
+                "order": "2",
+                "name": "调入方确认",
+                "description": "调入单位物资员移动端确认。",
+                "object_type": "manual"
+            },
+            {
+                "id": "action-confirm-allocation:step:3",
+                "order": "3",
+                "name": "执行与核算",
+                "description": "调用 confirmAllocation 执行，并按两金规则更新指标。",
+                "object_type": "tool"
+            }
+        ],
+        "rule_bindings": [
+            {
+                "id": "ARB-PSCM-INV-004-action-confirm-allocation-postcondition",
+                "rule_id": "PSCM-INV-004",
+                "target": {
+                    "type": "action",
+                    "id": "action-confirm-allocation"
+                },
+                "phase": "postcondition",
+                "enforcement": "optional",
+                "failure_policy": "warn",
+                "provenance": "human"
+            }
+        ],
+        "side_effects": {
+            "data_changes": [
+                {
+                    "target_object": "AllocationOrder",
+                    "mutation_type": "MODIFY",
+                    "impacted_properties": [
+                        "status"
+                    ]
+                }
+            ],
+            "notifications": [],
+            "external_calls": [
+                {
+                    "system": "Meta ERP",
+                    "endpoint": "/metaerp/openapi/v1/confirmAllocation",
+                    "method": "POST",
+                    "description": "调用 Meta ERP 确认并执行调剂"
+                }
+            ]
+        },
+        "triggered_event": [
+            "PSCM_ALLOCATION_CONFIRMED"
+        ],
+        "implementation": {
+            "kind": "external",
+            "executable": false,
+            "operation_id": "confirmAllocation",
+            "endpoint": "/metaerp/openapi/v1/confirmAllocation",
+            "method": "POST"
+        },
+        "provenance": "human",
+        "extensions": {
+            "package_id": "power-scm",
+            "release": "1.0.0",
+            "reads": []
+        }
+    },
+    {
+        "id": "action-create-disposal-package",
+        "name": "生成处置审批包",
+        "description": "为临期/淘汰批次生成处置审批包（报废/竞价/退回），在减值计提前完成决策。",
+        "object_type": "action",
+        "category": "两金压降",
+        "actor": [
+            "Agent",
+            "Human"
+        ],
+        "trigger": [
+            "PSCM_IMPAIRMENT_WARNING_RAISED",
+            "MANUAL"
+        ],
+        "target_objects": [
+            "DisposalOrder"
+        ],
+        "inputs": [
+            {
+                "name": "dormant_lot",
+                "type": "application/json",
+                "description": "临期/淘汰批次",
+                "required": true,
+                "source_object": "InventoryLot.lot_id"
+            }
+        ],
+        "outputs": [
+            {
+                "name": "disposal",
+                "type": "application/json",
+                "description": "处置单",
+                "required": true,
+                "source_object": "DisposalOrder"
+            }
+        ],
+        "action_steps": [
+            {
+                "id": "action-create-disposal-package:step:1",
+                "order": "1",
+                "name": "方式测算",
+                "description": "按回收价值测算最优处置方式。",
+                "object_type": "logic"
+            },
+            {
+                "id": "action-create-disposal-package:step:2",
+                "order": "2",
+                "name": "写回 ERP",
+                "description": "调用 createDisposal 生成审批包。",
+                "object_type": "tool"
+            }
+        ],
+        "rule_bindings": [
+            {
+                "id": "ARB-PSCM-INV-003-action-create-disposal-package-precondition",
+                "rule_id": "PSCM-INV-003",
+                "target": {
+                    "type": "action",
+                    "id": "action-create-disposal-package"
+                },
+                "phase": "precondition",
+                "enforcement": "optional",
+                "failure_policy": "warn",
+                "provenance": "human"
+            }
+        ],
+        "side_effects": {
+            "data_changes": [
+                {
+                    "target_object": "DisposalOrder",
+                    "mutation_type": "CREATE",
+                    "impacted_properties": []
+                }
+            ],
+            "notifications": [],
+            "external_calls": [
+                {
+                    "system": "Meta ERP",
+                    "endpoint": "/metaerp/openapi/v1/createDisposal",
+                    "method": "POST",
+                    "description": "调用 Meta ERP 创建处置单"
+                }
+            ]
+        },
+        "triggered_event": [
+            "PSCM_DISPOSAL_PACKAGE_CREATED"
+        ],
+        "implementation": {
+            "kind": "external",
+            "executable": false,
+            "operation_id": "createDisposal",
+            "endpoint": "/metaerp/openapi/v1/createDisposal",
+            "method": "POST"
+        },
+        "provenance": "human",
+        "extensions": {
+            "package_id": "power-scm",
+            "release": "1.0.0",
+            "reads": []
+        }
+    }
+]

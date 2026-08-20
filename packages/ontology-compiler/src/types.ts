@@ -1,0 +1,328 @@
+/**
+ * Typed model of an allmetaOntology studio domain export (the compiler input)
+ * plus the compiler overlay and the compiled output shapes (design G1).
+ *
+ * IMPORTANT: this library is dependency-free (node builtins only) so the CLI
+ * can run it under Node's native type stripping. Do not add bare-specifier
+ * imports here; runtime-schema validation happens in the package tests via
+ * `@agentic/runtime/manifest`.
+ */
+
+// ── studio export (input) ─────────────────────────────────────────────────────
+
+export interface StudioActionStep {
+  id?: string;
+  order: string;
+  name: string;
+  description?: string;
+  object_type: string;
+}
+
+export interface StudioRuleBinding {
+  id?: string;
+  rule_id: string;
+  phase: string;
+  enforcement: string;
+  failure_policy?: string;
+}
+
+export interface StudioExternalCall {
+  system?: string;
+  endpoint: string;
+  method?: string;
+  description?: string;
+}
+
+export interface StudioDataChange {
+  target_object?: string;
+  mutation_type?: string;
+  impacted_properties?: string[];
+}
+
+export interface StudioActionImplementation {
+  kind: string;
+  operation_id?: string;
+  endpoint?: string;
+  method?: string;
+  model_tier?: string;
+  prompt_template_id?: string;
+}
+
+export interface StudioAction {
+  id: string;
+  name: string;
+  description?: string;
+  category?: string;
+  actor: string[];
+  trigger: string[];
+  target_objects?: string[];
+  action_steps?: StudioActionStep[];
+  rule_bindings?: StudioRuleBinding[];
+  side_effects?: {
+    data_changes?: StudioDataChange[];
+    external_calls?: StudioExternalCall[];
+  };
+  triggered_event: string[];
+  implementation: StudioActionImplementation;
+  [key: string]: unknown;
+}
+
+export interface StudioEventDataField {
+  name: string;
+  type?: string;
+  description?: string;
+  target_object?: string | null;
+  required?: boolean;
+}
+
+export interface StudioEvent {
+  name: string;
+  description?: string;
+  payload?: {
+    event_data?: StudioEventDataField[];
+    [key: string]: unknown;
+  };
+  [key: string]: unknown;
+}
+
+export interface StudioObjectProperty {
+  name: string;
+  type?: string;
+  description?: string;
+  /** True when the value is derived by the ontology rather than read from an
+   * ERP column — the compiled instructions must say so, or an agent will try
+   * to query a field that no source system exposes. */
+  is_computed?: boolean;
+  computed_expression?: string;
+  [key: string]: unknown;
+}
+
+export interface StudioObject {
+  id: string;
+  name?: string;
+  description?: string;
+  properties?: StudioObjectProperty[];
+  [key: string]: unknown;
+}
+
+export interface StudioRule {
+  id: string;
+  name?: string;
+  description?: string;
+  kind?: string;
+  machine_expression?: {
+    language?: string;
+    source?: string;
+    [key: string]: unknown;
+  };
+  outcome?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+export interface StudioWorkflowRole {
+  id?: string;
+  type?: string;
+  role?: string;
+  display_name?: string;
+}
+
+export interface StudioWorkflow {
+  id: string;
+  roles?: StudioWorkflowRole[];
+  actions?: Array<{ name?: string; [key: string]: unknown }>;
+  [key: string]: unknown;
+}
+
+export interface TransformObjectMap {
+  object_id: string;
+  erp_entity?: string | null;
+  fetch?: { method?: string; path?: string } | null;
+  [key: string]: unknown;
+}
+
+export interface TransformActionMap {
+  action_id: string;
+  kind: string;
+  operation_id?: string;
+  endpoint?: string;
+  method?: string;
+  data_changes?: StudioDataChange[];
+  [key: string]: unknown;
+}
+
+export interface TransformMaps {
+  object_maps: TransformObjectMap[];
+  action_maps: TransformActionMap[];
+  [key: string]: unknown;
+}
+
+/** Loaded, typed studio domain (raw payload envelopes are preserved for the
+ * pass-through output projections). */
+export interface StudioDomainModel {
+  domainId: string;
+  actions: StudioAction[];
+  events: StudioEvent[];
+  objects: StudioObject[];
+  rules: StudioRule[];
+  workflows: StudioWorkflow[];
+  transformMaps: TransformMaps;
+  raw: {
+    actions: unknown;
+    events: { metadata?: unknown; events: unknown[] };
+    objects: { metadata?: unknown; payload: unknown[] };
+    rules: { metadata?: unknown; payload: unknown[] };
+  };
+}
+
+// ── compiler overlay ──────────────────────────────────────────────────────────
+
+export interface OverlayEmission {
+  event: string;
+  /** `"always"` for an unconditional explicit emit; otherwise an AO safe
+   * condition-DSL expression (e.g. `lastResult.match_found == true`). */
+  when: string;
+  /** Safe data path for `emit_payload_from`; defaults to `results.<actionId>`. */
+  payload_from?: string;
+}
+
+export interface OverlayRuleGate {
+  /** `condition` requires `condition`; anything else compiles a logic judge. */
+  strategy: "condition" | "judge";
+  condition?: string;
+  /** Extra prompt context telling the judge where its facts live in the
+   * trigger event payload. */
+  judge_context?: string;
+}
+
+export interface OverlayManualStep {
+  awaiting_role?: string;
+  form_schema?: Record<string, unknown>;
+}
+
+export type OverlayToolArgumentSource =
+  | { from: string; required?: boolean }
+  | { const: unknown };
+
+/** One overlay-granted extra tool for a compiled agent. Only names with a
+ * compiler-known reviewed execution policy are accepted (currently just
+ * `ontology.query`) so an overlay can never ship an unreviewed policy. */
+export interface OverlayExtraTool {
+  /** Tool name — must be `"ontology.query"` for now. */
+  name: string;
+  /** Domain-specific guidance shown to the model (what the graph holds).
+   * Falls back to a generic read-only graph description when omitted. */
+  description?: string;
+  /** Passed through verbatim as the tool_use entry's `config` (e.g.
+   * `{tenant_property, id_property, database}`). */
+  config?: Record<string, unknown>;
+  /** When true, also grant the tool to every `rule-gate:*` LLM judge step
+   * and extend those judges' prompts with the graph-evidence instruction. */
+  grant_to_judges?: boolean;
+}
+
+export interface CompilerOverlay {
+  domain?: string;
+  description?: string;
+  /** actionId → ordered conditional/unconditional emissions. */
+  emissions?: Record<string, OverlayEmission[]>;
+  /** ruleId → gate strategy for mandatory precondition bindings. */
+  rule_gates?: Record<string, OverlayRuleGate>;
+  /** actionId → ontology manual-step name → form schema / awaiting role. */
+  manual_steps?: Record<string, Record<string, OverlayManualStep>>;
+  /** actionId → tool_arguments template for the ERP write step. */
+  tool_arguments?: Record<string, Record<string, OverlayToolArgumentSource>>;
+  /** actionId → extra prompt output-contract fields (name → description). */
+  output_contracts?: Record<string, { fields?: Record<string, string> }>;
+  /** actionId → extra read-only tools granted to that agent's LLM steps. */
+  extra_tools?: Record<string, OverlayExtraTool[]>;
+}
+
+// ── compiled output ───────────────────────────────────────────────────────────
+
+/** Reviewed execution policy — must byte-match the global registry entry for
+ * the named tool (metaerp.invoke and ontology.query respectively). */
+export type CompiledExecutionPolicy =
+  | {
+      operation: "read_write";
+      effect_scope: "external";
+      sandbox_policy: "requires_attempt_grant";
+    }
+  | {
+      operation: "read";
+      effect_scope: "external";
+      sandbox_policy: "live_external";
+    };
+
+export interface CompiledToolUseEntry {
+  name: string;
+  description?: string;
+  side_effect: "read" | "write";
+  execution_policy: CompiledExecutionPolicy;
+  /** JSON Schema advertised to the model's tool roster (multi-operation
+   * query entries constrain `operation` via enum here). */
+  input_schema?: Record<string, unknown>;
+  config: {
+    /** Pinned operation. Omitted for merged multi-operation query entries —
+     * the runtime lifts config by tool NAME (first match wins), so an agent
+     * may carry at most ONE metaerp.invoke entry. */
+    operation?: string;
+    /** metaerp.invoke entries always carry these two; overlay-granted extra
+     * tools (ontology.query) instead carry their overlay config verbatim. */
+    base_url_env?: string;
+    catalog_path?: string;
+    [key: string]: unknown;
+  };
+}
+
+/** One manifest action/step. Kept structural (the real contract is
+ * `@agentic/runtime` AgentSchema, asserted in tests). */
+export interface CompiledStep {
+  order: string;
+  name: string;
+  description?: string;
+  type: "logic" | "condition" | "manual" | "tool" | "emit" | "decision";
+  action_prompt?: string;
+  condition?: string;
+  form_schema?: Record<string, unknown>;
+  awaiting_role?: string;
+  tool_arguments?: Record<string, OverlayToolArgumentSource>;
+  allowed_tools?: string[];
+  result_key?: string;
+  depends_on?: string[];
+  on_error?: "soft" | "terminal";
+  emit_event?: string;
+  emit_payload_from?: string;
+  decision_table?: Record<string, unknown>;
+}
+
+export interface CompiledAgent {
+  id: string;
+  name: string;
+  title: string;
+  description: string;
+  actor: string[];
+  trigger: string[];
+  triggered_event: string[];
+  retries: number;
+  generated: true;
+  ontology_instructions?: string;
+  tool_use: CompiledToolUseEntry[];
+  actions: CompiledStep[];
+}
+
+export interface ErpOperation {
+  operation_id: string;
+  method: string;
+  path: string;
+  kind: "query" | "write";
+  entity: string | null;
+}
+
+export interface CompileResult {
+  workflow: CompiledAgent[];
+  actions: unknown;
+  events: { metadata?: unknown; events: unknown[] };
+  objects: { metadata?: unknown; payload: unknown[] };
+  rules: { metadata?: unknown; payload: unknown[] };
+  erpOperations: ErpOperation[];
+}

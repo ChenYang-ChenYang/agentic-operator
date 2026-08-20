@@ -1,0 +1,289 @@
+{
+  "description": "power-scm 编译器 overlay：条件发射、规则闸口策略、人工步骤表单与 Meta ERP 写入参数映射（design G1）。上游分析 Agent 的输出契约（output_contracts）与下游闸口条件/参数路径保持一致：缺口事件负载携带 gap_report（lines/lock_lines/recommended_po/collab/agreement），匹配事件负载携带 match_pairs/requisition/dormant_lot/impairment_lots。",
+  "domain": "allmeta-power-scm",
+  "emissions": {
+    "action-forecast-typhoon-impact": [
+      {
+        "event": "PSCM_STOCK_GAP_IDENTIFIED",
+        "payload_from": "results.action-forecast-typhoon-impact",
+        "when": "always"
+      }
+    ],
+    "action-match-dormant-stock": [
+      {
+        "event": "PSCM_DORMANT_MATCH_FOUND",
+        "payload_from": "results.action-match-dormant-stock",
+        "when": "lastResult.match_found == true"
+      },
+      {
+        "event": "PSCM_IMPAIRMENT_WARNING_RAISED",
+        "payload_from": "results.action-match-dormant-stock",
+        "when": "lastResult.impairment_found == true"
+      }
+    ]
+  },
+  "manual_steps": {
+    "action-confirm-allocation": {
+      "调入方确认": {
+        "awaiting_role": "调入方物资员",
+        "form_schema": {
+          "properties": {
+            "comment": {
+              "title": "备注",
+              "type": "string"
+            },
+            "decision": {
+              "enum": [
+                "approve",
+                "reject"
+              ],
+              "title": "确认结果",
+              "type": "string"
+            }
+          },
+          "required": [
+            "decision"
+          ],
+          "title": "跨单位调剂 · 调入方确认",
+          "type": "object"
+        }
+      },
+      "调出方确认": {
+        "awaiting_role": "调出方物资员",
+        "form_schema": {
+          "properties": {
+            "comment": {
+              "title": "备注",
+              "type": "string"
+            },
+            "decision": {
+              "enum": [
+                "approve",
+                "reject"
+              ],
+              "title": "确认结果",
+              "type": "string"
+            }
+          },
+          "required": [
+            "decision"
+          ],
+          "title": "跨单位调剂 · 调出方确认",
+          "type": "object"
+        }
+      }
+    },
+    "action-create-emergency-po": {
+      "应急审批": {
+        "awaiting_role": "物资部主任",
+        "form_schema": {
+          "properties": {
+            "agreement_confirmed": {
+              "title": "已核对应急框架协议条款",
+              "type": "boolean"
+            },
+            "comment": {
+              "title": "审批意见",
+              "type": "string"
+            },
+            "decision": {
+              "enum": [
+                "approve",
+                "reject"
+              ],
+              "title": "审批决定",
+              "type": "string"
+            }
+          },
+          "required": [
+            "decision"
+          ],
+          "title": "紧急采购应急审批",
+          "type": "object"
+        }
+      }
+    },
+    "action-create-stock-transfer": {
+      "应急审批": {
+        "awaiting_role": "物资部主任",
+        "form_schema": {
+          "properties": {
+            "adjusted_qty": {
+              "title": "调整后调拨数量（可选）",
+              "type": "number"
+            },
+            "comment": {
+              "title": "审批意见",
+              "type": "string"
+            },
+            "decision": {
+              "enum": [
+                "approve",
+                "reject"
+              ],
+              "title": "审批决定",
+              "type": "string"
+            }
+          },
+          "required": [
+            "decision"
+          ],
+          "title": "跨仓调拨应急审批",
+          "type": "object"
+        }
+      }
+    }
+  },
+  "output_contracts": {
+    "action-forecast-typhoon-impact": {
+      "fields": {
+        "affected_regions": "受影响网格清单：[{region_id,region_name,risk_level}]",
+        "gap_report": "缺口报告对象：{gap_exists:boolean, forecast_qty:number, available_qty:number, transfer:{material_id,from_warehouse,to_warehouse,qty}（跨仓调拨行）, lock:{lot_id,qty}（锁库目标批次）, recommended_po:{agreement_id,supplier_id,material_id,qty}（紧急采购建议）, agreement:{agreement_id,valid_from,valid_to,emergency_clause}（供 PSCM-EMG-004 合规判定）, collab:{target_entity_id,material_id,qty}（跨单位借调）}"
+      }
+    },
+    "action-match-dormant-stock": {
+      "fields": {
+        "allocation": "调剂指令（供创建跨单位调剂单写回）：{requisition_id, lot_id, from_org_id, to_org_id, qty, savings}（from_org=囤货单位、to_org=需求单位、savings=可拦截金额）",
+        "dormant_lot": "主匹配呆滞批次：{lot_id,material_id,age_days,status,qty_on_hand,warehouse_id,entity_id}（供 PSCM-INV-001 闸口判定）",
+        "impairment_found": "boolean：是否发现临期/淘汰减值批次。发现才发射 PSCM_IMPAIRMENT_WARNING_RAISED。",
+        "impairment_lots": "临期/淘汰批次清单：[{lot_id,material_id,remaining_shelf_days,tech_status,book_value}]",
+        "match_found": "boolean：是否命中『需求↔呆滞批次』同物匹配（含同物不同码）。命中才发射 PSCM_DORMANT_MATCH_FOUND。",
+        "requisition": "被拦截采购需求：{requisition_id,material_id,qty,entity_id}",
+        "suspend": "拦截指令（供暂停采购写回）：{requisition_id, reason}",
+        "disposal": "处置指令（供创建处置包写回，取账面价值最高的一个临期/淘汰批次）：{lot_id, org_id, est_value, reason}（org_id=批次归属单位、est_value=预计残值。impairment_found=false 时置 null）"
+      }
+    },
+    "action-review-emergency-response": {
+      "fields": {
+        "review_report": "复盘报告对象：{deviation:[{material_id,forecast_qty,consumed_qty,deviation_pct}], sla:{ontime_rate}, replenishment_lines:[{material_id,qty,warehouse_id}]}。replenishment_lines 供补库采购计划批量建需求。"
+      }
+    },
+    "action-scan-supplier-risk": {
+      "fields": {
+        "expedite": "催交指令：{po_id, supplier_id, legal_flag:true}（针对最紧要的关键订单）",
+        "exposure_report": "穿透报告（事件 PSCM_SUPPLIER_RISK_FLAGGED 的 payload 段）。其中 related_party_screening 为关联方排查证据，必须逐候选列出：[{supplier_id, controller_id, controller_name, shares_controller_with_risk_supplier:boolean}]，并给出风险供应商本身的 controller_id。实控人数据在 Meta ERP 中不存在（外部工商股权数据），必须用 ontology.query 的 neighbors 操作（id=供应商编号，如 SUP-001）逐一查询 UltimateController 关系取得，不得凭空判断『未发现关联』——没查到就是证据不足，不是通过",
+        "inspection": "驻厂监造指令：{supplier_id, po_id}（保重点工程订单）",
+        "rfq": "替代询价指令：{supplier_id, material_id, qty}。supplier 必须来自 related_party_screening 中shares_controller_with_risk_supplier=false 且 controller_id 已经图谱核验的候选；与风险供应商同实控人的候选（马甲公司）一律不得进入询价",
+        "risk_flag": "风险名单指令：{supplier_id, type:'integrity'|'related_party', severity:'critical'|'high', reason}"
+      }
+    }
+  },
+  "rule_gates": {
+    "PSCM-EMG-002": {
+      "condition": "input.gap_report.available_qty < input.gap_report.forecast_qty",
+      "strategy": "condition"
+    },
+    "PSCM-EMG-004": {
+      "judge_context": "触发事件负载 gap_report.recommended_po 携带 agreement_id/supplier_id/material_id/qty；gap_report.agreement 携带协议明细（agreement_id/valid_from/valid_to/emergency_clause）。判定：协议在效（valid_from ≤ 今日 ≤ valid_to）且 emergency_clause == true 为 pass，否则 violation。",
+      "strategy": "judge"
+    },
+    "PSCM-INV-001": {
+      "condition": "input.dormant_lot.age_days > 720 && input.dormant_lot.status == 'available'",
+      "strategy": "condition"
+    },
+    "PSCM-INV-002": {
+      "judge_context": "触发事件负载 match_pairs 携带 需求↔呆滞批次 配对（同 equivalent_group 语义等效组，含同物不同码）；requisition.qty 为需求量，dormant_lot.qty_on_hand 为呆滞在库量。判定：存在同物呆滞批次且 qty_on_hand ≥ 需求量×50% 即命中拦截（violation）。",
+      "strategy": "judge"
+    },
+    "PSCM-RSK-002": {
+      "judge_context": "触发事件负载 exposure_report.recommended_candidate 携带候选供应商（supplier_id/controller_id/material_id）；exposure_report.risk_supplier 携带风险供应商（supplier_id/controller_id）。判定：候选与风险供应商 controller_id 相同即关联方假备选，为 violation；不同为 pass。",
+      "strategy": "judge"
+    }
+  },
+  "tool_arguments": {
+    "action-add-supplier-risk-flag": {
+      "payload": {
+        "from": "event.data.risk_flag"
+      }
+    },
+    "action-confirm-allocation": {
+      "payload": {
+        "from": "event.data.row"
+      }
+    },
+    "action-create-allocation-order": {
+      "payload": {
+        "from": "event.data.allocation"
+      }
+    },
+    "action-create-collab-request": {
+      "payload": {
+        "from": "event.data.gap_report.collab"
+      }
+    },
+    "action-create-disposal-package": {
+      "payload": {
+        "from": "event.data.disposal"
+      }
+    },
+    "action-create-emergency-po": {
+      "payload": {
+        "from": "event.data.gap_report.recommended_po"
+      }
+    },
+    "action-create-onsite-inspection": {
+      "payload": {
+        "from": "event.data.inspection"
+      }
+    },
+    "action-create-stock-transfer": {
+      "payload": {
+        "from": "event.data.gap_report.transfer"
+      }
+    },
+    "action-dispatch-logistics": {
+      "payload": {
+        "from": "event.data.row"
+      }
+    },
+    "action-generate-replenishment-plan": {
+      "lines": {
+        "from": "event.data.review_report.replenishment_lines",
+        "required": false
+      },
+      "payload": {
+        "from": "event.data"
+      }
+    },
+    "action-issue-expedite-notice": {
+      "payload": {
+        "from": "event.data.expedite"
+      }
+    },
+    "action-lock-inventory": {
+      "payload": {
+        "from": "event.data.gap_report.lock"
+      }
+    },
+    "action-release-inventory": {
+      "payload": {
+        "from": "event.data"
+      }
+    },
+    "action-send-rfq": {
+      "payload": {
+        "from": "event.data.rfq"
+      }
+    },
+    "action-suspend-requisition": {
+      "payload": {
+        "from": "event.data.suspend"
+      }
+    }
+  },
+  "extra_tools": {
+    "action-scan-supplier-risk": [
+      {
+        "name": "ontology.query",
+        "description": "本体图谱（Neo4j）只读查询。Meta ERP 中不存在的外部工商股权数据在图谱里：Supplier 节点经 CONTROLLED_BY 关系连到 UltimateController（实控人）节点。用 neighbors 操作（id=供应商编号，如 SUP-001）查该供应商的实控人；比较 controller_id 即可判定两家供应商是否同一实控人（马甲/关联方）。此外图谱还有 Material 的 EQUIVALENT_TO 语义等效关系与全部对象实例。"
+      }
+    ],
+    "action-send-rfq": [
+      {
+        "name": "ontology.query",
+        "description": "本体图谱（Neo4j）只读查询。Meta ERP 中不存在的外部工商股权数据在图谱里：Supplier 节点经 CONTROLLED_BY 关系连到 UltimateController（实控人）节点。用 neighbors 操作（id=供应商编号，如 SUP-001）查该供应商的实控人；比较 controller_id 即可判定两家供应商是否同一实控人（马甲/关联方）。此外图谱还有 Material 的 EQUIVALENT_TO 语义等效关系与全部对象实例。",
+        "grant_to_judges": true
+      }
+    ]
+  }
+}

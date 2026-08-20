@@ -1,0 +1,315 @@
+/*
+ * Workflow monitor (design §G4) — live-state chrome layered over the
+ * workflow canvas: node state rings/badges, the live legend and the
+ * run-scrubber strip. Colors come from the shared tokens
+ * (apps/web/styles/tokens.css): --signal, --green, --red, --amber.
+ */
+
+/* ── Node live ring ──────────────────────────────────────────────────── */
+
+.ring {
+  position: absolute;
+  inset: -3px;
+  border: 2px solid transparent;
+  border-radius: 6px;
+  pointer-events: none;
+}
+
+.ringRunning {
+  border-color: var(--signal);
+  animation: monitorPulse 1.6s ease-in-out infinite;
+}
+
+.ringWaiting {
+  border-color: var(--amber);
+}
+
+.ringFailed {
+  border-color: var(--red);
+}
+
+.ringOk {
+  border-color: var(--green);
+  animation: monitorOkFade 2.4s ease-out forwards;
+}
+
+@keyframes monitorPulse {
+  0%,
+  100% {
+    opacity: 1;
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--signal) 35%, transparent);
+  }
+  50% {
+    opacity: 0.55;
+    box-shadow: 0 0 0 5px color-mix(in srgb, var(--signal) 0%, transparent);
+  }
+}
+
+@keyframes monitorOkFade {
+  0% {
+    opacity: 1;
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--green) 22%, transparent);
+  }
+  100% {
+    opacity: 0.35;
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+
+/* ── Node live badge (top-right chip) ────────────────────────────────── */
+
+.badgeRow {
+  position: absolute;
+  top: -9px;
+  right: 6px;
+  display: flex;
+  gap: 4px;
+  pointer-events: none;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 6px;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  line-height: 14px;
+  color: var(--bg);
+  white-space: nowrap;
+  border: none;
+  border-radius: 8px;
+  pointer-events: auto;
+}
+
+.badgeRunning {
+  background: var(--signal);
+}
+
+.badgeWaiting {
+  background: var(--amber);
+  cursor: pointer;
+}
+
+.badgeWaiting:hover {
+  filter: brightness(1.12);
+}
+
+.badgeFailed {
+  background: var(--red);
+}
+
+.badgeOk {
+  background: var(--green);
+  animation: monitorOkFade 2.4s ease-out forwards;
+}
+
+.badgeTokens {
+  padding: 1px 6px;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  line-height: 14px;
+  color: var(--text-2);
+  white-space: nowrap;
+  background: var(--panel-3);
+  border: 1px solid var(--border-2);
+  border-radius: 8px;
+}
+
+/* ── Live legend ─────────────────────────────────────────────────────── */
+
+.legend {
+  position: absolute;
+  bottom: 12px;
+  left: 12px;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  padding: 6px 10px;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-3);
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  pointer-events: none;
+}
+
+.legendItem {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.legendDot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+
+/* ── Run scrubber strip ──────────────────────────────────────────────── */
+
+.scrubber {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 5px 24px;
+  overflow: hidden;
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--border);
+}
+
+.scrubberLabel {
+  flex: none;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--text-3);
+  text-transform: uppercase;
+}
+
+.scrubberTrack {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.chip {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-2);
+  white-space: nowrap;
+  cursor: pointer;
+  background: var(--panel);
+  border: 1px solid var(--border-2);
+  border-radius: 12px;
+}
+
+.chip:hover {
+  border-color: var(--border-3, var(--border-2));
+  color: var(--text);
+}
+
+.chipSelected {
+  color: var(--text);
+  border-color: var(--signal);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--signal) 18%, transparent);
+}
+
+.chipDot {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: 50%;
+}
+
+.chipDotRunning {
+  animation: monitorPulse 1.6s ease-in-out infinite;
+}
+
+/* ── Live inspector panel ────────────────────────────────────────────── */
+
+.tabs {
+  display: flex;
+  flex: none;
+  gap: 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel-2);
+}
+
+.tab {
+  padding: 8px 14px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  color: var(--text-3);
+  text-transform: uppercase;
+  cursor: pointer;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+}
+
+.tabActive {
+  color: var(--text);
+  border-bottom-color: var(--signal);
+}
+
+.logBox {
+  height: 190px;
+  padding: 8px 10px;
+  overflow-y: auto;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  line-height: 1.55;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.logLineError {
+  color: var(--red);
+}
+
+.stepRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  font-size: 11.5px;
+  border-bottom: 1px solid var(--border);
+}
+
+.stepRow:last-child {
+  border-bottom: none;
+}
+
+.runRow {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 6px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-2);
+  text-align: left;
+  cursor: pointer;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+}
+
+.runRow:hover {
+  background: var(--panel-2);
+}
+
+.runRowSelected {
+  color: var(--text);
+  background: var(--panel-2);
+  box-shadow: inset 2px 0 0 var(--signal);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ringRunning,
+  .ringOk,
+  .badgeOk,
+  .chipDotRunning {
+    animation: none;
+  }
+}

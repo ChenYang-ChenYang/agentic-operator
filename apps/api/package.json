@@ -51,11 +51,12 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@agentic/mock-erp": "workspace:*",
+    "@tenants/__system": "workspace:*",
+    "@tenants/tenant-test1": "workspace:*",
     "@types/node": "^26.1.1",
     "@types/pg": "^8.20.0",
     "@vitest/coverage-v8": "3.2.4",
-    "@tenants/__system": "workspace:*",
-    "@tenants/tenant-test1": "workspace:*",
     "tsx": "^4.22.0",
     "typescript": "^6.0.3",
     "vitest": "^3.0.5"

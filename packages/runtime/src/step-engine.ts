@@ -1555,6 +1555,19 @@ async function runTenantPrompt(
       validated = result.text;
     }
     validationMeta = { rawResponse: result.text };
+  } else if (agent?.generated === true && !prompt.output) {
+    // Ontology-compiled generated agents (redesign 2026-08-19 §G1) publish
+    // their logic result as the emitted-event payload and downstream steps
+    // address into it (`emit_payload_from: results.<id>`, condition paths
+    // like `input.gap_report.…`). Mirror the v2 behaviour: prefer structured
+    // JSON when the model returned it, keep raw text otherwise. Legacy
+    // (non-generated) v1 agents keep the historical raw-text result.
+    try {
+      validated = parseStructuredJson(result.text);
+    } catch {
+      validated = result.text;
+    }
+    validationMeta = { rawResponse: result.text };
   } else if (prompt.output) {
     try {
       const json = parseStructuredJson(result.text);
@@ -2542,10 +2555,29 @@ async function runActionCore(input: StepInput): Promise<StepOutput> {
       } else if (tenantPrompt || agent?.generated) {
         // Declarative generated agents (codeExecuted=false) run their authored
         // ontology instructions through the real gateway via the default
-        // generated prompt (now carrying the action's objective/description).
+        // generated prompt. For v1 generated agents the full authored
+        // action_prompt (rubric + output contract) must ride the user turn —
+        // it reaches the model nowhere else, and compiled ontology agents put
+        // their fail-closed output contract there. v2 agents already carry
+        // action_prompt in the system message, so their action-context keeps
+        // the one-line description.
+        let logicPromptIsV2 = false;
+        try {
+          logicPromptIsV2 =
+            agent !== undefined &&
+            normalizeAgentForExecution(agent).compatibilityMode === "v2";
+        } catch {
+          logicPromptIsV2 = false;
+        }
+        const authoredLogicObjective =
+          !logicPromptIsV2 &&
+          typeof action.action_prompt === "string" &&
+          action.action_prompt.trim()
+            ? action.action_prompt.trim()
+            : action.description;
         const logicPrompt =
           tenantPrompt ??
-          makeGeneratedAgentPrompt(action.name, action.description);
+          makeGeneratedAgentPrompt(action.name, authoredLogicObjective);
         // Per-action AI controls are true per-step overrides: any omitted
         // field inherits the agent-level selection, so a cheap classifier, a
         // reasoning-heavy planner, and a long-context synthesizer can coexist

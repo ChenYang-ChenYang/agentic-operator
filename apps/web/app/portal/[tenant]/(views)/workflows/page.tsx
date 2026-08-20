@@ -117,9 +117,19 @@ import {
   readWorkflowReturnState,
   workflowCanvasHref,
 } from "@/app/portal/components/workflows/workflow-navigation";
+import {
+  InspectorTabs,
+  LiveAgentPanel,
+  LiveLegend,
+  NodeLiveBadge,
+  RunScrubber,
+  type MonitorInspectorTab,
+} from "@/app/portal/components/workflow-monitor";
 import { useDag } from "@/lib/hooks/useAgents";
 import { useAgentEditor } from "@/lib/hooks/useAgentStudio";
 import { useEvents } from "@/lib/hooks/useEvents";
+import type { RunListRow } from "@/lib/hooks/useRuns";
+import { useWorkflowLiveState } from "@/lib/hooks/useWorkflowLiveState";
 import {
   formatWorkflowAuthoringError,
   useDeleteWorkflow,
@@ -239,6 +249,13 @@ export default function WorkflowsPage() {
   // surface their emit/trigger names through the DAG payload regardless of
   // whether the event has ever fired).
   const eventsQuery = useEvents({ limit: 200 });
+  // §G4 realtime workflow monitor — per-agent live state + edge pulses folded
+  // from the tenant SSE stream. Drives node rings/badges, real edge animation
+  // and the live inspector panel outside edit mode.
+  const live = useWorkflowLiveState();
+  const [scrubRun, setScrubRun] = useState<RunListRow | null>(null);
+  const [inspectorTab, setInspectorTab] =
+    useState<MonitorInspectorTab>("live");
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
   const [selectedEvent, setSelectedEvent] = useState<string | null>(null);
   const [hoveredEdge, setHoveredEdge] = useState<number | null>(null);
@@ -404,6 +421,39 @@ export default function WorkflowsPage() {
         ? agents.find((agent) => agent.kebabId === selectedAgent)
         : undefined,
     [agents, selectedAgent],
+  );
+  // §G4 — lookups bridging the SSE stream's `agentName` (manifest name) to
+  // the canvas's kebab-id node key space.
+  const agentNameSet = useMemo(
+    () => new Set(agents.map((agent) => agent.name)),
+    [agents],
+  );
+  const agentTitlesByName = useMemo(
+    () =>
+      Object.fromEntries(agents.map((agent) => [agent.name, agent.title])),
+    [agents],
+  );
+  const kebabByName = useMemo(
+    () => new Map(agents.map((agent) => [agent.name, agent.kebabId])),
+    [agents],
+  );
+  // Fresh inspector tab per node selection; drop the scrub highlight when the
+  // operator switches workflows (its runs belong to the previous DAG).
+  useEffect(() => {
+    setInspectorTab("live");
+  }, [selectedAgent]);
+  useEffect(() => {
+    setScrubRun(null);
+  }, [selectedWorkflow]);
+  const openTaskInbox = useCallback(
+    (taskId: string | null) => {
+      router.push(
+        `/portal/${tenant}/tasks${
+          taskId ? `?selected=${encodeURIComponent(taskId)}` : ""
+        }` as never,
+      );
+    },
+    [router, tenant],
   );
   useEffect(() => {
     // A workflow switch can render once with the previous node selection
@@ -725,10 +775,28 @@ export default function WorkflowsPage() {
         }
       });
     }
+    // §G4 run scrubber — highlight the selected run's node plus the edges
+    // carrying the event that run emitted.
+    if (scrubRun) {
+      const kebab = kebabByName.get(scrubRun.agentName);
+      if (kebab) {
+        nodes.add(kebab);
+        edges.forEach((e, i) => {
+          if (
+            e.src === kebab &&
+            scrubRun.emittedEvent &&
+            e.event === scrubRun.emittedEvent
+          ) {
+            edgeSet.add(i);
+            nodes.add(e.dst);
+          }
+        });
+      }
+    }
     return { nodes, edges: edgeSet };
-  }, [selectedAgent, selectedEvent, edges]);
+  }, [selectedAgent, selectedEvent, scrubRun, kebabByName, edges]);
 
-  const dim = Boolean(selectedAgent || selectedEvent);
+  const dim = Boolean(selectedAgent || selectedEvent || scrubRun);
 
   // After data loads, scroll the canvas so the leftmost node is visible.
   // The canvas reserves room for all RAAS stages (0..7) at fixed COL_W;
@@ -1789,6 +1857,17 @@ export default function WorkflowsPage() {
 
       {editing && <EditDraftBanner counts={draftCounts} />}
 
+      {/* §G4 — run scrubber: recent runs across this workflow's agents.
+          Selecting a chip highlights the node + its emitted-event edges. */}
+      {!editing && (
+        <RunScrubber
+          agentNames={agentNameSet}
+          titlesByName={agentTitlesByName}
+          selectedRunId={scrubRun?.id ?? null}
+          onSelect={setScrubRun}
+        />
+      )}
+
       {restoredAt && (
         <div
           role="status"
@@ -2063,8 +2142,13 @@ export default function WorkflowsPage() {
                           setSelectedEvent(e.event);
                         }}
                       />
+                      {/* §G4 — a dot travels an edge only while its event
+                          name actually pulsed on the SSE stream within the
+                          last few seconds (or the edge is highlighted).
+                          Replaces the former index-modulo decoration. */}
                       {liveStream &&
-                        (isHi || (!dim && Math.abs((i * 37) % 7) === 0)) && (
+                        (isHi ||
+                          (!dim && live.activeEventNames.has(e.event))) && (
                           <circle
                             className={styles.animatedEdgeDot}
                             r="3"
@@ -2352,12 +2436,22 @@ export default function WorkflowsPage() {
                           />
                         </>
                       )}
+                      {/* §G4 — live state ring + badge (view mode only). */}
+                      {!editing && (
+                        <NodeLiveBadge
+                          live={
+                            live.agents[a.name] ?? live.agents[a.kebabId]
+                          }
+                          onOpenTasks={openTaskInbox}
+                        />
+                      )}
                     </div>
                   );
                 })}
               </div>
             </div>
           </div>
+          {!editing && <LiveLegend />}
         </div>
 
         <div
@@ -2432,14 +2526,32 @@ export default function WorkflowsPage() {
               onClose={() => setSelectedAgent(null)}
             />
           ) : selectedAgent && selectedAgentRecord ? (
-            <AgentInspector
-              agent={selectedAgentRecord}
-              onClose={() => setSelectedAgent(null)}
-              onToggleWidth={toggleAgentPanelWidth}
-              canResize={inspectorCanResize}
-              isWide={inspectorIsWide}
-              workflowLabel={`${selectedWorkflow ?? t("workflowPage.workflowLower")}${workflowVersion ? ` · ${workflowVersion}` : ""}`}
-            />
+            // §G4 — outside edit mode the inspector defaults to the live
+            // monitor (state, controls, step timeline, log tail) with the
+            // original manifest definition one tab away.
+            <>
+              <InspectorTabs tab={inspectorTab} onChange={setInspectorTab} />
+              {inspectorTab === "live" ? (
+                <LiveAgentPanel
+                  agent={selectedAgentRecord}
+                  live={
+                    live.agents[selectedAgentRecord.name] ??
+                    live.agents[selectedAgentRecord.kebabId]
+                  }
+                  onClose={() => setSelectedAgent(null)}
+                  onOpenTasks={openTaskInbox}
+                />
+              ) : (
+                <AgentInspector
+                  agent={selectedAgentRecord}
+                  onClose={() => setSelectedAgent(null)}
+                  onToggleWidth={toggleAgentPanelWidth}
+                  canResize={inspectorCanResize}
+                  isWide={inspectorIsWide}
+                  workflowLabel={`${selectedWorkflow ?? t("workflowPage.workflowLower")}${workflowVersion ? ` · ${workflowVersion}` : ""}`}
+                />
+              )}
+            </>
           ) : selectedEvent ? (
             <EventInspector
               eventName={selectedEvent}

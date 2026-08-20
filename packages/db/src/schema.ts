@@ -491,8 +491,19 @@ export const runs = sqliteTable(
     triggerEventId: text("trigger_event_id").references(() => events.id),
     /** P1-RT-04 — parent run id when this run was composed via `subflow`. */
     parentRunId: text("parent_run_id"),
+    /** §G4 — `paused` is a non-terminal operator hold: the runtime parks the
+     * run before its next action (`pause-check-<ord>` in register.ts) until
+     * POST /v1/runs/:id/resume emits the tenant `run.resume` event. */
     status: text("status", {
-      enum: ["queued", "running", "ok", "failed", "waiting", "cancelled"],
+      enum: [
+        "queued",
+        "running",
+        "ok",
+        "failed",
+        "waiting",
+        "paused",
+        "cancelled",
+      ],
     }).notNull(),
     queuedAt: integer("queued_at", { mode: "timestamp_ms" })
       .notNull()
@@ -2054,6 +2065,53 @@ export const eventStore = sqliteTable(
     subjectIdx: index("event_store_subject_idx").on(t.subject),
     causationIdx: index("event_store_causation_idx").on(t.causationId),
     corrIdx: index("event_store_correlation_idx").on(t.correlationId),
+  }),
+);
+
+// §G2 — agent-execution LIVE window (Studio eval-test reconnection). One row
+// per accepted POST /api/agent-execution/live/executions. `clientRequestId` is
+// UNIQUE per window tenant so an idempotent replay returns the SAME
+// executionId without publishing a second trigger event. `eventId` links the
+// execution to the published trigger event; the run is located at read time
+// via runs.trigger_event_id (never denormalized here), so the envelope always
+// reflects live run truth.
+export const agentExecutions = sqliteTable(
+  "agent_executions",
+  {
+    id: text("id").primaryKey(), // exe-…
+    tenantSlug: text("tenant_slug").notNull(),
+    agent: text("agent").notNull(),
+    clientRequestId: text("client_request_id").notNull(),
+    /** The published trigger event id (events.id / Inngest envelope id). */
+    eventId: text("event_id"),
+    /** The exact validated AoLiveExecutionRequest body (audit + snapshotDigest echo). */
+    requestJson: text("request_json", { mode: "json" }),
+    status: text("status", {
+      enum: [
+        "pending",
+        "running",
+        "succeeded",
+        "failed",
+        "timeout",
+        "cancelled",
+      ],
+    })
+      .notNull()
+      .default("pending"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+  },
+  (t) => ({
+    clientRequestUq: uniqueIndex("agent_executions_client_request_uq").on(
+      t.tenantSlug,
+      t.clientRequestId,
+    ),
+    eventIdx: index("agent_executions_event_idx").on(t.eventId),
+    tenantCreatedIdx: index("agent_executions_tenant_created_idx").on(
+      t.tenantSlug,
+      t.createdAt,
+    ),
   }),
 );
 

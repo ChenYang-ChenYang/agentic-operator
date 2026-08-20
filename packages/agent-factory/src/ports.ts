@@ -808,6 +808,12 @@ export interface FactoryPorts {
    *  按本体内容哈希精确寻址：本体一变查询自然 miss（隐式失效）。Absent → 仅会话内 ctx
    *  缓存（今日行为）；一切钩子 best-effort，store 故障绝不影响工具本身。 */
   domainInsights?: DomainInsightStore;
+  /** optional: authored System Profile alias groups — each inner array is a set of
+   * equivalent external-system names treated as one identity during binding. */
+  systemAliases?: { list(): Promise<string[][]> };
+  /** optional: System Profiles flagged human-boundary — the WHOLE system is manually
+   * handled (see collectExecutionResources in tools.ts; seeds mode:"all" boundaries). */
+  systemHumanBoundaries?: { list(): Promise<string[]> };
 }
 
 /** #KNOW-PACK — one persisted domain-analysis pack: the fold-surviving understanding fields of

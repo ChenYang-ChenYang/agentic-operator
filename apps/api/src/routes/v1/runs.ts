@@ -588,6 +588,191 @@ export async function runsRoutes(app: FastifyInstance) {
     },
   );
 
+  // POST /v1/runs/:id/pause — §G4 operator hold for an in-flight manifest run.
+  //
+  // Pausing is durable-cooperative, mirroring the cancel contract's
+  // status-row discipline: the route flips `runs.status` to `paused`
+  // (allowed only from running/waiting), and the runtime's memoized
+  // `pause-check-<ord>` step (packages/runtime/src/register.ts) reads that
+  // row before each action and parks the function on
+  // `step.waitForEvent("pause-wait-<ord>")` until the tenant `run.resume`
+  // event matching this runId arrives (7d timeout). No Inngest signal is
+  // needed to PAUSE — the durable row is the cooperative signal — so this
+  // write commits directly, like the code-agent cancel path.
+  //
+  // Idempotency: pausing an already-paused or terminal run is a 200 no-op.
+  app.post<{ Params: { id: string } }>(
+    "/runs/:id/pause",
+    async (req, reply) => {
+      const auth = requirePermission(req, "runs.cancel");
+      const db = getDb();
+      const run = db
+        .select()
+        .from(runs)
+        .where(eq(runs.id, req.params.id))
+        .all()[0];
+      if (!run) return reply.fail("not_found", "run not found", 404);
+      if (run.tenantId !== auth.tenantId)
+        return reply.fail("forbidden", "forbidden", 403);
+      if (run.status === "paused") {
+        return reply.ok({
+          runId: run.id,
+          status: "paused",
+          paused: false,
+          note: "Run is already paused; no action taken.",
+        });
+      }
+      if (!["running", "waiting"].includes(run.status)) {
+        return reply.ok({
+          runId: run.id,
+          status: run.status,
+          paused: false,
+          note: `Run is not pausable from status=${run.status}; no action taken.`,
+        });
+      }
+      const previousStatus = run.status;
+      const pausedAt = new Date();
+      const auditId = makeId("aud");
+      const persisted = db.transaction((tx) => {
+        const updated = tx
+          .update(runs)
+          .set({ status: "paused" })
+          .where(
+            and(
+              eq(runs.id, run.id),
+              eq(runs.tenantId, auth.tenantId),
+              inArray(runs.status, ["running", "waiting"]),
+            ),
+          )
+          .run() as { changes?: number };
+        if ((updated.changes ?? 0) !== 1) return false;
+        tx.insert(auditLog)
+          .values({
+            id: auditId,
+            tenantId: auth.tenantId,
+            actorUserId: auth.userId,
+            action: "run.pause",
+            targetType: "run",
+            targetId: run.id,
+            at: pausedAt,
+            metaJson: { previousStatus } as never,
+          })
+          .run();
+        return true;
+      });
+      if (!persisted) {
+        const current = db
+          .select({ status: runs.status })
+          .from(runs)
+          .where(and(eq(runs.id, run.id), eq(runs.tenantId, auth.tenantId)))
+          .all()[0];
+        return reply.ok({
+          runId: run.id,
+          status: current?.status ?? run.status,
+          paused: false,
+          note: `Run reached status=${current?.status ?? "unknown"} before the pause was committed; no row was overwritten.`,
+        });
+      }
+      return reply.ok({
+        runId: run.id,
+        status: "paused",
+        paused: true,
+        note: "Run will park before its next action until resumed.",
+      });
+    },
+  );
+
+  // POST /v1/runs/:id/resume — §G4 counterpart of pause.
+  //
+  // Fail-closed ordering mirrors cancel: a parked manifest function only
+  // wakes on the tenant `run.resume` Inngest event, so the broker must
+  // accept that signal BEFORE the durable row flips back to running — a
+  // resume the runtime never received must not look resumed in the UI.
+  // The runtime's own `pause-resume-<ord>` step also performs a guarded
+  // paused→running flip, so the row converges even when the engine wakes
+  // before/without this route's update (e.g. direct DB pauses in tests).
+  app.post<{ Params: { id: string } }>(
+    "/runs/:id/resume",
+    async (req, reply) => {
+      const auth = requirePermission(req, "runs.cancel");
+      const db = getDb();
+      const run = db
+        .select()
+        .from(runs)
+        .where(eq(runs.id, req.params.id))
+        .all()[0];
+      if (!run) return reply.fail("not_found", "run not found", 404);
+      if (run.tenantId !== auth.tenantId)
+        return reply.fail("forbidden", "forbidden", 403);
+      if (run.status !== "paused") {
+        return reply.ok({
+          runId: run.id,
+          status: run.status,
+          resumed: false,
+          note: `Run is not paused (status=${run.status}); no action taken.`,
+        });
+      }
+      try {
+        await getTenantInngest(auth.tenantSlug).send({
+          // Stable per (run, pause cycle): timestamp disambiguates repeated
+          // pause/resume cycles while broker retries of one click dedupe.
+          id: `resume-${run.id}-${run.startedAt?.getTime() ?? 0}-${Date.now()}`,
+          name: tenantEventName(
+            auth.tenantSlug,
+            "run.resume",
+          ) as `${string}/${string}`,
+          data: {
+            runId: run.id,
+            subject: run.subject ?? null,
+            resumedBy: auth.tenantSlug,
+          },
+        });
+      } catch (err) {
+        req.log.error(
+          { err, runId: run.id, action: "run.resume.inngest_send_failed" },
+          "resume: Inngest did not accept the resume signal; run stays paused",
+        );
+        return reply.fail(
+          "resume_signal_failed",
+          "Inngest did not acknowledge the resume signal; run status was not changed",
+          502,
+        );
+      }
+      const resumedAt = new Date();
+      const auditId = makeId("aud");
+      db.transaction((tx) => {
+        tx.update(runs)
+          .set({ status: "running" })
+          .where(
+            and(
+              eq(runs.id, run.id),
+              eq(runs.tenantId, auth.tenantId),
+              eq(runs.status, "paused"),
+            ),
+          )
+          .run();
+        tx.insert(auditLog)
+          .values({
+            id: auditId,
+            tenantId: auth.tenantId,
+            actorUserId: auth.userId,
+            action: "run.resume",
+            targetType: "run",
+            targetId: run.id,
+            at: resumedAt,
+            metaJson: { signal: "inngest_acknowledged" } as never,
+          })
+          .run();
+      });
+      return reply.ok({
+        runId: run.id,
+        status: "running",
+        resumed: true,
+        note: "Resume signal accepted; the parked function continues at its pause gate.",
+      });
+    },
+  );
+
   // DELETE /v1/runs/:id — soft-delete (tombstone) a single run. Recoverable
   // from the recycle bin via POST /runs/:id/restore. Tenant-scoped and refuses
   // an in-flight run (cancel it first). Idempotent: re-deleting a tombstoned

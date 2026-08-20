@@ -76,6 +76,9 @@ test("all root database operations use binaries plus argv (never shell strings)"
     "generate",
     "migrate",
     "prune-deployments",
+    // Recovery is deliberately absent from the supervised roster below: it has
+    // to run precisely when the writer lease cannot be acquired.
+    "recover-writer-lease",
     "seed",
     "studio",
     "wipe-runtime",

@@ -1,0 +1,1110 @@
+{
+    "metadata": {
+        "version_number": 1001,
+        "created_at": "2026-08-19T00:00:00.000Z",
+        "created_by": "power-scm-builder",
+        "source": "import",
+        "parent_version": null,
+        "message": "power-scm 1.0.0",
+        "ai_involved": false,
+        "last_updated": "2026-08-19"
+    },
+    "events": [
+        {
+            "name": "PSCM_TYPHOON_ALERT_RECEIVED",
+            "description": "气象部门发布台风预警（含预测路径帧与登陆倒计时）。",
+            "event_version": "1.0.0",
+            "payload": {
+                "source_action": null,
+                "event_data": [
+                    {
+                        "name": "typhoon_event",
+                        "type": "JSON",
+                        "description": "台风事件（路径、强度、登陆预估）",
+                        "target_object": "ExternalEvent",
+                        "required": true
+                    }
+                ],
+                "state_mutations": [
+                    {
+                        "target_object": "ExternalEvent",
+                        "mutation_type": "CREATE",
+                        "impacted_properties": [
+                            "event_id",
+                            "event_type",
+                            "severity",
+                            "payload"
+                        ]
+                    }
+                ]
+            },
+            "producers": [
+                {
+                    "type": "ExternalSystem",
+                    "id": "weather-feed"
+                }
+            ],
+            "subscribers": [
+                {
+                    "type": "Action",
+                    "id": "action-forecast-typhoon-impact",
+                    "required": false
+                }
+            ],
+            "provenance": "human",
+            "extensions": {
+                "package_id": "power-scm",
+                "release": "1.0.0"
+            }
+        },
+        {
+            "name": "PSCM_LEGAL_DISHONEST_RECEIVED",
+            "description": "司法数据源推送：某供应商被列为失信被执行人。",
+            "event_version": "1.0.0",
+            "payload": {
+                "source_action": null,
+                "event_data": [
+                    {
+                        "name": "risk_event",
+                        "type": "JSON",
+                        "description": "司法失信事件",
+                        "target_object": "ExternalEvent",
+                        "required": true
+                    }
+                ],
+                "state_mutations": [
+                    {
+                        "target_object": "ExternalEvent",
+                        "mutation_type": "CREATE",
+                        "impacted_properties": [
+                            "event_id",
+                            "event_type",
+                            "supplier_id"
+                        ]
+                    },
+                    {
+                        "target_object": "Supplier",
+                        "mutation_type": "MODIFY",
+                        "impacted_properties": [
+                            "is_dishonest"
+                        ]
+                    }
+                ]
+            },
+            "producers": [
+                {
+                    "type": "ExternalSystem",
+                    "id": "legal-data-feed"
+                }
+            ],
+            "subscribers": [
+                {
+                    "type": "Action",
+                    "id": "action-scan-supplier-risk",
+                    "required": false
+                }
+            ],
+            "provenance": "human",
+            "extensions": {
+                "package_id": "power-scm",
+                "release": "1.0.0"
+            }
+        },
+        {
+            "name": "PSCM_INSPECTION_FAILED",
+            "description": "Meta ERP 质量模块回传检验不合格结论。",
+            "event_version": "1.0.0",
+            "payload": {
+                "source_action": null,
+                "event_data": [
+                    {
+                        "name": "inspection",
+                        "type": "JSON",
+                        "description": "不合格检验报告",
+                        "target_object": "InspectionReport",
+                        "required": true
+                    }
+                ],
+                "state_mutations": [
+                    {
+                        "target_object": "InspectionReport",
+                        "mutation_type": "CREATE",
+                        "impacted_properties": [
+                            "inspection_id",
+                            "result"
+                        ]
+                    }
+                ]
+            },
+            "producers": [
+                {
+                    "type": "ExternalSystem",
+                    "id": "MetaERP"
+                }
+            ],
+            "subscribers": [
+                {
+                    "type": "Action",
+                    "id": "action-scan-supplier-risk",
+                    "required": false
+                }
+            ],
+            "provenance": "human",
+            "extensions": {
+                "package_id": "power-scm",
+                "release": "1.0.0"
+            }
+        },
+        {
+            "name": "PSCM_REQUISITION_SUBMITTED",
+            "description": "Meta ERP 回传：新采购需求提交/批准——同物匹配拦截的入口。",
+            "event_version": "1.0.0",
+            "payload": {
+                "source_action": null,
+                "event_data": [
+                    {
+                        "name": "requisition",
+                        "type": "JSON",
+                        "description": "新采购需求",
+                        "target_object": "PurchaseRequisition",
+                        "required": true
+                    }
+                ],
+                "state_mutations": [
+                    {
+                        "target_object": "PurchaseRequisition",
+                        "mutation_type": "CREATE_OR_MODIFY",
+                        "impacted_properties": [
+                            "requisition_id",
+                            "status"
+                        ]
+                    }
+                ]
+            },
+            "producers": [
+                {
+                    "type": "ExternalSystem",
+                    "id": "MetaERP"
+                }
+            ],
+            "subscribers": [
+                {
+                    "type": "Action",
+                    "id": "action-match-dormant-stock",
+                    "required": false
+                }
+            ],
+            "provenance": "human",
+            "extensions": {
+                "package_id": "power-scm",
+                "release": "1.0.0"
+            }
+        },
+        {
+            "name": "PSCM_INVENTORY_SNAPSHOT_SYNCED",
+            "description": "Meta ERP 库存快照同步节拍（本体零存储，按拍拉取）。",
+            "event_version": "1.0.0",
+            "payload": {
+                "source_action": null,
+                "event_data": [
+                    {
+                        "name": "snapshot_meta",
+                        "type": "JSON",
+                        "description": "快照批次与范围",
+                        "target_object": "InventoryLot",
+                        "required": true
+                    }
+                ],
+                "state_mutations": [
+                    {
+                        "target_object": "InventoryLot",
+                        "mutation_type": "CREATE_OR_MODIFY",
+                        "impacted_properties": [
+                            "qty_on_hand",
+                            "status",
+                            "age_days"
+                        ]
+                    }
+                ]
+            },
+            "producers": [
+                {
+                    "type": "ExternalSystem",
+                    "id": "MetaERP"
+                }
+            ],
+            "subscribers": [
+                {
+                    "type": "Action",
+                    "id": "action-match-dormant-stock",
+                    "required": false
+                }
+            ],
+            "provenance": "human",
+            "extensions": {
+                "package_id": "power-scm",
+                "release": "1.0.0"
+            }
+        },
+        {
+            "name": "PSCM_STOCK_GAP_IDENTIFIED",
+            "description": "台风推演识别出物资缺口：受影响资产、需求量、可用库存与缺口清单。",
+            "event_version": "1.0.0",
+            "payload": {
+                "source_action": "action-forecast-typhoon-impact",
+                "event_data": [
+                    {
+                        "name": "gap_report",
+                        "type": "JSON",
+                        "description": "缺口报告",
+                        "target_object": "Material",
+                        "required": true
+                    },
+                    {
+                        "name": "affected_regions",
+                        "type": "JSON",
+                        "description": "受影响网格清单",
+                        "target_object": "GridRegion",
+                        "required": true
+                    }
+                ],
+                "state_mutations": [
+                    {
+                        "target_object": "ExternalEvent",
+                        "mutation_type": "MODIFY",
+                        "impacted_properties": [
+                            "severity"
+                        ]
+                    }
+                ]
+            },
+            "producers": [
+                {
+                    "type": "Action",
+                    "id": "action-forecast-typhoon-impact"
+                }
+            ],
+            "subscribers": [
+                {
+                    "type": "Action",
+                    "id": "action-lock-inventory",
+                    "required": false
+                },
+                {
+                    "type": "Action",
+                    "id": "action-create-stock-transfer",
+                    "required": false
+                },
+                {
+                    "type": "Action",
+                    "id": "action-create-emergency-po",
+                    "required": false
+                },
+                {
+                    "type": "Action",
+                    "id": "action-create-collab-request",
+                    "required": false
+                }
+            ],
+            "provenance": "human",
+            "extensions": {
+                "package_id": "power-scm",
+                "release": "1.0.0"
+            }
+        },
+        {
+            "name": "PSCM_SUPPLIER_RISK_FLAGGED",
+            "description": "供应商风险扫描完成：风险评分、受累合同/项目清单与关联方名单。",
+            "event_version": "1.0.0",
+            "payload": {
+                "source_action": "action-scan-supplier-risk",
+                "event_data": [
+                    {
+                        "name": "exposure_report",
+                        "type": "JSON",
+                        "description": "穿透报告",
+                        "target_object": "Supplier",
+                        "required": true
+                    }
+                ],
+                "state_mutations": [
+                    {
+                        "target_object": "Supplier",
+                        "mutation_type": "MODIFY",
+                        "impacted_properties": [
+                            "risk_level"
+                        ]
+                    }
+                ]
+            },
+            "producers": [
+                {
+                    "type": "Action",
+                    "id": "action-scan-supplier-risk"
+                }
+            ],
+            "subscribers": [
+                {
+                    "type": "Action",
+                    "id": "action-issue-expedite-notice",
+                    "required": false
+                },
+                {
+                    "type": "Action",
+                    "id": "action-create-onsite-inspection",
+                    "required": false
+                },
+                {
+                    "type": "Action",
+                    "id": "action-send-rfq",
+                    "required": false
+                },
+                {
+                    "type": "Action",
+                    "id": "action-add-supplier-risk-flag",
+                    "required": false
+                }
+            ],
+            "provenance": "human",
+            "extensions": {
+                "package_id": "power-scm",
+                "release": "1.0.0"
+            }
+        },
+        {
+            "name": "PSCM_DORMANT_MATCH_FOUND",
+            "description": "同物匹配命中：采购需求与集团呆滞库存同物（含同物不同码），可拦截并调剂。",
+            "event_version": "1.0.0",
+            "payload": {
+                "source_action": "action-match-dormant-stock",
+                "event_data": [
+                    {
+                        "name": "match_pairs",
+                        "type": "JSON",
+                        "description": "需求↔呆滞批次配对清单",
+                        "target_object": "PurchaseRequisition",
+                        "required": true
+                    },
+                    {
+                        "name": "savings_estimate",
+                        "type": "JSON",
+                        "description": "预计节约金额",
+                        "target_object": null,
+                        "required": true
+                    }
+                ],
+                "state_mutations": [
+                    {
+                        "target_object": "InventoryLot",
+                        "mutation_type": "MODIFY",
+                        "impacted_properties": [
+                            "status"
+                        ]
+                    }
+                ]
+            },
+            "producers": [
+                {
+                    "type": "Action",
+                    "id": "action-match-dormant-stock"
+                }
+            ],
+            "subscribers": [
+                {
+                    "type": "Action",
+                    "id": "action-suspend-requisition",
+                    "required": false
+                },
+                {
+                    "type": "Action",
+                    "id": "action-create-allocation-order",
+                    "required": false
+                }
+            ],
+            "provenance": "human",
+            "extensions": {
+                "package_id": "power-scm",
+                "release": "1.0.0"
+            }
+        },
+        {
+            "name": "PSCM_IMPAIRMENT_WARNING_RAISED",
+            "description": "临期/技术淘汰批次减值预警：须在计提前完成处置决策。",
+            "event_version": "1.0.0",
+            "payload": {
+                "source_action": "action-match-dormant-stock",
+                "event_data": [
+                    {
+                        "name": "impairment_lots",
+                        "type": "JSON",
+                        "description": "临期批次清单",
+                        "target_object": "InventoryLot",
+                        "required": true
+                    }
+                ],
+                "state_mutations": []
+            },
+            "producers": [
+                {
+                    "type": "Action",
+                    "id": "action-match-dormant-stock"
+                }
+            ],
+            "subscribers": [
+                {
+                    "type": "Action",
+                    "id": "action-create-disposal-package",
+                    "required": false
+                }
+            ],
+            "provenance": "human",
+            "extensions": {
+                "package_id": "power-scm",
+                "release": "1.0.0"
+            }
+        },
+        {
+            "name": "PSCM_EMERGENCY_REVIEW_COMPLETED",
+            "description": "应急保供复盘完成：偏差分析与补库建议。",
+            "event_version": "1.0.0",
+            "payload": {
+                "source_action": "action-review-emergency-response",
+                "event_data": [
+                    {
+                        "name": "review_report",
+                        "type": "JSON",
+                        "description": "复盘报告",
+                        "target_object": "Material",
+                        "required": true
+                    }
+                ],
+                "state_mutations": []
+            },
+            "producers": [
+                {
+                    "type": "Action",
+                    "id": "action-review-emergency-response"
+                }
+            ],
+            "subscribers": [
+                {
+                    "type": "Action",
+                    "id": "action-generate-replenishment-plan",
+                    "required": false
+                }
+            ],
+            "provenance": "human",
+            "extensions": {
+                "package_id": "power-scm",
+                "release": "1.0.0"
+            }
+        },
+        {
+            "name": "PSCM_INVENTORY_LOCKED",
+            "description": "库存批次已锁定。",
+            "event_version": "1.0.0",
+            "payload": {
+                "source_action": "action-lock-inventory",
+                "event_data": [
+                    {
+                        "name": "locked_lot",
+                        "type": "JSON",
+                        "description": "锁定批次",
+                        "target_object": "InventoryLot",
+                        "required": true
+                    }
+                ],
+                "state_mutations": [
+                    {
+                        "target_object": "InventoryLot",
+                        "mutation_type": "MODIFY",
+                        "impacted_properties": [
+                            "status"
+                        ]
+                    }
+                ]
+            },
+            "producers": [
+                {
+                    "type": "Action",
+                    "id": "action-lock-inventory"
+                }
+            ],
+            "subscribers": [],
+            "provenance": "human",
+            "extensions": {
+                "package_id": "power-scm",
+                "release": "1.0.0"
+            }
+        },
+        {
+            "name": "PSCM_INVENTORY_RELEASED",
+            "description": "库存批次已释放。",
+            "event_version": "1.0.0",
+            "payload": {
+                "source_action": "action-release-inventory",
+                "event_data": [
+                    {
+                        "name": "released_lot",
+                        "type": "JSON",
+                        "description": "释放批次",
+                        "target_object": "InventoryLot",
+                        "required": true
+                    }
+                ],
+                "state_mutations": [
+                    {
+                        "target_object": "InventoryLot",
+                        "mutation_type": "MODIFY",
+                        "impacted_properties": [
+                            "status"
+                        ]
+                    }
+                ]
+            },
+            "producers": [
+                {
+                    "type": "Action",
+                    "id": "action-release-inventory"
+                }
+            ],
+            "subscribers": [],
+            "provenance": "human",
+            "extensions": {
+                "package_id": "power-scm",
+                "release": "1.0.0"
+            }
+        },
+        {
+            "name": "PSCM_STOCK_TRANSFER_CREATED",
+            "description": "跨仓调拨单已创建并通过应急审批。",
+            "event_version": "1.0.0",
+            "payload": {
+                "source_action": "action-create-stock-transfer",
+                "event_data": [
+                    {
+                        "name": "transfer_order",
+                        "type": "JSON",
+                        "description": "调拨单",
+                        "target_object": "StockTransferOrder",
+                        "required": true
+                    }
+                ],
+                "state_mutations": [
+                    {
+                        "target_object": "StockTransferOrder",
+                        "mutation_type": "CREATE",
+                        "impacted_properties": [
+                            "transfer_id",
+                            "status"
+                        ]
+                    }
+                ]
+            },
+            "producers": [
+                {
+                    "type": "Action",
+                    "id": "action-create-stock-transfer"
+                }
+            ],
+            "subscribers": [
+                {
+                    "type": "Action",
+                    "id": "action-dispatch-logistics",
+                    "required": false
+                }
+            ],
+            "provenance": "human",
+            "extensions": {
+                "package_id": "power-scm",
+                "release": "1.0.0"
+            }
+        },
+        {
+            "name": "PSCM_EMERGENCY_PO_CREATED",
+            "description": "紧急采购订单已创建。",
+            "event_version": "1.0.0",
+            "payload": {
+                "source_action": "action-create-emergency-po",
+                "event_data": [
+                    {
+                        "name": "purchase_order",
+                        "type": "JSON",
+                        "description": "紧急采购订单",
+                        "target_object": "PurchaseOrder",
+                        "required": true
+                    }
+                ],
+                "state_mutations": [
+                    {
+                        "target_object": "PurchaseOrder",
+                        "mutation_type": "CREATE",
+                        "impacted_properties": [
+                            "purchase_order_id",
+                            "is_emergency"
+                        ]
+                    }
+                ]
+            },
+            "producers": [
+                {
+                    "type": "Action",
+                    "id": "action-create-emergency-po"
+                }
+            ],
+            "subscribers": [],
+            "provenance": "human",
+            "extensions": {
+                "package_id": "power-scm",
+                "release": "1.0.0"
+            }
+        },
+        {
+            "name": "PSCM_LOGISTICS_DISPATCHED",
+            "description": "运输任务已下达，物资在途。",
+            "event_version": "1.0.0",
+            "payload": {
+                "source_action": "action-dispatch-logistics",
+                "event_data": [
+                    {
+                        "name": "shipment",
+                        "type": "JSON",
+                        "description": "运输任务",
+                        "target_object": null,
+                        "required": true
+                    }
+                ],
+                "state_mutations": [
+                    {
+                        "target_object": "StockTransferOrder",
+                        "mutation_type": "MODIFY",
+                        "impacted_properties": [
+                            "status"
+                        ]
+                    }
+                ]
+            },
+            "producers": [
+                {
+                    "type": "Action",
+                    "id": "action-dispatch-logistics"
+                }
+            ],
+            "subscribers": [],
+            "provenance": "human",
+            "extensions": {
+                "package_id": "power-scm",
+                "release": "1.0.0"
+            }
+        },
+        {
+            "name": "PSCM_COLLAB_REQUESTED",
+            "description": "跨单位协同借调请求已发出。",
+            "event_version": "1.0.0",
+            "payload": {
+                "source_action": "action-create-collab-request",
+                "event_data": [
+                    {
+                        "name": "collab_request",
+                        "type": "JSON",
+                        "description": "协同请求",
+                        "target_object": "LegalEntity",
+                        "required": true
+                    }
+                ],
+                "state_mutations": []
+            },
+            "producers": [
+                {
+                    "type": "Action",
+                    "id": "action-create-collab-request"
+                }
+            ],
+            "subscribers": [],
+            "provenance": "human",
+            "extensions": {
+                "package_id": "power-scm",
+                "release": "1.0.0"
+            }
+        },
+        {
+            "name": "PSCM_REPLENISHMENT_PLANNED",
+            "description": "补库采购计划已自动生成（闭环产物，非人工填报）。",
+            "event_version": "1.0.0",
+            "payload": {
+                "source_action": "action-generate-replenishment-plan",
+                "event_data": [
+                    {
+                        "name": "requisitions",
+                        "type": "JSON",
+                        "description": "补库需求批次",
+                        "target_object": "PurchaseRequisition",
+                        "required": true
+                    }
+                ],
+                "state_mutations": [
+                    {
+                        "target_object": "PurchaseRequisition",
+                        "mutation_type": "CREATE",
+                        "impacted_properties": [
+                            "requisition_id",
+                            "status"
+                        ]
+                    }
+                ]
+            },
+            "producers": [
+                {
+                    "type": "Action",
+                    "id": "action-generate-replenishment-plan"
+                }
+            ],
+            "subscribers": [
+                {
+                    "type": "Action",
+                    "id": "action-match-dormant-stock",
+                    "required": false
+                }
+            ],
+            "provenance": "human",
+            "extensions": {
+                "package_id": "power-scm",
+                "release": "1.0.0"
+            }
+        },
+        {
+            "name": "PSCM_EXPEDITE_ISSUED",
+            "description": "催交函已发出。",
+            "event_version": "1.0.0",
+            "payload": {
+                "source_action": "action-issue-expedite-notice",
+                "event_data": [
+                    {
+                        "name": "notice",
+                        "type": "JSON",
+                        "description": "催交函",
+                        "target_object": "ExpediteNotice",
+                        "required": true
+                    }
+                ],
+                "state_mutations": [
+                    {
+                        "target_object": "ExpediteNotice",
+                        "mutation_type": "CREATE",
+                        "impacted_properties": [
+                            "notice_id",
+                            "status"
+                        ]
+                    }
+                ]
+            },
+            "producers": [
+                {
+                    "type": "Action",
+                    "id": "action-issue-expedite-notice"
+                }
+            ],
+            "subscribers": [],
+            "provenance": "human",
+            "extensions": {
+                "package_id": "power-scm",
+                "release": "1.0.0"
+            }
+        },
+        {
+            "name": "PSCM_ONSITE_INSPECTION_CREATED",
+            "description": "驻厂监造任务已创建。",
+            "event_version": "1.0.0",
+            "payload": {
+                "source_action": "action-create-onsite-inspection",
+                "event_data": [
+                    {
+                        "name": "inspection_task",
+                        "type": "JSON",
+                        "description": "监造任务",
+                        "target_object": "InspectionReport",
+                        "required": true
+                    }
+                ],
+                "state_mutations": [
+                    {
+                        "target_object": "InspectionReport",
+                        "mutation_type": "CREATE",
+                        "impacted_properties": [
+                            "inspection_id",
+                            "status"
+                        ]
+                    }
+                ]
+            },
+            "producers": [
+                {
+                    "type": "Action",
+                    "id": "action-create-onsite-inspection"
+                }
+            ],
+            "subscribers": [],
+            "provenance": "human",
+            "extensions": {
+                "package_id": "power-scm",
+                "release": "1.0.0"
+            }
+        },
+        {
+            "name": "PSCM_RFQ_SENT",
+            "description": "替代供应商询价已发出（关联方已拦截）。",
+            "event_version": "1.0.0",
+            "payload": {
+                "source_action": "action-send-rfq",
+                "event_data": [
+                    {
+                        "name": "rfq",
+                        "type": "JSON",
+                        "description": "询价单",
+                        "target_object": "Rfq",
+                        "required": true
+                    }
+                ],
+                "state_mutations": [
+                    {
+                        "target_object": "Rfq",
+                        "mutation_type": "CREATE",
+                        "impacted_properties": [
+                            "rfq_id",
+                            "status"
+                        ]
+                    }
+                ]
+            },
+            "producers": [
+                {
+                    "type": "Action",
+                    "id": "action-send-rfq"
+                }
+            ],
+            "subscribers": [],
+            "provenance": "human",
+            "extensions": {
+                "package_id": "power-scm",
+                "release": "1.0.0"
+            }
+        },
+        {
+            "name": "PSCM_RISK_FLAG_ADDED",
+            "description": "供应商已标入风险/廉洁名单并推送审计部。",
+            "event_version": "1.0.0",
+            "payload": {
+                "source_action": "action-add-supplier-risk-flag",
+                "event_data": [
+                    {
+                        "name": "risk_flag",
+                        "type": "JSON",
+                        "description": "风险标记",
+                        "target_object": "RiskFlag",
+                        "required": true
+                    }
+                ],
+                "state_mutations": [
+                    {
+                        "target_object": "RiskFlag",
+                        "mutation_type": "CREATE",
+                        "impacted_properties": [
+                            "flag_id",
+                            "flag_type",
+                            "severity"
+                        ]
+                    }
+                ]
+            },
+            "producers": [
+                {
+                    "type": "Action",
+                    "id": "action-add-supplier-risk-flag"
+                }
+            ],
+            "subscribers": [],
+            "provenance": "human",
+            "extensions": {
+                "package_id": "power-scm",
+                "release": "1.0.0"
+            }
+        },
+        {
+            "name": "PSCM_REQUISITION_SUSPENDED",
+            "description": "采购需求已被同物拦截暂停。",
+            "event_version": "1.0.0",
+            "payload": {
+                "source_action": "action-suspend-requisition",
+                "event_data": [
+                    {
+                        "name": "suspended_requisition",
+                        "type": "JSON",
+                        "description": "已暂停需求",
+                        "target_object": "PurchaseRequisition",
+                        "required": true
+                    }
+                ],
+                "state_mutations": [
+                    {
+                        "target_object": "PurchaseRequisition",
+                        "mutation_type": "MODIFY",
+                        "impacted_properties": [
+                            "status"
+                        ]
+                    }
+                ]
+            },
+            "producers": [
+                {
+                    "type": "Action",
+                    "id": "action-suspend-requisition"
+                }
+            ],
+            "subscribers": [],
+            "provenance": "human",
+            "extensions": {
+                "package_id": "power-scm",
+                "release": "1.0.0"
+            }
+        },
+        {
+            "name": "PSCM_ALLOCATION_PROPOSED",
+            "description": "跨单位调剂单已创建，待双边确认。",
+            "event_version": "1.0.0",
+            "payload": {
+                "source_action": "action-create-allocation-order",
+                "event_data": [
+                    {
+                        "name": "allocation",
+                        "type": "JSON",
+                        "description": "调剂单",
+                        "target_object": "AllocationOrder",
+                        "required": true
+                    }
+                ],
+                "state_mutations": [
+                    {
+                        "target_object": "AllocationOrder",
+                        "mutation_type": "CREATE",
+                        "impacted_properties": [
+                            "allocation_id",
+                            "status",
+                            "savings_amount"
+                        ]
+                    }
+                ]
+            },
+            "producers": [
+                {
+                    "type": "Action",
+                    "id": "action-create-allocation-order"
+                }
+            ],
+            "subscribers": [
+                {
+                    "type": "Action",
+                    "id": "action-confirm-allocation",
+                    "required": false
+                }
+            ],
+            "provenance": "human",
+            "extensions": {
+                "package_id": "power-scm",
+                "release": "1.0.0"
+            }
+        },
+        {
+            "name": "PSCM_ALLOCATION_CONFIRMED",
+            "description": "调剂双边确认完成并执行，两金指标已更新。",
+            "event_version": "1.0.0",
+            "payload": {
+                "source_action": "action-confirm-allocation",
+                "event_data": [
+                    {
+                        "name": "confirmed_allocation",
+                        "type": "JSON",
+                        "description": "已确认调剂单",
+                        "target_object": "AllocationOrder",
+                        "required": true
+                    }
+                ],
+                "state_mutations": [
+                    {
+                        "target_object": "AllocationOrder",
+                        "mutation_type": "MODIFY",
+                        "impacted_properties": [
+                            "status"
+                        ]
+                    },
+                    {
+                        "target_object": "InventoryLot",
+                        "mutation_type": "MODIFY",
+                        "impacted_properties": [
+                            "status",
+                            "qty_on_hand"
+                        ]
+                    },
+                    {
+                        "target_object": "PurchaseRequisition",
+                        "mutation_type": "MODIFY",
+                        "impacted_properties": [
+                            "status"
+                        ]
+                    }
+                ]
+            },
+            "producers": [
+                {
+                    "type": "Action",
+                    "id": "action-confirm-allocation"
+                }
+            ],
+            "subscribers": [],
+            "provenance": "human",
+            "extensions": {
+                "package_id": "power-scm",
+                "release": "1.0.0"
+            }
+        },
+        {
+            "name": "PSCM_DISPOSAL_PACKAGE_CREATED",
+            "description": "处置审批包已生成。",
+            "event_version": "1.0.0",
+            "payload": {
+                "source_action": "action-create-disposal-package",
+                "event_data": [
+                    {
+                        "name": "disposal",
+                        "type": "JSON",
+                        "description": "处置单",
+                        "target_object": "DisposalOrder",
+                        "required": true
+                    }
+                ],
+                "state_mutations": [
+                    {
+                        "target_object": "DisposalOrder",
+                        "mutation_type": "CREATE",
+                        "impacted_properties": [
+                            "disposal_id",
+                            "method",
+                            "status"
+                        ]
+                    }
+                ]
+            },
+            "producers": [
+                {
+                    "type": "Action",
+                    "id": "action-create-disposal-package"
+                }
+            ],
+            "subscribers": [],
+            "provenance": "human",
+            "extensions": {
+                "package_id": "power-scm",
+                "release": "1.0.0"
+            }
+        }
+    ]
+}

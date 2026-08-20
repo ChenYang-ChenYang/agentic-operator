@@ -54,6 +54,7 @@ import {
   stopRunReconciler,
 } from "./services/reconcile-runs";
 import { inngestRoute } from "./routes/inngest";
+import { agentExecutionRoutes } from "./routes/agent-execution";
 import { bootstrapRuntime } from "./bootstrap";
 import { getMcpManager } from "@agentic/mcp";
 import { factorySandboxModelProxyRoutes } from "./services/agent-factory/factory-sandbox-model-proxy";
@@ -238,6 +239,10 @@ export async function build() {
     await app.register(factorySandboxModelProxyRoutes);
     await app.register(factorySandboxProbeRoutes);
     await app.register(productionCodeActRpcRoutes);
+    // §G2 — agent-execution LIVE window (Studio eval-test). AO_API_KEY-
+    // authenticated, single-tenant, served at /api/agent-execution/live/*
+    // (deliberately outside the /v1 prefix per the Studio contract).
+    await app.register(agentExecutionRoutes);
 
     // Runs boot: builds per-tenant Inngest apps + seeds the per-app registry that
     // the `/inngest[/:slug]` routes delegate to. The route reads the registry per

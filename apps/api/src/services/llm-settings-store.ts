@@ -5,6 +5,13 @@
  * non-secret store is atomically persisted to data/llm-settings.json and
  * mirrored as base64 plus a checksum inside a managed block in
  * apps/api/.env.local. API keys remain in the encrypted provider-key vault.
+ *
+ * Test processes must never touch the developer's real .env.local: a Vitest
+ * run that resolves its settings JSON under data/test-runs/ used to leave a
+ * managed block behind whose AGENTIC_LLM_SETTINGS_PATH silently rerouted the
+ * next dev boot to test scratch. The mirror is therefore written only to an
+ * explicit AGENTIC_LLM_ENV_MIRROR_PATH while under test, and non-test boots
+ * ignore a persisted settings path that points into test-run scratch.
  */
 import { createHash, randomUUID } from "node:crypto";
 import {
@@ -18,7 +25,7 @@ import {
   renameSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
   CORE_LLM_TASK_TAXONOMY,
   LlmSettingsSchema,
@@ -79,9 +86,67 @@ function workspaceRoot(start = process.cwd()): string {
   }
 }
 
+function isTestProcess(): boolean {
+  return process.env.NODE_ENV === "test" || process.env.VITEST !== undefined;
+}
+
+function isTestRunScratchPath(path: string): boolean {
+  const resolved = resolve(path);
+  const scratchRoots = [
+    process.env.AGENTIC_API_TEST_RUN_ROOT?.trim(),
+    join(workspaceRoot(), "data", "test-runs"),
+  ];
+  for (const root of scratchRoots) {
+    if (!root) continue;
+    const relativeToRoot = relative(resolve(root), resolved);
+    if (
+      relativeToRoot === "" ||
+      (!relativeToRoot.startsWith("..") && !isAbsolute(relativeToRoot))
+    ) {
+      return true;
+    }
+  }
+  // A managed block persisted from another checkout resolves outside this
+  // workspace root; the conventional segment pair still identifies scratch.
+  return resolved.includes(`${sep}data${sep}test-runs${sep}`);
+}
+
+const settingsPathWarnings = new Set<string>();
+
+function warnOnce(key: string, message: string): void {
+  if (settingsPathWarnings.has(key)) return;
+  settingsPathWarnings.add(key);
+  console.warn(`[llm-settings] ${message}`);
+}
+
 export function llmSettingsPath(): string {
   const explicit = process.env.AGENTIC_LLM_SETTINGS_PATH?.trim();
-  if (explicit) return resolve(explicit);
+  if (explicit) {
+    const resolved = resolve(explicit);
+    if (!isTestProcess()) {
+      if (isTestRunScratchPath(resolved)) {
+        warnOnce(
+          `scratch:${resolved}`,
+          `ignoring AGENTIC_LLM_SETTINGS_PATH=${explicit}: it points into test-run scratch (data/test-runs), most likely a stale managed block in apps/api/.env.local left behind by a test run. Remove that block; falling back to the default settings location.`,
+        );
+        return fallbackLlmSettingsPath();
+      }
+      if (!existsSync(resolved)) {
+        const fallback = fallbackLlmSettingsPath();
+        if (fallback !== resolved && existsSync(fallback)) {
+          warnOnce(
+            `missing:${resolved}`,
+            `AGENTIC_LLM_SETTINGS_PATH=${explicit} does not exist yet while ${fallback} does; the explicit path is honored, but verify it is not a stale override.`,
+          );
+        }
+      }
+    }
+    return resolved;
+  }
+  return fallbackLlmSettingsPath();
+}
+
+function fallbackLlmSettingsPath(): string {
   const dbUrl = process.env.DATABASE_URL;
   if (dbUrl?.startsWith("file:")) {
     return resolve(dirname(dbUrl.slice(5)), "llm-settings.json");
@@ -93,6 +158,23 @@ export function llmSettingsEnvMirrorPath(): string {
   const explicit = process.env.AGENTIC_LLM_ENV_MIRROR_PATH?.trim();
   if (explicit) return resolve(explicit);
   return join(workspaceRoot(), "apps", "api", ".env.local");
+}
+
+/**
+ * Non-null when the .env.local mirror must not be written. An explicit
+ * AGENTIC_LLM_ENV_MIRROR_PATH is always honored (tests point it at their
+ * scratch dir); without one, the default target is the developer's real
+ * apps/api/.env.local, which a test process must never rewrite.
+ */
+function envMirrorSkipReason(): string | null {
+  if (process.env.AGENTIC_LLM_ENV_MIRROR_PATH?.trim()) return null;
+  if (isTestProcess()) {
+    return "env mirror skipped: test processes never write apps/api/.env.local (set AGENTIC_LLM_ENV_MIRROR_PATH to mirror into test scratch)";
+  }
+  if (isTestRunScratchPath(llmSettingsPath())) {
+    return "env mirror skipped: AI settings resolve into test-run scratch (data/test-runs)";
+  }
+  return null;
 }
 
 function providerKind(provider: ProviderId) {
@@ -352,6 +434,16 @@ function persistFile(file: LlmSettingsFile): LlmSettingsSnapshot["sync"] {
   atomicWrite(jsonPath, content);
   cache = file;
   cachePath = jsonPath;
+  const skipReason = envMirrorSkipReason();
+  if (skipReason) {
+    return {
+      status: "synced",
+      jsonPath,
+      envPath,
+      checksum: checksum(content),
+      message: skipReason,
+    };
+  }
   try {
     const existing = existsSync(envPath) ? readFileSync(envPath, "utf8") : "";
     atomicWrite(envPath, managedEnvContent(existing, content));
@@ -390,11 +482,14 @@ export function getLlmSettings(workspaceSlug: string): LlmSettingsSnapshot {
   } else {
     const content = canonicalJson(file);
     const envPath = llmSettingsEnvMirrorPath();
-    const mirrorMessage = existsSync(envPath)
-      ? envMirrorDriftMessage(readFileSync(envPath, "utf8"), content)
-      : "the .env.local mirror is missing";
+    const skipReason = envMirrorSkipReason();
+    const mirrorMessage =
+      skipReason ??
+      (existsSync(envPath)
+        ? envMirrorDriftMessage(readFileSync(envPath, "utf8"), content)
+        : "the .env.local mirror is missing");
     sync = {
-      status: mirrorMessage === null ? "synced" : "drift",
+      status: skipReason || mirrorMessage === null ? "synced" : "drift",
       jsonPath: llmSettingsPath(),
       envPath,
       checksum: checksum(content),

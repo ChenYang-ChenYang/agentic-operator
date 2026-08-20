@@ -564,7 +564,13 @@ export const ontologyQuery = defineTool({
           fields: rows.fields,
           records,
           count: records.length,
-          truncated: rows.values.length > records.length,
+          // Every generated statement ends in `LIMIT $limit`, so the server has
+          // already applied the cap and the slice above never drops a row —
+          // comparing the two would report `false` even when rows were cut.
+          // Hitting the limit exactly is the only signal available that more
+          // rows may exist, and the model needs it: on a relationship scan,
+          // "no more results" and "capped" lead to opposite conclusions.
+          truncated: records.length >= query.limit,
         },
         meta: {
           tool: "ontology.query",

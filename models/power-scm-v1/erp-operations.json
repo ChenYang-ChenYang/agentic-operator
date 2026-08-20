@@ -1,0 +1,275 @@
+[
+  {
+    "entity": "srm_risk_flag_t",
+    "kind": "write",
+    "method": "POST",
+    "operation_id": "addRiskFlag",
+    "path": "/metaerp/openapi/v1/addRiskFlag"
+  },
+  {
+    "entity": "wm_allocation_order_t",
+    "kind": "write",
+    "method": "POST",
+    "operation_id": "confirmAllocation",
+    "path": "/metaerp/openapi/v1/confirmAllocation"
+  },
+  {
+    "entity": "wm_allocation_order_t",
+    "kind": "write",
+    "method": "POST",
+    "operation_id": "createAllocation",
+    "path": "/metaerp/openapi/v1/createAllocation"
+  },
+  {
+    "entity": null,
+    "kind": "write",
+    "method": "POST",
+    "operation_id": "createCollabRequest",
+    "path": "/metaerp/openapi/v1/createCollabRequest"
+  },
+  {
+    "entity": "wm_disposal_order_t",
+    "kind": "write",
+    "method": "POST",
+    "operation_id": "createDisposal",
+    "path": "/metaerp/openapi/v1/createDisposal"
+  },
+  {
+    "entity": "po_order_header_t",
+    "kind": "write",
+    "method": "POST",
+    "operation_id": "createEmergencyPo",
+    "path": "/metaerp/openapi/v1/createEmergencyPo"
+  },
+  {
+    "entity": "qm_inspection_t",
+    "kind": "write",
+    "method": "POST",
+    "operation_id": "createInspectionTask",
+    "path": "/metaerp/openapi/v1/createInspectionTask"
+  },
+  {
+    "entity": "po_requisition_t",
+    "kind": "write",
+    "method": "POST",
+    "operation_id": "createRequisitionBatch",
+    "path": "/metaerp/openapi/v1/createRequisitionBatch"
+  },
+  {
+    "entity": "srm_rfq_t",
+    "kind": "write",
+    "method": "POST",
+    "operation_id": "createRfq",
+    "path": "/metaerp/openapi/v1/createRfq"
+  },
+  {
+    "entity": "wm_transfer_order_t",
+    "kind": "write",
+    "method": "POST",
+    "operation_id": "createShipmentTask",
+    "path": "/metaerp/openapi/v1/createShipmentTask"
+  },
+  {
+    "entity": "wm_transfer_order_t",
+    "kind": "write",
+    "method": "POST",
+    "operation_id": "createTransferOrder",
+    "path": "/metaerp/openapi/v1/createTransferOrder"
+  },
+  {
+    "entity": "wm_inventory_lot_t",
+    "kind": "write",
+    "method": "POST",
+    "operation_id": "lockInventoryLot",
+    "path": "/metaerp/openapi/v1/lockInventoryLot"
+  },
+  {
+    "entity": "srm_agreement_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "queryAgreements",
+    "path": "/metaerp/openapi/v1/queryAgreements"
+  },
+  {
+    "entity": "wm_allocation_order_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "queryAllocations",
+    "path": "/metaerp/openapi/v1/queryAllocations"
+  },
+  {
+    "entity": "srm_contract_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "queryContracts",
+    "path": "/metaerp/openapi/v1/queryContracts"
+  },
+  {
+    "entity": "po_delivery_schedule_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "queryDeliverySchedules",
+    "path": "/metaerp/openapi/v1/queryDeliverySchedules"
+  },
+  {
+    "entity": "org_department_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "queryDepartments",
+    "path": "/metaerp/openapi/v1/queryDepartments"
+  },
+  {
+    "entity": "wm_disposal_order_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "queryDisposals",
+    "path": "/metaerp/openapi/v1/queryDisposals"
+  },
+  {
+    "entity": "hr_employee_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "queryEmployees",
+    "path": "/metaerp/openapi/v1/queryEmployees"
+  },
+  {
+    "entity": "po_expedite_notice_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "queryExpediteNotices",
+    "path": "/metaerp/openapi/v1/queryExpediteNotices"
+  },
+  {
+    "entity": "pm_asset_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "queryGridAssets",
+    "path": "/metaerp/openapi/v1/queryGridAssets"
+  },
+  {
+    "entity": "gis_region_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "queryGridRegions",
+    "path": "/metaerp/openapi/v1/queryGridRegions"
+  },
+  {
+    "entity": "qm_inspection_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "queryInspections",
+    "path": "/metaerp/openapi/v1/queryInspections"
+  },
+  {
+    "entity": "wm_inventory_lot_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "queryInventoryLots",
+    "path": "/metaerp/openapi/v1/queryInventoryLots"
+  },
+  {
+    "entity": "org_legal_entity_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "queryLegalEntities",
+    "path": "/metaerp/openapi/v1/queryLegalEntities"
+  },
+  {
+    "entity": "mm_material_master_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "queryMaterials",
+    "path": "/metaerp/openapi/v1/queryMaterials"
+  },
+  {
+    "entity": "ps_milestone_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "queryMilestones",
+    "path": "/metaerp/openapi/v1/queryMilestones"
+  },
+  {
+    "entity": "ps_project_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "queryProjects",
+    "path": "/metaerp/openapi/v1/queryProjects"
+  },
+  {
+    "entity": "po_order_header_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "queryPurchaseOrders",
+    "path": "/metaerp/openapi/v1/queryPurchaseOrders"
+  },
+  {
+    "entity": "om_repair_order_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "queryRepairOrders",
+    "path": "/metaerp/openapi/v1/queryRepairOrders"
+  },
+  {
+    "entity": "po_requisition_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "queryRequisitions",
+    "path": "/metaerp/openapi/v1/queryRequisitions"
+  },
+  {
+    "entity": "srm_rfq_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "queryRfqs",
+    "path": "/metaerp/openapi/v1/queryRfqs"
+  },
+  {
+    "entity": "srm_risk_flag_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "queryRiskFlags",
+    "path": "/metaerp/openapi/v1/queryRiskFlags"
+  },
+  {
+    "entity": "srm_supplier_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "querySuppliers",
+    "path": "/metaerp/openapi/v1/querySuppliers"
+  },
+  {
+    "entity": "wm_transfer_order_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "queryTransferOrders",
+    "path": "/metaerp/openapi/v1/queryTransferOrders"
+  },
+  {
+    "entity": "wm_warehouse_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "queryWarehouses",
+    "path": "/metaerp/openapi/v1/queryWarehouses"
+  },
+  {
+    "entity": "wm_inventory_lot_t",
+    "kind": "write",
+    "method": "POST",
+    "operation_id": "releaseInventoryLot",
+    "path": "/metaerp/openapi/v1/releaseInventoryLot"
+  },
+  {
+    "entity": "po_expedite_notice_t",
+    "kind": "write",
+    "method": "POST",
+    "operation_id": "sendExpediteNotice",
+    "path": "/metaerp/openapi/v1/sendExpediteNotice"
+  },
+  {
+    "entity": "po_requisition_t",
+    "kind": "write",
+    "method": "POST",
+    "operation_id": "suspendRequisition",
+    "path": "/metaerp/openapi/v1/suspendRequisition"
+  }
+]
