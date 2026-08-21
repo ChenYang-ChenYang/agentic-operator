@@ -63,7 +63,12 @@ async function capture(): Promise<void> {
 
     await page.goto(`${BASE_URL}/sign-in?return=/portal/raas/dashboard`);
     await page.getByLabel(/email|邮箱/i).fill(email);
-    await page.getByLabel(/password|密码/i).fill(password);
+    // Constrained to the input: the reveal toggle beside it carries aria-label
+  // "Show password"/"显示密码", which this pattern also matches.
+  await page
+    .getByLabel(/password|密码/i)
+    .and(page.locator("input"))
+    .fill(password);
     await page.locator('button[type="submit"]').click();
     await page.waitForURL(/\/portal\//, { timeout: 30_000 });
 

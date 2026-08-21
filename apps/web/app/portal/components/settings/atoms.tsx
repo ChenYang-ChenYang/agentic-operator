@@ -89,6 +89,7 @@ export function TextIn({
   prefix,
   ariaLabel,
   disabled,
+  type,
 }: {
   value: string;
   onChange?: (v: string) => void;
@@ -103,6 +104,8 @@ export function TextIn({
    */
   ariaLabel?: string;
   disabled?: boolean;
+  /** Native input type. Defaults to text; "password" masks the value. */
+  type?: "text" | "password" | "email";
 }) {
   const { t } = useI18n();
   return (
@@ -129,6 +132,7 @@ export function TextIn({
         </span>
       )}
       <input
+        type={type ?? "text"}
         value={value}
         disabled={disabled}
         onChange={(e) => onChange?.(e.target.value)}

@@ -10,6 +10,9 @@
 export const SETTINGS_SECTIONS = [
   { id: "workspace", icon: "settings" as const },
   { id: "appearance", icon: "moon" as const },
+  // Own account: change your own password. Distinct from "people"/Access,
+  // which manage OTHER users and need admin rights.
+  { id: "account", icon: "human" as const },
   { id: "people", icon: "human" as const },
   // AI & models — LLM gateway settings, routing, providers, live tests.
   { id: "ai", icon: "spark" as const },

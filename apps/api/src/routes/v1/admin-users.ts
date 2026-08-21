@@ -3,6 +3,7 @@
  * "all users" view. Superadmin only (requireSuperadmin).
  *
  *   GET    /v1/admin/users                              all users + memberships
+ *   POST   /v1/admin/users                              create an account
  *   PATCH  /v1/admin/users/:userId                      set platformRole/status
  *   POST   /v1/admin/users/:userId/memberships          grant cross-tenant role
  *   DELETE /v1/admin/users/:userId/memberships/:slug    revoke a membership
@@ -15,6 +16,7 @@ import {
   auditLog,
   deployments,
   getDb,
+  hashPassword,
   memberships,
   tasks,
   tenants,
@@ -22,11 +24,13 @@ import {
   workflowVersions,
 } from "@agentic/db";
 import {
+  AdminCreateUserBody,
   AdminMembershipBody,
   AdminUpdateUserBody,
   type AdminUserRow,
   type TenantRole,
 } from "@agentic/contracts";
+import { makeId } from "@agentic/shared";
 import { requireSuperadmin, writeAudit } from "../../plugins/rbac";
 
 function superadminCount(): number {
@@ -78,6 +82,85 @@ export async function adminUsersRoutes(app: FastifyInstance): Promise<void> {
     return reply.ok({ items: listUsers() });
   });
 
+  // ── POST /v1/admin/users ────────────────────────────────────────────────
+  // Admin-provisioned account. `/v1/auth/register` is the SELF-service path and
+  // deliberately forces platformRole "none" with no membership; this one lets a
+  // superadmin set the role and grant an initial tenant in the same commit, so
+  // the new user does not land on the "request access" empty state.
+  app.post("/admin/users", async (req, reply) => {
+    const ctx = requireSuperadmin(req);
+    const body = AdminCreateUserBody.parse(req.body);
+    const email = body.email.toLowerCase();
+    const db = getDb();
+
+    const existing = db.select({ id: users.id }).from(users).where(eq(users.email, email)).all()[0];
+    if (existing) {
+      return reply.fail("email_taken", "an account with this email already exists", 409);
+    }
+
+    // Resolve the tenant BEFORE the transaction so an unknown slug is a clean
+    // 404 rather than a half-created account rolled back by a thrown error.
+    let tenantId: string | null = null;
+    if (body.membership) {
+      const t = db
+        .select({ id: tenants.id })
+        .from(tenants)
+        .where(eq(tenants.slug, body.membership.tenantSlug))
+        .all()[0];
+      if (!t) {
+        return reply.fail(
+          "tenant_not_found",
+          `no tenant "${body.membership.tenantSlug}"`,
+          404,
+        );
+      }
+      tenantId = t.id;
+    }
+
+    const userId = makeId("usr");
+    const now = new Date();
+    // Account + membership + audit commit together: a visible account with a
+    // missing grant would silently deny the access the admin just approved.
+    db.transaction((tx) => {
+      tx.insert(users)
+        .values({
+          id: userId,
+          email,
+          name: body.name,
+          passwordHash: hashPassword(body.password),
+          platformRole: body.platformRole,
+          status: "active",
+          createdAt: now,
+          updatedAt: now,
+        })
+        .run();
+      if (tenantId && body.membership) {
+        tx.insert(memberships)
+          .values({
+            userId,
+            tenantId,
+            role: body.membership.role,
+            createdAt: now,
+            createdBy: ctx.userId ?? null,
+          })
+          .run();
+      }
+      writeAudit(ctx, {
+        action: "platform.user.create",
+        targetType: "user",
+        targetId: userId,
+        // Never the password, not even hashed.
+        meta: {
+          email,
+          platformRole: body.platformRole,
+          ...(body.membership ? { membership: body.membership } : {}),
+        },
+      });
+    });
+
+    return reply.ok({ items: listUsers() }, 201);
+  });
+
   // ── PATCH /v1/admin/users/:userId ───────────────────────────────────────
   app.patch<{ Params: { userId: string } }>("/admin/users/:userId", async (req, reply) => {
     const ctx = requireSuperadmin(req);
@@ -97,21 +180,30 @@ export async function adminUsersRoutes(app: FastifyInstance): Promise<void> {
       return reply.fail("last_superadmin", "cannot remove the last platform superadmin", 409);
     }
 
-    const patch: { platformRole?: "none" | "superadmin"; status?: "active" | "suspended"; updatedAt: Date } = {
+    const patch: {
+      platformRole?: "none" | "superadmin";
+      status?: "active" | "suspended";
+      passwordHash?: string;
+      updatedAt: Date;
+    } = {
       updatedAt: new Date(),
     };
     if (body.platformRole !== undefined) patch.platformRole = body.platformRole;
     if (body.status !== undefined) patch.status = body.status;
+    if (body.password !== undefined) patch.passwordHash = hashPassword(body.password);
     db.transaction(() => {
       const updated = db.update(users).set(patch).where(eq(users.id, userId)).run() as {
         changes?: number;
       };
       if ((updated.changes ?? 0) !== 1) throw new Error(`user ${userId} changed during update`);
+      // `body` may carry a plaintext password — record that a reset happened,
+      // never the value itself.
+      const { password: resetPassword, ...auditableBody } = body;
       writeAudit(ctx, {
         action: "platform.user.update",
         targetType: "user",
         targetId: userId,
-        meta: { ...body },
+        meta: { ...auditableBody, ...(resetPassword ? { passwordReset: true } : {}) },
       });
     });
     return reply.ok({ items: listUsers() });

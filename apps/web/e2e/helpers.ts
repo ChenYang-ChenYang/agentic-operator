@@ -32,7 +32,13 @@ export async function loginBootstrapAdmin(
 ): Promise<void> {
   await page.goto(`/sign-in?return=${encodeURIComponent(returnPath)}`);
   await page.getByLabel(/email|邮箱/i).fill(BOOTSTRAP_ADMIN_EMAIL);
-  await page.getByLabel(/password|密码/i).fill(BOOTSTRAP_ADMIN_PASSWORD);
+  // Constrained to the input on purpose: the field's reveal toggle carries
+  // aria-label "Show password"/"显示密码", which this same pattern matches, and
+  // two hits is a strict-mode violation rather than a wrong-element bug.
+  await page
+    .getByLabel(/password|密码/i)
+    .and(page.locator("input"))
+    .fill(BOOTSTRAP_ADMIN_PASSWORD);
   await page.locator('button[type="submit"]').click();
   await page.waitForURL(/\/portal\//, { timeout: 15_000 });
 }

@@ -117,11 +117,45 @@ export const AdminUpdateUserBody = z
   .object({
     platformRole: PlatformRoleSchema.optional(),
     status: z.enum(["active", "suspended"]).optional(),
+    /**
+     * Admin-set replacement password. Unlike the self-service path
+     * (`ChangePasswordBody`) this does not know the user's current password —
+     * it is a reset performed on their behalf, so it is superadmin-only and
+     * always audited. Treat the value as a temporary credential.
+     */
+    password: z
+      .string()
+      .min(PASSWORD_MIN, `password must be ≥ ${PASSWORD_MIN} chars`)
+      .optional(),
   })
-  .refine((b) => b.platformRole !== undefined || b.status !== undefined, {
-    message: "provide platformRole and/or status",
-  });
+  .refine(
+    (b) =>
+      b.platformRole !== undefined ||
+      b.status !== undefined ||
+      b.password !== undefined,
+    { message: "provide platformRole, status and/or password" },
+  );
 export type AdminUpdateUserBody = z.infer<typeof AdminUpdateUserBody>;
+
+export const AdminCreateUserBody = z.object({
+  email: z.string().email(),
+  name: z.string().trim().min(1).max(120),
+  /**
+   * Set by an admin on the user's behalf. The account is usable immediately —
+   * there is no invite/activation flow yet — so treat this as a temporary
+   * credential and tell the user to change it via POST /v1/me/password.
+   */
+  password: z.string().min(PASSWORD_MIN, `password must be \u2265 ${PASSWORD_MIN} chars`),
+  platformRole: PlatformRoleSchema.default("none"),
+  /**
+   * Optional initial tenant grant. Without one the new account can sign in but
+   * lands on the "request access" empty state, which reads as a broken login.
+   */
+  membership: z
+    .object({ tenantSlug: z.string().min(1).max(64), role: TenantRoleSchema })
+    .optional(),
+});
+export type AdminCreateUserBody = z.infer<typeof AdminCreateUserBody>;
 
 export const AdminMembershipBody = z.object({
   tenantSlug: z.string().min(1).max(64),

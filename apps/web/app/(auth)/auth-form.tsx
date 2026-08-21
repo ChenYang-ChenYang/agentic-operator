@@ -212,6 +212,10 @@ function AuthFormInner({ initialMode }: { initialMode: "signin" | "signup" }) {
             type="password"
             autoComplete={isSignup ? "new-password" : "current-password"}
             required
+            revealLabels={{
+              show: t("auth.showPassword"),
+              hide: t("auth.hidePassword"),
+            }}
           />
 
           {error ? (
@@ -283,6 +287,15 @@ function AuthFormInner({ initialMode }: { initialMode: "signin" | "signup" }) {
   );
 }
 
+/**
+ * Text input, with an optional reveal toggle for password fields.
+ *
+ * Passing `revealLabels` swaps the input between `password` and `text` — the
+ * usual defence against a typo in a masked field that only surfaces as a
+ * failed sign-in. The toggle is a real button so it is reachable by keyboard,
+ * and it is excluded from the tab order between the field and the submit
+ * button so the common path (type, Enter) is unchanged.
+ */
 function Field({
   label,
   value,
@@ -290,6 +303,7 @@ function Field({
   type,
   autoComplete,
   required,
+  revealLabels,
 }: {
   label: string;
   value: string;
@@ -297,26 +311,84 @@ function Field({
   type: string;
   autoComplete?: string;
   required?: boolean;
+  revealLabels?: { show: string; hide: string };
 }) {
+  const [revealed, setRevealed] = useState(false);
+  const canReveal = Boolean(revealLabels);
+  const effectiveType = canReveal && revealed ? "text" : type;
+
   return (
     <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
       <span style={{ fontSize: 11.5, color: "var(--text-2)" }}>{label}</span>
-      <input
-        type={type}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        autoComplete={autoComplete}
-        required={required}
-        style={{
-          padding: "9px 11px",
-          background: "var(--panel-2)",
-          border: "1px solid var(--border-2)",
-          borderRadius: 7,
-          color: "var(--text)",
-          fontSize: 13,
-          outline: "none",
-        }}
-      />
+      <span style={{ position: "relative", display: "block" }}>
+        <input
+          type={effectiveType}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          autoComplete={autoComplete}
+          required={required}
+          style={{
+            width: "100%",
+            padding: canReveal ? "9px 40px 9px 11px" : "9px 11px",
+            background: "var(--panel-2)",
+            border: "1px solid var(--border-2)",
+            borderRadius: 7,
+            color: "var(--text)",
+            fontSize: 13,
+            outline: "none",
+          }}
+        />
+        {canReveal ? (
+          <button
+            type="button"
+            tabIndex={-1}
+            onClick={() => setRevealed((v) => !v)}
+            aria-pressed={revealed}
+            aria-label={revealed ? revealLabels!.hide : revealLabels!.show}
+            title={revealed ? revealLabels!.hide : revealLabels!.show}
+            style={{
+              position: "absolute",
+              top: "50%",
+              right: 6,
+              transform: "translateY(-50%)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              width: 28,
+              height: 28,
+              padding: 0,
+              background: "transparent",
+              border: "none",
+              borderRadius: 5,
+              color: "var(--text-3)",
+              cursor: "pointer",
+            }}
+          >
+            <EyeIcon off={revealed} />
+          </button>
+        ) : null}
+      </span>
     </label>
+  );
+}
+
+/** Outline eye; the `off` variant adds the slash. 16px, inherits currentColor. */
+function EyeIcon({ off }: { off: boolean }) {
+  return (
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7Z" />
+      <circle cx="12" cy="12" r="3" />
+      {off ? <path d="m4 4 16 16" /> : null}
+    </svg>
   );
 }

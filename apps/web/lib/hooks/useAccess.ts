@@ -106,6 +106,33 @@ export function useAdminUsers(
   });
 }
 
+/**
+ * Admin-provisioned account. Unlike `/v1/auth/register` (self-service, always
+ * platformRole "none" and no grant), this sets the role and the initial tenant
+ * membership in one commit so the new user is not stranded on "request access".
+ */
+export function useCreateUser() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: {
+      email: string;
+      name: string;
+      password: string;
+      platformRole?: "none" | "superadmin";
+      membership?: { tenantSlug: string; role: TenantRole };
+    }) =>
+      callV1<{ items: AdminUserRow[] }>("/v1/admin/users", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ACCESS_KEYS.users });
+      // A grant in the active tenant also changes the Members tab.
+      qc.invalidateQueries({ queryKey: ACCESS_KEYS.members });
+    },
+  });
+}
+
 export function useUpdateUser() {
   const qc = useQueryClient();
   return useMutation({
@@ -116,6 +143,8 @@ export function useUpdateUser() {
       userId: string;
       platformRole?: "none" | "superadmin";
       status?: "active" | "suspended";
+      /** Admin-set replacement password; superadmin-only and audited server-side. */
+      password?: string;
     }) =>
       callV1<{ items: AdminUserRow[] }>(`/v1/admin/users/${userId}`, {
         method: "PATCH",

@@ -15,6 +15,7 @@
  */
 
 import { useMemo, useState } from "react";
+import { PASSWORD_MIN } from "@agentic/contracts";
 import type { AdminUserRow, MemberRow, TenantRole } from "@agentic/contracts";
 import { Badge, Button, Empty, ViewHeader } from "@/app/portal/components";
 import { toast } from "@/app/portal/components/toast";
@@ -24,6 +25,7 @@ import { useTenants } from "@/lib/hooks/useTenants";
 import {
   useAddMember,
   useAdminUsers,
+  useCreateUser,
   useDeleteUser,
   useGrantMembership,
   useMembers,
@@ -310,6 +312,157 @@ function MembersView({
   );
 }
 
+/**
+ * Admin-provisioned account (POST /v1/admin/users).
+ *
+ * The initial tenant grant is offered here rather than left to a second step:
+ * an account created without one can sign in but lands on the "request access"
+ * empty state, which users reliably report as "my login is broken".
+ *
+ * The password is set by the admin and is usable immediately — there is no
+ * invite/activation email yet — so the copy tells them to hand it over as a
+ * temporary credential the user changes in Settings → Account.
+ */
+function CreateUserModal({ onClose }: { onClose: () => void }) {
+  const { t } = useI18n();
+  const createUser = useCreateUser();
+  const tenantsQuery = useTenants();
+  const [email, setEmail] = useState("");
+  const [name, setName] = useState("");
+  const [password, setPassword] = useState("");
+  const [platformRole, setPlatformRole] = useState<"none" | "superadmin">(
+    "none",
+  );
+  const [tenantSlug, setTenantSlug] = useState("");
+  const [role, setRole] = useState<TenantRole>("viewer");
+  const [error, setError] = useState<string | null>(null);
+
+  // Same shape + archived filter the grant-membership modal uses: offering an
+  // archived tenant would create a grant the user can never act on.
+  const tenantOptions = (tenantsQuery.data?.items ?? []).filter(
+    (tn) => tn.archivedAt == null,
+  );
+  const tooShort = password.length > 0 && password.length < PASSWORD_MIN;
+  const canSubmit =
+    Boolean(email.trim()) &&
+    Boolean(name.trim()) &&
+    password.length >= PASSWORD_MIN &&
+    !createUser.isPending;
+
+  async function submit() {
+    setError(null);
+    try {
+      await createUser.mutateAsync({
+        email: email.trim().toLowerCase(),
+        name: name.trim(),
+        password,
+        platformRole,
+        ...(tenantSlug ? { membership: { tenantSlug, role } } : {}),
+      });
+      toast({ tone: "signal", title: t("access.toastUserCreated") });
+      onClose();
+    } catch (e) {
+      setError(formatApiError(e, t, "access.apiUnreachable"));
+    }
+  }
+
+  return (
+    <Modal title={t("access.newUserTitle")} onClose={onClose}>
+      <p style={{ fontSize: 12, color: "var(--text-3)", marginTop: 0 }}>
+        {t("access.newUserHint")}
+      </p>
+      <LabeledInput
+        label={t("access.emailLabel")}
+        value={email}
+        onChange={setEmail}
+        placeholder={t("access.emailPlaceholder")}
+        type="email"
+      />
+      <LabeledInput
+        label={t("access.nameLabel")}
+        value={name}
+        onChange={setName}
+        placeholder={t("access.namePlaceholder")}
+      />
+      <LabeledInput
+        label={t("access.tempPasswordLabel")}
+        value={password}
+        onChange={setPassword}
+        placeholder={t("access.tempPasswordPlaceholder")}
+        type="password"
+        revealLabels={{
+          show: t("auth.showPassword"),
+          hide: t("auth.hidePassword"),
+        }}
+      />
+      <div style={{ fontSize: 11, color: tooShort ? "var(--red)" : "var(--text-4)" }}>
+        {t("access.passwordMinHint", { min: PASSWORD_MIN })}
+      </div>
+      <div
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          gap: 6,
+          marginTop: 12,
+        }}
+      >
+        <span style={{ fontSize: 11.5, color: "var(--text-2)" }}>
+          {t("access.initialAccessLabel")}
+        </span>
+        <div style={{ display: "flex", gap: 8 }}>
+          <select
+            value={tenantSlug}
+            onChange={(e) => setTenantSlug(e.target.value)}
+            style={{ ...selectStyle, flex: 1 }}
+            aria-label={t("access.tenantLabel")}
+          >
+            <option value="">{t("access.noInitialTenant")}</option>
+            {tenantOptions.map((tn) => (
+              <option key={tn.slug} value={tn.slug}>
+                {tn.name} ({tn.slug})
+              </option>
+            ))}
+          </select>
+          {tenantSlug ? <RoleSelect value={role} onChange={setRole} /> : null}
+        </div>
+        <span style={{ fontSize: 11, color: "var(--text-4)" }}>
+          {tenantSlug
+            ? t("access.initialAccessHint")
+            : t("access.noInitialTenantHint")}
+        </span>
+      </div>
+      <label
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          marginTop: 12,
+          fontSize: 12,
+          color: "var(--text-2)",
+        }}
+      >
+        <input
+          type="checkbox"
+          checked={platformRole === "superadmin"}
+          onChange={(e) =>
+            setPlatformRole(e.target.checked ? "superadmin" : "none")
+          }
+        />
+        {t("access.makeSuperadmin")}
+      </label>
+      {error ? <ErrorNote text={error} /> : null}
+      <ModalActions>
+        <Button tone="ghost" small onClick={onClose}>
+          {t("access.cancel")}
+        </Button>
+        <Button tone="primary" small onClick={submit} disabled={!canSubmit}>
+          {createUser.isPending ? t("access.creating") : t("access.create")}
+        </Button>
+      </ModalActions>
+    </Modal>
+  );
+}
+
 function AddMemberModal({ onClose }: { onClose: () => void }) {
   const { t } = useI18n();
   const addMember = useAddMember();
@@ -383,6 +536,8 @@ function AllUsersView({ selfId }: { selfId: string | null }) {
   const deleteUser = useDeleteUser();
   const [query, setQuery] = useState("");
   const [manage, setManage] = useState<AdminUserRow | null>(null);
+  const [resetting, setResetting] = useState<AdminUserRow | null>(null);
+  const [creating, setCreating] = useState(false);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -413,6 +568,7 @@ function AllUsersView({ selfId }: { selfId: string | null }) {
     body: {
       platformRole?: "none" | "superadmin";
       status?: "active" | "suspended";
+      password?: string;
     },
   ) {
     try {
@@ -448,11 +604,19 @@ function AllUsersView({ selfId }: { selfId: string | null }) {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-      <SearchBox
-        value={query}
-        onChange={setQuery}
-        placeholder={t("access.searchPlaceholder")}
-      />
+      <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <SearchBox
+            value={query}
+            onChange={setQuery}
+            placeholder={t("access.searchPlaceholder")}
+          />
+        </div>
+        <Button tone="primary" small onClick={() => setCreating(true)}>
+          {t("access.newUser")}
+        </Button>
+      </div>
+      {creating && <CreateUserModal onClose={() => setCreating(false)} />}
       <Table
         head={[
           t("access.colMember"),
@@ -533,6 +697,14 @@ function AllUsersView({ selfId }: { selfId: string | null }) {
                   <Button
                     tone="default"
                     small
+                    disabled={updateUser.isPending}
+                    onClick={() => setResetting(u)}
+                  >
+                    {t("access.resetPassword")}
+                  </Button>
+                  <Button
+                    tone="default"
+                    small
                     disabled={updateUser.isPending || Boolean(platformRoleLock)}
                     title={platformRoleLock}
                     onClick={() =>
@@ -585,7 +757,84 @@ function AllUsersView({ selfId }: { selfId: string | null }) {
           onClose={() => setManage(null)}
         />
       ) : null}
+      {resetting ? (
+        <ResetPasswordModal
+          user={resetting}
+          onReset={(password) => patch(resetting, { password })}
+          pending={updateUser.isPending}
+          onClose={() => setResetting(null)}
+        />
+      ) : null}
     </div>
+  );
+}
+
+/**
+ * Admin password reset (PATCH /v1/admin/users/:id with `password`).
+ *
+ * Distinct from Settings → Account: that path proves the current password,
+ * this one does not — it is a superadmin acting on someone else's account, so
+ * the server audits it and the new value is only ever a temporary credential.
+ * The field reveals on demand because the admin has to read the value back to
+ * the person it belongs to.
+ */
+function ResetPasswordModal({
+  user,
+  onReset,
+  pending,
+  onClose,
+}: {
+  user: AdminUserRow;
+  onReset: (password: string) => Promise<void>;
+  pending: boolean;
+  onClose: () => void;
+}) {
+  const { t } = useI18n();
+  const [password, setPassword] = useState("");
+  const tooShort = password.length > 0 && password.length < PASSWORD_MIN;
+  const canSubmit = password.length >= PASSWORD_MIN && !pending;
+
+  async function submit() {
+    if (!canSubmit) return;
+    await onReset(password);
+    onClose();
+  }
+
+  return (
+    <Modal title={t("access.resetPasswordTitle", { name: user.name })} onClose={onClose}>
+      <p style={{ fontSize: 12, color: "var(--text-3)", marginTop: 0 }}>
+        {t("access.resetPasswordHint")}
+      </p>
+      <LabeledInput
+        label={t("access.resetPasswordLabel")}
+        value={password}
+        onChange={setPassword}
+        placeholder={t("access.resetPasswordPlaceholder")}
+        type="password"
+        revealLabels={{
+          show: t("auth.showPassword"),
+          hide: t("auth.hidePassword"),
+        }}
+      />
+      <div style={{ fontSize: 11, color: tooShort ? "var(--red)" : "var(--text-4)" }}>
+        {t("access.passwordMinHint", { min: PASSWORD_MIN })}
+      </div>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "flex-end",
+          gap: 8,
+          marginTop: 18,
+        }}
+      >
+        <Button tone="default" onClick={onClose}>
+          {t("access.cancel")}
+        </Button>
+        <Button tone="primary" disabled={!canSubmit} onClick={submit}>
+          {pending ? t("access.resetPasswordBusy") : t("access.resetPasswordSubmit")}
+        </Button>
+      </div>
+    </Modal>
   );
 }
 
@@ -1039,29 +1288,89 @@ function ModalActions({ children }: { children: React.ReactNode }) {
   );
 }
 
+/**
+ * Labelled text input. Passing `revealLabels` turns it into a password field
+ * with a show/hide toggle — an admin typing a credential they must then read
+ * out needs to confirm it, and a masked-only field turns every typo into a
+ * failed sign-in for someone else.
+ */
 function LabeledInput({
   label,
   value,
   onChange,
   placeholder,
   type,
+  revealLabels,
 }: {
   label: string;
   value: string;
   onChange: (v: string) => void;
   placeholder?: string;
   type?: string;
+  revealLabels?: { show: string; hide: string };
 }) {
+  const [revealed, setRevealed] = useState(false);
+  const canReveal = Boolean(revealLabels);
   return (
     <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
       <span style={{ fontSize: 11.5, color: "var(--text-2)" }}>{label}</span>
-      <input
-        type={type ?? "text"}
-        value={value}
-        placeholder={placeholder}
-        onChange={(e) => onChange(e.target.value)}
-        style={{ ...selectStyle, background: "var(--panel-2)" }}
-      />
+      <span style={{ position: "relative", display: "block" }}>
+        <input
+          type={canReveal && revealed ? "text" : (type ?? "text")}
+          value={value}
+          placeholder={placeholder}
+          onChange={(e) => onChange(e.target.value)}
+          style={{
+            ...selectStyle,
+            background: "var(--panel-2)",
+            width: "100%",
+            ...(canReveal ? { paddingRight: 40 } : null),
+          }}
+        />
+        {canReveal ? (
+          <button
+            type="button"
+            tabIndex={-1}
+            onClick={() => setRevealed((v) => !v)}
+            aria-pressed={revealed}
+            aria-label={revealed ? revealLabels!.hide : revealLabels!.show}
+            title={revealed ? revealLabels!.hide : revealLabels!.show}
+            style={{
+              position: "absolute",
+              top: "50%",
+              right: 6,
+              transform: "translateY(-50%)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              width: 28,
+              height: 28,
+              padding: 0,
+              background: "transparent",
+              border: "none",
+              borderRadius: 5,
+              color: "var(--text-3)",
+              cursor: "pointer",
+            }}
+          >
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7Z" />
+              <circle cx="12" cy="12" r="3" />
+              {revealed ? <path d="m4 4 16 16" /> : null}
+            </svg>
+          </button>
+        ) : null}
+      </span>
     </label>
   );
 }

@@ -16,6 +16,7 @@ import {
 } from "@/app/portal/components/settings/data";
 import { WorkspaceSection } from "@/app/portal/components/settings/sections/Workspace";
 import { AppearanceSection } from "@/app/portal/components/settings/sections/Appearance";
+import { AccountSection } from "@/app/portal/components/settings/sections/Account";
 import { PeopleSection } from "@/app/portal/components/settings/sections/People";
 import { AISection } from "@/app/portal/components/settings/sections/AI";
 import { ModelsSection } from "@/app/portal/components/settings/sections/Models";
@@ -217,6 +218,7 @@ export default function SettingsPage() {
             <SectionHeader section={sec} />
             {section === "workspace" && <WorkspaceSection />}
             {section === "appearance" && <AppearanceSection />}
+            {section === "account" && <AccountSection />}
             {section === "people" && <PeopleSection />}
             {section === "ai" && <AISection />}
             {section === "models" && <ModelsSection />}
