@@ -32,19 +32,6 @@ if (parsedApiUrl.protocol !== "http:" && parsedApiUrl.protocol !== "https:") {
  *                                     react-query); `/` redirects there via
  *                                     `apps/web/app/page.tsx`.
  */
-/**
- * BUILD NOTE — the `build` script passes `--experimental-build-mode compile`.
- * Next.js 16 (every version through 16.3.0 stable — re-verified on the 16.3.0
- * upgrade) crashes while statically
- * prerendering its internal `/_not-found` and `/_global-error` pages with
- * "Cannot read properties of null (reading 'useContext')" inside the framework's
- * OuterLayoutRouter — an unresolved upstream bug (vercel/next.js #85668, #86178,
- * #84994) that is bundler-, React-version- and config-independent and cannot be
- * worked around from application code. `compile` mode skips the static-generate
- * phase; this portal is 100% dynamic (every route is `ƒ` server-rendered on
- * demand, all data flows through /v1), so nothing is lost. Revisit once Next
- * ships a fix and drop the flag to restore the standard build.
- */
 /** @type {import("next").NextConfig} */
 const nextConfig = {
   // Emit a self-contained server bundle at .next/standalone — the web Dockerfile
