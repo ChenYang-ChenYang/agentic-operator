@@ -2389,26 +2389,41 @@ export default function WorkflowsPage() {
                           <span
                             style={{
                               marginLeft: "auto",
+                              minWidth: 0,
+                              maxWidth: "58%",
                               fontSize: 10,
                               fontFamily: "var(--mono)",
                               color: "var(--text-3)",
+                              // The technical id is secondary to the title on a
+                              // projector; clamp it to an ellipsis instead of
+                              // letting it clip mid-glyph.
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                              whiteSpace: "nowrap",
+                              direction: "rtl",
+                              textAlign: "right",
                             }}
+                            title={a.kebabId}
                           >
                             {a.kebabId}
                           </span>
                         </div>
                         <div
                           style={{
-                            fontSize: 12.5,
+                            // The human-readable name is what a room reads;
+                            // it outranks the id above it.
+                            fontSize: 14,
                             color: "var(--text)",
                             fontWeight: 600,
-                            lineHeight: 1.2,
+                            lineHeight: 1.25,
                             overflow: "hidden",
                             textOverflow: "ellipsis",
                             display: "-webkit-box",
                             WebkitLineClamp: 2,
                             WebkitBoxOrient: "vertical",
+                            wordBreak: "break-word",
                           }}
+                          title={a.title}
                         >
                           {a.title}
                         </div>
