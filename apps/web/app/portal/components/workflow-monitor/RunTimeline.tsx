@@ -31,7 +31,11 @@ import {
   type ToolCallNode,
   type TurnNode,
 } from "./trace-tree";
-import { readDataChange, type EvidenceArtifact } from "./data-change";
+import {
+  readDataChange,
+  readStepOutcome,
+  type EvidenceArtifact,
+} from "./data-change";
 import { fmtDuration, fmtTokens } from "./live-support";
 import styles from "./timeline.module.css";
 
@@ -312,7 +316,9 @@ function AttemptBlock({
           </span>
         </div>
       ) : null}
-      {attempt.error ? (
+      {/* A skipped step's reason is already rendered by StepOutcome from the
+          resolved output; only a genuine execution error belongs here. */}
+      {attempt.error && attempt.status !== "skipped" ? (
         <p className={styles.changeError}>{attempt.error}</p>
       ) : null}
       <ul className={`${styles.turnList} wf-spine`}>
@@ -323,6 +329,69 @@ function AttemptBlock({
           <ToolCallRow key={`loose-${c.seq}`} call={c} />
         ))}
       </ul>
+    </div>
+  );
+}
+
+/**
+ * The decision the step reached, in the model's own words.
+ *
+ * For a rule gate this is the whole point of the step: `status` is the verdict
+ * and `reason` is the sentence explaining which evidence was missing. It sits
+ * directly under the step header rather than behind an expander, because on a
+ * projector this is the line the room needs to read.
+ */
+function StepOutcome({ output }: { output: unknown }) {
+  const { t } = useI18n();
+  const outcome = useMemo(() => readStepOutcome(output), [output]);
+  if (!outcome) return null;
+
+  if (outcome.kind === "condition") {
+    return (
+      <div className={styles.outcomeCondition}>
+        <code>{outcome.condition}</code>
+        {outcome.evaluated !== null ? (
+          <span className={styles.evaluated}>
+            {outcome.evaluated
+              ? t("monitor.conditionTrue")
+              : t("monitor.conditionFalse")}
+          </span>
+        ) : null}
+      </div>
+    );
+  }
+
+  const violated =
+    outcome.status !== null &&
+    /violat|fail|reject|deny/i.test(outcome.status);
+
+  return (
+    <div
+      className={styles.outcome}
+      style={{
+        borderLeftColor: violated
+          ? "var(--red)"
+          : outcome.kind === "skipped"
+            ? "var(--text-3)"
+            : "var(--green)",
+      }}
+    >
+      <div className={styles.outcomeHead}>
+        {outcome.ruleId ? (
+          <code className={styles.ruleId}>{outcome.ruleId}</code>
+        ) : null}
+        {outcome.status ? (
+          <span
+            className={styles.verdict}
+            style={{ color: violated ? "var(--red)" : "var(--text-2)" }}
+          >
+            {outcome.status}
+          </span>
+        ) : null}
+      </div>
+      {outcome.reason ? (
+        <p className={styles.reason}>{outcome.reason}</p>
+      ) : null}
     </div>
   );
 }
@@ -338,6 +407,7 @@ function StepBlock({ step }: { step: StepNode }) {
         {step.type ? <span className={styles.stepType}>{step.type}</span> : null}
         <span className={styles.callTime}>{fmtDuration(last?.durationMs)}</span>
       </header>
+      <StepOutcome output={step.output} />
       {step.attempts.map((attempt) => (
         <AttemptBlock
           key={attempt.attempt}

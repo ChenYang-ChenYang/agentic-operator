@@ -151,3 +151,71 @@ export function readDataChange(
     errorText: null,
   };
 }
+
+
+/**
+ * The decision a step reached, read from its resolved output payload.
+ *
+ * GET /v1/runs/:id already resolves each step's outputRef into `step.output`,
+ * so the verdict and — crucially — the model's own stated `reason` are
+ * reachable without touching the server. For a rule gate that reason IS the
+ * reasoning: a sentence in the operator's language saying which evidence was
+ * missing and why the gate failed closed. It is the single most useful line in
+ * the whole trace and it was previously rendered nowhere.
+ */
+export interface StepOutcome {
+  kind: "verdict" | "skipped" | "condition" | "none";
+  /** "violation" | "pass" | … for a rule gate. */
+  status: string | null;
+  /** The model's stated justification, or the skip condition. */
+  reason: string | null;
+  ruleId: string | null;
+  /** A condition step's expression and whether it evaluated true. */
+  condition: string | null;
+  evaluated: boolean | null;
+}
+
+export function readStepOutcome(output: unknown): StepOutcome | null {
+  if (!output || typeof output !== "object" || Array.isArray(output)) return null;
+  const o = output as Record<string, unknown>;
+
+  const str = (v: unknown): string | null =>
+    typeof v === "string" && v.trim().length > 0 ? v : null;
+
+  if (o.skipped === true) {
+    return {
+      kind: "skipped",
+      status: "skipped",
+      reason: str(o.reason),
+      ruleId: null,
+      condition: null,
+      evaluated: null,
+    };
+  }
+
+  const ruleId = str(o.ruleId);
+  const status = str(o.status);
+  if (ruleId || (status && str(o.reason))) {
+    return {
+      kind: "verdict",
+      status,
+      reason: str(o.reason),
+      ruleId,
+      condition: null,
+      evaluated: null,
+    };
+  }
+
+  if (typeof o.evaluated === "boolean" || str(o.condition)) {
+    return {
+      kind: "condition",
+      status: null,
+      reason: null,
+      ruleId: null,
+      condition: str(o.condition),
+      evaluated: typeof o.evaluated === "boolean" ? o.evaluated : null,
+    };
+  }
+
+  return null;
+}

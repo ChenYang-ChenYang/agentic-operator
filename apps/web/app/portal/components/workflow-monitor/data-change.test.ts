@@ -6,7 +6,7 @@
  * rather than against an idealised contract.
  */
 import { describe, expect, it } from "vitest";
-import { readDataChange } from "./data-change";
+import { readDataChange, readStepOutcome } from "./data-change";
 
 describe("readDataChange", () => {
   it("reads a mutation receipt as a write, with its document id and row", () => {
@@ -100,5 +100,47 @@ describe("readDataChange", () => {
   it("returns null for a missing artifact rather than throwing", () => {
     expect(readDataChange(null)).toBeNull();
     expect(readDataChange(undefined)).toBeNull();
+  });
+});
+
+describe("readStepOutcome", () => {
+  it("reads a rule-gate verdict and the model's stated reason", () => {
+    const o = readStepOutcome({
+      ruleId: "PSCM-EMG-004",
+      status: "violation",
+      reason: "触发负载未提供今日日期，无法确认协议有效期是否覆盖今日；按 fail-closed 判定违反。",
+    });
+    expect(o?.kind).toBe("verdict");
+    expect(o?.status).toBe("violation");
+    expect(o?.ruleId).toBe("PSCM-EMG-004");
+    expect(o?.reason).toContain("fail-closed");
+  });
+
+  it("reads a skipped step and why it was skipped", () => {
+    const o = readStepOutcome({
+      skipped: true,
+      reason: 'condition "rule-verdict-PSCM-EMG-004" is false',
+    });
+    expect(o?.kind).toBe("skipped");
+    expect(o?.reason).toContain("rule-verdict");
+  });
+
+  it("reads a condition evaluation with its expression", () => {
+    const o = readStepOutcome({
+      evaluated: false,
+      condition: "results.rule-gate.status == 'pass'",
+      valid: true,
+      targetActionId: null,
+    });
+    expect(o?.kind).toBe("condition");
+    expect(o?.evaluated).toBe(false);
+    expect(o?.condition).toContain("rule-gate");
+  });
+
+  it("returns null for output with no decision in it", () => {
+    expect(readStepOutcome({ ok: true, id: "TRF-1" })).toBeNull();
+    expect(readStepOutcome(null)).toBeNull();
+    expect(readStepOutcome([1, 2])).toBeNull();
+    expect(readStepOutcome("text")).toBeNull();
   });
 });

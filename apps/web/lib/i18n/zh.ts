@@ -395,7 +395,7 @@ export const zh = {
       focusWorkspace: "聚焦工作区",
       harnessTitle: "Harness 执行",
       collapse: "收起",
-      expand: "展开",
+    expand: "展开",
       noHarnessJobs:
         "当前 Session 还没有 Harness Job；发送执行请求后会在这里显示真实步骤。",
       testBlocker: "请先完成 Build，并生成可测试的 Agent code 候选版本。",
@@ -5653,6 +5653,8 @@ export const zh = {
     dataChangeLive: "\u771f\u5b9e\u7cfb\u7edf",
     dataChangeSandbox: "\u6c99\u7bb1",
     dataChangeNone: "\u8fd9\u6b21\u8c03\u7528\u6ca1\u6709\u8bb0\u5f55\u8bc1\u636e\u3002",
+    conditionTrue: "\u6210\u7acb",
+    conditionFalse: "\u4e0d\u6210\u7acb",
     expand: "\u5c55\u5f00\u8be6\u60c5",
     collapse: "\u6536\u8d77\u8be6\u60c5",
   },

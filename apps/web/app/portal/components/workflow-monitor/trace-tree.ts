@@ -91,6 +91,8 @@ export interface StepNode {
   type: string | null;
   visibility: string;
   attempts: AttemptNode[];
+  /** Resolved step output, when the persisted step list supplied one. */
+  output?: unknown;
 }
 
 export interface RunTraceTree {
@@ -366,6 +368,8 @@ export interface RunStepRow {
   tokensIn: number | null;
   tokensOut: number | null;
   attempts?: number;
+  /** Resolved payload from the step's outputRef — carries the verdict + reason. */
+  output?: unknown;
 }
 
 /**
@@ -402,6 +406,7 @@ export function mergeStepRows(
         name: row.name,
         type: row.type,
         visibility: "user",
+        output: row.output,
         attempts: [
           {
             attempt: 1,
@@ -432,7 +437,12 @@ export function mergeStepRows(
         ord: row?.ord ?? Number.MAX_SAFE_INTEGER,
         // The table is authoritative for the declared type; the trace only
         // carries it on the opening row, which a cursor can trim away.
-        step: row && !step.type ? { ...step, type: row.type } : step,
+        // The table is authoritative for the declared type, and it is the
+        // only source of the resolved output payload.
+        step:
+          row && (!step.type || row.output !== undefined)
+            ? { ...step, type: step.type ?? row.type, output: row.output }
+            : step,
       };
     }),
     ...extra,

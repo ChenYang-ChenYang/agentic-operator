@@ -409,7 +409,7 @@ export const en = {
       focusWorkspace: "Focus workspace",
       harnessTitle: "Harness execution",
       collapse: "Collapse",
-      expand: "Expand",
+    expand: "Expand",
       noHarnessJobs:
         "No Harness jobs yet. Send an execution request to see durable steps here.",
       testBlocker:
@@ -5992,6 +5992,8 @@ export const en = {
     dataChangeLive: "live system",
     dataChangeSandbox: "sandbox",
     dataChangeNone: "No evidence recorded for this call.",
+    conditionTrue: "true",
+    conditionFalse: "false",
     expand: "Show detail",
     collapse: "Hide detail",
   },
