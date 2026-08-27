@@ -7,6 +7,7 @@ import type {
   GenerateWorkflowResponse,
   ProviderId,
   WorkflowDetail,
+  WorkflowGenerationProgress,
 } from "@agentic/contracts";
 import {
   Badge,
@@ -18,11 +19,17 @@ import {
 import { defaultFleetModelKey } from "@/app/portal/components/workflows/fleet-selection";
 import { useTenant } from "@/app/portal/lib/use-tenant";
 import { useI18n } from "@/app/portal/lib/preferences-context";
+import {
+  unmetRequirements,
+  type RequirementInput,
+} from "./new-workflow-requirements";
+import { GenerationProgressPanel } from "./GenerationProgressPanel";
 import { workflowStatusLabel } from "@/app/portal/lib/protocol-labels";
 import { useFleet } from "@/lib/hooks/useModelFleet";
 import {
   useCreateWorkflow,
-  useGenerateWorkflow,
+  WorkflowGenerationError,
+  generateWorkflowStreamed,
   formatWorkflowAuthoringError,
   useWorkflowCatalog,
   useWorkflowDetail,
@@ -98,7 +105,6 @@ export function NewWorkflowModal({
   const workflowsQuery = useWorkflowCatalog();
   const foldersQuery = useWorkflowDocumentFolders();
   const fleetQuery = useFleet();
-  const generate = useGenerateWorkflow();
   const create = useCreateWorkflow();
 
   const templates = templatesQuery.data?.templates ?? [];
@@ -123,6 +129,13 @@ export function NewWorkflowModal({
   const [outputsText, setOutputsText] = useState("");
   const [modelKey, setModelKey] = useState("");
   const [preview, setPreview] = useState<GenerateWorkflowResponse | null>(null);
+  const [progressEvents, setProgressEvents] = useState<
+    WorkflowGenerationProgress[]
+  >([]);
+  const [generating, setGenerating] = useState(false);
+  const [generationStartedAt, setGenerationStartedAt] = useState<number | null>(
+    null,
+  );
   const [previewFingerprint, setPreviewFingerprint] = useState<string | null>(
     null,
   );
@@ -198,16 +211,34 @@ export function NewWorkflowModal({
 
   async function runGeneration() {
     setError(null);
+    setProgressEvents([]);
+    setGenerationStartedAt(Date.now());
+    setGenerating(true);
     const requestedFingerprint = currentGenerationFingerprint;
     try {
-      const result = await generate.mutateAsync(generationInput);
+      const result = await generateWorkflowStreamed(
+        generationInput,
+        (event) => setProgressEvents((current) => [...current, event]),
+      );
       setPreview(result);
       setPreviewFingerprint(requestedFingerprint);
       if (!name.trim()) changeName(result.summary.slice(0, 120));
     } catch (generationError) {
-      setError(
-        formatError(generationError, t("newWorkflowModal.requestFailed"), t),
-      );
+      // A coded generation failure carries the server's own reason and hint;
+      // anything else falls back to the generic formatter.
+      if (generationError instanceof WorkflowGenerationError) {
+        setError(
+          generationError.hint
+            ? `${generationError.message} — ${generationError.hint}`
+            : generationError.message,
+        );
+      } else {
+        setError(
+          formatError(generationError, t("newWorkflowModal.requestFailed"), t),
+        );
+      }
+    } finally {
+      setGenerating(false);
     }
   }
 
@@ -270,11 +301,20 @@ export function NewWorkflowModal({
     }
   }
 
-  const ready =
-    name.trim().length > 0 &&
-    slug.trim().length > 0 &&
-    (path !== "generate" || preview !== null);
-  const canCreate = ready && (path !== "generate" || previewIsCurrent);
+  // One source of truth for "can I create?", so the button's disabled state and
+  // the reason shown to the operator can never disagree.
+  const requirementInput: RequirementInput = {
+    path,
+    name,
+    slug,
+    purpose,
+    hasPreview: preview !== null,
+    previewIsCurrent,
+    templateId,
+    cloneSlug,
+  };
+  const blocking = unmetRequirements(requirementInput);
+  const canCreate = blocking.length === 0;
 
   return (
     <ModalOverlay
@@ -454,8 +494,17 @@ export function NewWorkflowModal({
               onExpectedOutputs={setOutputsText}
               preview={preview}
               previewStale={preview !== null && !previewIsCurrent}
-              pending={generate.isPending}
+              pending={generating}
               onGenerate={() => void runGeneration()}
+              progress={
+                progressEvents.length > 0 || generating ? (
+                  <GenerationProgressPanel
+                    events={progressEvents}
+                    running={generating}
+                    startedAt={generationStartedAt}
+                  />
+                ) : null
+              }
             />
           )}
 
@@ -656,6 +705,41 @@ export function NewWorkflowModal({
                 : t("newWorkflowModal.serverDraftNote")}
             </span>
           </div>
+          {blocking.length > 0 ? (
+            <div
+              role="status"
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                flexWrap: "wrap",
+                fontSize: 11,
+                color: "var(--text-3)",
+              }}
+            >
+              <span style={{ color: "var(--text-2)" }}>
+                {t("newWorkflowModal.stillNeeded")}
+              </span>
+              {blocking.map((requirement) => (
+                <span
+                  key={requirement.id}
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 4,
+                    padding: "2px 8px",
+                    borderRadius: 999,
+                    border: "1px solid var(--border-2)",
+                    background: "var(--panel-2)",
+                    color: "var(--text-2)",
+                  }}
+                >
+                  <Icon name="alert" size={9} />
+                  {t(`newWorkflowModal.req_${requirement.id}`)}
+                </span>
+              ))}
+            </div>
+          ) : null}
           <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
             <Button tone="ghost" onClick={onClose}>
               {t("newWorkflowModal.cancel")}
@@ -695,6 +779,7 @@ function GenerationPanel({
   previewStale,
   pending,
   onGenerate,
+  progress,
 }: {
   purpose: string;
   onPurpose: (value: string) => void;
@@ -711,6 +796,7 @@ function GenerationPanel({
   previewStale: boolean;
   pending: boolean;
   onGenerate: () => void;
+  progress?: React.ReactNode;
 }) {
   const { language, t } = useI18n();
   return (
@@ -830,6 +916,7 @@ function GenerationPanel({
               : t("newWorkflowModal.generateProposal")}
         </Button>
       </div>
+      {progress}
       {preview && (
         <div
           style={{

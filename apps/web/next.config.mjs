@@ -42,6 +42,22 @@ const nextConfig = {
   transpilePackages: ["@agentic/contracts"],
   typedRoutes: true,
   reactStrictMode: true,
+  experimental: {
+    /**
+     * The rewrite proxy in front of apps/api defaults to a 30 s timeout
+     * (`proxyTimeout || 30000`, next/dist/server/lib/router-utils/proxy-request.js:37).
+     * Workflow generation is a single blocking LLM call the api allows 90 s for
+     * (workflow-generator.ts), and a real generation measured 34 s — so the
+     * proxy was aborting requests the api went on to complete successfully, and
+     * the browser received a plain-text 500 for a workflow that had in fact
+     * been generated and audited.
+     *
+     * Sits above the api's own 90 s ceiling so the api is always the component
+     * that decides a call has taken too long, and the operator gets a real
+     * error instead of a proxy-generated one.
+     */
+    proxyTimeout: 120_000,
+  },
   async redirects() {
     return [
       {

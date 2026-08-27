@@ -20,6 +20,9 @@ import {
   type WorkflowDetail,
   type WorkflowRunProfileTarget,
   type WorkflowTestRunBody,
+  WorkflowGenerationProgressSchema,
+  type WorkflowGenerationProgress,
+  type GenerateWorkflowResponse,
 } from "@agentic/contracts";
 import { z, type ZodType } from "zod";
 import { tenantHeader } from "./tenant-header";
@@ -33,6 +36,22 @@ interface ApiOk {
 interface ApiErr {
   ok: false;
   error: { code: string; message: string; hint?: string; details?: unknown };
+}
+
+/**
+ * A generation failure with the server's coded reason attached, so the modal
+ * can show why it failed instead of "HTTP 500".
+ */
+export class WorkflowGenerationError extends Error {
+  constructor(
+    public readonly code: string,
+    message: string,
+    public readonly hint?: string,
+    public readonly details?: unknown,
+  ) {
+    super(message);
+    this.name = "WorkflowGenerationError";
+  }
 }
 
 export class WorkflowAuthoringApiError extends Error {
@@ -320,6 +339,133 @@ export function useGenerateWorkflow() {
         body: JSON.stringify(body),
       }),
   });
+}
+
+/**
+ * Streaming generation: same result as `useGenerateWorkflow`, but reports the
+ * server's real stage transitions while it runs.
+ *
+ * Falls back to the plain endpoint when the stream cannot be opened at all, so
+ * a proxy that buffers or blocks event-streams degrades to today's behaviour
+ * rather than breaking generation.
+ */
+export async function generateWorkflowStreamed(
+  body: GenerateWorkflowBody,
+  onProgress: (event: WorkflowGenerationProgress) => void,
+  signal?: AbortSignal,
+): Promise<GenerateWorkflowResponse> {
+  let response: Response;
+  try {
+    response = await fetch("/v1/workflows/generate/stream", {
+      method: "POST",
+      credentials: "same-origin",
+      signal,
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "text/event-stream",
+        ...tenantHeader(),
+        ...usageAttributionHeaders("workflow-authoring"),
+      },
+      body: JSON.stringify(body),
+    });
+  } catch {
+    return callV1("/v1/workflows/generate", GenerateWorkflowResponseSchema, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+
+  if (!response.ok || !response.body) {
+    // A non-2xx here is a normal JSON envelope (the route parses the body
+    // before hijacking), so surface it the way every other call does.
+    let envelope: ApiErr | null = null;
+    try {
+      envelope = (await response.json()) as ApiErr;
+    } catch {
+      envelope = null;
+    }
+    throw new WorkflowGenerationError(
+      envelope?.error?.code ?? "requestFailed",
+      envelope?.error?.message ?? `Generation failed (${response.status})`,
+      envelope?.error?.hint,
+      envelope?.error?.details,
+    );
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let result: GenerateWorkflowResponse | null = null;
+  let failure: WorkflowGenerationError | null = null;
+
+  const consumeFrame = (frame: string): void => {
+    let event = "message";
+    const dataLines: string[] = [];
+    for (const line of frame.split("\n")) {
+      if (line.startsWith(":")) continue;
+      if (line.startsWith("event:")) event = line.slice(6).trim();
+      else if (line.startsWith("data:")) dataLines.push(line.slice(5).trim());
+    }
+    if (dataLines.length === 0) return;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(dataLines.join("\n"));
+    } catch {
+      return;
+    }
+    if (event === "progress") {
+      const progress = WorkflowGenerationProgressSchema.safeParse(parsed);
+      if (progress.success) onProgress(progress.data);
+      return;
+    }
+    if (event === "result") {
+      const finalResult = GenerateWorkflowResponseSchema.safeParse(parsed);
+      if (finalResult.success) result = finalResult.data;
+      else
+        failure = new WorkflowGenerationError(
+          "invalidResponse",
+          "The server returned a workflow this client could not read.",
+        );
+      return;
+    }
+    if (event === "failed") {
+      const shape = parsed as {
+        code?: string;
+        message?: string;
+        hint?: string;
+        details?: unknown;
+      };
+      failure = new WorkflowGenerationError(
+        shape.code ?? "generation_failed",
+        shape.message ?? "Generation failed.",
+        shape.hint,
+        shape.details,
+      );
+    }
+  };
+
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let split = buffer.indexOf("\n\n");
+    while (split !== -1) {
+      consumeFrame(buffer.slice(0, split));
+      buffer = buffer.slice(split + 2);
+      split = buffer.indexOf("\n\n");
+    }
+  }
+  if (buffer.trim()) consumeFrame(buffer);
+
+  if (failure) throw failure;
+  if (!result) {
+    throw new WorkflowGenerationError(
+      "streamTruncated",
+      "The connection closed before the workflow finished generating.",
+      "Try again — nothing was created.",
+    );
+  }
+  return result;
 }
 
 export function useRunWorkflowTest(slug?: string | null) {

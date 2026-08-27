@@ -11,6 +11,8 @@ import {
   type ProviderId,
   type WorkflowGenerationSource,
   type WorkflowManifestV2,
+  type WorkflowGenerationProgress,
+  type WorkflowGenerationStage,
 } from "@agentic/contracts";
 import { validateJsonSchemaDocument } from "@agentic/runtime";
 import { listGlobalTools, type ToolCatalogEntry } from "@agentic/tools";
@@ -1370,17 +1372,85 @@ function generationSources(
   ];
 }
 
+/**
+ * Reports real, server-observed stage transitions. Optional so the plain
+ * request/response route is unchanged; the SSE route supplies one.
+ *
+ * Deliberately never throws into the generation: a broken client socket must
+ * not fail a generation that is otherwise succeeding.
+ */
+export type WorkflowGenerationProgressReporter = (
+  event: WorkflowGenerationProgress,
+) => void;
+
 export async function generateWorkflowPreview(
   input: GenerateWorkflowBody,
   ctx: WorkflowTenantContext,
+  onProgress?: WorkflowGenerationProgressReporter,
 ): Promise<GenerateWorkflowResponse> {
-  const documents = input.documentFolder
-    ? await extractWorkflowDocuments(ctx.tenantSlug, input.documentFolder)
-    : null;
-  const research = input.webResearch
-    ? await researchWorkflowPurpose(input, ctx.tenantSlug)
-    : null;
+  const startedAtMs = Date.now();
+  const stageStarts = new Map<WorkflowGenerationStage, number>();
+  function report(
+    stage: WorkflowGenerationStage,
+    status: "started" | "ok" | "skipped" | "failed",
+    extra: {
+      detail?: string | null;
+      tokensIn?: number | null;
+      tokensOut?: number | null;
+    } = {},
+  ): void {
+    if (!onProgress) return;
+    const now = Date.now();
+    if (status === "started") stageStarts.set(stage, now);
+    const startedAt = stageStarts.get(stage);
+    try {
+      onProgress({
+        stage,
+        status,
+        atMs: Math.max(0, now - startedAtMs),
+        durationMs:
+          status === "started" || startedAt === undefined
+            ? null
+            : Math.max(0, now - startedAt),
+        detail: extra.detail ?? null,
+        tokensIn: extra.tokensIn ?? null,
+        tokensOut: extra.tokensOut ?? null,
+      });
+    } catch {
+      // A dead client socket must never fail the generation.
+    }
+  }
+
+  let documents: Awaited<ReturnType<typeof extractWorkflowDocuments>> | null =
+    null;
+  if (input.documentFolder) {
+    report("documents", "started");
+    documents = await extractWorkflowDocuments(
+      ctx.tenantSlug,
+      input.documentFolder,
+    );
+    report("documents", "ok", {
+      detail: `${documents.documents.length} document(s)`,
+    });
+  } else {
+    report("documents", "skipped");
+  }
+
+  let research: Awaited<ReturnType<typeof researchWorkflowPurpose>> | null =
+    null;
+  if (input.webResearch) {
+    report("research", "started");
+    research = await researchWorkflowPurpose(input, ctx.tenantSlug);
+    report("research", "ok", {
+      detail: `${research.results.length} source(s)`,
+    });
+  } else {
+    report("research", "skipped");
+  }
+
+  report("model", "started");
   const selection = resolveModel(input);
+  report("model", "ok", { detail: `${selection.provider} · ${selection.model}` });
   const warnings = (documents?.report.diagnostics ?? [])
     .filter((item) => item.status !== "included")
     .map(
@@ -1424,6 +1494,9 @@ export async function generateWorkflowPreview(
       research_results: research?.results ?? [],
       research_provider: research?.provider ?? null,
     };
+    report("generate", "started", {
+      detail: `${selection.provider} · ${selection.model}`,
+    });
     const first = await gateway.chat({
       routing: { taskType: "workflow.generate" },
       provider: selection.provider,
@@ -1444,6 +1517,11 @@ export async function generateWorkflowPreview(
     });
     tokensIn = first.tokensIn;
     tokensOut = first.tokensOut;
+    report("generate", "ok", {
+      detail: `${first.text.length.toLocaleString("en-US")} characters returned`,
+      tokensIn,
+      tokensOut,
+    });
     const initialContext = (): CompileContext => ({
       provider: selection.provider,
       model: selection.model,
@@ -1455,11 +1533,20 @@ export async function generateWorkflowPreview(
       warnings,
     });
     try {
+      report("interpret", "started");
       interpreted = interpretModelValue(
         parseJson(first.text),
         initialContext(),
       );
+      report("interpret", "ok", {
+        detail: `${interpreted.manifest.agents.length} agent(s)`,
+      });
     } catch (firstError) {
+      report("interpret", "failed", {
+        detail:
+          firstError instanceof Error ? firstError.message : String(firstError),
+      });
+      report("repair", "started");
       const repaired = await gateway.chat({
         routing: { taskType: "output.repair" },
         provider: selection.provider,
@@ -1501,7 +1588,18 @@ export async function generateWorkflowPreview(
           parseJson(repaired.text),
           initialContext(),
         );
+        report("repair", "ok", {
+          detail: `${interpreted.manifest.agents.length} agent(s) after repair`,
+          tokensIn,
+          tokensOut,
+        });
       } catch (repairError) {
+        report("repair", "failed", {
+          detail:
+            repairError instanceof Error
+              ? repairError.message
+              : String(repairError),
+        });
         throw new WorkflowGenerationOutputError(
           "generator output remained invalid after one repair attempt",
           {
@@ -1519,15 +1617,22 @@ export async function generateWorkflowPreview(
     }
   }
 
+  report("validate", "started");
   const validation = validateWorkflowManifest(interpreted.manifest, {
     tenantSlug: ctx.tenantSlug,
   });
   if (!validation.valid) {
+    report("validate", "failed", {
+      detail: `${validation.issues.filter((issue) => issue.severity === "error").length} blocking issue(s)`,
+    });
     throw new WorkflowGenerationOutputError(
       "generated workflow did not pass structural validation",
       validation.issues.filter((issue) => issue.severity === "error"),
     );
   }
+  report("validate", "ok", {
+    detail: `${interpreted.manifest.agents.length} agent(s), ${validation.issues.length} warning(s)`,
+  });
   return {
     summary: interpreted.summary,
     rationale: interpreted.rationale,

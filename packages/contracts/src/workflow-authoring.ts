@@ -379,6 +379,41 @@ export type WorkflowGenerationSource = z.infer<
   typeof WorkflowGenerationSourceSchema
 >;
 
+/**
+ * Real, server-observed stages of a workflow generation. Emitted over SSE so
+ * the modal can show what is actually happening rather than an indeterminate
+ * spinner. `documents`, `research` and `repair` are conditional — they appear
+ * only when that work is actually performed.
+ */
+export const WorkflowGenerationStageSchema = z.enum([
+  "documents",
+  "research",
+  "model",
+  "generate",
+  "interpret",
+  "repair",
+  "validate",
+]);
+export type WorkflowGenerationStage = z.infer<
+  typeof WorkflowGenerationStageSchema
+>;
+
+export const WorkflowGenerationProgressSchema = z.object({
+  stage: WorkflowGenerationStageSchema,
+  status: z.enum(["started", "ok", "skipped", "failed"]),
+  /** Milliseconds since the generation began — monotonic, server-measured. */
+  atMs: z.number().int().nonnegative(),
+  /** Wall-clock duration of this stage; present on every terminal status. */
+  durationMs: z.number().int().nonnegative().nullable().default(null),
+  /** Short human-readable fact, e.g. "3 agents" or "gpt-5.6-luna". */
+  detail: z.string().max(400).nullable().default(null),
+  tokensIn: z.number().int().nonnegative().nullable().default(null),
+  tokensOut: z.number().int().nonnegative().nullable().default(null),
+});
+export type WorkflowGenerationProgress = z.infer<
+  typeof WorkflowGenerationProgressSchema
+>;
+
 export const GenerateWorkflowResponseSchema = z.object({
   summary: z.string(),
   rationale: z.string(),
