@@ -20,6 +20,10 @@ import { useMemo, useState } from "react";
 import { useI18n } from "@/app/portal/lib/preferences-context";
 import { useArtifact } from "@/lib/hooks/useArtifact";
 import { useRunTrace } from "@/lib/hooks/useRunTrace";
+import {
+  useRunReasoning,
+  type ReasoningTurnRow,
+} from "@/lib/hooks/useRunReasoning";
 import { useRun } from "@/lib/hooks/useRuns";
 import {
   buildRunTraceTree,
@@ -178,53 +182,23 @@ function ToolCallRow({ call }: { call: ToolCallNode }) {
 }
 
 /**
- * The turn's own reasoning, expanded in place.
+ * The model's own reasoning for this turn, expanded in place.
  *
- * Fetched only when opened, like the evidence: the artifact holds the full
- * model response and pulling one per turn on render would multiply requests by
- * the length of the agent loop. The text is whatever the runtime recorded —
- * this renders it, it does not summarise it.
+ * This is the real thing, not the prompt: `llm_turns.reasoning` holds the text
+ * the model produced while working the problem, and `responseText` its answer.
+ * The trace's turn artifacts carry neither — their `response` is null on every
+ * row — so the timeline joins this in from GET /v1/reasoning?run= instead.
  */
-function Reasoning({ artifactId }: { artifactId: string }) {
+function Reasoning({
+  reasoning,
+  responseText,
+}: {
+  reasoning: string | null;
+  responseText: string | null;
+}) {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
-  const { data, isLoading } = useArtifact(open ? artifactId : null);
-
-  /**
-   * What the model was actually asked.
-   *
-   * The turn artifact is {iteration, request, response, usage}, but `response`
-   * is null on every turn artifact this runtime writes — the model's own words
-   * are not persisted anywhere the client can reach. What IS persisted is the
-   * request: the system rubric and the user instruction, which for a rule gate
-   * is the obligation text the agent had to judge against. That is the useful
-   * half and it is shown as-is rather than dressed up as chain-of-thought.
-   */
-  const text = useMemo(() => {
-    if (data === null || data === undefined) return null;
-    if (typeof data === "string") return data;
-    const d = data as Record<string, unknown>;
-    for (const key of ["reasoning", "thinking", "content", "text"]) {
-      const v = d[key];
-      if (typeof v === "string" && v.trim().length > 0) return v;
-    }
-    const response = d.response;
-    if (typeof response === "string" && response.trim()) return response;
-
-    const messages = (d.request as { messages?: unknown } | undefined)?.messages;
-    if (Array.isArray(messages)) {
-      const parts = messages
-        .map((m) => {
-          const msg = m as { role?: unknown; content?: unknown };
-          if (typeof msg.content !== "string") return null;
-          const role = typeof msg.role === "string" ? msg.role : "?";
-          return `[${role}]\n${msg.content}`;
-        })
-        .filter((x): x is string => x !== null);
-      if (parts.length) return parts.join("\n\n");
-    }
-    return JSON.stringify(data, null, 2);
-  }, [data]);
+  if (!reasoning && !responseText) return null;
 
   return (
     <div className={styles.reasoningBlock}>
@@ -240,19 +214,26 @@ function Reasoning({ artifactId }: { artifactId: string }) {
         </span>
       </button>
       {open ? (
-        isLoading ? (
-          <p className={styles.muted}>{t("monitor.loading")}</p>
-        ) : text ? (
-          <pre className={styles.reasoningText}>{text}</pre>
-        ) : (
-          <p className={styles.muted}>{t("monitor.dataChangeNone")}</p>
-        )
+        <>
+          {reasoning ? (
+            <pre className={styles.reasoningText}>{reasoning}</pre>
+          ) : null}
+          {responseText ? (
+            <pre className={styles.answerText}>{responseText}</pre>
+          ) : null}
+        </>
       ) : null}
     </div>
   );
 }
 
-function TurnRow({ turn }: { turn: TurnNode }) {
+function TurnRow({
+  turn,
+  reasoning,
+}: {
+  turn: TurnNode;
+  reasoning?: ReasoningTurnRow;
+}) {
   const { t } = useI18n();
   return (
     <li className={`${styles.turnRow} wf-row-in`}>
@@ -280,7 +261,10 @@ function TurnRow({ turn }: { turn: TurnNode }) {
           <span className={styles.finish}>{turn.finishReason}</span>
         ) : null}
       </div>
-      {turn.artifactId ? <Reasoning artifactId={turn.artifactId} /> : null}
+      <Reasoning
+        reasoning={reasoning?.reasoning ?? null}
+        responseText={reasoning?.responseText ?? null}
+      />
       {turn.toolCalls.length > 0 ? (
         <ul className={styles.callList}>
           {turn.toolCalls.map((c) => (
@@ -295,9 +279,11 @@ function TurnRow({ turn }: { turn: TurnNode }) {
 function AttemptBlock({
   attempt,
   showHeader,
+  reasoningByOrd,
 }: {
   attempt: AttemptNode;
   showHeader: boolean;
+  reasoningByOrd?: Map<number, ReasoningTurnRow>;
 }) {
   const { t } = useI18n();
   return (
@@ -323,7 +309,11 @@ function AttemptBlock({
       ) : null}
       <ul className={`${styles.turnList} wf-spine`}>
         {attempt.turns.map((turn) => (
-          <TurnRow key={turn.iteration} turn={turn} />
+          <TurnRow
+            key={turn.iteration}
+            turn={turn}
+            reasoning={reasoningByOrd?.get(turn.iteration - 1)}
+          />
         ))}
         {attempt.looseToolCalls.map((c) => (
           <ToolCallRow key={`loose-${c.seq}`} call={c} />
@@ -396,7 +386,13 @@ function StepOutcome({ output }: { output: unknown }) {
   );
 }
 
-function StepBlock({ step }: { step: StepNode }) {
+function StepBlock({
+  step,
+  reasoningByStep,
+}: {
+  step: StepNode;
+  reasoningByStep?: Map<string, Map<number, ReasoningTurnRow>>;
+}) {
   const multipleAttempts = step.attempts.length > 1;
   const last = step.attempts[step.attempts.length - 1];
   return (
@@ -413,6 +409,7 @@ function StepBlock({ step }: { step: StepNode }) {
           key={attempt.attempt}
           attempt={attempt}
           showHeader={multipleAttempts}
+          reasoningByOrd={reasoningByStep?.get(step.stepId)}
         />
       ))}
     </section>
@@ -443,12 +440,15 @@ function elapsedFrom(events: RunTraceEvent[]): number | null {
 export function RunTimeline({
   events,
   stepRows,
+  reasoningTurns,
   isLoading,
   isError,
 }: {
   events: RunTraceEvent[];
   /** Persisted step list — carries the skipped steps the trace omits. */
   stepRows?: readonly RunStepRow[];
+  /** Captured LLM turns — the only source of the model's own reasoning. */
+  reasoningTurns?: readonly ReasoningTurnRow[];
   isLoading: boolean;
   isError: boolean;
 }) {
@@ -458,6 +458,22 @@ export function RunTimeline({
     [events, stepRows],
   );
   const elapsedMs = useMemo(() => elapsedFrom(events), [events]);
+  // (stepId → ord → turn). llm_turns.step_id is the same id the steps table
+  // uses, so traced and merged nodes both find their turns.
+  const reasoningByStep = useMemo(() => {
+    const byStep = new Map<string, Map<number, ReasoningTurnRow>>();
+    for (const turn of reasoningTurns ?? []) {
+      const key = turn.stepId;
+      if (!key) continue;
+      let inner = byStep.get(key);
+      if (!inner) {
+        inner = new Map();
+        byStep.set(key, inner);
+      }
+      inner.set(turn.ord, turn);
+    }
+    return byStep;
+  }, [reasoningTurns]);
 
   if (isError) return <p className={styles.muted}>{t("monitor.error")}</p>;
   if (isLoading && events.length === 0) {
@@ -498,7 +514,11 @@ export function RunTimeline({
       ) : null}
 
       {tree.steps.map((step) => (
-        <StepBlock key={step.stepId} step={step} />
+        <StepBlock
+          key={step.stepId}
+          step={step}
+          reasoningByStep={reasoningByStep}
+        />
       ))}
     </div>
   );
@@ -538,12 +558,14 @@ export function RunTimelinePanel({
   // skipped never emit trace rows, and a run whose gate failed is mostly
   // skipped steps.
   const detail = useRun(runId, { live: status === "running" });
+  const { turns } = useRunReasoning(runId, status === "running");
 
   if (!runId) return <p className={styles.muted}>{t("monitor.selectRun")}</p>;
   return (
     <RunTimeline
       events={events}
       stepRows={detail.data?.steps as RunStepRow[] | undefined}
+      reasoningTurns={turns}
       isLoading={isLoading && detail.isLoading}
       isError={isError && detail.isError}
     />
@@ -573,12 +595,14 @@ export function IdleTimelinePanel({
     focus?.live ? "running" : "ok",
   );
   const detail = useRun(focus?.runId ?? null, { live: focus?.live ?? false });
+  const { turns } = useRunReasoning(focus?.runId ?? null, focus?.live ?? false);
 
   if (!focus) return <>{fallback}</>;
   return (
     <RunTimeline
       events={events}
       stepRows={detail.data?.steps as RunStepRow[] | undefined}
+      reasoningTurns={turns}
       isLoading={isLoading && detail.isLoading}
       isError={isError && detail.isError}
     />

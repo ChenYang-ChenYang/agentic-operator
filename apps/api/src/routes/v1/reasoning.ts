@@ -13,12 +13,13 @@ import { listRecentTurns, listRuleAudit } from "../../queries/reasoning-feed";
 export async function reasoningRoutes(app: FastifyInstance) {
   app.get("/reasoning", async (req, reply) => {
     const auth = requirePermission(req, "runs.read");
-    const q = req.query as { limit?: string; agent?: string };
+    const q = req.query as { limit?: string; agent?: string; run?: string };
     const limit = q.limit ? Number(q.limit) : undefined;
     return reply.ok(
       listRecentTurns(auth.tenantSlug, {
         limit: Number.isFinite(limit) ? limit : undefined,
         agent: q.agent,
+        run: q.run,
       }),
     );
   });

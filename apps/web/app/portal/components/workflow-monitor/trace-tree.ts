@@ -359,6 +359,8 @@ export function buildRunTraceTree(events: RunTraceEvent[]): RunTraceTree {
 
 /** One row of the `steps` table, as GET /v1/runs/:id returns it. */
 export interface RunStepRow {
+  /** steps.id — the same id llm_turns.step_id points at. */
+  id?: string;
   ord: number;
   name: string;
   type: string;
@@ -402,7 +404,7 @@ export function mergeStepRows(
     extra.push({
       ord: row.ord,
       step: {
-        stepId: `row-${row.ord}-${row.name}`,
+        stepId: row.id ?? `row-${row.ord}-${row.name}`,
         name: row.name,
         type: row.type,
         visibility: "user",

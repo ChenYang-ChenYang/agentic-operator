@@ -19,6 +19,8 @@ import { resolveTenantId } from "./reasoning";
 export interface ReasoningTurn {
   id: string;
   runId: string;
+  /** steps.id of the step that produced this turn, when the runtime recorded one. */
+  stepId: string | null;
   agentName: string | null;
   agentTitle: string | null;
   subject: string | null;
@@ -38,11 +40,12 @@ export interface ReasoningTurn {
 
 /**
  * Recent captured LLM turns across the tenant's runs, newest first. Optional
- * `agent` filter (by agent name) focuses the feed on e.g. a rule-check agent.
+ * `agent` filter (by agent name) focuses the feed on e.g. a rule-check agent;
+ * optional `run` filter narrows to a single execution.
  */
 export function listRecentTurns(
   tenantSlug: string,
-  opts: { limit?: number; agent?: string } = {},
+  opts: { limit?: number; agent?: string; run?: string } = {},
 ): ReasoningTurn[] {
   const db = getDb();
   const tenantId = resolveTenantId(tenantSlug);
@@ -54,11 +57,18 @@ export function listRecentTurns(
     isNull(runs.deletedAt),
   ];
   if (opts.agent) where.push(eq(agents.name, opts.agent));
+  // Scoping to one run is what the workflow monitor's timeline needs: it shows
+  // a single execution and has to line each turn up with the step that made
+  // it, not sample the tenant-wide feed.
+  if (opts.run) where.push(eq(llmTurns.runId, opts.run));
 
   const rows = db
     .select({
       id: llmTurns.id,
       runId: llmTurns.runId,
+      // Needed to line a turn up with the step that produced it; the monitor
+      // timeline joins on (stepId, ord).
+      stepId: llmTurns.stepId,
       agentName: agents.name,
       agentTitle: agents.title,
       subject: runs.subject,
