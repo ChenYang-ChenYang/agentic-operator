@@ -658,9 +658,55 @@ export function workflowInputControl(
   return input.kind === "prompt" ? "textarea" : "text";
 }
 
+/**
+ * Both the catalog templates and the AI generator write a mechanical prompt-port
+ * default of the form `Process the incoming X event as Y.` It is a placeholder,
+ * not a request anyone would actually type, so the Run console should look past
+ * it for something derived from what the workflow is FOR.
+ */
+const GENERATED_PROMPT_BOILERPLATE =
+  /^Process the incoming .+ event as .+\.$/;
+
+export interface WorkflowPromptSeedContext {
+  /** The workflow's stated purpose (WorkflowSummary.description). */
+  workflowDescription?: string;
+  /** Descriptions of the agents listening to the selected entry event. */
+  agentDescriptions?: readonly string[];
+}
+
+/**
+ * A starting request the operator can actually send, preferring real authored
+ * data over invented text. Falls back through: authored example → a non-boilerplate
+ * authored default → the workflow's own purpose → the entry agent's description →
+ * the generic control default.
+ */
+export function seedWorkflowPromptValue(
+  input: WorkflowRunInputDescriptor,
+  ctx: WorkflowPromptSeedContext = {},
+): unknown {
+  if (input.example !== undefined) return structuredClone(input.example);
+  if (
+    typeof input.default === "string" &&
+    input.default.trim() &&
+    !GENERATED_PROMPT_BOILERPLATE.test(input.default.trim())
+  ) {
+    return input.default;
+  }
+  const purpose = ctx.workflowDescription?.trim();
+  if (purpose) return purpose;
+  const agentPurpose = ctx.agentDescriptions?.find((value) => value?.trim());
+  if (agentPurpose) return agentPurpose.trim();
+  if (input.default !== undefined) return structuredClone(input.default);
+  return "";
+}
+
 export function seedWorkflowInputValue(
   input: WorkflowRunInputDescriptor,
+  ctx?: WorkflowPromptSeedContext,
 ): unknown {
+  // The prompt port is the one field a human actually writes, so it gets the
+  // goal-derived ladder rather than the raw authored default.
+  if (input.kind === "prompt") return seedWorkflowPromptValue(input, ctx);
   if (input.default !== undefined) return structuredClone(input.default);
   if (input.example !== undefined) return structuredClone(input.example);
   const schema = input.schema as Record<string, unknown>;

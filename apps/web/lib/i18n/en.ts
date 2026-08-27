@@ -4317,6 +4317,79 @@ export const en = {
     confirm: "Publish anyway",
     publishing: "Publishing…",
   },
+  workflowValidation: {
+    severity: {
+      error: "ERROR",
+      warning: "WARNING",
+      info: "INFO",
+    },
+    issue: {
+      dangling_trigger:
+        'Agent "{first}" listens for "{second}", but no agent emits that event.',
+      dangling_emitter:
+        'Agent "{first}" emits "{second}", but no agent listens for it.',
+      duplicate_agent_name: 'More than one agent is named "{first}".',
+      duplicate_kebab_id: 'More than one agent uses the id "{first}".',
+      unknown_tool: 'Tool "{first}" is not registered.',
+      orphan_actor: 'Agent "{first}" is not connected to any other agent.',
+      kebab_id_collision: 'The agent id "{first}" collides with an existing one.',
+      silent_rename: 'Agent "{first}" appears to have been renamed to "{second}".',
+      unknown_subflow: 'Subflow "{first}" does not exist.',
+      broken_subflow: 'Subflow "{first}" cannot be dispatched.',
+      trigger_cycle: 'Events form a loop through "{first}".',
+      missing_system_prompt: "This agent needs a system prompt before it can run.",
+      prompt_rubric_incomplete: "The system prompt is missing recommended sections",
+      prompt_substance_missing: "Some system prompt sections are present but empty",
+      provider_not_configured: "The selected provider has no credentials in this workspace",
+      model_not_configured: "The selected model is not available",
+      agent_limit_exceeded: "This workflow has too many agents",
+      invalid_manifest: "The workflow manifest is not valid",
+      concurrency_excess: "The configured concurrency is above the runtime limit",
+      invalid_cron: "The schedule expression is not valid",
+      schedule_env_disabled: "Scheduling is disabled in this environment",
+      schedule_env_unconfigured: "Scheduling is not configured in this environment",
+      prompt_injection_smell: "The prompt contains text that reads like an injected instruction",
+      schema_version_downgrade: "This manifest targets an older schema version",
+    },
+  },
+  workflowTemplates: {
+    helloWorld: {
+      name: "Hello World",
+      description:
+        "A runnable one-agent workflow that turns a greeting into a structured completion event.",
+    },
+    webhookSummarizer: {
+      name: "Webhook summarizer",
+      description:
+        "Validates an inbound webhook payload and produces a concise, auditable summary.",
+    },
+    scheduledReport: {
+      name: "Scheduled report",
+      description: "Builds a bounded weekly operational report on a UTC schedule.",
+    },
+    supportTriage: {
+      name: "Support triage",
+      description:
+        "Classifies a support request, then prepares a grounded response draft.",
+    },
+    documentApproval: {
+      name: "Document approval",
+      description:
+        "Reviews a document against stated criteria and routes it to a durable human decision.",
+    },
+    dataEnrichment: {
+      name: "Data enrichment",
+      description:
+        "Normalizes a record and enriches it from explicitly supplied reference evidence.",
+    },
+    category: {
+      starter: "Starter",
+      operations: "Operations",
+      support: "Support",
+      documents: "Documents",
+      data: "Data",
+    },
+  },
   newWorkflowModal: {
     progressRunning: "Generating your workflow…",
     progressDone: "Generation complete",
@@ -4364,18 +4437,6 @@ export const en = {
     blankStubHelp:
       "Runs straight away as a draft. Publish it later, when you want the rest of your team to use it.",
     pickTemplate: "Pick a template",
-    tplName_raas: "RAAS · Recruitment",
-    tplDesc_raas: "22-agent pipeline: sync → JD → match → submit",
-    tplName_support: "Tier-1 Ticket Triage",
-    tplDesc_support: "Classify → enrich → route → draft reply",
-    tplName_finance: "Monthly Close",
-    tplDesc_finance: "GL reconcile → variance review → sign-off",
-    tplName_rag: "Doc Q&A · RAG",
-    tplDesc_rag: "Ingest → chunk → embed → answer",
-    tplName_sales: "Outbound Sequence",
-    tplDesc_sales: "Enrich lead → personalize → followups",
-    tplName_compl: "Compliance Review",
-    tplDesc_compl: "Detect PII → redact → audit → archive",
     agentsEvents: "{agents} agents · {events} events",
     manifest: "Manifest",
     dropPrefix: "Drop",
@@ -4443,9 +4504,17 @@ export const en = {
     purposeHint:
       "Minimum 20 characters. Specific constraints produce better agent prompts.",
     documentFolder: "Process document folder (optional)",
+    researchLabel: "Research",
+    stopGenerating: "Stop",
+    confirmCancelBusy:
+      "A workflow is still being generated. Close anyway and discard it?",
+    documentFolderHint:
+      "The folder's documents become context for the generated agents.",
+    documentFolderEmpty:
+      "No process documents in this Domain yet. Add files under data/workflow-documents/<domain>/ to use them as context.",
     noFolder: "No folder",
     fileCount: "{count} files",
-    webResearch: "Research relevant functionality",
+    webResearch: "Search the web while generating",
     webResearchHelp:
       "Uses the configured tenant search provider. Missing credentials become a visible warning.",
     constraints: "Constraints (one per line)",
@@ -5070,7 +5139,7 @@ export const en = {
     currentDraftBadge: "CURRENT DRAFT",
     publishedLiveBadge: "PUBLISHED LIVE",
     subtitle:
-      "Configure an entry event, execute, and inspect agent-level evidence without leaving the workflow.",
+      "Pick an entry event and press Run. The event is emitted, every agent listening to it runs, and each event they emit is followed in turn.",
     closeAria: "Close workflow Run Console",
     executionTarget: "Execution target",
     executionTargetHint:
@@ -6475,6 +6544,12 @@ export const en = {
       noImmutableVersion: "No immutable workflow version is available.",
       liveTitle: "Workflow is live",
       liveDescription: "{version} was published to production.",
+      publishBlockedByValidation:
+        "Not published — {count} blocking issue(s) must be fixed first.",
+      publishBlockedByEditor: "Not published — fix the highlighted fields first.",
+      publishSaveFailed: "Not published — the draft could not be saved.",
+      liveDescriptionDetailed:
+        "Version {version} is live · {functions} function(s) registered in {seconds}s",
       publishFailed: "Publish failed",
       connectedTitle: "Agents connected",
       connectedDescription:

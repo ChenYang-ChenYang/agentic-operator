@@ -48,7 +48,10 @@ import {
 } from "@/app/portal/components";
 import { useTenant } from "@/app/portal/lib/use-tenant";
 import { useDirty } from "@/app/portal/lib/dirty-context";
-import { useI18n } from "@/app/portal/lib/preferences-context";
+import {
+  useI18n,
+  type Translate,
+} from "@/app/portal/lib/preferences-context";
 import {
   COL_W,
   MAX_CANVAS_H,
@@ -134,6 +137,7 @@ import { useEvents } from "@/lib/hooks/useEvents";
 import type { RunListRow } from "@/lib/hooks/useRuns";
 import { useWorkflowLiveState } from "@/lib/hooks/useWorkflowLiveState";
 import {
+  WorkflowAuthoringApiError,
   WorkflowPublishOverwriteRequiredError,
   downloadWorkflowTemplateFile,
   formatWorkflowAuthoringError,
@@ -1160,17 +1164,73 @@ export default function WorkflowsPage() {
     }
   }
 
+  /**
+   * Publish failures arrive in three shapes: a plain message, a
+   * `workflow_publish_blocked` payload carrying `issues`, and a
+   * `workflow_validation_failed` payload carrying a full validation response.
+   * Showing only `err.message` for the latter two told the operator that
+   * something failed without saying what to fix.
+   */
+  function describePublishFailure(err: unknown, translate: Translate): string {
+    const details =
+      err instanceof WorkflowAuthoringApiError
+        ? (err.details as
+            | { issues?: Array<{ message?: string }> }
+            | { issues?: Array<{ message?: string; severity?: string }> }
+            | undefined)
+        : undefined;
+    const issues = Array.isArray(details?.issues) ? details.issues : [];
+    const blocking = issues
+      .filter(
+        (issue) =>
+          !("severity" in issue) ||
+          (issue as { severity?: string }).severity === "error",
+      )
+      .map((issue) => issue.message)
+      .filter((message): message is string => Boolean(message));
+    const base =
+      err instanceof Error ? err.message : translate("common.unknownError");
+    if (blocking.length === 0) return base;
+    const shown = blocking.slice(0, 3).join("; ");
+    return blocking.length > 3
+      ? `${base} — ${shown} (+${blocking.length - 3})`
+      : `${base} — ${shown}`;
+  }
+
   async function publishCurrent() {
     if (!selectedWorkflow || publishInFlight.current) return;
     publishInFlight.current = true;
     setPublishing(true);
     try {
       const checked = await validateCurrent();
-      if (!checked?.valid) return;
+      if (!checked?.valid) {
+        // validateCurrent already reported WHY; this says what it means for the
+        // action the operator actually took, which otherwise looked like a
+        // button that did nothing.
+        toast({
+          tone: "red",
+          title: t("workflowPage.toast.publishFailed"),
+          description: checked
+            ? t("workflowPage.toast.publishBlockedByValidation", {
+                count: checked.issues.filter(
+                  (issue) => issue.severity === "error",
+                ).length,
+              })
+            : t("workflowPage.toast.publishBlockedByEditor"),
+        });
+        return;
+      }
       let versionId = dagQuery.data?.workflowVersionId ?? undefined;
       if (dirty) {
         const saved = await saveDraft();
-        if (!saved) return;
+        if (!saved) {
+          toast({
+            tone: "red",
+            title: t("workflowPage.toast.publishFailed"),
+            description: t("workflowPage.toast.publishSaveFailed"),
+          });
+          return;
+        }
         versionId = saved.latestVersionId;
       }
       if (!versionId) {
@@ -1205,8 +1265,10 @@ export default function WorkflowsPage() {
       toast({
         tone: "green",
         title: t("workflowPage.toast.liveTitle"),
-        description: t("workflowPage.toast.liveDescription", {
+        description: t("workflowPage.toast.liveDescriptionDetailed", {
           version: result.version,
+          functions: result.inngest_fns_registered,
+          seconds: (result.elapsed_ms / 1000).toFixed(1),
         }),
       });
       setDraft(emptyDraft());
@@ -1227,8 +1289,7 @@ export default function WorkflowsPage() {
       toast({
         tone: "red",
         title: t("workflowPage.toast.publishFailed"),
-        description:
-          err instanceof Error ? err.message : t("common.unknownError"),
+        description: describePublishFailure(err, t),
       });
     }
   }
@@ -2741,6 +2802,7 @@ export default function WorkflowsPage() {
         <WorkflowRunConsole
           workflowSlug={selectedWorkflow}
           workflowName={selectedSummary?.name ?? selectedWorkflow}
+          workflowDescription={selectedSummary?.description ?? ""}
           manifest={editableManifest()}
           currentVersion={
             workflowVersion ||

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   CreateWorkflowBody,
   GenerateWorkflowBody,
@@ -24,6 +24,11 @@ import {
   type RequirementInput,
 } from "./new-workflow-requirements";
 import { GenerationProgressPanel } from "./GenerationProgressPanel";
+import {
+  templateDescriptionLabel,
+  templateNameLabel,
+} from "@/app/portal/lib/template-labels";
+import { formatValidationIssue } from "@/lib/i18n/workflow-validation";
 import { workflowStatusLabel } from "@/app/portal/lib/protocol-labels";
 import { useFleet } from "@/lib/hooks/useModelFleet";
 import {
@@ -50,7 +55,29 @@ function slugify(value: string): string {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
+    // The slug must start with a letter (WorkflowSlugSchema), so a name
+    // beginning with a digit would otherwise derive an invalid slug.
+    .replace(/^[0-9]+/, "")
+    .replace(/^-+/, "")
     .slice(0, 80);
+}
+
+/**
+ * A usable slug for a name that contains no ASCII at all.
+ *
+ * `slugify` strips everything outside [a-z0-9], so a purely Chinese (or any
+ * non-Latin) display name derived an EMPTY slug — the operator was then told
+ * "workflow ID still needed" with no hint of what to type. Fall back to a
+ * readable, collision-free default they can edit.
+ */
+function fallbackSlug(taken: readonly string[]): string {
+  const used = new Set(taken);
+  if (!used.has("workflow")) return "workflow";
+  for (let index = 2; index < 1_000; index += 1) {
+    const candidate = `workflow-${index}`;
+    if (!used.has(candidate)) return candidate;
+  }
+  return `workflow-${Date.now().toString(36)}`;
 }
 
 function formatError(
@@ -200,7 +227,11 @@ export function NewWorkflowModal({
 
   function changeName(next: string) {
     setName(next);
-    if (!slugTouched) setSlug(slugify(next));
+    if (slugTouched) return;
+    const derived = slugify(next);
+    setSlug(
+      derived || (next.trim() ? fallbackSlug(workflows.map((w) => w.slug)) : ""),
+    );
   }
 
   function choosePath(next: CreationPath) {
@@ -209,16 +240,38 @@ export function NewWorkflowModal({
     if (next !== "generate") setPreview(null);
   }
 
+  /** Lets the operator stop a 30-90s generation instead of waiting it out. */
+  const generationAbort = useRef<AbortController | null>(null);
+
+  function stopGeneration() {
+    generationAbort.current?.abort();
+  }
+
+  /**
+   * Closing mid-generation would silently abandon a call the model is already
+   * being paid for, so confirm first. Anything else closes immediately.
+   */
+  function requestClose() {
+    if (generating || create.isPending) {
+      if (!window.confirm(t("newWorkflowModal.confirmCancelBusy"))) return;
+      stopGeneration();
+    }
+    onClose();
+  }
+
   async function runGeneration() {
     setError(null);
     setProgressEvents([]);
     setGenerationStartedAt(Date.now());
     setGenerating(true);
+    const controller = new AbortController();
+    generationAbort.current = controller;
     const requestedFingerprint = currentGenerationFingerprint;
     try {
       const result = await generateWorkflowStreamed(
         generationInput,
         (event) => setProgressEvents((current) => [...current, event]),
+        controller.signal,
       );
       setPreview(result);
       setPreviewFingerprint(requestedFingerprint);
@@ -226,7 +279,13 @@ export function NewWorkflowModal({
     } catch (generationError) {
       // A coded generation failure carries the server's own reason and hint;
       // anything else falls back to the generic formatter.
-      if (generationError instanceof WorkflowGenerationError) {
+      if (
+        generationError instanceof DOMException &&
+        generationError.name === "AbortError"
+      ) {
+        // The operator stopped it on purpose.
+        setError(null);
+      } else if (generationError instanceof WorkflowGenerationError) {
         setError(
           generationError.hint
             ? `${generationError.message} — ${generationError.hint}`
@@ -238,6 +297,7 @@ export function NewWorkflowModal({
         );
       }
     } finally {
+      generationAbort.current = null;
       setGenerating(false);
     }
   }
@@ -318,7 +378,7 @@ export function NewWorkflowModal({
 
   return (
     <ModalOverlay
-      onClose={onClose}
+      onClose={requestClose}
       ariaLabel={t("newWorkflowModal.createAria")}
     >
       <div
@@ -358,7 +418,7 @@ export function NewWorkflowModal({
           </div>
           <button
             type="button"
-            onClick={onClose}
+            onClick={requestClose}
             aria-label={t("newWorkflowModal.closeAria")}
             style={{ color: "var(--text-3)" }}
           >
@@ -496,6 +556,7 @@ export function NewWorkflowModal({
               previewStale={preview !== null && !previewIsCurrent}
               pending={generating}
               onGenerate={() => void runGeneration()}
+              onStop={stopGeneration}
               progress={
                 progressEvents.length > 0 || generating ? (
                   <GenerationProgressPanel
@@ -741,7 +802,7 @@ export function NewWorkflowModal({
             </div>
           ) : null}
           <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
-            <Button tone="ghost" onClick={onClose}>
+            <Button tone="ghost" onClick={requestClose}>
               {t("newWorkflowModal.cancel")}
             </Button>
             <Button
@@ -779,6 +840,7 @@ function GenerationPanel({
   previewStale,
   pending,
   onGenerate,
+  onStop,
   progress,
 }: {
   purpose: string;
@@ -796,6 +858,7 @@ function GenerationPanel({
   previewStale: boolean;
   pending: boolean;
   onGenerate: () => void;
+  onStop?: () => void;
   progress?: React.ReactNode;
 }) {
   const { language, t } = useI18n();
@@ -836,6 +899,7 @@ function GenerationPanel({
             value={folder}
             onChange={(event) => onFolder(event.target.value)}
             style={controlStyle}
+            disabled={folders.length === 0}
           >
             <option value="">{t("newWorkflowModal.noFolder")}</option>
             {folders.map((item) => (
@@ -845,32 +909,48 @@ function GenerationPanel({
               </option>
             ))}
           </select>
-        </Field>
-        <label style={{ ...choiceStyle, alignItems: "flex-start" }}>
-          <input
-            type="checkbox"
-            checked={webResearch}
-            onChange={(event) => onWebResearch(event.target.checked)}
-            style={{ marginTop: 2, accentColor: "var(--signal)" }}
-          />
-          <span>
-            <span
-              style={{ display: "block", color: "var(--text)", fontSize: 12.5 }}
-            >
-              {t("newWorkflowModal.webResearch")}
-            </span>
-            <span
-              style={{
-                display: "block",
-                color: "var(--text-3)",
-                fontSize: 11,
-                marginTop: 3,
-              }}
-            >
-              {t("newWorkflowModal.webResearchHelp")}
-            </span>
+          {/* Answering "am I supposed to pick something here?": when the Domain
+              has no documents the control has nothing to offer, so say that
+              plainly and name the directory instead of leaving an inert box. */}
+          <span style={fieldHintStyle}>
+            {folders.length === 0
+              ? t("newWorkflowModal.documentFolderEmpty")
+              : t("newWorkflowModal.documentFolderHint")}
           </span>
-        </label>
+        </Field>
+        {/* Wrapped in a Field so both columns share the same label row — the
+            checkbox previously had no label and sat higher than the select. */}
+        <Field label={t("newWorkflowModal.researchLabel")}>
+          <label style={{ ...choiceStyle, alignItems: "flex-start" }}>
+            <input
+              type="checkbox"
+              checked={webResearch}
+              onChange={(event) => onWebResearch(event.target.checked)}
+              style={{ marginTop: 2, accentColor: "var(--signal)" }}
+            />
+            <span>
+              <span
+                style={{
+                  display: "block",
+                  color: "var(--text)",
+                  fontSize: 12.5,
+                }}
+              >
+                {t("newWorkflowModal.webResearch")}
+              </span>
+              <span
+                style={{
+                  display: "block",
+                  color: "var(--text-3)",
+                  fontSize: 11,
+                  marginTop: 3,
+                }}
+              >
+                {t("newWorkflowModal.webResearchHelp")}
+              </span>
+            </span>
+          </label>
+        </Field>
       </div>
       <div
         style={{
@@ -902,7 +982,7 @@ function GenerationPanel({
           />
         </Field>
       </div>
-      <div>
+      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
         <Button
           tone="primary"
           icon="spark"
@@ -915,6 +995,11 @@ function GenerationPanel({
               ? t("newWorkflowModal.regenerateProposal")
               : t("newWorkflowModal.generateProposal")}
         </Button>
+        {pending && onStop ? (
+          <Button tone="ghost" icon="x" onClick={onStop}>
+            {t("newWorkflowModal.stopGenerating")}
+          </Button>
+        ) : null}
       </div>
       {progress}
       {preview && (
@@ -1073,9 +1158,8 @@ function GenerationPanel({
             />
             <PreviewSection
               title={t("newWorkflowModal.validation")}
-              items={preview.validation.issues.map(
-                (issue) =>
-                  `${issue.severity.toUpperCase()} · ${issue.path}: ${issue.message}`,
+              items={preview.validation.issues.map((issue) =>
+                formatValidationIssue(t, issue),
               )}
               empty={t("newWorkflowModal.noValidationIssues")}
             />
@@ -1293,7 +1377,7 @@ function TemplatePicker({
                     fontWeight: 600,
                   }}
                 >
-                  {template.name}
+                  {templateNameLabel(t, template.id, template.name)}
                 </span>
                 {template.hasHumanTask && <Badge tone="violet">HITL</Badge>}
                 {selected === template.id && (
@@ -1312,7 +1396,7 @@ function TemplatePicker({
                   marginTop: 7,
                 }}
               >
-                {template.description}
+                {templateDescriptionLabel(t, template.id, template.description)}
               </div>
               <div
                 className="mono"
@@ -1399,6 +1483,12 @@ function PathCard({
     </button>
   );
 }
+
+const fieldHintStyle: React.CSSProperties = {
+  fontSize: 10.5,
+  color: "var(--text-3)",
+  lineHeight: 1.45,
+};
 
 function Field({
   label,

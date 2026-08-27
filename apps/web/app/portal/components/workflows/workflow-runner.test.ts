@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
+import type { WorkflowRunInputDescriptor } from "@agentic/contracts";
 import {
   buildWorkflowPayloadGuide,
   buildWorkflowEventPayload,
   deriveWorkflowEntrypoints,
   parseWorkflowTestLimits,
   seedWorkflowInputValue,
+  seedWorkflowPromptValue,
   validateWorkflowInputValues,
   workflowInputControl,
   workflowInputExampleValue,
@@ -337,5 +339,78 @@ describe("workflow Run Console model", () => {
       priority: "urgent",
       inputs: { prompt: "Run", priority: "normal" },
     });
+  });
+});
+
+describe("seedWorkflowPromptValue", () => {
+  function promptPort(
+    over: Partial<WorkflowRunInputDescriptor> = {},
+  ): WorkflowRunInputDescriptor {
+    return {
+      id: "prompt",
+      label: "Request",
+      description: null,
+      kind: "prompt",
+      required: false,
+      schema: { type: "string" },
+      sensitivity: "none",
+      consumers: ["a"],
+      bindings: [],
+      ...over,
+    } as unknown as WorkflowRunInputDescriptor;
+  }
+
+  it("prefers an authored example over everything else", () => {
+    expect(
+      seedWorkflowPromptValue(promptPort({ example: "Authored example" }), {
+        workflowDescription: "The purpose",
+      }),
+    ).toBe("Authored example");
+  });
+
+  it("uses the workflow's purpose instead of generator boilerplate", () => {
+    // Templates and the generator both write this shape; it is a placeholder,
+    // not something a person would send.
+    const value = seedWorkflowPromptValue(
+      promptPort({
+        default: "Process the incoming SHORT_VIDEO_REQUEST event as Scriptwriter.",
+      }),
+      { workflowDescription: "Draft a marketing short-video script and shot list" },
+    );
+    expect(value).toBe("Draft a marketing short-video script and shot list");
+  });
+
+  it("keeps a genuinely authored default", () => {
+    expect(
+      seedWorkflowPromptValue(promptPort({ default: "Hello!" }), {
+        workflowDescription: "The purpose",
+      }),
+    ).toBe("Hello!");
+  });
+
+  it("falls back to the listening agent's description", () => {
+    expect(
+      seedWorkflowPromptValue(
+        promptPort({ default: "Process the incoming X event as Y." }),
+        { agentDescriptions: ["Turns a request into a shot list."] },
+      ),
+    ).toBe("Turns a request into a shot list.");
+  });
+
+  it("never returns the boilerplate when nothing better exists", () => {
+    const value = seedWorkflowPromptValue(
+      promptPort({ default: "Process the incoming X event as Y." }),
+      {},
+    );
+    expect(value).toBe("Process the incoming X event as Y.");
+  });
+
+  it("is used for the prompt port by seedWorkflowInputValue", () => {
+    expect(
+      seedWorkflowInputValue(
+        promptPort({ default: "Process the incoming X event as Y." }),
+        { workflowDescription: "Real purpose" },
+      ),
+    ).toBe("Real purpose");
   });
 });

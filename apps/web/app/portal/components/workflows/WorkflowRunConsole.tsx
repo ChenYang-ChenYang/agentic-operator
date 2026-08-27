@@ -34,6 +34,7 @@ import {
   workflowInputDisplayExample,
   workflowInputIsRuntimeProvided,
   type WorkflowPayloadGuide,
+  type WorkflowPromptSeedContext,
 } from "./workflow-runner";
 import {
   chatCapableEntrypoint,
@@ -54,6 +55,8 @@ type ResultTab = "summary" | "agents" | "events" | "json";
 export interface WorkflowRunConsoleProps {
   workflowSlug: string;
   workflowName: string;
+  /** The workflow's stated purpose; seeds a meaningful starting prompt. */
+  workflowDescription?: string;
   manifest: unknown;
   currentVersion: string;
   liveVersionId: string | null;
@@ -100,8 +103,11 @@ function inputValueForForm(
   return value;
 }
 
-function inputSeedForForm(input: WorkflowRunInputDescriptor): unknown {
-  return inputValueForForm(input, seedWorkflowInputValue(input));
+function inputSeedForForm(
+  input: WorkflowRunInputDescriptor,
+  ctx?: WorkflowPromptSeedContext,
+): unknown {
+  return inputValueForForm(input, seedWorkflowInputValue(input, ctx));
 }
 
 function compactExample(
@@ -237,6 +243,7 @@ function readRunFile(file: File, t?: Translate): Promise<WorkflowRunFileValue> {
 export function WorkflowRunConsole({
   workflowSlug,
   workflowName,
+  workflowDescription,
   manifest,
   currentVersion,
   liveVersionId,
@@ -347,6 +354,24 @@ export function WorkflowRunConsole({
     }
   }, [entrypoints, selectedEvent]);
 
+  /**
+   * What the prompt field should say before the operator types anything. Real
+   * manifest data only — the workflow's own purpose, then the listening agent's
+   * description.
+   */
+  const promptSeedContext = useMemo<WorkflowPromptSeedContext>(
+    () => ({
+      workflowDescription,
+      agentDescriptions: (entrypoint?.listenerAgentIds ?? [])
+        .map(
+          (id) =>
+            manifestAgents.find((agent) => agent.id === id)?.description ?? "",
+        )
+        .filter(Boolean),
+    }),
+    [workflowDescription, entrypoint?.listenerAgentIds, manifestAgents],
+  );
+
   useEffect(() => {
     if (!entrypoint) {
       setInputValues({});
@@ -356,7 +381,7 @@ export function WorkflowRunConsole({
       Object.fromEntries(
         entrypoint.inputs
           .filter((input) => !workflowInputIsRuntimeProvided(input))
-          .map((input) => [input.id, inputSeedForForm(input)]),
+          .map((input) => [input.id, inputSeedForForm(input, promptSeedContext)]),
       ),
     );
     setRawPayload("{}");

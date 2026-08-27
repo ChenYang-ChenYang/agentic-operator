@@ -113,3 +113,18 @@ describe("template and clone paths", () => {
     }
   });
 });
+
+// Slug derivation is exercised through the modal, but the rule it must satisfy
+// is the contract's: lowercase kebab-case starting with a letter.
+describe("slug contract", () => {
+  const SLUG = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
+
+  it("accepts the fallback used for a non-Latin display name", () => {
+    expect(SLUG.test("workflow")).toBe(true);
+    expect(SLUG.test("workflow-2")).toBe(true);
+  });
+
+  it("rejects the empty slug a Chinese-only name used to produce", () => {
+    expect(SLUG.test("")).toBe(false);
+  });
+});

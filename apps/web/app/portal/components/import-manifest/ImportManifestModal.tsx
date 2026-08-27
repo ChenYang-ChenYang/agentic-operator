@@ -27,6 +27,7 @@ import {
 } from "@/app/portal/components";
 import { toast } from "@/app/portal/components/toast";
 import { useI18n } from "@/app/portal/lib/preferences-context";
+import { localizeValidationMessage } from "@/lib/i18n/workflow-validation";
 import { useTenant } from "@/app/portal/lib/use-tenant";
 import { fmtBytes } from "@/lib/format";
 import { OverwriteConfirmModal } from "./OverwriteConfirmModal";
@@ -1375,7 +1376,7 @@ function IssuesPanel({ issues }: { issues: ManifestImportPreview["issues"] }) {
               {issue.path || "/"}
             </span>
             <span style={{ fontSize: 12, color: "var(--text-2)" }}>
-              {issue.message}
+              {localizeValidationMessage(t, issue)}
             </span>
             <Badge
               tone={
@@ -1793,7 +1794,8 @@ function ErrorSurface({
         <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
           {commitIssues.map((issue, index) => (
             <li key={`${issue.path}:${issue.code}:${index}`}>
-              <span className="mono">{issue.path}</span> — {issue.message} [
+              <span className="mono">{issue.path}</span> —{" "}
+              {localizeValidationMessage(t, issue)} [
               {issue.code}]
             </li>
           ))}
