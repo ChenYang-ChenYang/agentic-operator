@@ -1,0 +1,360 @@
+/*
+ * Monitor timeline (§G4).
+ *
+ * Sized for a projector first: the smallest type here is 11.5px and every
+ * status is carried by shape as well as colour. Motion comes from the wf-*
+ * keyframes in global.css — declared globally because CSS-module keyframe
+ * names are mangled and become unreachable from inline style props.
+ */
+
+.root {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 2px 0 20px;
+}
+
+/* ─── run totals ─────────────────────────────────────────────── */
+.totals {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(88px, 1fr));
+  gap: 1px;
+  background: var(--border);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.metric {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 9px 11px;
+  background: var(--panel);
+}
+.metricValue {
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 16px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  letter-spacing: -0.01em;
+}
+.metricLabel {
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+/* ─── step ───────────────────────────────────────────────────── */
+.step {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: var(--shadow-1);
+  overflow: hidden;
+}
+.stepHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--border);
+}
+.stepName {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.stepType {
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 10.5px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--panel-3, var(--panel));
+  color: var(--text-3);
+}
+
+/* ─── attempt ────────────────────────────────────────────────── */
+.attempt {
+  padding: 8px 12px 4px;
+}
+.attemptHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0 8px;
+}
+.attemptLabel {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+.retryTag {
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 1px 6px;
+  border-radius: 4px;
+  color: var(--amber);
+  background: color-mix(in srgb, var(--amber) 14%, transparent);
+}
+
+/* ─── the spine ──────────────────────────────────────────────── */
+.turnList,
+.callList {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 0 15px;
+  position: relative;
+}
+/* One continuous rule the eye follows from trigger to final write. */
+.turnList::before,
+.callList::before {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 4px;
+  bottom: 6px;
+  width: 1.5px;
+  background: var(--border-2, var(--border));
+  border-radius: 1px;
+}
+
+.turnRow {
+  position: relative;
+  padding: 6px 0 8px;
+}
+.turnHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.turnLabel {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+.model {
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--signal) 12%, transparent);
+  color: var(--signal);
+}
+.turnTokens,
+.callTime,
+.finish {
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-3);
+}
+.finish {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--panel-2);
+}
+.reasoningLink {
+  display: inline-block;
+  margin-top: 4px;
+  font-size: 11.5px;
+  color: var(--accent-text, var(--signal));
+  text-decoration: underline;
+}
+
+/* ─── tool call ──────────────────────────────────────────────── */
+.callRow {
+  position: relative;
+  padding: 2px 0;
+}
+.callHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 5px 6px;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  text-align: left;
+  color: var(--text-2);
+  transition: background var(--dur-1) var(--ease-out);
+}
+.callHead:hover {
+  background: var(--panel-2);
+}
+.callHead:focus-visible {
+  outline: 2px solid var(--signal);
+  outline-offset: 1px;
+}
+.callName {
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 12px;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.caret {
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 13px;
+  color: var(--text-3);
+  width: 12px;
+  text-align: center;
+}
+
+/* ─── status dot ─────────────────────────────────────────────── */
+.dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+.dotRunning {
+  box-shadow: 0 0 0 0 color-mix(in srgb, var(--signal) 60%, transparent);
+  animation: wf-dot-pulse 1.4s var(--ease-inout) infinite;
+}
+@keyframes wf-dot-pulse {
+  0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--signal) 55%, transparent); }
+  70% { box-shadow: 0 0 0 6px transparent; }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .dotRunning { animation: none; }
+}
+
+/* ─── the data change ────────────────────────────────────────── */
+.change {
+  margin: 4px 0 8px 14px;
+  padding: 9px 11px;
+  border-left: 2.5px solid var(--border-2, var(--border));
+  border-radius: 0 6px 6px 0;
+  background: var(--panel-2);
+}
+.changeHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 5px;
+}
+.changeVerb {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+.changeOp {
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 11px;
+  color: var(--text-3);
+}
+.changeEnv {
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 1px 6px;
+  border-radius: 4px;
+  color: var(--text-3);
+  border: 1px solid var(--border-2, var(--border));
+}
+.docId {
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--signal);
+  margin-bottom: 4px;
+  word-break: break-all;
+}
+.changeError {
+  font-size: 12px;
+  color: var(--red);
+  margin: 4px 0;
+}
+
+.fields {
+  display: grid;
+  grid-template-columns: minmax(0, auto) minmax(0, 1fr);
+  gap: 2px 12px;
+  margin: 6px 0 0;
+}
+.field {
+  display: contents;
+}
+.fieldKey {
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 11px;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+.fieldValue {
+  margin: 0;
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 11.5px;
+  color: var(--text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ─── notes ──────────────────────────────────────────────────── */
+.muted {
+  font-size: 12.5px;
+  color: var(--text-3);
+  margin: 8px 0;
+}
+.degraded {
+  font-size: 11.5px;
+  color: var(--amber);
+  background: color-mix(in srgb, var(--amber) 10%, transparent);
+  border-radius: 6px;
+  padding: 6px 9px;
+  margin: 0;
+}
+
+/* ─── reasoning ──────────────────────────────────────────────── */
+.reasoningBlock {
+  margin-top: 4px;
+}
+.reasoningLink {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px 2px 0;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 11.5px;
+  color: var(--accent-text, var(--signal));
+  text-decoration: underline;
+}
+.reasoningLink:focus-visible {
+  outline: 2px solid var(--signal);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+.reasoningText {
+  margin: 4px 0 6px;
+  padding: 8px 10px;
+  max-height: 260px;
+  overflow: auto;
+  background: var(--panel-2);
+  border-left: 2.5px solid color-mix(in srgb, var(--signal) 45%, transparent);
+  border-radius: 0 6px 6px 0;
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--text-2);
+  white-space: pre-wrap;
+  word-break: break-word;
+}

@@ -9,7 +9,11 @@
  * subtly wrong.
  */
 import { describe, expect, it } from "vitest";
-import { buildRunTraceTree, type RunTraceEvent } from "./trace-tree";
+import {
+  buildRunTraceTree,
+  mergeStepRows,
+  type RunTraceEvent,
+} from "./trace-tree";
 import fixture from "./__fixtures__/run-trace.sample.json";
 
 /** Index into a collection the test asserts is populated, with a real message. */
@@ -215,5 +219,52 @@ describe("buildRunTraceTree", () => {
       expect(tree.runLevel.length).toBeGreaterThan(0);
       expect(tree.runLevel.every((r) => r.kind === "run")).toBe(true);
     });
+  });
+});
+
+describe("mergeStepRows", () => {
+  it("adds skipped steps the trace never recorded, in ordinal order", () => {
+    seq = 0;
+    const tree = buildRunTraceTree([
+      ev({ kind: "step", stepId: "s-a", name: "rule-gate", status: "running" }),
+      ev({ kind: "step", stepId: "s-a", name: "rule-gate", status: "ok", durationMs: 5400 }),
+    ]);
+    // The steps table sees three more, all skipped because the gate failed —
+    // the human approval among them, which is the point of the demo.
+    const merged = mergeStepRows(tree, [
+      { ord: 1, name: "rule-gate", type: "logic", status: "ok", durationMs: 5400, error: null, tokensIn: 1242, tokensOut: 210 },
+      { ord: 2, name: "\u5e94\u6025\u5ba1\u6279", type: "manual", status: "skipped", durationMs: null, error: null, tokensIn: null, tokensOut: null },
+      { ord: 3, name: "metaerp.invoke", type: "tool", status: "skipped", durationMs: null, error: null, tokensIn: null, tokensOut: null },
+    ]);
+
+    expect(merged.steps.map((s) => [s.name, s.type])).toEqual([
+      ["rule-gate", "logic"],
+      ["\u5e94\u6025\u5ba1\u6279", "manual"],
+      ["metaerp.invoke", "tool"],
+    ]);
+    // The traced step keeps its rich node, not the flat table row.
+    expect(at(merged.steps, 0, "step").attempts).toHaveLength(1);
+    expect(at(at(merged.steps, 1, "step").attempts, 0, "attempt").status).toBe(
+      "skipped",
+    );
+  });
+
+  it("returns the tree untouched when the table adds nothing", () => {
+    seq = 0;
+    const tree = buildRunTraceTree([
+      ev({ kind: "step", name: "analyze", status: "running" }),
+      ev({ kind: "step", name: "analyze", status: "ok" }),
+    ]);
+    const merged = mergeStepRows(tree, [
+      { ord: 1, name: "analyze", type: "logic", status: "ok", durationMs: 1, error: null, tokensIn: null, tokensOut: null },
+    ]);
+    expect(merged.steps).toHaveLength(1);
+    expect(merged).toEqual(tree);
+  });
+
+  it("is a no-op on an empty step list", () => {
+    seq = 0;
+    const tree = buildRunTraceTree([ev({ kind: "step", name: "x", status: "ok" })]);
+    expect(mergeStepRows(tree, [])).toBe(tree);
   });
 });

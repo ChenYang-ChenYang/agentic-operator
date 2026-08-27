@@ -61,6 +61,30 @@ export function fmtTokens(n: number): string {
   return `${(n / 1_000_000).toFixed(1)}M`;
 }
 
+/**
+ * Human duration for step/turn rows: 838 → "838ms", 12_400 → "12.4s",
+ * 1_831_853 → "30m 32s".
+ *
+ * The live panel previously printed the raw millisecond count, so a half-hour
+ * step read as "1831853MS" — a number nobody parses at a glance, least of all
+ * from across a room.
+ */
+export function fmtDuration(ms: number | null | undefined): string {
+  if (ms === null || ms === undefined || !Number.isFinite(ms) || ms < 0) {
+    return "—";
+  }
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  const totalSeconds = ms / 1000;
+  if (totalSeconds < 60) {
+    return `${totalSeconds.toFixed(totalSeconds < 10 ? 1 : 0)}s`;
+  }
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = Math.round(totalSeconds - minutes * 60);
+  if (minutes < 60) return `${minutes}m ${seconds}s`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ${minutes - hours * 60}m`;
+}
+
 /** Compact relative time for chip subtitles. */
 export function fmtAgoShort(iso: string | null): string {
   if (!iso) return "—";

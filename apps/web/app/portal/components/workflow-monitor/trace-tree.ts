@@ -354,3 +354,89 @@ export function buildRunTraceTree(events: RunTraceEvent[]): RunTraceTree {
     totals,
   };
 }
+
+/** One row of the `steps` table, as GET /v1/runs/:id returns it. */
+export interface RunStepRow {
+  ord: number;
+  name: string;
+  type: string;
+  status: string;
+  durationMs: number | null;
+  error: string | null;
+  tokensIn: number | null;
+  tokensOut: number | null;
+  attempts?: number;
+}
+
+/**
+ * Merge the persisted step list into a trace-derived tree.
+ *
+ * The two sources see different things and the timeline needs both. The trace
+ * is rich — turns, tool calls, tokens, evidence — but it only records steps
+ * that actually EXECUTED: a skipped step emits no trace rows at all. The steps
+ * table is the complete skeleton, including the `skipped` manual gates, tool
+ * calls and emits that never ran.
+ *
+ * That gap is exactly what a demo has to show. "The human approval gate was
+ * skipped because the rule gate failed" is the story; a trace-only timeline
+ * silently omits the gate and the run looks like it simply stopped.
+ *
+ * Steps present in both are kept from the trace (it knows strictly more).
+ * Steps only in the table are appended as single-attempt, turn-less nodes at
+ * their recorded ordinal.
+ */
+export function mergeStepRows(
+  tree: RunTraceTree,
+  rows: readonly RunStepRow[],
+): RunTraceTree {
+  if (rows.length === 0) return tree;
+  const traced = new Set(tree.steps.map((s) => s.name));
+  const extra: Array<{ ord: number; step: StepNode }> = [];
+
+  for (const row of rows) {
+    if (traced.has(row.name)) continue;
+    extra.push({
+      ord: row.ord,
+      step: {
+        stepId: `row-${row.ord}-${row.name}`,
+        name: row.name,
+        type: row.type,
+        visibility: "user",
+        attempts: [
+          {
+            attempt: 1,
+            status: row.status,
+            startedAt: null,
+            durationMs: row.durationMs,
+            summary: null,
+            error: row.error,
+            turns: [],
+            looseToolCalls: [],
+            tokensIn: row.tokensIn ?? 0,
+            tokensOut: row.tokensOut ?? 0,
+          },
+        ],
+      },
+    });
+  }
+  if (extra.length === 0) return tree;
+
+  // Interleave by ordinal: the table's `ord` is the authoritative order, and
+  // traced steps keep their relative position by taking the ord of the row
+  // that shares their name.
+  const rowByName = new Map(rows.map((r) => [r.name, r]));
+  const merged = [
+    ...tree.steps.map((step) => {
+      const row = rowByName.get(step.name);
+      return {
+        ord: row?.ord ?? Number.MAX_SAFE_INTEGER,
+        // The table is authoritative for the declared type; the trace only
+        // carries it on the opening row, which a cursor can trim away.
+        step: row && !step.type ? { ...step, type: row.type } : step,
+      };
+    }),
+    ...extra,
+  ].sort((a, b) => a.ord - b.ord);
+
+  return { ...tree, steps: merged.map((m) => m.step) };
+}

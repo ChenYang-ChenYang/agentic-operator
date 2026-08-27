@@ -121,6 +121,7 @@ import {
 import {
   InspectorTabs,
   LiveAgentPanel,
+  RunTimelinePanel,
   LiveLegend,
   NodeLiveBadge,
   RunScrubber,
@@ -256,8 +257,10 @@ export default function WorkflowsPage() {
   // and the live inspector panel outside edit mode.
   const live = useWorkflowLiveState(tenant);
   const [scrubRun, setScrubRun] = useState<RunListRow | null>(null);
+  // Timeline is the resting tab — it answers "what did this agent just do"
+  // without a further click, which is the question the canvas is opened to ask.
   const [inspectorTab, setInspectorTab] =
-    useState<MonitorInspectorTab>("live");
+    useState<MonitorInspectorTab>("timeline");
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
   const [selectedEvent, setSelectedEvent] = useState<string | null>(null);
   const [hoveredEdge, setHoveredEdge] = useState<number | null>(null);
@@ -2565,7 +2568,24 @@ export default function WorkflowsPage() {
             // original manifest definition one tab away.
             <>
               <InspectorTabs tab={inspectorTab} onChange={setInspectorTab} />
-              {inspectorTab === "live" ? (
+              {inspectorTab === "timeline" ? (
+                <RunTimelinePanel
+                  scrubbedRunId={scrubRun?.id ?? null}
+                  scrubbedRunStatus={scrubRun?.status ?? null}
+                  activeRunId={
+                    (
+                      live.agents[selectedAgentRecord.name] ??
+                      live.agents[selectedAgentRecord.kebabId]
+                    )?.activeRunId
+                  }
+                  lastRunId={
+                    (
+                      live.agents[selectedAgentRecord.name] ??
+                      live.agents[selectedAgentRecord.kebabId]
+                    )?.lastRunId
+                  }
+                />
+              ) : inspectorTab === "live" ? (
                 <LiveAgentPanel
                   agent={selectedAgentRecord}
                   live={
