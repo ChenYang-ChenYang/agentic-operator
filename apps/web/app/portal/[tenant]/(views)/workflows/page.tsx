@@ -254,7 +254,7 @@ export default function WorkflowsPage() {
   // §G4 realtime workflow monitor — per-agent live state + edge pulses folded
   // from the tenant SSE stream. Drives node rings/badges, real edge animation
   // and the live inspector panel outside edit mode.
-  const live = useWorkflowLiveState();
+  const live = useWorkflowLiveState(tenant);
   const [scrubRun, setScrubRun] = useState<RunListRow | null>(null);
   const [inspectorTab, setInspectorTab] =
     useState<MonitorInspectorTab>("live");

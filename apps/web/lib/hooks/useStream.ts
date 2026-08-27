@@ -190,6 +190,52 @@ export const OBSERVABILITY_KEYS = {
 
 import type { QueryClient } from "@tanstack/react-query";
 
+/**
+ * Coalescing layer over invalidateQueries.
+ *
+ * Frames arrive in bursts, not singly: connecting to the stream replays the
+ * recent tail, and one power-scm scenario fans out to five agents that emit
+ * continuously for several seconds. Invalidating per frame turns a 65-frame
+ * burst into ~200 refetches — measured on the workflows canvas — which alone
+ * exhausts the api's 600-reads-per-minute budget (plugins/security.ts:147) and
+ * then feeds itself, because TanStack retries the resulting 429s.
+ *
+ * Keys collected inside one window collapse by serialised identity, so N
+ * frames touching the same key cost exactly one refetch. The window is short
+ * enough to stay imperceptible next to the refetch itself.
+ */
+const COALESCE_WINDOW_MS = 220;
+
+const pendingKeys = new Map<string, readonly unknown[]>();
+let flushTimer: ReturnType<typeof setTimeout> | null = null;
+
+function flushInvalidations(client: QueryClient): void {
+  flushTimer = null;
+  const keys = [...pendingKeys.values()];
+  pendingKeys.clear();
+  for (const queryKey of keys) void client.invalidateQueries({ queryKey });
+}
+
+/** Queue a key for invalidation on the next flush. Exported for tests. */
+export function queueInvalidate(
+  client: QueryClient,
+  queryKey: readonly unknown[],
+): void {
+  pendingKeys.set(JSON.stringify(queryKey), queryKey);
+  if (flushTimer === null) {
+    flushTimer = setTimeout(() => flushInvalidations(client), COALESCE_WINDOW_MS);
+  }
+}
+
+/** For tests — drop anything queued and cancel the pending flush. */
+export function resetInvalidationQueue(): void {
+  pendingKeys.clear();
+  if (flushTimer !== null) {
+    clearTimeout(flushTimer);
+    flushTimer = null;
+  }
+}
+
 export function dispatch(event: StreamEvent, client: QueryClient): void {
   switch (event.type) {
     case "run.started":
@@ -197,62 +243,68 @@ export function dispatch(event: StreamEvent, client: QueryClient): void {
     case "run.cancelled":
     case "run.completed": {
       // The list views all show status; counts shows running runs.
-      void client.invalidateQueries({ queryKey: RUN_KEYS.all });
-      void client.invalidateQueries({ queryKey: COUNT_KEYS.tenant });
-      void client.invalidateQueries({ queryKey: RUN_KEYS.detail(event.runId) });
+      queueInvalidate(client, RUN_KEYS.all);
+      queueInvalidate(client, COUNT_KEYS.tenant);
+      queueInvalidate(client, RUN_KEYS.detail(event.runId));
       // Token/cost totals and per-agent/model series are persisted on run
       // lifecycle changes. Prefix invalidation refreshes every selected range.
-      void client.invalidateQueries({ queryKey: USAGE_KEYS.all });
-      void client.invalidateQueries({ queryKey: OBSERVABILITY_KEYS.all });
+      queueInvalidate(client, USAGE_KEYS.all);
+      queueInvalidate(client, OBSERVABILITY_KEYS.all);
       // Per-agent throughput changes as runs start/finish. Prefix-match
       // invalidates every window variant ("1h"/"24h"/"7d").
-      void client.invalidateQueries({ queryKey: ["workflows", "throughput"] as const });
+      queueInvalidate(client, ["workflows", "throughput"] as const);
       break;
     }
     case "run.step.started":
     case "run.step.completed": {
-      // The current-step badge on runs.list and the timeline on runs.detail
-      // both refetch.
-      void client.invalidateQueries({ queryKey: RUN_KEYS.detail(event.runId) });
-      void client.invalidateQueries({ queryKey: RUN_KEYS.all });
+      // ONLY this run's detail. Step frames are by far the highest-volume
+      // event on this stream — one power-scm scenario fans out to five agents
+      // and emits ~80 within a few seconds — so anything broader melts the
+      // read budget: the api allows 600 reads/min (security.ts:147) and a
+      // list refetch per frame blows through it, whereupon TanStack retries
+      // the 429s and the storm feeds itself. The list's current-step badge
+      // goes slightly stale between frames and is repaired by the
+      // run.started/run.completed handlers above (rare enough to afford the
+      // ["runs"] prefix) and by useRuns' own 15s refetchInterval.
+      queueInvalidate(client, RUN_KEYS.detail(event.runId));
       break;
     }
     case "event.emitted": {
-      void client.invalidateQueries({ queryKey: EVENT_KEYS.all });
-      void client.invalidateQueries({ queryKey: COUNT_KEYS.tenant });
-      void client.invalidateQueries({ queryKey: OBSERVABILITY_KEYS.all });
+      queueInvalidate(client, EVENT_KEYS.all);
+      queueInvalidate(client, COUNT_KEYS.tenant);
+      queueInvalidate(client, OBSERVABILITY_KEYS.all);
       break;
     }
     case "task.created":
     case "task.resolved": {
-      void client.invalidateQueries({ queryKey: TASK_KEYS.all });
-      void client.invalidateQueries({ queryKey: COUNT_KEYS.tenant });
+      queueInvalidate(client, TASK_KEYS.all);
+      queueInvalidate(client, COUNT_KEYS.tenant);
       break;
     }
     case "deployment.created": {
       // UC-V11-06: refresh the deployments list so a hot-reload lands in
       // the table immediately. The toast itself is fired by the chrome
       // (see chrome.tsx onEvent handler), which has access to useToast().
-      void client.invalidateQueries({ queryKey: DEPLOYMENT_KEYS.list });
+      queueInvalidate(client, DEPLOYMENT_KEYS.list);
       // Deployments can add or replace live agents. Keep both the agents page
       // and the sidebar's canonical count projection in sync with that write.
-      void client.invalidateQueries({ queryKey: AGENT_KEYS.all });
-      void client.invalidateQueries({ queryKey: COUNT_KEYS.tenant });
+      queueInvalidate(client, AGENT_KEYS.all);
+      queueInvalidate(client, COUNT_KEYS.tenant);
       break;
     }
     case "audit.recorded": {
-      void client.invalidateQueries({ queryKey: AUDIT_KEYS.all });
-      void client.invalidateQueries({ queryKey: OBSERVABILITY_KEYS.all });
+      queueInvalidate(client, AUDIT_KEYS.all);
+      queueInvalidate(client, OBSERVABILITY_KEYS.all);
       break;
     }
     case "llm.call.completed": {
-      void client.invalidateQueries({ queryKey: USAGE_KEYS.all });
-      void client.invalidateQueries({ queryKey: OBSERVABILITY_KEYS.all });
+      queueInvalidate(client, USAGE_KEYS.all);
+      queueInvalidate(client, OBSERVABILITY_KEYS.all);
       break;
     }
     case "tool.call.completed": {
-      void client.invalidateQueries({ queryKey: RUN_KEYS.detail(event.runId) });
-      void client.invalidateQueries({ queryKey: OBSERVABILITY_KEYS.all });
+      queueInvalidate(client, RUN_KEYS.detail(event.runId));
+      queueInvalidate(client, OBSERVABILITY_KEYS.all);
       break;
     }
     case "log.line": {

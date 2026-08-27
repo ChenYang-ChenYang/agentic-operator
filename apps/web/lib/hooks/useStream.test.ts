@@ -5,7 +5,7 @@
  * TanStack Query keys so consumers (`useRuns`, `useEvents`, `useTasks`,
  * `useAgents`, `useCounts`) automatically refetch.
  */
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { QueryClient } from "@tanstack/react-query";
 import {
   dispatch,
@@ -18,6 +18,7 @@ import {
   TASK_KEYS,
   USAGE_KEYS,
   streamPathWithCursor,
+  resetInvalidationQueue,
 } from "./useStream";
 
 function makeClient() {
@@ -26,7 +27,16 @@ function makeClient() {
   return { client, spy };
 }
 
+/**
+ * Flush the coalescing window, then read what was invalidated.
+ *
+ * dispatch() no longer invalidates synchronously: keys are collected and
+ * flushed once per window so a burst of frames costs one refetch per key
+ * instead of one per frame. Every assertion therefore has to advance timers
+ * first — reading the spy without flushing sees an empty list.
+ */
 function invalidatedKeys(spy: ReturnType<typeof vi.spyOn>): unknown[] {
+  vi.runOnlyPendingTimers();
   return spy.mock.calls.map((call: unknown[]) => {
     const arg = call[0] as { queryKey: unknown } | undefined;
     return arg?.queryKey;
@@ -34,7 +44,15 @@ function invalidatedKeys(spy: ReturnType<typeof vi.spyOn>): unknown[] {
 }
 
 describe("dispatch — SSE events → query cache invalidations", () => {
-  afterEach(() => vi.restoreAllMocks());
+  beforeEach(() => {
+    vi.useFakeTimers();
+    resetInvalidationQueue();
+  });
+  afterEach(() => {
+    resetInvalidationQueue();
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
 
   it("run.started invalidates runs.all, counts, and the run detail", () => {
     const { client, spy } = makeClient();
@@ -59,7 +77,7 @@ describe("dispatch — SSE events → query cache invalidations", () => {
     expect(keys).toContainEqual(USAGE_KEYS.all);
   });
 
-  it("run.step.completed invalidates the run detail + list", () => {
+  it("run.step.completed invalidates ONLY that run's detail", () => {
     const { client, spy } = makeClient();
     dispatch(
       {
@@ -83,7 +101,48 @@ describe("dispatch — SSE events → query cache invalidations", () => {
     );
     const keys = invalidatedKeys(spy as never);
     expect(keys).toContainEqual(RUN_KEYS.detail("run-001"));
-    expect(keys).toContainEqual(RUN_KEYS.all);
+    // Deliberately NOT the ["runs"] prefix or any list key. Step frames are the
+    // highest-volume event on the stream; invalidating the list per frame is
+    // what exhausted the api's read budget. The list is repaired by the run
+    // lifecycle handlers and by useRuns' own refetchInterval.
+    expect(keys).not.toContainEqual(RUN_KEYS.all);
+    expect(keys).not.toContainEqual(RUN_KEYS.list());
+  });
+
+  it("coalesces a burst so repeated keys cost one invalidation", () => {
+    const { client, spy } = makeClient();
+    const frame = (ord: number) =>
+      ({
+        type: "run.step.completed",
+        tenantId: "t1",
+        at: ord,
+        runId: "run-001",
+        stepId: `stp-${ord}`,
+        ord,
+        name: "matchHardRequirements",
+        stepType: "logic",
+        status: "ok",
+        durationMs: 12,
+        provider: "anthropic",
+        model: "claude-sonnet-4-5",
+        tokensIn: 10,
+        tokensOut: 5,
+        error: null,
+      }) as const;
+
+    // A fan-out burst: many frames for the same run inside one window.
+    for (let ord = 1; ord <= 40; ord += 1) dispatch(frame(ord), client);
+
+    // Nothing has fired yet — the window is still open.
+    expect(spy).not.toHaveBeenCalled();
+
+    vi.runOnlyPendingTimers();
+
+    // 40 frames collapse to the single distinct key they all touch.
+    const keys = spy.mock.calls.map(
+      (call: unknown[]) => (call[0] as { queryKey: unknown }).queryKey,
+    );
+    expect(keys).toEqual([RUN_KEYS.detail("run-001")]);
   });
 
   it("event.emitted invalidates events.all + counts", () => {

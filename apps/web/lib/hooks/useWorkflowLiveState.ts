@@ -269,7 +269,9 @@ export interface UseWorkflowLiveStateResult {
   activeEventNames: Set<string>;
 }
 
-export function useWorkflowLiveState(): UseWorkflowLiveStateResult {
+export function useWorkflowLiveState(
+  tenant?: string,
+): UseWorkflowLiveStateResult {
   const [state, dispatch] = useReducer(
     workflowLiveReducer,
     undefined,
@@ -278,7 +280,19 @@ export function useWorkflowLiveState(): UseWorkflowLiveStateResult {
   const onEvent = useCallback((event: RunStreamEvent) => {
     dispatch({ kind: "stream", event });
   }, []);
-  useStream({ onEvent });
+  // Connect through the unbuffered `/livefeed` route handler, NOT the default
+  // `/v1/stream`: the `/v1/:path*` rewrite in next.config.mjs buffers SSE
+  // response bodies, so an EventSource pointed there receives the handshake
+  // frame and nothing else — every run/step frame this reducer exists to
+  // animate silently never arrives. Same reason chrome.tsx and
+  // TerminalLogTab.tsx take this route. The tenant rides as a query param
+  // because EventSource cannot set the x-agentic-tenant header; the proxy
+  // promotes it to the header upstream, so the canvas animates for the tenant
+  // being viewed rather than the session default.
+  useStream({
+    path: tenant ? `/livefeed?tenant=${encodeURIComponent(tenant)}` : "/livefeed",
+    onEvent,
+  });
 
   // Expire edge pulses. The interval only runs while pulses exist so an idle
   // canvas costs nothing; the reducer returns the same reference when nothing

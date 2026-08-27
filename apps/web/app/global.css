@@ -2732,3 +2732,45 @@ a {
 html[data-ontocode-workbench="true"] [data-portal-topbar] {
   display: none !important;
 }
+
+/* ─── Workflow monitor timeline (§G4) ────────────────────────────────
+ * These live here rather than in timeline.module.css on purpose: CSS-module
+ * keyframe names are mangled at build time, so a name referenced from an
+ * inline `style={{ animation: "…" }}` prop resolves to nothing and fails
+ * silently. Global keyframes stay referenceable from both stylesheets and
+ * inline styles.
+ *
+ * Durations come from --dur-* in tokens.css. Every rule below is paired with
+ * a prefers-reduced-motion opt-out, matching the rest of this file. */
+@keyframes wf-row-in {
+  from { opacity: 0; transform: translate3d(-10px, 0, 0); }
+  to   { opacity: 1; transform: none; }
+}
+/* The vertical spine draws downward as an attempt's turns arrive. */
+@keyframes wf-spine-draw {
+  from { transform: scaleY(0); }
+  to   { transform: scaleY(1); }
+}
+/* Indeterminate progress for a step that is running with no known duration. */
+@keyframes wf-rail {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(300%); }
+}
+/* A write landing in the business system: flash the row, then settle. */
+@keyframes wf-commit {
+  0%   { background: color-mix(in srgb, currentColor 26%, transparent); }
+  100% { background: transparent; }
+}
+
+.wf-row-in    { animation: wf-row-in var(--dur-3) var(--ease-out) both; }
+.wf-spine     { animation: wf-spine-draw var(--dur-4) var(--ease-out) both; transform-origin: top center; }
+.wf-rail::after { animation: wf-rail 1.15s var(--ease-inout) infinite; }
+.wf-commit    { animation: wf-commit var(--dur-4) var(--ease-out) both; }
+
+@media (prefers-reduced-motion: reduce) {
+  .wf-row-in,
+  .wf-spine,
+  .wf-commit      { animation: none; }
+  .wf-spine       { transform: none; }
+  .wf-rail::after { animation: none; }
+}
