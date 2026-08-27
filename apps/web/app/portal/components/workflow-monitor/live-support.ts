@@ -96,3 +96,35 @@ export function fmtAgoShort(iso: string | null): string {
   if (s < 86_400) return `${Math.round(s / 3600)}h`;
   return `${Math.round(s / 86_400)}d`;
 }
+
+
+/**
+ * Which run the inspector should show when nothing is selected.
+ *
+ * The resting panel used to be a static catalogue of event constants — the
+ * most valuable strip of screen in the room, spent on a reference table. This
+ * picks the run worth watching instead: anything still running wins over
+ * anything finished, and among equals the most recent activity wins.
+ *
+ * Returns null when the tenant has never run anything, which is the only case
+ * where the catalogue is genuinely the better thing to show.
+ */
+export function pickFocusRun(
+  agents: Record<string, { activeRunId: string | null; lastRunId: string | null; lastEventAt: number | null }>,
+): { runId: string; live: boolean } | null {
+  let best: { runId: string; live: boolean; at: number } | null = null;
+  for (const state of Object.values(agents)) {
+    const runId = state.activeRunId ?? state.lastRunId;
+    if (!runId) continue;
+    const live = state.activeRunId !== null;
+    const at = state.lastEventAt ?? 0;
+    if (
+      best === null ||
+      (live && !best.live) ||
+      (live === best.live && at > best.at)
+    ) {
+      best = { runId, live, at };
+    }
+  }
+  return best ? { runId: best.runId, live: best.live } : null;
+}

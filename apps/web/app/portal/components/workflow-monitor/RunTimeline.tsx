@@ -36,7 +36,7 @@ import {
   readStepOutcome,
   type EvidenceArtifact,
 } from "./data-change";
-import { fmtDuration, fmtTokens } from "./live-support";
+import { fmtDuration, fmtTokens, pickFocusRun } from "./live-support";
 import styles from "./timeline.module.css";
 
 function statusColor(status: string | null): string {
@@ -540,6 +540,41 @@ export function RunTimelinePanel({
   const detail = useRun(runId, { live: status === "running" });
 
   if (!runId) return <p className={styles.muted}>{t("monitor.selectRun")}</p>;
+  return (
+    <RunTimeline
+      events={events}
+      stepRows={detail.data?.steps as RunStepRow[] | undefined}
+      isLoading={isLoading && detail.isLoading}
+      isError={isError && detail.isError}
+    />
+  );
+}
+
+/**
+ * Resting state of the inspector: the run worth watching, with no selection.
+ *
+ * Falls back to `fallback` (the event catalogue) only when the tenant has
+ * never run anything — otherwise the most valuable strip of screen in the room
+ * shows a reference table while agents are working behind it.
+ */
+export function IdleTimelinePanel({
+  agents,
+  fallback,
+}: {
+  agents: Record<
+    string,
+    { activeRunId: string | null; lastRunId: string | null; lastEventAt: number | null }
+  >;
+  fallback: React.ReactNode;
+}) {
+  const focus = useMemo(() => pickFocusRun(agents), [agents]);
+  const { events, isLoading, isError } = useRunTrace(
+    focus?.runId ?? null,
+    focus?.live ? "running" : "ok",
+  );
+  const detail = useRun(focus?.runId ?? null, { live: focus?.live ?? false });
+
+  if (!focus) return <>{fallback}</>;
   return (
     <RunTimeline
       events={events}

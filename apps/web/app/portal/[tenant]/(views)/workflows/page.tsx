@@ -122,6 +122,7 @@ import {
   InspectorTabs,
   LiveAgentPanel,
   RunTimelinePanel,
+  IdleTimelinePanel,
   LiveLegend,
   NodeLiveBadge,
   RunScrubber,
@@ -2631,10 +2632,18 @@ export default function WorkflowsPage() {
               onAddHuman={() => addAgent("Human")}
             />
           ) : (
-            <DefaultInspector
-              events={events}
-              agents={agents}
-              onPick={setSelectedEvent}
+            // §G4 — with nothing selected the aside shows the run worth
+            // watching rather than a static catalogue of event constants; the
+            // catalogue remains the fallback for a tenant that has never run.
+            <IdleTimelinePanel
+              agents={live.agents}
+              fallback={
+                <DefaultInspector
+                  events={events}
+                  agents={agents}
+                  onPick={setSelectedEvent}
+                />
+              }
             />
           )}
         </aside>
