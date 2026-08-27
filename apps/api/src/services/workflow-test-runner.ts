@@ -777,9 +777,15 @@ export async function runWorkflowDraftTest(
   ];
   const agentRuns: WorkflowTestAgentRun[] = [];
   const eventRecords: WorkflowTestEventRecord[] = [];
-  const warnings = validation.issues
-    .filter((issue) => issue.severity !== "error")
-    .map((issue) => `${issue.path}: ${issue.message}`);
+  // Keep both shapes: the flat strings for API clients, and the structured
+  // issues the portal needs to render a localized message (the `code` is what
+  // a translation is keyed on, and flattening loses it).
+  const validationIssues = validation.issues.filter(
+    (issue) => issue.severity !== "error",
+  );
+  const warnings = validationIssues.map(
+    (issue) => `${issue.path}: ${issue.message}`,
+  );
   let limitReached = false;
   let halt = false;
 
@@ -931,5 +937,6 @@ export async function runWorkflowDraftTest(
     events: eventRecords,
     terminalOutputs,
     warnings,
+    validationIssues,
   });
 }

@@ -4325,9 +4325,9 @@ export const en = {
     },
     issue: {
       dangling_trigger:
-        'Agent "{first}" listens for "{second}", but no agent emits that event.',
+        'Nothing in this workflow emits "{second}", so "{first}" is an entry point — expected for the first agent. If it should run after another agent, make that agent emit "{second}".',
       dangling_emitter:
-        'Agent "{first}" emits "{second}", but no agent listens for it.',
+        'Nothing in this workflow listens for "{second}", so "{first}" produces the final output — expected for the last agent. If another agent should run next, give it "{second}" as its trigger.',
       duplicate_agent_name: 'More than one agent is named "{first}".',
       duplicate_kebab_id: 'More than one agent uses the id "{first}".',
       unknown_tool: 'Tool "{first}" is not registered.',
@@ -5295,6 +5295,7 @@ export const en = {
     modelTokens: "Model tokens",
     tokenSummary: "{input} in · {output} out",
     duration: "Duration",
+    adviceHeading: "{count} advisory note(s) — the run still passed",
     terminalOutputs: "Terminal outputs",
     noTerminalOutput: "No successful terminal output was produced.",
     triggeredBy: "Triggered by",

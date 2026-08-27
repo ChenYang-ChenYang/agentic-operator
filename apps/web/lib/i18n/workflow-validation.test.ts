@@ -46,14 +46,16 @@ describe("localizeValidationMessage", () => {
     expect(out).toContain("definevideomarketingbrief");
     expect(out).toContain("SHORT_VIDEO_MARKETING_REQUEST");
     // The prose is translated, not the identifiers.
-    expect(out).toContain("监听");
+    expect(out).toContain("入口");
     expect(out).not.toContain("triggers on");
   });
 
   it("still reads correctly in English", () => {
-    expect(localizeValidationMessage(t, issue())).toBe(
-      'Agent "definevideomarketingbrief" listens for "SHORT_VIDEO_MARKETING_REQUEST", but no agent emits that event.',
-    );
+    const out = localizeValidationMessage(t, issue());
+    expect(out).toContain("SHORT_VIDEO_MARKETING_REQUEST");
+    expect(out).toContain("definevideomarketingbrief");
+    // The copy explains WHY this is expected rather than reading as a defect.
+    expect(out).toContain("entry point");
   });
 
   it("falls back to the server message for an unknown code", () => {

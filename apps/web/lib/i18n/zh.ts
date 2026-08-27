@@ -4077,8 +4077,10 @@ export const zh = {
       info: "提示",
     },
     issue: {
-      dangling_trigger: "智能体「{first}」监听「{second}」，但没有任何智能体发出该事件。",
-      dangling_emitter: "智能体「{first}」发出「{second}」，但没有任何智能体监听它。",
+      dangling_trigger:
+        "工作流内没有智能体发出「{second}」，因此「{first}」是入口——作为第一个智能体这是正常的。如果它本应在其他智能体之后运行，请让那个智能体发出「{second}」。",
+      dangling_emitter:
+        "工作流内没有智能体监听「{second}」，因此「{first}」产出最终结果——作为最后一个智能体这是正常的。如果后面还应有智能体，请把「{second}」设为它的触发事件。",
       duplicate_agent_name: "有多个智能体都叫「{first}」。",
       duplicate_kebab_id: "有多个智能体使用了同一个 id「{first}」。",
       unknown_tool: "工具「{first}」未注册。",
@@ -4992,6 +4994,7 @@ export const zh = {
     modelTokens: "模型令牌",
     tokenSummary: "输入 {input} · 输出 {output}",
     duration: "耗时",
+    adviceHeading: "{count} 条提示——本次运行仍然通过",
     terminalOutputs: "终端输出",
     noTerminalOutput: "未生成成功的终端输出。",
     triggeredBy: "触发来源",

@@ -46,6 +46,7 @@ import {
   type WorkflowChatTurn,
 } from "./workflow-chat";
 import { WorkflowChatPanel } from "./WorkflowChatPanel";
+import { localizeValidationMessage } from "@/lib/i18n/workflow-validation";
 import styles from "./WorkflowRunConsole.module.css";
 
 type RunTarget = "draft" | "live";
@@ -1700,11 +1701,24 @@ function DraftEvidence({
       </div>
       {result.warnings.length > 0 ? (
         <div style={{ display: "grid", gap: 6 }}>
-          {result.warnings.map((warning) => (
-            <InlineNotice key={warning} tone="amber">
-              {warning}
-            </InlineNotice>
-          ))}
+          <div style={sectionHeadingStyle}>
+            {t("workflowRunConsole.adviceHeading", {
+              count: result.warnings.length,
+            })}
+          </div>
+          {/* Prefer the structured issues: they carry the `code` a localized
+              message is keyed on. Older responses only have the flat strings. */}
+          {result.validationIssues.length > 0
+            ? result.validationIssues.map((issue) => (
+                <InlineNotice key={`${issue.path}:${issue.code}`} tone="amber">
+                  {localizeValidationMessage(t, issue)}
+                </InlineNotice>
+              ))
+            : result.warnings.map((warning) => (
+                <InlineNotice key={warning} tone="amber">
+                  {warning}
+                </InlineNotice>
+              ))}
         </div>
       ) : null}
       <div>

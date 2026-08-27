@@ -689,7 +689,14 @@ export const WorkflowTestRunResponseSchema = z.object({
   agentRuns: z.array(WorkflowTestAgentRunSchema),
   events: z.array(WorkflowTestEventRecordSchema),
   terminalOutputs: z.array(WorkflowTestTerminalOutputSchema),
+  /**
+   * Pre-formatted `path: message` strings, kept for API clients.
+   * The portal renders `validationIssues` instead — flattening to a string
+   * discards the `code`, which is what a localized message is keyed on.
+   */
   warnings: z.array(z.string()),
+  /** The same non-blocking issues, structure intact. */
+  validationIssues: z.array(WorkflowValidationIssueSchema).default([]),
 });
 export type WorkflowTestRunResponse = z.infer<
   typeof WorkflowTestRunResponseSchema
