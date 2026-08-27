@@ -28,6 +28,9 @@ pnpm seed:rich            # RAAS historical fixtures + English ontology overlay 
 pnpm db:generate          # drizzle-kit generate after editing packages/db/src/schema.ts
 pnpm db:studio            # drizzle-kit studio
 pnpm ensure:native        # manually run the native-module ABI guard
+pnpm codex:runtime:install # install the exact app-server runtime under deploy/codex
+pnpm codex:protocol:check  # reject drift between generated protocol and pinned runtime
+pnpm verify:codex-harness  # exact-version + no-model-call app-server handshake
 ```
 
 Single test (api workspace): `pnpm --filter @agentic/api exec vitest run test/tc-3-test-agent-happy.test.ts`. Vitest config uses `pool: "forks"` and `sequence.concurrent: false` because the SQLite handle isn't worker-thread safe and tests share `data/agentic.db`.
@@ -46,6 +49,8 @@ A single workspace's dev server: `pnpm --filter @agentic/api run dev` (or `@agen
 **Inngest durability discipline.** Inngest replays handlers; every DB write must be inside a `step.run("name", ...)` so exactly one row is produced per actual execution. `step.sendEvent` is the only idempotent way to emit downstream events — never `inngest.send` inside a step body. HITL: create a `tasks` row inside `step.run`, then `step.waitForEvent("task.resolved", { if: 'async.data.taskId == "<id>"' })`. See `packages/runtime/src/register.ts:165-280`. Inngest dev mode is **not crash-safe** — if the api restarts mid-run (e.g. tsx watch reloading on a file edit) the in-flight handler can be dropped; re-fire under a fresh subject.
 
 **LLM Gateway** (`packages/llm-gateway`) fronts 14 providers (`mock`, `anthropic`, `openai`, `openrouter`, `gemini`, `azure`, `groq`, `together`, `mistral`, `deepseek`, `qwen`, `bedrock`, `vertex`, `custom`). A single gateway singleton is constructed in `apps/api/src/services/llm.ts` and injected into both consumers at boot (`setAgentGateway` for BaseAgent, `setRuntimeGateway` for the manifest step engine's `logic`/`llmCall` action) — see `apps/api/src/bootstrap.ts`. Provider catalog metadata lives in `@agentic/contracts/providers`. Background design: `docs/design/llm-gateway-and-baseagent.md`.
+
+**Codex app-server harness.** `codex.version` is the source-of-truth pin; `deploy/codex/package-lock.json` packages that exact `@openai/codex` runtime, `packages/codex-protocol/generated/` is produced by the pinned binary, and `packages/codex-harness` is the only application package allowed to speak its newline-delimited JSON-RPC protocol. Never hand-edit generated protocol files. Upgrade the pin and deploy package together, install the runtime, run `pnpm codex:protocol:generate`, inspect the generated diff, then run `pnpm codex:protocol:check` and `pnpm verify:codex-harness`. The full API image receives the binary; Factory control/workload/CodeAct/candidate images must not. Production callers must explicitly allow-list child environment variables and route model credentials through the platform gateway rather than inheriting host secrets. Background design: `docs/design/codex-harness.md`.
 
 **Tenant scoping.** Every user-visible table carries `tenant_id`. Use `tenantScope(ctx, table)` from `@agentic/db` to build the predicate — direct `getDb()` access leaks across tenants. In dev (`AUTH_MODE=dev` or `NODE_ENV !== "production"`) the auth plugin returns the tenant matching `AGENTIC_DEV_TENANT` (default `raas`). Tests set `AGENTIC_DEV_TENANT=__system`. The dev-only `x-agentic-tenant: <slug>` request header overrides the tenant per-request (advisory — never a 401; only consulted under `AUTH_MODE=dev`) — handy for hitting `/v1/*` for a non-default tenant via curl.
 

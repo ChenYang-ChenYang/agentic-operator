@@ -21,21 +21,23 @@ MCP/tool integrations, and observability views run as one workspace.
 
 ## Workspace
 
-| Area | Responsibility |
-| --- | --- |
-| `apps/web` | Next.js 16 + React 19 operator portal |
-| `apps/api` | Fastify 5 REST API, auth, SSE, Inngest handlers, health and metrics |
-| `apps/cli` | Operator CLI |
-| `packages/agents` | Canonical code-agent contract, registry, tool loop and execution engine |
-| `packages/runtime` | Manifest registration and workflow step engine |
-| `packages/llm-gateway` | Credentialed provider adapters, budgets, usage telemetry |
-| `packages/tools` | Real tool dispatch and credential gating |
-| `packages/mcp` | MCP process/server lifecycle |
-| `packages/db` | Drizzle schema, migrations, seed and SQLite access |
-| `packages/contracts` | Shared API and stream schemas |
-| `packages/agent-factory` | Domain-grounded agent generation and verification |
-| `tenants/*` | Tenant-specific agents, prompts, skills and real integrations |
-| `models/*` | Versioned workflow/ontology manifests |
+| Area                      | Responsibility                                                          |
+| ------------------------- | ----------------------------------------------------------------------- |
+| `apps/web`                | Next.js 16 + React 19 operator portal                                   |
+| `apps/api`                | Fastify 5 REST API, auth, SSE, Inngest handlers, health and metrics     |
+| `apps/cli`                | Operator CLI                                                            |
+| `packages/agents`         | Canonical code-agent contract, registry, tool loop and execution engine |
+| `packages/runtime`        | Manifest registration and workflow step engine                          |
+| `packages/llm-gateway`    | Credentialed provider adapters, budgets, usage telemetry                |
+| `packages/codex-harness`  | Fail-closed Codex app-server lifecycle and JSON-RPC adapter             |
+| `packages/codex-protocol` | Generated bindings/schema for the pinned Codex app-server protocol      |
+| `packages/tools`          | Real tool dispatch and credential gating                                |
+| `packages/mcp`            | MCP process/server lifecycle                                            |
+| `packages/db`             | Drizzle schema, migrations, seed and SQLite access                      |
+| `packages/contracts`      | Shared API and stream schemas                                           |
+| `packages/agent-factory`  | Domain-grounded agent generation and verification                       |
+| `tenants/*`               | Tenant-specific agents, prompts, skills and real integrations           |
+| `models/*`                | Versioned workflow/ontology manifests                                   |
 
 Workflows and agents can also be authored from the portal: Agent Studio edits
 per-agent V2 definitions, the workflow-authoring API drafts/validates/publishes
@@ -44,9 +46,8 @@ Integrations stores third-party credentials (e.g. GoHire) encrypted per tenant.
 LLM traffic is routed per tenant through the gateway (providers include
 Moonshot and Z.ai) and accounted in a usage ledger surfaced at `/v1/usage`.
 
-The workspace requires Node 26 (26.5.0 is the pinned target in `.nvmrc` and
-`package.json#engines`; the lifecycle version guard accepts any 26.x) and
-pnpm 11. The exact pnpm version is pinned in `package.json`.
+The workspace requires exactly Node 26.5.0 and pnpm 11.21.0. Both versions are
+pinned and enforced by the root lifecycle guards.
 
 ## Local development
 
@@ -82,12 +83,21 @@ pnpm typecheck
 pnpm lint
 pnpm test
 pnpm build
+pnpm codex:runtime:install
+pnpm codex:protocol:check
+pnpm verify:codex-harness
 pnpm --filter @agentic/api verify:observability
 ```
 
 `/health` reports the database, event broker, storage/fanout backends, selected
 model provider/model and whether the gateway is mock-backed. A production-ready
 local response must have `ok: true` and `llmGateway.mock: false`.
+
+`verify:codex-harness` checks the exact Codex version and performs the required
+app-server handshake using an isolated temporary `CODEX_HOME`. It does not make
+a model call or inherit provider credentials. See
+[`docs/design/codex-harness.md`](docs/design/codex-harness.md) for the runtime
+boundary and upgrade procedure.
 
 `verify:observability` is an isolated canary labelled as a test run. It uses
 the configured real default provider/model (and refuses mock), then verifies

@@ -1,0 +1,9 @@
+{
+  "name": "agentic-operator-codex-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Reproducible Linux packaging for the pinned Codex app-server runtime.",
+  "dependencies": {
+    "@openai/codex": "0.150.1"
+  }
+}

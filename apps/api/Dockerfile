@@ -89,6 +89,20 @@ COPY models models
 # Build gate — typecheck the api + its workspace dependencies.
 RUN pnpm --filter @agentic/api... typecheck
 
+# --- codex-harness-runtime -----------------------------------------------
+# App-server is packaged independently from the pnpm workspace so its native
+# platform payload is present only in the full API image. Factory control,
+# workload, production CodeAct and one-shot candidate targets do not inherit
+# this stage or its binary.
+FROM ${NODE_BASE_IMAGE} AS codex-harness-runtime
+ARG CODEX_HARNESS_VERSION=0.150.1
+WORKDIR /opt/codex
+COPY codex.version ./codex.version
+COPY deploy/codex/package.json deploy/codex/package-lock.json ./
+RUN node -e "const fs=require('node:fs');const expected=process.argv[1];const pinned=fs.readFileSync('codex.version','utf8').trim();const pkg=require('./package.json').dependencies['@openai/codex'];if(pinned!==expected||pkg!==expected)throw new Error('Codex runtime pins do not match '+expected)" "$CODEX_HARNESS_VERSION"
+RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund \
+ && node -e "const cp=require('node:child_process');const expected=process.argv[1];const out=cp.execFileSync(process.execPath,['node_modules/@openai/codex/bin/codex.js','--version'],{encoding:'utf8'}).trim();if(out!=='codex-cli '+expected)throw new Error('unexpected Codex runtime: '+out)" "$CODEX_HARNESS_VERSION"
+
 # --- runtime -------------------------------------------------------------
 FROM ${NODE_BASE_IMAGE} AS runtime
 ARG AGENTIC_BUILD_ID=unverified-local-build
@@ -109,6 +123,7 @@ ENV AGENTIC_IMPORTS_DIR=/app/models/.imports
 ENV AGENTIC_LOGS_DIR=/app/data/logs
 ENV AGENTIC_ARTIFACTS_DIR=/app/data/artifacts
 ENV AGENTIC_TENANTS_DIR=/app/data/tenants
+ENV CODEX_CLI_PATH=/opt/codex/node_modules/@openai/codex/bin/codex.js
 # document.convert uses the system browser as an isolated, deterministic
 # text-to-PDF renderer. Keep the path explicit so dependency discovery is not
 # distro/PATH dependent at runtime.
@@ -137,6 +152,7 @@ WORKDIR /app
 # isolated module layout means each workspace has its own node_modules
 # symlinked into the .pnpm store; we need both the store and the symlinks.
 COPY --from=build --chown=agentic:agentic /app /app
+COPY --from=codex-harness-runtime --chown=agentic:agentic /opt/codex /opt/codex
 
 # Default data / artifact directories — content is volume-mounted at
 # runtime; create the mount points so a fresh container without volumes
