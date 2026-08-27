@@ -149,6 +149,13 @@ import {
 } from "@/lib/hooks/useWorkflowAuthoring";
 import styles from "./workflow.module.css";
 
+/** Server publish failures with a localized sentence of their own. */
+const PUBLISH_FAILURE_CODES = new Set([
+  "tenant_inngest_disabled",
+  "workflow_validation_failed",
+  "workflow_publish_blocked",
+]);
+
 /**
  * Stage label catalog — static workflow ontology. Mirrors the dashboard's
  * STAGE_LABELS map (see `dashboard/page.tsx`) so the workflow funnel
@@ -1188,8 +1195,17 @@ export default function WorkflowsPage() {
       )
       .map((issue) => issue.message)
       .filter((message): message is string => Boolean(message));
+    // Known server codes get a localized sentence; anything else keeps the
+    // server's own message rather than rendering a raw key.
+    const code =
+      err instanceof WorkflowAuthoringApiError ? err.code : undefined;
+    const localized =
+      code && PUBLISH_FAILURE_CODES.has(code)
+        ? translate(`workflowPage.publishError.${code}`)
+        : null;
     const base =
-      err instanceof Error ? err.message : translate("common.unknownError");
+      localized ??
+      (err instanceof Error ? err.message : translate("common.unknownError"));
     if (blocking.length === 0) return base;
     const shown = blocking.slice(0, 3).join("; ");
     return blocking.length > 3

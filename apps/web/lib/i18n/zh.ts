@@ -6166,6 +6166,12 @@ export const zh = {
       noImmutableVersion: "没有可用的不可变工作流版本。",
       liveTitle: "工作流已上线",
       liveDescription: "{version} 已发布到生产环境。",
+      publishError: {
+        tenant_inngest_disabled:
+          "该 Business Domain 的工作流运行时已关闭。请在「业务域 → Inngest 部署」中开启后再发布。",
+        workflow_validation_failed: "已保存的版本存在阻断性校验问题。",
+        workflow_publish_blocked: "发布流程发现了阻断性问题。",
+      },
       publishBlockedByValidation: "未发布——还有 {count} 个阻断性问题需要先修复。",
       publishBlockedByEditor: "未发布——请先修复高亮字段。",
       publishSaveFailed: "未发布——草稿保存失败。",

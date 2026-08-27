@@ -6545,6 +6545,14 @@ export const en = {
       noImmutableVersion: "No immutable workflow version is available.",
       liveTitle: "Workflow is live",
       liveDescription: "{version} was published to production.",
+      publishError: {
+        tenant_inngest_disabled:
+          "This Business Domain's workflow runtime is turned off. Turn it on in Business Domains → Inngest deployment, then publish again.",
+        workflow_validation_failed:
+          "The saved version has blocking validation issues.",
+        workflow_publish_blocked:
+          "The publish pipeline found blocking issues.",
+      },
       publishBlockedByValidation:
         "Not published — {count} blocking issue(s) must be fixed first.",
       publishBlockedByEditor: "Not published — fix the highlighted fields first.",

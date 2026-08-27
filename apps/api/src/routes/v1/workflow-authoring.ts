@@ -22,6 +22,10 @@ import {
   WorkflowValidationResponseSchema,
 } from "@agentic/contracts";
 import { isLLMError } from "@agentic/llm-gateway";
+import {
+  getTenantInngestDeploymentMarker,
+  tenantInngestDeploymentEnabledFromMarker,
+} from "@agentic/db";
 import { ZodError } from "zod";
 import { requireAuth, requireWorkspaceWriter } from "../../plugins/auth";
 import { writeAudit } from "../../plugins/audit";
@@ -704,6 +708,24 @@ export async function workflowAuthoringRoutes(
       (req.params as { slug: string }).slug,
     );
     const body = PublishWorkflowBodySchema.parse(req.body ?? {});
+    // A tenant whose Inngest workflows are switched off registers zero
+    // functions, so the commit fails activation verification deep inside the
+    // hot swap and surfaces as "hot-swap failed; last-good recovery was
+    // incomplete" — which says nothing about the actual cause. New tenants
+    // start disabled by design (routes/v1/tenants.ts), so this is the FIRST
+    // thing a new Business Domain hits. Fail fast and name the fix.
+    if (
+      !tenantInngestDeploymentEnabledFromMarker(
+        getTenantInngestDeploymentMarker(auth.tenantId),
+      )
+    ) {
+      return reply.fail(
+        "tenant_inngest_disabled",
+        "This Business Domain's workflow runtime is turned off, so publishing would register no functions.",
+        409,
+        "Turn on the workflow runtime for this Domain in Business Domains → Inngest deployment, then publish again.",
+      );
+    }
     try {
       const snapshot = getWorkflowPublishSnapshot(slug, body.versionId, auth);
       // Validate the exact immutable version on the server. The canvas's

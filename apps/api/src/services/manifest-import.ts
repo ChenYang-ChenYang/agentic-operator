@@ -49,7 +49,15 @@
  * wrap any multi-statement work in `db.transaction(() => { ... })()`.
  */
 
-import { mkdir, readdir, stat, writeFile, rm, rename } from "node:fs/promises";
+import {
+  mkdir,
+  readdir,
+  rename,
+  rm,
+  rmdir,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { openSync, fsyncSync, closeSync } from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
@@ -3343,6 +3351,24 @@ export async function commit(
             },
           ),
         );
+      }
+    }
+    // Removing the artifacts can leave the model directory behind, empty. A
+    // tenant folder with no workflow.json is worse than no folder at all:
+    // bootstrap finds it and throws "[manifest] no workflow.json found in …",
+    // which then fails every later attempt to enable the tenant's runtime —
+    // a rolled-back publish would permanently brick the Domain.
+    //
+    // `rmdir` (not a recursive remove) can only succeed on an already-empty
+    // directory, so a folder that still holds anything is left untouched.
+    for (const directory of new Set(
+      removedArtifacts.map((artifactPath) => path.dirname(artifactPath)),
+    )) {
+      try {
+        await rmdir(directory);
+        fsyncDirectoryRequired(path.dirname(directory));
+      } catch {
+        // Non-empty or already gone — both are fine.
       }
     }
     // A rename may have left an empty staging tree; removing it is part of
