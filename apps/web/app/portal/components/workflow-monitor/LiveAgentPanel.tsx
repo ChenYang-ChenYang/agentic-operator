@@ -37,6 +37,7 @@ import {
   liveStatusColor,
   liveStatusLabel,
   runStatusColor,
+  fmtDuration,
 } from "./live-support";
 import styles from "./monitor.module.css";
 
@@ -386,7 +387,7 @@ export function LiveAgentPanel({
       <Section
         title={
           run
-            ? `Steps · ${run.status}${run.durationMs != null ? ` · ${run.durationMs}ms` : ""}`
+            ? `Steps · ${run.status}${run.durationMs != null ? ` · ${fmtDuration(run.durationMs)}` : ""}`
             : "Steps"
         }
       >
@@ -430,7 +431,7 @@ export function LiveAgentPanel({
                   style={{ color: "var(--text-3)", flex: "none" }}
                 >
                   {step.status}
-                  {step.durationMs != null ? ` ${step.durationMs}ms` : ""}
+                  {step.durationMs != null ? ` ${fmtDuration(step.durationMs)}` : ""}
                   {(step.tokensIn ?? 0) + (step.tokensOut ?? 0) > 0
                     ? ` · ${fmtTokens((step.tokensIn ?? 0) + (step.tokensOut ?? 0))}t`
                     : ""}
