@@ -3812,6 +3812,13 @@ export const en = {
     srcUrlSub: "HTTP(S) JSON only",
     srcRepoTitle: "From repo",
     srcRepoSub: "Public GitHub or GitLab JSON",
+    bringAWorkflow: "Bring a workflow",
+    orStartFromNothing: "Or start from nothing",
+    startBlankTitle: "Start blank instead",
+    startBlankSub:
+      "No file? Create a one-agent workflow you can talk to right now.",
+    createBlankCta: "Create blank workflow",
+    downloadTemplateLink: "Download an annotated template \u2192",
     dropPrefix: "Drop",
     dropAnd: "and",
     or: "or",
@@ -4316,7 +4323,7 @@ export const en = {
       "Workflows are versioned per-domain. You'll be able to deploy to staging before prod.",
     closeAria: "Close new workflow modal",
     startFrom: "Start from",
-    blankTitle: "Blank canvas",
+    blankTitle: "Blank · start with one agent",
     blankSub: "Start with one trigger agent and build out from there.",
     templateTitle: "From template",
     templateSub: "Pre-built workflows for common patterns.",
@@ -4335,7 +4342,7 @@ export const en = {
     triggerManual: "Manual (operator)",
     firstAgentName: "First agent name",
     blankStubHelp:
-      "We'll create one undeployed agent draft. It cannot run until you complete the workflow and deploy it.",
+      "Runs straight away as a draft. Publish it later, when you want the rest of your team to use it.",
     pickTemplate: "Pick a template",
     tplName_raas: "RAAS · Recruitment",
     tplDesc_raas: "22-agent pipeline: sync → JD → match → submit",
@@ -4376,7 +4383,7 @@ export const en = {
     path_import: "manifest import",
     generateTitle: "Generate with AI",
     generateSub: "Purpose, research, and process documents.",
-    blankStarterSub: "One safe starter agent.",
+    blankStarterSub: "Ready to chat in 60 seconds.",
     templatePathTitle: "Template",
     templatePathSub: "Maintained workflow patterns.",
     existingTitle: "Existing workflow",
@@ -4388,7 +4395,7 @@ export const en = {
     providerNotConfigured: "not configured",
     blankStarterTitle: "Blank starter",
     blankStarterBody:
-      "Creates one production-shaped starter agent with editable prompt, typed input/output, a logic action, conservative limits, and a completion event. Add and connect nodes on the canvas.",
+      "One agent, one trigger event, one completion event. Its system prompt already says hello \u2014 edit it, then press Run and talk to it.",
     sourceWorkflow: "Source workflow",
     loadingWorkflows: "Loading workflows…",
     loadingWorkflowsBody:
@@ -5111,6 +5118,22 @@ export const en = {
     summary: "Summary",
     agentTrace: "Agent trace",
     rawJson: "Raw JSON",
+    modeAria: "Run mode",
+    modeChat: "Chat",
+    modePayload: "Payload",
+    chatEmptyTitle: "Talk to your workflow",
+    chatEmptyBody:
+      "Type a message. It becomes {event}, runs {agent} with your system prompt, and the reply comes back here.",
+    chatSuggestion: "What is your refund policy?",
+    chatPlaceholder: "Type a message…",
+    chatSend: "Send",
+    chatMeta: "Enter to send · Shift+Enter for a new line",
+    chatNotSaved: "This conversation is not saved.",
+    chatRunning: "Running {agent}…",
+    chatColdStart:
+      "Long first calls are normal — the model is warming up.",
+    chatPartialCascade:
+      "Not every agent in this workflow ran. Check that each agent's trigger matches an event another agent emits.",
     draftFooterHint:
       "Runs the exact current canvas manifest. Production remains unchanged.",
     liveFooterHint:
@@ -5893,6 +5916,9 @@ export const en = {
     bannerViewportPinnedDismiss: "Dismiss",
   },
   tenantSwitcher: {
+    templateDownloaded:
+      "Edit it, then drop it back on Workflows \u2192 Import manifest. The _readme and _doc lines are the comments \u2014 delete them any time.",
+    templateDownloadFailed: "Template download failed",
     toastProvisionedTitle: "Business Domain provisioned",
     toastProvisionedDesc: "{name} ({slug}) is ready",
     agentCount: "{count} agents",
@@ -6301,6 +6327,10 @@ export const en = {
     agentRequired: "Select an agent before continuing.",
   },
   workflowPage: {
+    downloadTemplate: "Download template",
+    downloadTemplateFailed: "Template download failed",
+    downloadToast:
+      "Edit it, then drop it back on Import manifest. The _readme and _doc lines are the comments \u2014 delete them any time.",
     editingDraftOf: "Editing an unpublished draft of",
     editingDraftHint:
       " · Save creates an immutable draft version; Publish explicitly promotes it to live.",

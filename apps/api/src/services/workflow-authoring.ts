@@ -617,8 +617,10 @@ function resolveCreateSource(
   switch (input.source.type) {
     case "blank": {
       const selection = explicitSelection ?? defaultModelSelection();
+      // The slug drives the agent name and both event names so a second blank
+      // workflow in the same tenant cannot collide on the Inngest function id.
       return {
-        manifest: instantiateBlankWorkflow(selection),
+        manifest: instantiateBlankWorkflow({ ...selection, slug: input.slug }),
         actions: null,
         lineage: { source: "blank" },
       };
@@ -676,6 +678,54 @@ function draftIdentity(manifest: WorkflowManifestV2): {
   };
 }
 
+/**
+ * The workflow manifest is the authoring source of truth, while Agent Studio
+ * (and anything else keyed on an agent identity) resolves editable identities
+ * from the `agents` table. Materialize only missing identities so an existing
+ * row retains its lifecycle, enabled state, and historical identity metadata.
+ *
+ * Called from BOTH create and save. Creating without it left a freshly created
+ * workflow with no agent identity until its first save, which is a NOT NULL FK
+ * hazard for anything that wants to address the agent (schema.ts:442-452).
+ */
+function materializeManifestAgents(
+  tx: Parameters<Parameters<ReturnType<typeof getDb>["transaction"]>[0]>[0],
+  manifest: WorkflowManifestV2,
+  workflowId: string,
+  tenantId: string,
+  now: Date,
+): void {
+  const materialized = new Set(
+    tx
+      .select({ kebabId: agents.kebabId })
+      .from(agents)
+      .where(eq(agents.workflowId, workflowId))
+      .all()
+      .map((row) => row.kebabId),
+  );
+  for (const definition of manifest.agents) {
+    if (materialized.has(definition.id)) continue;
+    tx.insert(agents)
+      .values({
+        id: makeId("agt"),
+        tenantId,
+        workflowId,
+        kebabId: definition.id,
+        name: definition.name,
+        title: definition.title ?? definition.name,
+        actor: definition.actor.includes("Human") ? "Human" : "Agent",
+        kind: "manifest",
+        enabled: false,
+        lifecycle: "draft",
+        createdAt: now,
+        updatedAt: now,
+      })
+      .onConflictDoNothing({ target: [agents.workflowId, agents.kebabId] })
+      .run();
+    materialized.add(definition.id);
+  }
+}
+
 export function createWorkflowDraft(
   input: CreateWorkflowBody,
   ctx: WorkflowTenantContext,
@@ -713,6 +763,7 @@ export function createWorkflowDraft(
           createdAt: now,
         })
         .run();
+      materializeManifestAgents(tx, manifest, workflowId, ctx.tenantId, now);
     });
   } catch (error) {
     if (String((error as Error).message).includes("UNIQUE constraint failed")) {
@@ -795,40 +846,7 @@ export function saveWorkflowDraft(
       })
       .run();
 
-    // The workflow manifest is the authoring source of truth, while Agent
-    // Studio resolves editable identities from the agents table. Materialize
-    // only missing identities here so a canvas-added agent is addressable as
-    // soon as its workflow draft is saved. Existing rows retain their
-    // lifecycle, enabled state, and historical identity metadata.
-    const materialized = new Set(
-      tx
-        .select({ kebabId: agents.kebabId })
-        .from(agents)
-        .where(eq(agents.workflowId, workflow.id))
-        .all()
-        .map((row) => row.kebabId),
-    );
-    for (const definition of manifest.agents) {
-      if (materialized.has(definition.id)) continue;
-      tx.insert(agents)
-        .values({
-          id: makeId("agt"),
-          tenantId: ctx.tenantId,
-          workflowId: workflow.id,
-          kebabId: definition.id,
-          name: definition.name,
-          title: definition.title ?? definition.name,
-          actor: definition.actor.includes("Human") ? "Human" : "Agent",
-          kind: "manifest",
-          enabled: false,
-          lifecycle: "draft",
-          createdAt: now,
-          updatedAt: now,
-        })
-        .onConflictDoNothing({ target: [agents.workflowId, agents.kebabId] })
-        .run();
-      materialized.add(definition.id);
-    }
+    materializeManifestAgents(tx, manifest, workflow.id, ctx.tenantId, now);
   });
   return getWorkflowDraft(slug, ctx);
 }

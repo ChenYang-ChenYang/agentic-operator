@@ -9,6 +9,8 @@ import {
   type WorkflowManifestV2,
 } from "@agentic/contracts";
 import {
+  // Aliased: a later test shadows `agents` with a local manifest array.
+  agents as agentsTable,
   deployments,
   getDb,
   tenants,
@@ -186,7 +188,17 @@ describe("workflow authoring templates and immutable drafts", () => {
     );
     expect(created.status).toBe("draft");
     expect(created.manifest.agents).toHaveLength(1);
-    expect(created.manifest.agents[0]?.trigger).toEqual(["WORKFLOW_REQUESTED"]);
+    // Event and agent names derive from the workflow slug: the Inngest function
+    // id is `${tenantSlug}.${agentName}` and nothing enforces agent-name
+    // uniqueness across a tenant, so a fixed name would collide on the second
+    // blank workflow in the same Business Domain.
+    const blankPrefix = `blank-${suffix}`.toUpperCase().replace(/[^A-Z0-9]+/g, "_");
+    expect(created.manifest.agents[0]?.trigger).toEqual([
+      `${blankPrefix}_REQUESTED`,
+    ]);
+    expect(created.manifest.agents[0]?.triggered_event).toEqual([
+      `${blankPrefix}_COMPLETED`,
+    ]);
     expect(created.manifest.agents[0]?.model).toBe("mock-model-v1");
     const live = getDb()
       .select()
@@ -194,6 +206,18 @@ describe("workflow authoring templates and immutable drafts", () => {
       .where(eq(deployments.versionId, created.latestVersionId))
       .all();
     expect(live).toHaveLength(0);
+
+    // Creation — not just the first save — materializes the agent identity, so
+    // anything keyed on `agents.id` can address a brand-new blank workflow.
+    const createdAgents = getDb()
+      .select()
+      .from(agentsTable)
+      .where(eq(agentsTable.workflowId, created.id))
+      .all();
+    expect(createdAgents).toHaveLength(1);
+    expect(createdAgents[0]?.kebabId).toBe(created.manifest.agents[0]?.id);
+    expect(createdAgents[0]?.lifecycle).toBe("draft");
+    expect(createdAgents[0]?.enabled).toBe(false);
 
     const internalWorkflowId = makeId("wf");
     getDb()

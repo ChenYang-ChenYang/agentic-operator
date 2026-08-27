@@ -137,6 +137,40 @@ describe("workflow authoring HTTP API", () => {
     expect(catalog.templates[0]?.agentCount).toBeGreaterThan(0);
   });
 
+  it("serves the annotated blank template as a downloadable, re-importable file", async () => {
+    const response = await env.fetch("/v1/workflow-templates/blank/download", {
+      headers: { "x-agentic-tenant": tenantASlug },
+    });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("application/json");
+    const disposition = response.headers.get("content-disposition") ?? "";
+    expect(disposition).toContain("attachment");
+    // The importer routes by filename and tests /actions.*\.json$/i BEFORE
+    // /workflow.*\.json$/i, so the name must match the second and not the first.
+    const filename = /filename="([^"]+)"/.exec(disposition)?.[1] ?? "";
+    expect(filename).toMatch(/workflow.*\.json$/i);
+    expect(filename).not.toMatch(/actions.*\.json$/i);
+
+    // The body is the manifest itself, not an {ok,data} envelope — an envelope
+    // would not re-import.
+    const raw = await response.text();
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    expect(parsed.$schemaVersion).toBe(2);
+    expect(Array.isArray(parsed.agents)).toBe(true);
+    expect(Array.isArray(parsed._readme)).toBe(true);
+    expect(parsed.ok).toBeUndefined();
+  });
+
+  it("404s an unknown template download", async () => {
+    const response = await env.fetch(
+      "/v1/workflow-templates/does-not-exist/download",
+      { headers: { "x-agentic-tenant": tenantASlug } },
+    );
+    expect(response.status).toBe(404);
+    const body = (await response.json()) as Envelope<unknown>;
+    expect(body.error?.code).toBe("workflow_template_not_found");
+  });
+
   it("creates and reloads a server draft without making it visible cross-tenant", async () => {
     const created = await env.fetch("/v1/workflows", {
       method: "POST",

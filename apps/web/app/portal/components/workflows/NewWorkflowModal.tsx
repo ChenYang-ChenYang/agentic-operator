@@ -105,7 +105,10 @@ export function NewWorkflowModal({
   const workflows = workflowsQuery.data?.workflows ?? [];
   const fleet = fleetQuery.data ?? [];
 
-  const [path, setPath] = useState<CreationPath>("generate");
+  // Blank leads. The generate path cannot enable Create until an LLM preview
+  // returns (`ready` requires `preview !== null` below), so defaulting to it
+  // shows a new operator a dead button on a fresh install.
+  const [path, setPath] = useState<CreationPath>("blank");
   const [name, setName] = useState("");
   const [slug, setSlug] = useState("");
   const [slugTouched, setSlugTouched] = useState(false);
@@ -334,18 +337,18 @@ export function NewWorkflowModal({
             }}
           >
             <PathCard
-              active={path === "generate"}
-              onClick={() => choosePath("generate")}
-              icon="spark"
-              title={t("newWorkflowModal.generateTitle")}
-              sub={t("newWorkflowModal.generateSub")}
-            />
-            <PathCard
               active={path === "blank"}
               onClick={() => choosePath("blank")}
               icon="plus"
               title={t("newWorkflowModal.blankTitle")}
               sub={t("newWorkflowModal.blankStarterSub")}
+            />
+            <PathCard
+              active={path === "generate"}
+              onClick={() => choosePath("generate")}
+              icon="spark"
+              title={t("newWorkflowModal.generateTitle")}
+              sub={t("newWorkflowModal.generateSub")}
             />
             <PathCard
               active={path === "template"}

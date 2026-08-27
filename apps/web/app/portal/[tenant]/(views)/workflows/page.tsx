@@ -135,6 +135,7 @@ import type { RunListRow } from "@/lib/hooks/useRuns";
 import { useWorkflowLiveState } from "@/lib/hooks/useWorkflowLiveState";
 import {
   WorkflowPublishOverwriteRequiredError,
+  downloadWorkflowTemplateFile,
   formatWorkflowAuthoringError,
   useDeleteWorkflow,
   usePublishWorkflow,
@@ -294,6 +295,30 @@ export default function WorkflowsPage() {
   );
   const [zoom, setZoom] = useState(1);
   const [showNewModal, setShowNewModal] = useState(false);
+
+  // `?new=blank` is how the post-Business-Domain import wizard hands off to the
+  // blank path — the operator arrives with nothing to import.
+  useEffect(() => {
+    if (searchParams?.get("new") === "blank") setShowNewModal(true);
+  }, [searchParams]);
+
+  async function downloadTemplate() {
+    try {
+      const filename = await downloadWorkflowTemplateFile();
+      toast({
+        tone: "green",
+        title: filename,
+        description: t("workflowPage.downloadToast"),
+      });
+    } catch (error) {
+      toast({
+        tone: "red",
+        title: t("workflowPage.downloadTemplateFailed"),
+        description: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   // Set when the server refuses an unconfirmed publish that would drop or
   // heavily rewrite live agents; carries the diff the operator must see.
   const [pendingOverwrite, setPendingOverwrite] = useState<{
@@ -1827,6 +1852,14 @@ export default function WorkflowsPage() {
                   onClick={() => setShowImport(true)}
                 >
                   {t("workflowPage.importManifest")}
+                </Button>,
+                <Button
+                  key="template"
+                  icon="download"
+                  small
+                  onClick={() => void downloadTemplate()}
+                >
+                  {t("workflowPage.downloadTemplate")}
                 </Button>,
               ]
         }

@@ -538,22 +538,156 @@ export function instantiateWorkflowTemplate(
   return WorkflowManifestV2Schema.parse(manifestCopy);
 }
 
-/** Blank canvas is intentionally a safe runnable starter, not an empty graph. */
-export function instantiateBlankWorkflow(selection?: {
+/**
+ * The literal first impression of the product: the system prompt a brand-new
+ * operator reads before they have learned any of our vocabulary. Deliberately
+ * heading-less.
+ *
+ * `scoreWorkflowPrompt` only reports a rubric section as `weak` when the prompt
+ * contains that section's heading as a `Heading\nbody` block whose body is
+ * under 12 non-whitespace characters (workflow-authoring.ts:908-948). A prompt
+ * with no headings at all therefore scores `weak: []` and trips only
+ * `prompt_rubric_incomplete` at severity WARNING. That matters because the
+ * starter must keep `generated: true` (below), and `generated: true` is exactly
+ * what escalates `prompt_substance_missing` to a BLOCKING error
+ * (workflow-authoring.ts:1124-1135) — which gates the draft test-run as well as
+ * publish. Never reshape this into headings with thin bodies.
+ */
+const STARTER_SYSTEM_PROMPT = [
+  "Hi, I am your AI Agent, how can I help you?",
+  "",
+  "Answer the person's request directly and in plain language. If you need a fact you were not given, say what is missing instead of guessing.",
+].join("\n");
+
+/** `support-answers` → `SUPPORT_ANSWERS`. Slugs are kebab-case by contract. */
+function eventPrefixFromSlug(slug: string | undefined): string {
+  const normalized = (slug ?? "").trim().toUpperCase().replace(/[^A-Z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+  return normalized || "WORKFLOW";
+}
+
+/** `support-answers` → `supportAnswers`. */
+function camelFromSlug(slug: string | undefined): string {
+  const parts = (slug ?? "").trim().toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  if (parts.length === 0) return "starter";
+  return parts
+    .map((part, index) => (index === 0 ? part : part[0]!.toUpperCase() + part.slice(1)))
+    .join("");
+}
+
+/** `support-answers` → `support-answers`, and `` → `starter`. */
+function idFromSlug(slug: string | undefined): string {
+  const normalized = (slug ?? "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  return normalized || "starter";
+}
+
+/**
+ * Blank canvas is intentionally a safe runnable starter, not an empty graph —
+ * and, unlike the catalog templates, it is a CHAT agent: one prompt input, one
+ * string `reply` output, no payload port and no user_prompt_template.
+ *
+ * Three constraints shape it and none of them are cosmetic:
+ *   - `generated: true` is mandatory. A manifest-only agent has no tenant
+ *     `definePrompt`, and step-engine.ts:3674 runs a logic action only when
+ *     `tenantPrompt || agent?.generated`; otherwise every run fails with
+ *     `missing_tenant_prompt`.
+ *   - Exactly one `reply` output with `unwrap_single_output: false`, so the
+ *     compiled schema has an OBJECT root. jsonMode is forced on for every v2
+ *     logic action (step-engine.ts:2183) and `parseStructuredJson` requires
+ *     valid JSON, so free prose is impossible; an object root is what every
+ *     provider's JSON mode handles natively. A bare string root would make the
+ *     model emit a naked quoted JSON literal — fragile across providers.
+ *   - `user_prompt_template` is omitted. `compileAgentPrompts` puts the prompt
+ *     port value first and then appends the rendered template inside
+ *     `<agent-inputs>` (agent-execution.ts:411-414), so seeding
+ *     `{{inputs.prompt}}` would send the operator's message twice.
+ *
+ * Names derive from the workflow slug because the Inngest function id is
+ * `${tenantSlug}.${agentName}` (packages/runtime/src/event-name.ts) and nothing
+ * validates agent-name uniqueness across a tenant — a fixed `starterAgent`
+ * would collide on the second blank workflow in the same Business Domain.
+ */
+export function instantiateBlankWorkflow(input?: {
+  slug?: string;
   provider?: ProviderId;
   model?: string;
 }): WorkflowManifestV2 {
-  const hello = instantiateWorkflowTemplate("hello-world", selection)!;
-  const first = hello.agents[0]!;
-  first.id = "starter-agent";
-  first.name = "starterAgent";
-  first.title = "Starter agent";
-  first.description =
-    "A safe starter agent. Edit its purpose, trigger, prompt, actions, and output contract before publishing.";
-  first.trigger = ["WORKFLOW_REQUESTED"];
-  first.triggered_event = ["WORKFLOW_COMPLETED"];
-  first.output_bindings = {
-    WORKFLOW_COMPLETED: { result: { output: "result" } },
+  const prefix = eventPrefixFromSlug(input?.slug);
+  const agentId = `${idFromSlug(input?.slug)}-agent`;
+  const agentName = `${camelFromSlug(input?.slug)}Agent`;
+  const triggerEvent = `${prefix}_REQUESTED`;
+  const completedEvent = `${prefix}_COMPLETED`;
+
+  const agent: AgentDefinitionV2Input = {
+    id: agentId,
+    name: agentName,
+    title: "Starter agent",
+    description:
+      "Answers a message using the system prompt you write. Edit the prompt, press Run, and talk to it.",
+    actor: ["Agent"],
+    stage: 1,
+    template: "blank",
+    trigger: [triggerEvent],
+    // No trigger_bindings: the prompt port binds from `event.data.prompt` by
+    // alias, and an absent binding block keeps `requiresRawPayload` false so
+    // the Run console can offer chat instead of a raw-payload form.
+    inputs: [
+      {
+        id: "prompt",
+        label: "Message",
+        kind: "prompt",
+        required: false,
+        schema: { type: "string", minLength: 1 },
+        default: "Hello!",
+        sensitivity: "none",
+      },
+    ],
+    ontology_instructions: STARTER_SYSTEM_PROMPT,
+    generated: true,
+    prompt_provenance: { mode: "manual" },
+    tool_use: [],
+    actions: [
+      {
+        id: "reply",
+        order: "1",
+        name: "reply",
+        description: "Answer the message.",
+        type: "logic",
+        action_prompt:
+          "Answer the person's message using the system instructions above.",
+        // No action-level `retries`: the runtime declares it `z.never()` on
+        // actions (packages/runtime/src/manifest.ts:302).
+        timeout_s: 120,
+      },
+    ],
+    outputs: [
+      {
+        id: "reply",
+        label: "Reply",
+        required: true,
+        schema: {
+          type: "string",
+          minLength: 1,
+          description: "The assistant's answer, in plain language.",
+        },
+        sensitivity: "none",
+      },
+    ],
+    output_config: {
+      format: "json",
+      strict: false,
+      repair_attempts: 1,
+      unwrap_single_output: false,
+    },
+    triggered_event: [completedEvent],
+    output_bindings: { [completedEvent]: { reply: { output: "reply" } } },
+    temperature: 0.3,
+    max_tokens: 2400,
+    timeout_s: 120,
+    retries: 2,
+    ...(input?.provider ? { provider: input.provider } : {}),
+    ...(input?.model ? { model: input.model } : {}),
+    extensions: { starter: true, canvas: { position: { x: 80, y: 120 } } },
   };
-  return WorkflowManifestV2Schema.parse(hello);
+
+  return WorkflowManifestV2Schema.parse({ $schemaVersion: 2, agents: [agent] });
 }

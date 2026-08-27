@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { useRouter } from "next/navigation";
+import { normalizeWorkflowManifest } from "@agentic/contracts";
 import type {
   WorkflowRunEntrypoint,
   WorkflowRunInputDescriptor,
@@ -34,9 +35,20 @@ import {
   workflowInputIsRuntimeProvided,
   type WorkflowPayloadGuide,
 } from "./workflow-runner";
+import {
+  chatCapableEntrypoint,
+  chatIsDefault,
+  hasIncompleteCascade,
+  historyForNextTurn,
+  replyBubblesFromRun,
+  type WorkflowChatBubble,
+  type WorkflowChatTurn,
+} from "./workflow-chat";
+import { WorkflowChatPanel } from "./WorkflowChatPanel";
 import styles from "./WorkflowRunConsole.module.css";
 
 type RunTarget = "draft" | "live";
+type RunMode = "chat" | "payload";
 type ResultTab = "summary" | "agents" | "events" | "json";
 
 export interface WorkflowRunConsoleProps {
@@ -275,6 +287,14 @@ export function WorkflowRunConsole({
   >(null);
   const causality = useEventCausality(liveReceipt?.eventId);
 
+  // ─── Chat mode ────────────────────────────────────────────────────────────
+  const [chatTurns, setChatTurns] = useState<WorkflowChatTurn[]>([]);
+  const [chatBubbles, setChatBubbles] = useState<WorkflowChatBubble[]>([]);
+  const [chatDraft, setChatDraft] = useState("");
+  const [chatError, setChatError] = useState<string | null>(null);
+  const [chatCascadeWarning, setChatCascadeWarning] = useState(false);
+  const [mode, setMode] = useState<RunMode | null>(null);
+
   const entrypoints =
     target === "draft"
       ? draftProfile.entrypoints
@@ -294,6 +314,30 @@ export function WorkflowRunConsole({
     result?.agentRuns.find((run) => run.id === selectedAgentRunId) ??
     result?.agentRuns[0] ??
     null;
+
+  const manifestAgents = useMemo(() => {
+    try {
+      return normalizeWorkflowManifest(manifest).agents;
+    } catch {
+      return [];
+    }
+  }, [manifest]);
+  const chatEntrypoint = useMemo(
+    () => chatCapableEntrypoint(entrypoints),
+    [entrypoints],
+  );
+  // Chat needs a reply to render, and the live path returns an event id rather
+  // than an answer — so it is a draft-only affordance.
+  const chatAvailable = target === "draft" && chatEntrypoint !== null;
+  const effectiveMode: RunMode =
+    mode ??
+    (chatAvailable && chatIsDefault(manifestAgents, chatEntrypoint)
+      ? "chat"
+      : "payload");
+
+  useEffect(() => {
+    if (!chatAvailable && effectiveMode === "chat") setMode("payload");
+  }, [chatAvailable, effectiveMode]);
 
   useEffect(() => {
     const first =
@@ -421,6 +465,62 @@ export function WorkflowRunConsole({
     };
   }
 
+  /**
+   * One chat turn = one draft test run. The prior turns go along for the ride
+   * because the draft runner is stateless; the server re-bounds them.
+   */
+  async function sendChatTurn() {
+    const text = chatDraft.trim();
+    if (!text || !chatEntrypoint) return;
+    setChatError(null);
+    setChatCascadeWarning(false);
+    const priorTurns = chatTurns;
+    setChatDraft("");
+    setChatBubbles((current) => [
+      ...current,
+      { role: "user", content: text },
+    ]);
+    try {
+      const response = await runTest.mutateAsync({
+        manifest,
+        triggerEvent: chatEntrypoint.event,
+        subject: subject.trim() || undefined,
+        inputs: { prompt: text },
+        payload: {},
+        toolPolicy: "safe",
+        confirmLiveEffects: false,
+        failurePolicy: "continue",
+        humanDecision: "approve",
+        limits: parseWorkflowTestLimits(
+          { maxAgentRuns, maxEvents, maxDepth },
+          t,
+        ),
+        conversationHistory: historyForNextTurn([
+          ...priorTurns,
+          { role: "user", content: text },
+        ]),
+      });
+      const replies = replyBubblesFromRun(response, manifestAgents);
+      setChatBubbles((current) => [...current, ...replies]);
+      setChatTurns([
+        ...priorTurns,
+        { role: "user", content: text },
+        ...replies.map((reply) => ({
+          role: "assistant" as const,
+          content: reply.content,
+        })),
+      ]);
+      setChatCascadeWarning(hasIncompleteCascade(response, manifestAgents));
+      // Keep the full trace available under the Payload tab's result panes.
+      setResult(response);
+      setSelectedAgentRunId(response.agentRuns[0]?.id ?? null);
+    } catch (error) {
+      setChatError(
+        formatWorkflowAuthoringError(error, t),
+      );
+    }
+  }
+
   async function execute() {
     setFormError(null);
     setCopied(false);
@@ -450,6 +550,9 @@ export function WorkflowRunConsole({
           failurePolicy,
           humanDecision,
           limits,
+          // The payload form is a one-shot run; chat continuity lives in the
+          // chat composer, which sends its own transcript.
+          conversationHistory: [],
         });
         setResult(response);
         setSelectedAgentRunId(response.agentRuns[0]?.id ?? null);
@@ -532,6 +635,34 @@ export function WorkflowRunConsole({
               </Badge>
             </div>
             <p style={subtitleStyle}>{t("workflowRunConsole.subtitle")}</p>
+            {chatAvailable ? (
+              <div
+                role="tablist"
+                aria-label={t("workflowRunConsole.modeAria")}
+                style={{ display: "flex", gap: 4, marginTop: 10 }}
+              >
+                <ModeButton
+                  selected={effectiveMode === "chat"}
+                  onClick={() => setMode("chat")}
+                  label={t("workflowRunConsole.modeChat")}
+                />
+                <ModeButton
+                  selected={effectiveMode === "payload"}
+                  onClick={() => {
+                    // Show the mechanism rather than hiding it: whatever is in
+                    // the composer becomes the prompt input on the form.
+                    if (chatDraft.trim()) {
+                      setInputValues((current) => ({
+                        ...current,
+                        prompt: chatDraft.trim(),
+                      }));
+                    }
+                    setMode("payload");
+                  }}
+                  label={t("workflowRunConsole.modePayload")}
+                />
+              </div>
+            ) : null}
           </div>
           <Button
             icon="x"
@@ -542,6 +673,19 @@ export function WorkflowRunConsole({
           />
         </header>
 
+        {effectiveMode === "chat" && chatEntrypoint ? (
+          <WorkflowChatPanel
+            entrypoint={chatEntrypoint}
+            bubbles={chatBubbles}
+            pending={pending}
+            error={chatError}
+            incompleteCascade={chatCascadeWarning}
+            draft={chatDraft}
+            onDraftChange={setChatDraft}
+            onSend={() => void sendChatTurn()}
+          />
+        ) : (
+          <>
         <div className={styles.body} style={bodyStyle}>
           <aside className={styles.setup} style={setupStyle}>
             <SetupSection
@@ -1006,6 +1150,8 @@ export function WorkflowRunConsole({
             </Button>
           </div>
         </footer>
+          </>
+        )}
       </div>
     </ModalOverlay>
   );
@@ -1893,6 +2039,37 @@ function SetupSection({
       </div>
       <div style={{ display: "grid", gap: 10 }}>{children}</div>
     </section>
+  );
+}
+
+/** Chat | Payload. Visible rather than hidden behind an "advanced" toggle. */
+function ModeButton({
+  selected,
+  onClick,
+  label,
+}: {
+  selected: boolean;
+  onClick: () => void;
+  label: string;
+}) {
+  return (
+    <button
+      type="button"
+      role="tab"
+      aria-selected={selected}
+      onClick={onClick}
+      style={{
+        padding: "5px 12px",
+        fontSize: 11.5,
+        background: selected ? "rgba(208,255,0,0.07)" : "transparent",
+        color: selected ? "var(--text)" : "var(--text-3)",
+        border: `1px solid ${selected ? "var(--signal)" : "var(--border)"}`,
+        borderRadius: 5,
+        cursor: "pointer",
+      }}
+    >
+      {label}
+    </button>
   );
 }
 

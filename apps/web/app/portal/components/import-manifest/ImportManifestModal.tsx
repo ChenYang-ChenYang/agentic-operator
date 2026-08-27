@@ -90,6 +90,15 @@ export interface ImportManifestModalProps {
   draftTarget?: { slug: string; name: string };
   /** Called with the created workflow draft after a draft-mode import. */
   onDraftCreated?: (workflow: WorkflowDetail) => void;
+  /**
+   * Offers a way out for someone who has no manifest at all — the common case
+   * right after a Business Domain is created, when this wizard is the first
+   * thing they see. Omit it and the row is not rendered, so existing callers
+   * are unchanged.
+   */
+  onStartBlank?: () => void;
+  /** Offers the annotated starter file to edit offline. */
+  onDownloadTemplate?: () => void;
 }
 
 function manifestHeaders(slug: string): Record<string, string> {
@@ -173,6 +182,8 @@ export function ImportManifestModal({
   tenantSlug,
   draftTarget,
   onDraftCreated,
+  onStartBlank,
+  onDownloadTemplate,
 }: ImportManifestModalProps) {
   const { t } = useI18n();
   const urlTenant = useTenant();
@@ -767,6 +778,8 @@ export function ImportManifestModal({
               onDragOver={onDragOver}
               onDragLeave={onDragLeave}
               onDrop={onDrop}
+              onStartBlank={onStartBlank}
+              onDownloadTemplate={onDownloadTemplate}
             />
           )}
           {step === 1 &&
@@ -931,6 +944,8 @@ function SourceStep({
   onDragOver,
   onDragLeave,
   onDrop,
+  onStartBlank,
+  onDownloadTemplate,
 }: {
   source: SourceKind;
   setSource: (source: SourceKind) => void;
@@ -946,11 +961,13 @@ function SourceStep({
   onDragOver: (event: React.DragEvent) => void;
   onDragLeave: () => void;
   onDrop: (event: React.DragEvent) => void;
+  onStartBlank?: () => void;
+  onDownloadTemplate?: () => void;
 }) {
   const { t } = useI18n();
   return (
     <div>
-      <div style={eyebrowStyle}>{t("importManifestModal.source")}</div>
+      <div style={eyebrowStyle}>{t("importManifestModal.bringAWorkflow")}</div>
       <div style={sourceGridStyle}>
         <SourceCard
           active={source === "file"}
@@ -981,6 +998,66 @@ function SourceStep({
           sub={t("importManifestModal.srcRepoSub")}
         />
       </div>
+
+      {onStartBlank || onDownloadTemplate ? (
+        <div
+          style={{
+            marginTop: 18,
+            paddingTop: 16,
+            borderTop: "1px solid var(--border)",
+            display: "grid",
+            gap: 10,
+          }}
+        >
+          <div style={eyebrowStyle}>
+            {t("importManifestModal.orStartFromNothing")}
+          </div>
+          {onStartBlank ? (
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 16,
+                flexWrap: "wrap",
+                padding: "13px 15px",
+                borderRadius: 6,
+                border: "1px solid var(--border-2)",
+                background: "var(--panel-2)",
+              }}
+            >
+              <div style={{ minWidth: 0 }}>
+                <strong style={{ display: "block", fontSize: 13 }}>
+                  {t("importManifestModal.startBlankTitle")}
+                </strong>
+                <span style={{ color: "var(--text-3)", fontSize: 11.5 }}>
+                  {t("importManifestModal.startBlankSub")}
+                </span>
+              </div>
+              <Button icon="plus" tone="primary" onClick={onStartBlank}>
+                {t("importManifestModal.createBlankCta")}
+              </Button>
+            </div>
+          ) : null}
+          {onDownloadTemplate ? (
+            <button
+              type="button"
+              onClick={onDownloadTemplate}
+              style={{
+                justifySelf: "start",
+                background: "none",
+                border: "none",
+                padding: 0,
+                color: "var(--signal)",
+                fontSize: 11.5,
+                cursor: "pointer",
+              }}
+            >
+              {t("importManifestModal.downloadTemplateLink")}
+            </button>
+          ) : null}
+        </div>
+      ) : null}
 
       {source === "file" && (
         <>

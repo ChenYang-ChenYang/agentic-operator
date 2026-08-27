@@ -30,6 +30,7 @@ import {
 } from "@agentic/runtime";
 import { getGlobalToolCatalogEntry } from "@agentic/tools";
 import type { AuthedContext } from "../plugins/auth";
+import { boundConversationHistory } from "./conversation-history";
 import {
   getWorkflowDraft,
   getWorkflowRunVersionSnapshot,
@@ -474,6 +475,28 @@ async function executeAgent(
           tenantRegistry: input.registry,
           autoResolveManual: true,
           finalOutput: index === definition.actions.length - 1,
+          // Chat continuity for the draft run. This MUST ride the runAction
+          // call, not the prepareAgentExecution call above — that call's
+          // compiled messages are discarded and only `prepared.inputs` is
+          // consumed, so history wired there would ship dead. From here it
+          // flows StepInput.conversationHistory -> runTenantPrompt ->
+          // prepareAgentExecution.promptOptions -> compileAgentPrompts, which
+          // splices it between the system and user messages
+          // (packages/runtime/src/agent-execution.ts:439-447).
+          //
+          // depth 0 only: the person is chatting with the WORKFLOW, so only the
+          // agents listening to the trigger event get the transcript.
+          // Downstream agents receive agent 1's output through the normal
+          // emission graph, and may fan out many times per turn — injecting a
+          // shared transcript into each would be both wrong and unbounded.
+          ...(input.event.depth === 0 &&
+          input.body.conversationHistory.length > 0
+            ? {
+                conversationHistory: boundConversationHistory(
+                  input.body.conversationHistory,
+                ),
+              }
+            : {}),
         });
         provider = outcome.provider ?? provider;
         model = outcome.model ?? model;

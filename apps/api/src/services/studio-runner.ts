@@ -57,6 +57,12 @@ import type { InngestFunction } from "inngest";
 import { currentUsageAttribution } from "@agentic/llm-gateway";
 import type { AuthedContext } from "../plugins/auth";
 import {
+  MAX_CONVERSATION_HISTORY_BYTES,
+  MAX_CONVERSATION_HISTORY_MESSAGES,
+  boundConversationHistory,
+  conversationHistoryBytes,
+} from "./conversation-history";
+import {
   AgentStudioNotFoundError,
   checkpointDraft,
   definitionHash,
@@ -232,53 +238,8 @@ export function buildStudioLogicalTriggerPayload(args: {
 
 export const STUDIO_CONVERSATION_HISTORY_METADATA_KEY =
   "__agentic_conversation_history";
-const MAX_CONVERSATION_HISTORY_MESSAGES = 20;
-const MAX_CONVERSATION_HISTORY_BYTES = 64 * 1024;
-
-function conversationHistoryBytes(history: AgentConversationTurn[]): number {
-  return Buffer.byteLength(JSON.stringify(history), "utf8");
-}
-
-function truncateConversationTurn(
-  turn: AgentConversationTurn,
-): AgentConversationTurn {
-  const codePoints = Array.from(turn.content);
-  let low = 0;
-  let high = codePoints.length;
-  while (low < high) {
-    const middle = Math.ceil((low + high) / 2);
-    const candidate = [
-      { ...turn, content: codePoints.slice(0, middle).join("") },
-    ];
-    if (conversationHistoryBytes(candidate) <= MAX_CONVERSATION_HISTORY_BYTES) {
-      low = middle;
-    } else {
-      high = middle - 1;
-    }
-  }
-  return { ...turn, content: codePoints.slice(0, low).join("") };
-}
-
-function boundConversationHistory(
-  history: AgentConversationTurn[],
-): AgentConversationTurn[] {
-  const bounded = history
-    .slice(-MAX_CONVERSATION_HISTORY_MESSAGES)
-    .map((turn) => ({ role: turn.role, content: turn.content }));
-  while (
-    bounded.length > 1 &&
-    conversationHistoryBytes(bounded) > MAX_CONVERSATION_HISTORY_BYTES
-  ) {
-    bounded.shift();
-  }
-  if (
-    bounded.length === 1 &&
-    conversationHistoryBytes(bounded) > MAX_CONVERSATION_HISTORY_BYTES
-  ) {
-    bounded[0] = truncateConversationTurn(bounded[0]!);
-  }
-  return bounded;
-}
+// Bounding lives in ./conversation-history so the workflow draft chat and the
+// Test Lab enforce exactly one budget.
 
 function normalizeUserPrompt(content: unknown): string | null {
   const prompt =

@@ -43,6 +43,7 @@ export type IconName =
   | "trash"
   | "library"
   | "upload"
+  | "download"
   | "tenant"
   | "moon"
   | "sun";
@@ -326,6 +327,16 @@ export function Icon({ name, size = 14, color, style }: IconProps) {
         <svg style={s} viewBox="0 0 16 16" aria-hidden="true">
           <g {...common}>
             <path d="M5 4 L1.5 8 L5 12 M11 4 L14.5 8 L11 12" />
+          </g>
+        </svg>
+      );
+    case "download":
+      // The mirror of `upload`: arrow down onto the same baseline.
+      return (
+        <svg style={s} viewBox="0 0 16 16" aria-hidden="true">
+          <g {...common}>
+            <path d="M8 2 V11 M4.5 7.5 L8 11 L11.5 7.5" />
+            <path d="M2.5 13 H13.5" />
           </g>
         </svg>
       );

@@ -26,6 +26,7 @@ import {
   type TenantTokenRevealPayload,
 } from "./TenantTokenRevealModal";
 import { ImportManifestModal } from "../import-manifest/ImportManifestModal";
+import { downloadWorkflowTemplateFile } from "@/lib/hooks/useWorkflowAuthoring";
 import styles from "./sidebar.module.css";
 
 export interface TenantOption {
@@ -61,6 +62,37 @@ export function TenantSwitcher({
   useEffect(() => {
     if (!expanded) setOpen(false);
   }, [expanded]);
+
+  /**
+   * The wizard that opens right after a Business Domain is created is an
+   * IMPORT wizard, which is a dead end for someone who has no manifest yet.
+   * These two give that screen a way forward: create a blank workflow in the
+   * new domain, or take the annotated starter file away and edit it.
+   */
+  function startBlankIn(slug: string) {
+    setImportForSlug(null);
+    navigate(slug);
+    // `?new=blank` is honoured by the workflows view, which opens the New
+    // workflow modal with the blank path preselected.
+    router.push(`/portal/${slug}/workflows?new=blank`);
+  }
+
+  async function downloadTemplate() {
+    try {
+      const filename = await downloadWorkflowTemplateFile();
+      toast({
+        tone: "green",
+        title: filename,
+        description: t("tenantSwitcher.templateDownloaded"),
+      });
+    } catch (error) {
+      toast({
+        tone: "red",
+        title: t("tenantSwitcher.templateDownloadFailed"),
+        description: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
 
   function handleCreated(created: TenantCreateResponse) {
     setCreateOpen(false);
@@ -113,6 +145,8 @@ export function TenantSwitcher({
             onClose={() => setImportForSlug(null)}
             mode="workflow"
             tenantSlug={importForSlug}
+            onStartBlank={() => startBlankIn(importForSlug)}
+            onDownloadTemplate={() => void downloadTemplate()}
           />
         )}
       </>
@@ -296,6 +330,8 @@ export function TenantSwitcher({
           onClose={() => setImportForSlug(null)}
           mode="workflow"
           tenantSlug={importForSlug}
+          onStartBlank={() => startBlankIn(importForSlug)}
+          onDownloadTemplate={() => void downloadTemplate()}
         />
       )}
     </div>

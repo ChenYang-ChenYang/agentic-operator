@@ -127,6 +127,48 @@ export function formatWorkflowAuthoringError(
   return error instanceof Error ? error.message : String(error);
 }
 
+/**
+ * Download the annotated starter manifest as a file.
+ *
+ * A raw fetch rather than `callV1`, deliberately: that helper unwraps the
+ * `{ok,data}` envelope, and the bytes we want on disk are the manifest itself —
+ * an envelope would not re-import.
+ */
+export async function downloadWorkflowTemplateFile(
+  templateId = "blank",
+): Promise<string> {
+  const response = await fetch(
+    `/v1/workflow-templates/${encodeURIComponent(templateId)}/download`,
+    {
+      credentials: "same-origin",
+      headers: { Accept: "application/json", ...tenantHeader() },
+    },
+  );
+  if (!response.ok) {
+    throw new WorkflowAuthoringClientError(
+      "requestFailed",
+      `Template download failed (${response.status})`,
+      response.status,
+    );
+  }
+  const disposition = response.headers.get("content-disposition") ?? "";
+  const filename =
+    /filename="([^"]+)"/.exec(disposition)?.[1] ?? "workflow-template.json";
+  const blob = await response.blob();
+  const href = URL.createObjectURL(blob);
+  try {
+    const anchorEl = document.createElement("a");
+    anchorEl.href = href;
+    anchorEl.download = filename;
+    document.body.appendChild(anchorEl);
+    anchorEl.click();
+    anchorEl.remove();
+  } finally {
+    URL.revokeObjectURL(href);
+  }
+  return filename;
+}
+
 async function callV1<T>(
   path: string,
   schema: ZodType<T>,

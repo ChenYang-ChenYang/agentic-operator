@@ -67,6 +67,11 @@ import {
   getWorkflowTemplate,
   listWorkflowTemplates,
 } from "../../services/workflow-templates";
+import {
+  WORKFLOW_TEMPLATE_FILENAME,
+  annotateWorkflowManifest,
+  blankTemplateForDownload,
+} from "../../services/workflow-template-doc";
 
 function llmStatus(code: string): number {
   switch (code) {
@@ -110,6 +115,41 @@ export async function workflowAuthoringRoutes(
       );
     }
     return reply.ok(WorkflowTemplateDetailSchema.parse(template));
+  });
+
+  /**
+   * The self-teaching manifest a person downloads, edits offline, and drops
+   * back onto Import manifest.
+   *
+   * Sent raw rather than through `reply.ok` so the bytes on disk are the exact
+   * manifest — an `{ok,data}` envelope would not re-import. The filename is
+   * fixed and starts with "workflow": `ImportManifestModal.handleFiles` tests
+   * `/actions.*\.json$/i` BEFORE `/workflow.*\.json$/i`, so a name containing
+   * "actions" would be routed to the wrong slot.
+   */
+  app.get("/workflow-templates/:id/download", async (req, reply) => {
+    requireAuth(req);
+    const { id } = req.params as { id: string };
+    let document: Record<string, unknown>;
+    if (id === "blank") {
+      document = blankTemplateForDownload();
+    } else {
+      const template = getWorkflowTemplate(id);
+      if (!template) {
+        return reply.fail(
+          "workflow_template_not_found",
+          `Workflow template not found: ${id}`,
+          404,
+        );
+      }
+      document = annotateWorkflowManifest(template.manifest);
+    }
+    reply.raw.writeHead(200, {
+      "Content-Type": "application/json; charset=utf-8",
+      "Content-Disposition": `attachment; filename="${WORKFLOW_TEMPLATE_FILENAME}"`,
+    });
+    reply.raw.end(JSON.stringify(document, null, 2));
+    return reply;
   });
 
   app.get("/workflow-document-folders", async (req, reply) => {

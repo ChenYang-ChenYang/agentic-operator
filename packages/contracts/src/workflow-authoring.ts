@@ -496,6 +496,21 @@ export const WorkflowTestRunBodySchema = z
     humanDecision: WorkflowManualTaskDecisionSchema.default("approve"),
     humanPayload: z.unknown().optional(),
     limits: WorkflowTestRunLimitsSchema,
+    /**
+     * Prior turns of a chat-style draft run, supplied by the caller. The draft
+     * test runner is deliberately stateless (it writes no run, step or message
+     * rows), so continuity lives in the request rather than the database.
+     * Bounded server-side as well — never trust the client's length.
+     */
+    conversationHistory: z
+      .array(
+        z.object({
+          role: z.enum(["user", "assistant"]),
+          content: z.string().max(8_000),
+        }),
+      )
+      .max(20)
+      .default([]),
   })
   .superRefine((value, ctx) => {
     if (value.toolPolicy === "live" && value.confirmLiveEffects !== true) {
