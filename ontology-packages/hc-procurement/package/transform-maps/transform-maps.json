@@ -1,0 +1,424 @@
+{
+  "action_maps": [
+    {
+      "action_id": "collectChainExecutionData",
+      "action_name": "collectChainExecutionData",
+      "kind": "prompt",
+      "queries": [
+        "queryOpenPbpHeader",
+        "queryOpenPbpLine",
+        "getAllPbpLinePageByQuery",
+        "queryPr",
+        "queryProcPackageLineExecuteMode",
+        "queryRfxList",
+        "queryAwardList",
+        "getSpaByQuery",
+        "getContractByQuery",
+        "queryPoHeader",
+        "queryPoLineShipment",
+        "queryAcceptHeader",
+        "queryAcceptTransaction"
+      ]
+    },
+    {
+      "action_id": "calculateExecutionDeviation",
+      "action_name": "calculateExecutionDeviation",
+      "kind": "prompt",
+      "queries": [
+        "getStageCycleConfig",
+        "getAlertThresholdConfig"
+      ]
+    },
+    {
+      "action_id": "archiveDeviationMonitoring",
+      "action_name": "archiveDeviationMonitoring",
+      "kind": "prompt",
+      "queries": []
+    },
+    {
+      "action_id": "scoreOnTimeProbability",
+      "action_name": "scoreOnTimeProbability",
+      "kind": "prompt",
+      "queries": [
+        "getStageCycleConfig",
+        "queryHistoricalOnTimeRate",
+        "getAlertThresholdConfig"
+      ]
+    },
+    {
+      "action_id": "raiseDeviationAlert",
+      "action_name": "raiseDeviationAlert",
+      "data_changes": [
+        {
+          "target_object": "Deviation_Alert"
+        }
+      ],
+      "endpoint": "/metaerp/openapi/v1/pushAlert",
+      "kind": "external",
+      "method": "POST",
+      "operation_id": "pushAlert"
+    },
+    {
+      "action_id": "handleBlueAlertLocally",
+      "action_name": "handleBlueAlertLocally",
+      "data_changes": [
+        {
+          "target_object": "Deviation_Alert"
+        }
+      ],
+      "endpoint": "/metaerp/openapi/v1/closeBlueAlert",
+      "kind": "external",
+      "method": "POST",
+      "operation_id": "closeBlueAlert"
+    },
+    {
+      "action_id": "generateAdjustmentOptions",
+      "action_name": "generateAdjustmentOptions",
+      "kind": "prompt",
+      "queries": [
+        "getStageCycleConfig",
+        "queryTransferableStock"
+      ]
+    },
+    {
+      "action_id": "approveAdjustmentOption",
+      "action_name": "approveAdjustmentOption",
+      "data_changes": [
+        {
+          "target_object": "Adjustment_Option"
+        }
+      ],
+      "endpoint": "/metaerp/openapi/v1/approveAdjustmentOption",
+      "kind": "external",
+      "method": "POST",
+      "operation_id": "approveAdjustmentOption"
+    },
+    {
+      "action_id": "escalateOverdueAlert",
+      "action_name": "escalateOverdueAlert",
+      "data_changes": [
+        {
+          "target_object": "Deviation_Alert"
+        }
+      ],
+      "endpoint": "/metaerp/openapi/v1/escalateAlert",
+      "kind": "external",
+      "method": "POST",
+      "operation_id": "escalateAlert"
+    },
+    {
+      "action_id": "compressDownstreamCycle",
+      "action_name": "compressDownstreamCycle",
+      "data_changes": [
+        {
+          "target_object": "Chain_Stage_Progress"
+        }
+      ],
+      "endpoint": "/metaerp/openapi/v1/changePbp",
+      "kind": "external",
+      "method": "POST",
+      "operation_id": "changePbp"
+    },
+    {
+      "action_id": "adjustRequiredArrivalDate",
+      "action_name": "adjustRequiredArrivalDate",
+      "data_changes": [
+        {
+          "target_object": "Procurement_Plan_Line"
+        }
+      ],
+      "endpoint": "/metaerp/openapi/v1/changePbpLine",
+      "kind": "external",
+      "method": "POST",
+      "operation_id": "changePbpLine"
+    },
+    {
+      "action_id": "createStockTransferRequest",
+      "action_name": "createStockTransferRequest",
+      "data_changes": [
+        {
+          "target_object": "Stock_Transfer_Request"
+        }
+      ],
+      "endpoint": "/metaerp/openapi/v1/createTransactionOrder",
+      "kind": "external",
+      "method": "POST",
+      "operation_id": "createTransactionOrder"
+    },
+    {
+      "action_id": "trackTransferFulfillment",
+      "action_name": "trackTransferFulfillment",
+      "data_changes": [
+        {
+          "target_object": "Stock_Transfer_Request"
+        }
+      ],
+      "endpoint": "/metaerp/openapi/v1/updateTransactionOrder",
+      "kind": "external",
+      "method": "POST",
+      "operation_id": "updateTransactionOrder"
+    },
+    {
+      "action_id": "closeDeviationHandling",
+      "action_name": "closeDeviationHandling",
+      "data_changes": [
+        {
+          "target_object": "Alert_Handling_Record"
+        }
+      ],
+      "endpoint": "/metaerp/openapi/v1/writeEventLog",
+      "kind": "external",
+      "method": "POST",
+      "operation_id": "writeEventLog"
+    },
+    {
+      "action_id": "recycleFalseAlarm",
+      "action_name": "recycleFalseAlarm",
+      "data_changes": [
+        {
+          "target_object": "Rule_Review_Item"
+        }
+      ],
+      "endpoint": "/metaerp/openapi/v1/createReviewItem",
+      "kind": "external",
+      "method": "POST",
+      "operation_id": "createReviewItem"
+    }
+  ],
+  "object_maps": [
+    {
+      "erp_entity": "ss_pbp_header_t",
+      "fetch": {
+        "method": "POST",
+        "path": "/metaerp/openapi/v1/queryOpenPbpHeader"
+      },
+      "object_id": "Procurement_Plan",
+      "object_name": "采购计划"
+    },
+    {
+      "erp_entity": "ss_pbp_line_t",
+      "fetch": {
+        "method": "POST",
+        "path": "/metaerp/openapi/v1/queryOpenPbpLine"
+      },
+      "object_id": "Procurement_Plan_Line",
+      "object_name": "采购计划行"
+    },
+    {
+      "erp_entity": "emg_procurement_chain_t",
+      "fetch": {
+        "method": "POST",
+        "path": "/metaerp/openapi/v1/queryProcurementChains"
+      },
+      "object_id": "Procurement_Chain",
+      "object_name": "采购执行链路"
+    },
+    {
+      "erp_entity": "emg_chain_stage_progress_t",
+      "fetch": {
+        "method": "POST",
+        "path": "/metaerp/openapi/v1/queryChainStageProgress"
+      },
+      "object_id": "Chain_Stage_Progress",
+      "object_name": "链路节点进度"
+    },
+    {
+      "erp_entity": "pr_header_t",
+      "fetch": {
+        "method": "POST",
+        "path": "/metaerp/openapi/v1/queryPr"
+      },
+      "object_id": "Purchase_Requisition",
+      "object_name": "采购申请"
+    },
+    {
+      "erp_entity": "ss_proc_package_header_t",
+      "fetch": {
+        "method": "POST",
+        "path": "/metaerp/openapi/v1/queryProcPackageLineExecuteMode"
+      },
+      "object_id": "Sourcing_Package",
+      "object_name": "采购包"
+    },
+    {
+      "erp_entity": "ss_rfx_header_t",
+      "fetch": {
+        "method": "POST",
+        "path": "/metaerp/openapi/v1/queryRfxList"
+      },
+      "object_id": "Inquiry_Notice",
+      "object_name": "询价单"
+    },
+    {
+      "erp_entity": "ss_bid_header_t",
+      "fetch": {
+        "method": "POST",
+        "path": "/metaerp/openapi/v1/queryAwardList"
+      },
+      "object_id": "Bid_Award",
+      "object_name": "定标结果"
+    },
+    {
+      "erp_entity": "clm_contract_t",
+      "fetch": {
+        "method": "POST",
+        "path": "/metaerp/openapi/v1/getContractByQuery"
+      },
+      "object_id": "Purchase_Contract",
+      "object_name": "采购合同"
+    },
+    {
+      "erp_entity": "po_header_t",
+      "fetch": {
+        "method": "POST",
+        "path": "/metaerp/openapi/v1/queryPoHeader"
+      },
+      "object_id": "Purchase_Order",
+      "object_name": "采购订单"
+    },
+    {
+      "erp_entity": "ac_header_t",
+      "fetch": {
+        "method": "POST",
+        "path": "/metaerp/openapi/v1/queryAcceptHeader"
+      },
+      "object_id": "Goods_Acceptance",
+      "object_name": "采购验收"
+    },
+    {
+      "erp_entity": "cfg_stage_cycle_standard_t",
+      "fetch": {
+        "method": "POST",
+        "path": "/metaerp/openapi/v1/getStageCycleConfig"
+      },
+      "object_id": "Stage_Cycle_Standard",
+      "object_name": "采购阶段周期标准"
+    },
+    {
+      "erp_entity": "cfg_alert_threshold_t",
+      "fetch": {
+        "method": "POST",
+        "path": "/metaerp/openapi/v1/getAlertThresholdConfig"
+      },
+      "object_id": "Alert_Threshold_Setting",
+      "object_name": "预警阈值配置"
+    },
+    {
+      "erp_entity": "dev_execution_deviation_t",
+      "fetch": {
+        "method": "POST",
+        "path": "/metaerp/openapi/v1/queryExecutionDeviations"
+      },
+      "object_id": "Execution_Deviation",
+      "object_name": "执行偏差"
+    },
+    {
+      "erp_entity": "dev_probability_assessment_t",
+      "fetch": {
+        "method": "POST",
+        "path": "/metaerp/openapi/v1/queryProbabilityAssessments"
+      },
+      "object_id": "Delivery_Probability_Assessment",
+      "object_name": "按期达成概率评估"
+    },
+    {
+      "erp_entity": "dev_deviation_alert_t",
+      "fetch": {
+        "method": "POST",
+        "path": "/metaerp/openapi/v1/queryDeviationAlerts"
+      },
+      "object_id": "Deviation_Alert",
+      "object_name": "偏差预警"
+    },
+    {
+      "erp_entity": "dev_adjustment_option_t",
+      "fetch": {
+        "method": "POST",
+        "path": "/metaerp/openapi/v1/queryAdjustmentOptions"
+      },
+      "object_id": "Adjustment_Option",
+      "object_name": "调整方案"
+    },
+    {
+      "erp_entity": "inv_transaction_order_t",
+      "fetch": {
+        "method": "POST",
+        "path": "/metaerp/openapi/v1/queryTransactionOrders"
+      },
+      "object_id": "Stock_Transfer_Request",
+      "object_name": "调拨申请"
+    },
+    {
+      "erp_entity": "dev_alert_handling_record_t",
+      "fetch": {
+        "method": "POST",
+        "path": "/metaerp/openapi/v1/queryAlertHandlingRecords"
+      },
+      "object_id": "Alert_Handling_Record",
+      "object_name": "预警处置记录"
+    },
+    {
+      "erp_entity": "dev_rule_review_item_t",
+      "fetch": {
+        "method": "POST",
+        "path": "/metaerp/openapi/v1/queryRuleReviewItems"
+      },
+      "object_id": "Rule_Review_Item",
+      "object_name": "规则评审条目"
+    },
+    {
+      "erp_entity": "ss_pbp_rel_t",
+      "fetch": {
+        "method": "POST",
+        "path": "/metaerp/openapi/v1/getAllPbpLinePageByQuery"
+      },
+      "object_id": "ss_pbp_rel_t",
+      "object_name": "计划头行关系（防止行重复归集）"
+    },
+    {
+      "erp_entity": "ss_spa_header_t",
+      "fetch": {
+        "method": "POST",
+        "path": "/metaerp/openapi/v1/getSpaByQuery"
+      },
+      "object_id": "ss_spa_header_t",
+      "object_name": "价格协议台账（合同前置凭据）"
+    },
+    {
+      "erp_entity": "po_line_shipment_t",
+      "fetch": {
+        "method": "POST",
+        "path": "/metaerp/openapi/v1/queryPoLineShipment"
+      },
+      "object_id": "po_line_shipment_t",
+      "object_name": "订单行发运/到货台账（进度偏差的分子分母）"
+    },
+    {
+      "erp_entity": "ac_transaction_t",
+      "fetch": {
+        "method": "POST",
+        "path": "/metaerp/openapi/v1/queryAcceptTransaction"
+      },
+      "object_id": "ac_transaction_t",
+      "object_name": "验收交易台账"
+    },
+    {
+      "erp_entity": "stat_historical_on_time_rate_t",
+      "fetch": {
+        "method": "POST",
+        "path": "/metaerp/openapi/v1/queryHistoricalOnTimeRate"
+      },
+      "object_id": "stat_historical_on_time_rate_t",
+      "object_name": "同业务类型历史按期达成率统计"
+    },
+    {
+      "erp_entity": "inv_transferable_stock_t",
+      "fetch": {
+        "method": "POST",
+        "path": "/metaerp/openapi/v1/queryTransferableStock"
+      },
+      "object_id": "inv_transferable_stock_t",
+      "object_name": "可调拨库存（方案③的调出库点与可调数量）"
+    }
+  ]
+}

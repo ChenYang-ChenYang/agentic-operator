@@ -475,7 +475,12 @@ function appendEmissionSteps(
   emissions: OverlayEmission[],
   actionId: string,
   nextOrder: () => string,
+  /** Steps every emission must wait on — the ERP write for an external agent,
+   * so a failed/skipped write emits nothing. Empty for prompt agents, whose
+   * analyze step is already the immediately preceding step. */
+  dependsOn: readonly string[] = [],
 ): boolean {
+  const guard = dependsOn.length ? { depends_on: [...dependsOn] } : {};
   let conditional = false;
   for (const emission of emissions) {
     const payloadFrom = emission.payload_from ?? `results.${actionId}`;
@@ -488,6 +493,7 @@ function appendEmissionSteps(
         emit_event: emission.event,
         emit_payload_from: payloadFrom,
         result_key: identifierKey(`emit-${emission.event}`),
+        ...guard,
       });
       continue;
     }
@@ -500,6 +506,7 @@ function appendEmissionSteps(
       type: "condition",
       condition: emission.when,
       result_key: conditionKey,
+      ...guard,
     });
     steps.push({
       order: nextOrder(),
@@ -509,7 +516,7 @@ function appendEmissionSteps(
       emit_event: emission.event,
       emit_payload_from: payloadFrom,
       result_key: identifierKey(`emit-${emission.event}`),
-      depends_on: [conditionKey],
+      depends_on: [...dependsOn, conditionKey],
     });
   }
   return conditional;
@@ -595,6 +602,30 @@ function normalizeToolArguments(
   return out;
 }
 
+/** The overlay-declared compensation event for an action, validated against its
+ * own `triggered_event` so a typo cannot silently disable the saga. */
+function compensationEventFor(
+  ctx: CompileContext,
+  action: StudioAction,
+): string | undefined {
+  const event = ctx.overlay.compensation_events?.[action.id];
+  if (!event) return undefined;
+  if (!action.triggered_event.includes(event)) {
+    fail(
+      `overlay compensation_events for ${action.id} names ${event}, which is not in its triggered_event`,
+    );
+  }
+  return event;
+}
+
+/** `triggered_event` minus the compensation event — the events a SUCCESSFUL run emits. */
+function successEvents(ctx: CompileContext, action: StudioAction): string[] {
+  const compensation = compensationEventFor(ctx, action);
+  return compensation
+    ? action.triggered_event.filter((event) => event !== compensation)
+    : [...action.triggered_event];
+}
+
 function compileExternalAgent(ctx: CompileContext, action: StudioAction): {
   steps: CompiledStep[];
   toolUse: CompiledToolUseEntry[];
@@ -663,6 +694,12 @@ function compileExternalAgent(ctx: CompileContext, action: StudioAction): {
       name: manualStep.name,
       description: manualStep.description ?? manualStep.name,
       type: "manual",
+      // `task_type` is what makes the manual contract complete for the
+      // authoring lint (rule 7: a Human-actor agent needs task_type +
+      // awaiting_role + form_schema, or a taskDefinition tool). Emitting the
+      // step name matches register.ts's own `action.task_type ?? action.name`
+      // fallback, so the runtime task is byte-identical either way.
+      task_type: overlayManual?.task_type ?? manualStep.name,
       form_schema: overlayManual?.form_schema ?? genericApproveFormSchema(manualStep.name),
       awaiting_role:
         overlayManual?.awaiting_role ?? firstHumanRoleForAction(ctx.model, action.id) ?? "Human",
@@ -691,10 +728,27 @@ function compileExternalAgent(ctx: CompileContext, action: StudioAction): {
     ...(guards.length ? { depends_on: guards } : {}),
   });
 
-  // With gates in play the success event must be explicit and the implicit
-  // triggered_event[0] fallback suppressed, so a blocked run emits nothing.
-  if (gateKeys.length) {
-    for (const eventName of action.triggered_event) {
+  // An overlay emission block wins: it is the only way to express a real
+  // branch out of an external action (the canonical case is a human gate whose
+  // form carries approve/reject, where `triggered_event[0]` alone would emit
+  // APPROVED on a rejection). Emissions are gated on the write step, so a
+  // blocked gate or a failed write still emits nothing.
+  const overlayEmissions = overlayEmissionsFor(ctx, action);
+  if (overlayEmissions.length) {
+    const conditional = appendEmissionSteps(
+      steps,
+      overlayEmissions,
+      action.id,
+      nextOrder,
+      [action.id],
+    );
+    if (conditional || gateKeys.length) steps.push(suppressImplicitEmitStep(nextOrder()));
+  } else if (gateKeys.length) {
+    // With gates in play the success event must be explicit and the implicit
+    // triggered_event[0] fallback suppressed, so a blocked run emits nothing.
+    // A compensation event is NOT a success event — it is emitted by the
+    // runtime on hard failure, never as an unconditional emit step here.
+    for (const eventName of successEvents(ctx, action)) {
       steps.push({
         order: nextOrder(),
         name: `emit:${eventName}`,
@@ -797,6 +851,11 @@ export function compile(
       fail(`overlay extra_tools references unknown action ${actionId}`);
     }
   }
+  for (const actionId of Object.keys(overlay.compensation_events ?? {})) {
+    if (!model.actions.some((action) => action.id === actionId)) {
+      fail(`overlay compensation_events references unknown action ${actionId}`);
+    }
+  }
 
   const workflow: CompiledAgent[] = model.actions.map((action) => {
     const kind = action.implementation.kind;
@@ -812,6 +871,10 @@ export function compile(
     if (!trigger.length) trigger.push(syntheticManualTrigger(action.id));
 
     const ontologyInstructions = buildOntologyInstructions(model, action);
+    // `triggered_event` drives register.ts's implicit emit fallback, so it must
+    // list only what a SUCCESSFUL run emits; the failure event moves to
+    // `compensation_event`, which the runtime emits once on a hard failure.
+    const compensationEvent = compensationEventFor(ctx, action);
     return {
       id: action.id,
       name: action.id,
@@ -819,9 +882,10 @@ export function compile(
       description: action.description ?? "",
       actor: action.actor,
       trigger,
-      triggered_event: [...action.triggered_event],
+      triggered_event: successEvents(ctx, action),
       retries: 3,
       generated: true,
+      ...(compensationEvent ? { compensation_event: compensationEvent } : {}),
       ...(ontologyInstructions ? { ontology_instructions: ontologyInstructions } : {}),
       tool_use: compiled.toolUse,
       actions: compiled.steps,

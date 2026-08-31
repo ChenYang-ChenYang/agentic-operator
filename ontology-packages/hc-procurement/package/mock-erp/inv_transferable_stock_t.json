@@ -1,0 +1,31 @@
+{
+  "rows": [
+    {
+      "AVAILABLE_QTY": 5,
+      "ITEM_CODE": "M-BRK-126",
+      "STOCK_ID": "TS-001",
+      "TRANSFER_LEAD_DAYS": 7,
+      "UNIT": "台",
+      "WAREHOUSE_ID": "WH-HD-02",
+      "WAREHOUSE_NAME": "华东中心库"
+    },
+    {
+      "AVAILABLE_QTY": 9,
+      "ITEM_CODE": "M-BRK-126",
+      "STOCK_ID": "TS-002",
+      "TRANSFER_LEAD_DAYS": 12,
+      "UNIT": "台",
+      "WAREHOUSE_ID": "WH-HB-01",
+      "WAREHOUSE_NAME": "华北中心库"
+    },
+    {
+      "AVAILABLE_QTY": 22,
+      "ITEM_CODE": "M-CT-110",
+      "STOCK_ID": "TS-003",
+      "TRANSFER_LEAD_DAYS": 5,
+      "UNIT": "台",
+      "WAREHOUSE_ID": "WH-HD-02",
+      "WAREHOUSE_NAME": "华东中心库"
+    }
+  ]
+}

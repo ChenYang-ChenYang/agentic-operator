@@ -2,7 +2,7 @@
   "name": "agentic-operator",
   "version": "0.1.0",
   "private": true,
-  "description": "Agentic Operator \u2014 event-driven agentic workflow runtime + admin portal",
+  "description": "Agentic Operator — event-driven agentic workflow runtime + admin portal",
   "engines": {
     "node": "26.5.0"
   },
@@ -39,6 +39,10 @@
     "init:factory-external-sandbox-secrets": "node deploy/factory-sandbox/init-secrets.mjs",
     "build:agents-generation-ontology": "node scripts/build-agents-generation-ontology.mjs",
     "ontology:compile": "node scripts/ontology-compile.mjs",
+    "hc:stage": "node scripts/stage-hc-procurement-ontology.mjs",
+    "hc:compile": "node scripts/stage-hc-procurement-ontology.mjs && node scripts/ontology-compile.mjs --source ontology-packages/hc-procurement/package --tenant hc-procurement --overlay overlays/hc-procurement.json",
+    "hc:seed": "node scripts/seed-hc-procurement-tenant.mjs && node scripts/grant-hc-procurement-membership.mjs",
+    "hc:erp": "node scripts/run-hc-procurement-erp.mjs",
     "preview:agents-generation-ontology-release": "node scripts/allmeta-full-domain-release-client.mjs",
     "test:agents-generation-ontology-release": "node --test scripts/allmeta-full-domain-release-client.test.mjs",
     "watch:factory-production-images": "pnpm --filter @agentic/api run watch:factory-production-images",

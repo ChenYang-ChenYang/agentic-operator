@@ -1,0 +1,30 @@
+{
+  "rows": [
+    {
+      "APPROVED_AT": "2026-06-28T16:30:00+08:00",
+      "BUSINESS_TYPE": "物资",
+      "DEMAND_ORGANIZATION": "华东检修分公司",
+      "DEPARTMENT_LEADER": "李部长",
+      "DIVISION_LEADER": "王分管",
+      "PBP_HEADER_ID": "PBP-2026-0873",
+      "PLAN_NO": "PBP-2026-0873",
+      "PLAN_TYPE": "大修专项",
+      "PLANNER": "张计划",
+      "STATUS": "已批准",
+      "SUBMITTED_AT": "2026-06-20T09:00:00+08:00"
+    },
+    {
+      "APPROVED_AT": "2026-05-19T10:10:00+08:00",
+      "BUSINESS_TYPE": "物资",
+      "DEMAND_ORGANIZATION": "华南检修分公司",
+      "DEPARTMENT_LEADER": "李部长",
+      "DIVISION_LEADER": "王分管",
+      "PBP_HEADER_ID": "PBP-2026-0914",
+      "PLAN_NO": "PBP-2026-0914",
+      "PLAN_TYPE": "年度计划",
+      "PLANNER": "赵计划",
+      "STATUS": "已批准",
+      "SUBMITTED_AT": "2026-05-11T09:00:00+08:00"
+    }
+  ]
+}

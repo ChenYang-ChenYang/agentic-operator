@@ -1,0 +1,587 @@
+{
+  "domain": "allmeta-hc-procurement",
+  "description": "HC-采购 · 场景一「采购全链路执行偏差三级预警」编译器 overlay：把本体的条件分支、规则闸口、人机协作点与 Meta ERP 写入参数落成可执行语义。链路对应 docx 的 R1-01~R1-07——①查 collectChainExecutionData，②析 calculateExecutionDeviation，③评 scoreOnTimeProbability，④警 raiseDeviationAlert，⑤断 generateAdjustmentOptions/approveAdjustmentOption，⑥行 compressDownstreamCycle/adjustRequiredArrivalDate/createStockTransferRequest/trackTransferFulfillment，⑦升 escalateOverdueAlert，⑧闭环 closeDeviationHandling，⑨馈 recycleFalseAlarm。上游分析 Agent 的 output_contracts 与下游闸口条件、工具参数路径逐字段对齐。",
+  "emissions": {
+    "collectChainExecutionData": [
+      {
+        "event": "CHAIN_PROGRESS_SYNCED",
+        "payload_from": "results.collectChainExecutionData",
+        "when": "always"
+      }
+    ],
+    "calculateExecutionDeviation": [
+      {
+        "event": "EXECUTION_DEVIATION_CALCULATED",
+        "payload_from": "results.calculateExecutionDeviation",
+        "when": "always"
+      },
+      {
+        "event": "DEVIATION_DETECTED",
+        "payload_from": "results.calculateExecutionDeviation",
+        "when": "lastResult.execution_deviation.has_deviation == true"
+      },
+      {
+        "event": "NO_DEVIATION_CONFIRMED",
+        "payload_from": "results.calculateExecutionDeviation",
+        "when": "lastResult.execution_deviation.has_deviation == false"
+      }
+    ],
+    "archiveDeviationMonitoring": [
+      {
+        "event": "CHAIN_MONITORING_ARCHIVED",
+        "payload_from": "results.archiveDeviationMonitoring",
+        "when": "always"
+      }
+    ],
+    "scoreOnTimeProbability": [
+      {
+        "event": "ON_TIME_PROBABILITY_SCORED",
+        "payload_from": "results.scoreOnTimeProbability",
+        "when": "always"
+      }
+    ],
+    "generateAdjustmentOptions": [
+      {
+        "event": "ADJUSTMENT_OPTIONS_GENERATED",
+        "payload_from": "results.generateAdjustmentOptions",
+        "when": "lastResult.options_generated == true"
+      }
+    ],
+    "raiseDeviationAlert": [
+      {
+        "event": "DEVIATION_ALERT_RAISED",
+        "payload_from": "lastResult.alert_context",
+        "when": "always"
+      }
+    ],
+    "handleBlueAlertLocally": [
+      {
+        "event": "BLUE_ALERT_SELF_HANDLED",
+        "payload_from": "lastResult",
+        "when": "always"
+      }
+    ],
+    "approveAdjustmentOption": [
+      {
+        "event": "ADJUSTMENT_OPTION_APPROVED",
+        "payload_from": "lastResult.decision_context",
+        "when": "results.manual-5.decision == 'approved'"
+      }
+    ],
+    "escalateOverdueAlert": [
+      {
+        "event": "DEVIATION_ALERT_ESCALATED",
+        "payload_from": "lastResult.alert_context",
+        "when": "lastResult.escalated == true"
+      }
+    ],
+    "compressDownstreamCycle": [
+      {
+        "event": "CHAIN_PLAN_SCHEDULE_COMPRESSED",
+        "payload_from": "lastResult",
+        "when": "lastResult.applied == true"
+      }
+    ],
+    "adjustRequiredArrivalDate": [
+      {
+        "event": "REQUIRED_ARRIVAL_DATE_ADJUSTED",
+        "payload_from": "lastResult",
+        "when": "lastResult.applied == true"
+      }
+    ],
+    "createStockTransferRequest": [
+      {
+        "event": "STOCK_TRANSFER_REQUEST_CREATED",
+        "payload_from": "lastResult",
+        "when": "lastResult.applied == true"
+      }
+    ],
+    "trackTransferFulfillment": [
+      {
+        "event": "STOCK_TRANSFER_FULFILLED",
+        "payload_from": "lastResult",
+        "when": "lastResult.fulfilled == true"
+      }
+    ],
+    "closeDeviationHandling": [
+      {
+        "event": "DEVIATION_HANDLING_CLOSED",
+        "payload_from": "lastResult.closure_context",
+        "when": "always"
+      }
+    ],
+    "recycleFalseAlarm": [
+      {
+        "event": "FALSE_ALARM_RECYCLED",
+        "payload_from": "lastResult.recycle_context",
+        "when": "always"
+      },
+      {
+        "event": "THRESHOLD_REVIEW_ITEM_CREATED",
+        "payload_from": "lastResult.review_item",
+        "when": "lastResult.review_item_created == true"
+      }
+    ]
+  },
+  "rule_gates": {
+    "BR-ALERT-03": {
+      "strategy": "condition",
+      "condition": "input.alert_level == '蓝色'"
+    },
+    "BR-OPT-05": {
+      "strategy": "condition",
+      "condition": "input.planner_confirmed_by"
+    },
+    "BR-FB-01": {
+      "strategy": "condition",
+      "condition": "input.verification_result == '误报'"
+    }
+  },
+  "manual_steps": {
+    "handleBlueAlertLocally": {
+      "reviewBlueAlert": {
+        "task_type": "blue-alert.review",
+        "awaiting_role": "计划员",
+        "form_schema": {
+          "type": "object",
+          "title": "蓝色预警 · 查看偏差画像与按期概率",
+          "properties": {
+            "reviewed": {
+              "type": "boolean",
+              "title": "已查看偏差画像、按期概率与可解释理由"
+            },
+            "note": {
+              "type": "string",
+              "title": "备注（可选）"
+            }
+          },
+          "required": [
+            "reviewed"
+          ]
+        }
+      },
+      "decideSelfHandling": {
+        "task_type": "blue-alert.decide",
+        "awaiting_role": "计划员",
+        "form_schema": {
+          "type": "object",
+          "title": "蓝色预警 · 自行处置",
+          "properties": {
+            "handling_action": {
+              "type": "string",
+              "title": "处置方式",
+              "enum": [
+                "轻量调整",
+                "仅继续监控"
+              ]
+            },
+            "remark": {
+              "type": "string",
+              "title": "处置说明"
+            }
+          },
+          "required": [
+            "handling_action"
+          ]
+        }
+      }
+    },
+    "approveAdjustmentOption": {
+      "reviewOptions": {
+        "task_type": "adjustment.review",
+        "awaiting_role": "部门领导",
+        "form_schema": {
+          "type": "object",
+          "title": "调整方案 · 对比三个方案与到货影响推演",
+          "properties": {
+            "reviewed": {
+              "type": "boolean",
+              "title": "已对比三个方案的构成、时效与到货影响天数"
+            },
+            "focus": {
+              "type": "string",
+              "title": "关注点（可选）"
+            }
+          },
+          "required": [
+            "reviewed"
+          ]
+        }
+      },
+      "selectOption": {
+        "task_type": "adjustment.select",
+        "awaiting_role": "部门领导",
+        "form_schema": {
+          "type": "object",
+          "title": "调整方案 · 领导拍板",
+          "properties": {
+            "option_id": {
+              "type": "string",
+              "title": "选定方案编号"
+            },
+            "option_type": {
+              "type": "string",
+              "title": "方案类型",
+              "enum": [
+                "压缩后续周期",
+                "调整需求日期",
+                "执行调拨"
+              ]
+            },
+            "decision_role": {
+              "type": "string",
+              "title": "决策角色（须与预警等级匹配，BR-OPT-04）",
+              "enum": [
+                "分管领导",
+                "部门领导"
+              ]
+            },
+            "decided_by": {
+              "type": "string",
+              "title": "决策人姓名"
+            },
+            "comment": {
+              "type": "string",
+              "title": "决策意见"
+            }
+          },
+          "required": [
+            "option_id",
+            "option_type",
+            "decision_role",
+            "decided_by"
+          ]
+        }
+      },
+      "confirmHighRisk": {
+        "task_type": "adjustment.confirm-high-risk",
+        "awaiting_role": "部门领导",
+        "form_schema": {
+          "type": "object",
+          "title": "高危动作强制确认（BR-OPT-06）",
+          "properties": {
+            "is_high_risk": {
+              "type": "boolean",
+              "title": "选定方案是否属于高危动作（暂停申请、整单调剂）"
+            },
+            "high_risk_confirmed_by": {
+              "type": "string",
+              "title": "高危确认人（部门领导；非高危可留空）"
+            }
+          },
+          "required": [
+            "is_high_risk"
+          ]
+        }
+      },
+      "plannerConfirm": {
+        "task_type": "adjustment.planner-confirm",
+        "awaiting_role": "计划员",
+        "form_schema": {
+          "type": "object",
+          "title": "计划员确认执行（BR-OPT-05）· 执行决策卡",
+          "description": "这是回写业务单据前的最后一次人工确认；执行分支所需的字段在此收齐。alert_id / chain_id / option_id / option_type 照抄上一步领导选定的方案。",
+          "properties": {
+            "decision": {
+              "type": "string",
+              "title": "确认结果",
+              "enum": [
+                "approved",
+                "rejected"
+              ]
+            },
+            "planner_confirmed_by": {
+              "type": "string",
+              "title": "计划员姓名（BR-OPT-05：未确认不得回写单据）"
+            },
+            "alert_id": {
+              "type": "string",
+              "title": "预警编号"
+            },
+            "chain_id": {
+              "type": "string",
+              "title": "采购执行链路编号"
+            },
+            "option_id": {
+              "type": "string",
+              "title": "选定方案编号"
+            },
+            "option_type": {
+              "type": "string",
+              "title": "方案类型（决定走哪条执行分支）",
+              "enum": [
+                "压缩后续周期",
+                "调整需求日期",
+                "执行调拨"
+              ]
+            },
+            "remark": {
+              "type": "string",
+              "title": "备注"
+            }
+          },
+          "required": [
+            "decision",
+            "planner_confirmed_by",
+            "alert_id",
+            "chain_id",
+            "option_id",
+            "option_type"
+          ]
+        }
+      }
+    },
+    "compressDownstreamCycle": {
+      "confirmByPlanner": {
+        "task_type": "execute.compress.planner-confirm",
+        "awaiting_role": "计划员",
+        "form_schema": {
+          "type": "object",
+          "title": "方案① · 确认压缩后的节点时间表可执行",
+          "properties": {
+            "decision": {
+              "type": "string",
+              "title": "确认结果",
+              "enum": [
+                "approved",
+                "rejected"
+              ]
+            },
+            "planner_confirmed_by": {
+              "type": "string",
+              "title": "确认人姓名"
+            }
+          },
+          "required": [
+            "decision",
+            "planner_confirmed_by"
+          ]
+        }
+      }
+    },
+    "adjustRequiredArrivalDate": {
+      "confirmByPlanner": {
+        "task_type": "execute.need-date.planner-confirm",
+        "awaiting_role": "计划员",
+        "form_schema": {
+          "type": "object",
+          "title": "方案② · 计划员与需求部门确认新到货日期可接受",
+          "properties": {
+            "decision": {
+              "type": "string",
+              "title": "确认结果",
+              "enum": [
+                "approved",
+                "rejected"
+              ]
+            },
+            "planner_confirmed_by": {
+              "type": "string",
+              "title": "确认人姓名"
+            },
+            "demand_department_agreed": {
+              "type": "boolean",
+              "title": "需求部门已确认"
+            }
+          },
+          "required": [
+            "decision",
+            "planner_confirmed_by"
+          ]
+        }
+      }
+    },
+    "createStockTransferRequest": {
+      "confirmByPlanner": {
+        "task_type": "execute.transfer.planner-confirm",
+        "awaiting_role": "计划员",
+        "form_schema": {
+          "type": "object",
+          "title": "方案③ · 确认调拨来源与数量",
+          "properties": {
+            "decision": {
+              "type": "string",
+              "title": "确认结果",
+              "enum": [
+                "approved",
+                "rejected"
+              ]
+            },
+            "planner_confirmed_by": {
+              "type": "string",
+              "title": "确认人姓名"
+            }
+          },
+          "required": [
+            "decision",
+            "planner_confirmed_by"
+          ]
+        }
+      }
+    },
+    "closeDeviationHandling": {
+      "collectVerification": {
+        "task_type": "close.verify",
+        "awaiting_role": "计划员",
+        "form_schema": {
+          "type": "object",
+          "title": "偏差处置闭环 · 业务核实",
+          "properties": {
+            "verification_result": {
+              "type": "string",
+              "title": "核实结果",
+              "enum": [
+                "属实",
+                "误报"
+              ]
+            },
+            "deviation_eliminated": {
+              "type": "boolean",
+              "title": "重算后偏差是否已消除（BR-CLOSE-01）"
+            },
+            "remark": {
+              "type": "string",
+              "title": "核实说明"
+            }
+          },
+          "required": [
+            "verification_result",
+            "deviation_eliminated"
+          ]
+        }
+      }
+    },
+    "recycleFalseAlarm": {
+      "classifyFalseAlarm": {
+        "task_type": "feedback.classify",
+        "awaiting_role": "规则评审组",
+        "form_schema": {
+          "type": "object",
+          "title": "误报归因（BR-FB-01）",
+          "properties": {
+            "false_alarm_cause": {
+              "type": "string",
+              "title": "误报归因",
+              "enum": [
+                "阈值过严",
+                "数据质量",
+                "口径问题"
+              ]
+            },
+            "suggested_threshold_value": {
+              "type": "number",
+              "title": "建议阈值取值"
+            },
+            "remark": {
+              "type": "string",
+              "title": "归因说明"
+            }
+          },
+          "required": [
+            "false_alarm_cause"
+          ]
+        }
+      }
+    }
+  },
+  "tool_arguments": {
+    "raiseDeviationAlert": {
+      "payload": {
+        "from": "event.data"
+      }
+    },
+    "handleBlueAlertLocally": {
+      "payload": {
+        "from": "results.manual-2"
+      }
+    },
+    "approveAdjustmentOption": {
+      "payload": {
+        "from": "results.manual-5"
+      }
+    },
+    "escalateOverdueAlert": {
+      "payload": {
+        "from": "event.data"
+      }
+    },
+    "compressDownstreamCycle": {
+      "payload": {
+        "from": "event.data"
+      }
+    },
+    "adjustRequiredArrivalDate": {
+      "payload": {
+        "from": "event.data"
+      }
+    },
+    "createStockTransferRequest": {
+      "payload": {
+        "from": "event.data"
+      }
+    },
+    "trackTransferFulfillment": {
+      "payload": {
+        "from": "event.data"
+      }
+    },
+    "closeDeviationHandling": {
+      "payload": {
+        "from": "results.manual-4"
+      }
+    },
+    "recycleFalseAlarm": {
+      "payload": {
+        "from": "results.manual-1"
+      }
+    }
+  },
+  "output_contracts": {
+    "collectChainExecutionData": {
+      "fields": {
+        "procurement_chain": "采购执行链路：{chain_id, plan_id, plan_line_id, business_type, material_code, material_name, quantity, unit, required_arrival_date, current_stage:'立项'|'组包'|'询价'|'定标'|'合同'|'订单'|'到货', chain_status:'在途'|'已完成'|'已终止', planner, buyer, demand_department, forecast_arrival_date, last_synced_at}。current_stage 取「已完成节点之后的第一个未完成节点」。",
+        "stage_progress_list": "七个节点的进度记录，顺序固定为 立项/组包/询价/定标/合同/订单/到货：[{stage_progress_id, chain_id, stage_node, stage_sequence:1-7, actual_finish_date, stage_status:'未开始'|'进行中'|'已完成'|'部分完成', source_document_type, source_document_no, stage_started_at, synced_at}]。每个节点的实际完成时间必须来自对应单据的真实字段：立项=采购申请审批通过时间、组包=采购包 LAST_UPDATE_DATE、询价=询价单 EFFECTIVE_DATE、定标=定标 AWARD_DATE、合同=合同 SIGNING_DATE、订单=订单 EFFECTIVE_DATE、到货=验收完成时间（接收数量=订单数量才算完成，小于为部分完成）。查不到对应单据的节点写 stage_status='未开始'、actual_finish_date=null，不得编造。",
+        "synced_stage_count": "本次刷新的节点数（整数）。",
+        "coverage_note": "本次盯防范围说明（BR-COV-01：状态=已批准且链路在途的计划必须全量纳入，不得抽查）。",
+        "identifier_discipline": "【标识符纪律】plan_id / plan_line_id / 各单据号一律使用 metaERP 查询返回的原值（如 PBP-2026-0873、PBPL-2026-0873-01、PR-2026-11832、RFX-2026-0662），不得自造或翻译编码——下游按这些值 join ERP 台账。本字段填写一句确认语。"
+      }
+    },
+    "calculateExecutionDeviation": {
+      "fields": {
+        "procurement_chain": "原样透传上游链路对象，字段值不得改写或重新生成。",
+        "planned_dates": "各节点计划完成时间：[{stage_node, stage_sequence, standard_cycle_days, planned_finish_date, planned_date_derived:true}]。【推算方法】以 required_arrival_date 为终点，按 getStageCycleConfig 返回的该 business_type 的标准周期逐级倒排（到货节点计划完成=需求到货日期；上一节点计划完成=本节点计划完成 − 本节点标准周期），再从链路起点正排一次交叉校验；两向一致才置 planned_date_derived=true。缺任一节点周期配置时该节点不予推算并在 blocking_note 说明（BR-PLAN-01）。",
+        "thresholds_used": "本次判定实际采用的阈值，必须取自 getAlertThresholdConfig 返回值，不得写死：{time_deviation_days, schedule_deviation_ratio, threshold_ids:[string]}（BR-DEV-02）。",
+        "execution_deviation": "执行偏差：{deviation_id, chain_id, stage_progress_id, stage_node（发生偏差的节点，取当前停滞节点）, planned_finish_date, actual_finish_date（未完成节点代入当前扫描日）, time_deviation_days:number（=实际−计划，正数为延迟）, schedule_deviation_ratio:number（=1−已接收数量/订单数量；订单未生成时为 1）, amount_deviation_ratio:number|null（=已发生金额/计划金额−1）, has_deviation:boolean（时间偏差>时间阈值 或 进度偏差>进度阈值，BR-DEV-01）, deviation_level:'无偏差'（本步只判有无，等级由概率评分回写）, cause_tag:'供应商延迟'|'审批滞留'|'组包等待'|'流标重招'|'物流异常'|'其他', cause_explanation:string（cause_tag='其他' 时不得为空，BR-DEV-03）, cause_clarification_status:'无需澄清'|'待采购员澄清'|'已澄清'（停滞在采购执行环节且成因无法自动判明时置'待采购员澄清'，BR-DEV-04）, dwell_days:number, disposal_state:'待评分', evaluated_at}",
+        "blocking_note": "若因缺周期配置等原因无法完成推算，写明缺哪个「业务类型×节点」并置 has_deviation=false；否则填空字符串。"
+      }
+    },
+    "archiveDeviationMonitoring": {
+      "fields": {
+        "archived_deviation": "归档后的偏差记录：{deviation_id, chain_id, disposal_state:'已归档', archived_at}。",
+        "monitoring_note": "一句话说明为何无需打扰任何人（如「时间偏差 1 天、进度偏差 0，均未达阈值」），链路继续在途盯防。"
+      }
+    },
+    "scoreOnTimeProbability": {
+      "fields": {
+        "execution_deviation": "原样透传上游执行偏差对象。",
+        "procurement_chain": "原样透传上游链路对象。",
+        "probability_assessment": "按期达成概率评估：{assessment_id, deviation_id, chain_id, current_stage, remaining_standard_cycle_days:number（当前节点之后各节点标准周期之和，取自 getStageCycleConfig）, days_to_required_arrival:number, dwell_days:number, historical_on_time_rate:number（取自 queryHistoricalOnTimeRate）, historical_sample_size:integer, on_time_probability:number（0~1）, probability_grade:'红色'|'黄色'|'蓝色', explanation:string（不得为空，BR-PROB-04）, assessed_at}。【定级硬性】必须用 getAlertThresholdConfig 返回的分界值：概率<红色概率上限判红、介于红色上限与黄色下限之间判黄、>黄色概率下限判蓝（BR-PROB-01~03）。【explanation 硬性】必须同时说明剩余周期、滞留天数、历史达成率与样本量这四项如何影响了概率——只报超期天数不足以支撑决策。",
+        "alert_level": "与 probability_grade 同值，供下游预警推送直接取用。"
+      }
+    },
+    "generateAdjustmentOptions": {
+      "fields": {
+        "options_generated": "布尔值：预警等级为红色或黄色时为 true 并给出三个方案；蓝色时为 false 且 options 为空数组（BR-OPT-01：蓝色不生成方案）。",
+        "options": "三个可执行方案，缺一不可（BR-OPT-02）：[{option_id, alert_id, chain_id, option_type:'压缩后续周期'|'调整需求日期'|'执行调拨', option_summary, expected_arrival_date_after:Date, arrival_impact_days:number, arrival_impact_simulated:true（未完成推演的方案不得上会，BR-OPT-03）, feasibility_note, is_recommended:boolean, is_high_risk:boolean（暂停申请、整单调剂标为 true，BR-OPT-06）, option_status:'待决策', decision_role:'分管领导'（红色）|'部门领导'（黄色）（BR-OPT-04）}]。三个 option_type 必须各出现一次。",
+        "recommended_option": "被推荐的那一条方案对象（is_recommended=true），另附 recommendation_basis 说明为何推荐它：结合成因标签、按期概率与三个方案的到货影响天数对比。",
+        "transfer_source": "方案③的调拨来源，取自 queryTransferableStock：{warehouse_id, warehouse_name, item_code, available_qty, transfer_lead_days, transfer_quantity}。无可调库存时给出 {transfer_quantity: 0} 并在该方案的 feasibility_note 说明。",
+        "alert_context": "原样透传预警上下文：{alert_id, chain_id, deviation_id, alert_level, notified_role}。"
+      }
+    },
+    "closeDeviationHandling": {
+      "fields": {
+        "closure_context": "闭环上下文：{alert_id, deviation_id, chain_id, deviation_eliminated:boolean, verification_result:'属实'|'误报', closed_at}。deviation_eliminated 为 false 时不得闭环，退回重新生成调整方案（BR-CLOSE-01）。"
+      }
+    }
+  }
+}

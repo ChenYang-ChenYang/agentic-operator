@@ -1,0 +1,40 @@
+{
+  "rows": [
+    {
+      "EFFECTIVE_DATE": "2026-01-01",
+      "MAINTAINER": "规则评审组",
+      "THRESHOLD_CODE": "时间偏差天数",
+      "THRESHOLD_ID": "TH-TIME-7D",
+      "THRESHOLD_NAME": "时间偏差判定阈值",
+      "THRESHOLD_VALUE": 7,
+      "UNIT": "天"
+    },
+    {
+      "EFFECTIVE_DATE": "2026-01-01",
+      "MAINTAINER": "规则评审组",
+      "THRESHOLD_CODE": "进度偏差比例",
+      "THRESHOLD_ID": "TH-SCHED-20",
+      "THRESHOLD_NAME": "进度偏差判定阈值",
+      "THRESHOLD_VALUE": 0.2,
+      "UNIT": "比例"
+    },
+    {
+      "EFFECTIVE_DATE": "2026-01-01",
+      "MAINTAINER": "规则评审组",
+      "THRESHOLD_CODE": "红色概率上限",
+      "THRESHOLD_ID": "TH-PROB-RED",
+      "THRESHOLD_NAME": "红色分级概率上限",
+      "THRESHOLD_VALUE": 0.6,
+      "UNIT": "比例"
+    },
+    {
+      "EFFECTIVE_DATE": "2026-01-01",
+      "MAINTAINER": "规则评审组",
+      "THRESHOLD_CODE": "黄色概率下限",
+      "THRESHOLD_ID": "TH-PROB-YELLOW",
+      "THRESHOLD_NAME": "黄色分级概率下限",
+      "THRESHOLD_VALUE": 0.85,
+      "UNIT": "比例"
+    }
+  ]
+}

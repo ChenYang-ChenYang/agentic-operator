@@ -1,0 +1,2619 @@
+{
+  "metadata": {
+    "ai_involved": true,
+    "ai_reasons": [
+      "scenario-doc-modeling"
+    ],
+    "created_at": "2026-08-28T03:12:04.056Z",
+    "created_by": "scenario-modeling",
+    "description": "采购全链路执行偏差三级预警场景的业务对象模型：链路盯防主线 + 七节点单据 + 偏差/概率/预警/方案/调拨/留痕/评审。",
+    "document_type": "本体定义 (Ontology Schema)",
+    "last_updated": "2026-08-28",
+    "message": "按 2026-08-28 版文档更新：API 清单逐接口落地(queryPr/queryAllPbpLinePage/poShipment/acTransaction/阈值直读)、期望补提升指标",
+    "parent_version": 3,
+    "project_name": "采购-HC-Formal",
+    "source": "draft-from-source",
+    "version": "0.1",
+    "version_number": 4
+  },
+  "payload": [
+    {
+      "agent_facets": {
+        "searchable_fields": [
+          "plan_no",
+          "business_type",
+          "demand_organization",
+          "planner"
+        ],
+        "semantic_summary_template": "{plan_no}（{business_type}·{demand_organization}），状态{plan_status}，计划员{planner}"
+      },
+      "description": "全集团在途采购计划的头层单据，是全链路盯防的业务起点。它不是 ERP 计划表的镜像：只保留判定「这单归谁盯、按哪套周期算」所需的最小字段（业务类型、状态、需求单位、三级责任人）。示例：2026 年大修物资计划 PBP-2026-0873。",
+      "extensions": {
+        "erp_api_mapping": {
+          "endpoint": "/msourcing/openapi/v1/queryPbpHeader",
+          "method": "POST",
+          "note": "只读取数，本体不落业务数据",
+          "operation": "queryPbpHeader",
+          "system": "metaERP 寻源"
+        }
+      },
+      "id": "Procurement_Plan",
+      "lifecycle_initial_state": "草稿",
+      "lifecycle_state_property": "plan_status",
+      "lifecycle_states": [
+        {
+          "description": "计划编制中，尚未提报。",
+          "name": "草稿"
+        },
+        {
+          "description": "已提报，等待审批。",
+          "name": "审批中"
+        },
+        {
+          "description": "被拒绝后修订重报，等待再次审批。",
+          "name": "重新审批"
+        },
+        {
+          "description": "计划批准，立项节点具备完成条件。",
+          "name": "已批准",
+          "terminal": true
+        },
+        {
+          "description": "审批否决，需修订后重报。",
+          "name": "已拒绝"
+        }
+      ],
+      "lifecycle_transitions": [
+        {
+          "description": "计划员提报采购计划。",
+          "from": "草稿",
+          "id": "plan-submit",
+          "to": "审批中",
+          "trigger": "提报计划"
+        },
+        {
+          "description": "计划批准，链路开始计时。",
+          "from": "审批中",
+          "id": "plan-approve",
+          "to": "已批准",
+          "trigger": "审批通过"
+        },
+        {
+          "description": "计划被驳回。",
+          "from": "审批中",
+          "id": "plan-reject",
+          "to": "已拒绝",
+          "trigger": "审批否决"
+        },
+        {
+          "description": "修订后重新提报。",
+          "from": "已拒绝",
+          "id": "plan-revise",
+          "to": "重新审批",
+          "trigger": "修订重报"
+        },
+        {
+          "description": "复审批准。",
+          "from": "重新审批",
+          "id": "plan-reapprove",
+          "to": "已批准",
+          "trigger": "复审通过"
+        },
+        {
+          "description": "复审再次驳回。",
+          "from": "重新审批",
+          "id": "plan-rereject",
+          "to": "已拒绝",
+          "trigger": "复审否决"
+        }
+      ],
+      "name": "采购计划",
+      "primary_key": "plan_id",
+      "properties": [
+        {
+          "description": "采购计划编号，主键。",
+          "is_required": true,
+          "is_unique": true,
+          "name": "plan_id",
+          "source": "ss_pbp_header_t.PBP_HEADER_ID",
+          "type": "String"
+        },
+        {
+          "description": "计划单号（业务可读），如 PBP-2026-0873。",
+          "name": "plan_no",
+          "source": "",
+          "type": "String"
+        },
+        {
+          "description": "业务类型，决定各节点适用哪一套标准周期。",
+          "enum_values": [
+            "物资",
+            "工程",
+            "服务"
+          ],
+          "is_required": true,
+          "name": "business_type",
+          "source": "ss_pbp_header_t.BUSINESS_TYPE",
+          "type": "Enum"
+        },
+        {
+          "description": "计划类型：年度计划／临时计划／大修专项。",
+          "name": "plan_category",
+          "source": "ss_pbp_header_t.PLAN_TYPE",
+          "type": "String"
+        },
+        {
+          "description": "计划审批状态；批准即全链路正式起算。",
+          "enum_values": [
+            "草稿",
+            "审批中",
+            "重新审批",
+            "已批准",
+            "已拒绝"
+          ],
+          "is_required": true,
+          "name": "plan_status",
+          "source": "ss_pbp_header_t.STATUS",
+          "type": "Enum"
+        },
+        {
+          "description": "需求单位（二级单位／电厂），偏差影响面的归属。",
+          "name": "demand_organization",
+          "type": "String"
+        },
+        {
+          "description": "计划员，全链路盯防第一责任人，蓝色预警接收人。",
+          "is_required": true,
+          "name": "planner",
+          "type": "String"
+        },
+        {
+          "description": "部门领导，黄色预警的决策人。",
+          "name": "department_leader",
+          "type": "String"
+        },
+        {
+          "description": "分管领导，红色预警的决策人与升级接收人。",
+          "name": "division_leader",
+          "type": "String"
+        },
+        {
+          "description": "计划提报时间。",
+          "name": "submitted_at",
+          "type": "Timestamp"
+        },
+        {
+          "description": "计划批准时间。",
+          "name": "approved_at",
+          "type": "Timestamp"
+        }
+      ],
+      "relationship_description": "【采购计划 (Procurement_Plan)】拥有多条【采购计划行 (Procurement_Plan_Line)】，每条计划行派生一条【采购执行链路 (Procurement_Chain)】。",
+      "synonyms": [
+        "采购业务计划",
+        "在途计划",
+        "PBP"
+      ],
+      "type": "data"
+    },
+    {
+      "agent_facets": {
+        "searchable_fields": [
+          "material_code",
+          "material_name",
+          "demand_department"
+        ],
+        "semantic_summary_template": "{material_name}({material_code}) {quantity}{unit}，需求到货 {required_arrival_date}"
+      },
+      "description": "计划中的一条物资需求行，携带需求到货日期——它是整条链路计划时间倒排的终点基准，也是方案②「调整需求日期」唯一被改写的对象。",
+      "extensions": {
+        "decision_support": {
+          "decision": "方案②调整需求日期是否可行",
+          "writeback_action": "adjustRequiredArrivalDate"
+        },
+        "erp_api_mapping": {
+          "endpoint": "/msourcing/openapi/v1/queryPbpLine",
+          "method": "POST",
+          "operation": "queryPbpLine",
+          "system": "metaERP 寻源"
+        }
+      },
+      "id": "Procurement_Plan_Line",
+      "name": "采购计划行",
+      "primary_key": "plan_line_id",
+      "properties": [
+        {
+          "description": "采购计划行编号，主键。",
+          "is_required": true,
+          "is_unique": true,
+          "name": "plan_line_id",
+          "source": "ss_pbp_line_t.PBP_LINE_ID",
+          "type": "String"
+        },
+        {
+          "description": "所属采购计划。",
+          "is_foreign_key": true,
+          "is_required": true,
+          "name": "plan_id",
+          "references": "Procurement_Plan",
+          "source": "ss_pbp_rel_t.PBP_HEADER_ID",
+          "type": "String"
+        },
+        {
+          "description": "物料编码。",
+          "name": "material_code",
+          "source": "ss_pbp_line_t.ITEM_CODE",
+          "type": "String"
+        },
+        {
+          "description": "物料名称，人读标识。",
+          "name": "material_name",
+          "type": "String"
+        },
+        {
+          "description": "需求数量。",
+          "name": "quantity",
+          "source": "ss_pbp_line_t.QUANTITY",
+          "type": "Float"
+        },
+        {
+          "description": "计量单位。",
+          "name": "unit",
+          "type": "String"
+        },
+        {
+          "description": "需求到货日期——计划时间逐级倒排的终点。",
+          "is_required": true,
+          "name": "required_arrival_date",
+          "source": "ss_pbp_line_t.NEED_BY_DATE",
+          "type": "Date"
+        },
+        {
+          "description": "原始需求到货日期，方案②调整后用于留痕对比。",
+          "name": "original_required_arrival_date",
+          "type": "Date"
+        },
+        {
+          "description": "计划金额，金额偏差的分母。",
+          "name": "planned_amount",
+          "type": "Float",
+          "unit": "元"
+        },
+        {
+          "description": "需求部门，供货不及时的直接受影响方。",
+          "name": "demand_department",
+          "type": "String"
+        },
+        {
+          "description": "用途场景（生产／大修／技改），决定偏差的业务后果轻重。",
+          "name": "usage_scenario",
+          "type": "String"
+        }
+      ],
+      "relationship_description": "【采购计划行 (Procurement_Plan_Line)】属于【采购计划 (Procurement_Plan)】，并被【采购执行链路 (Procurement_Chain)】一对一盯防。",
+      "synonyms": [
+        "计划行",
+        "需求行"
+      ],
+      "type": "data"
+    },
+    {
+      "agent_facets": {
+        "disambiguation_keys": [
+          "plan_line_id"
+        ],
+        "searchable_fields": [
+          "chain_id",
+          "material_name",
+          "current_stage",
+          "planner"
+        ],
+        "semantic_summary_template": "{material_name} 链路走到「{current_stage}」，需求到货 {required_arrival_date}，预计到货 {forecast_arrival_date}"
+      },
+      "description": "一条计划行从立项到到货的全链路执行实例，把分散在申请／组包／询价／定标／合同／订单／验收各单据里的进度归拢成一条可盯防的主线。计划员看的「这单走到哪一步」就是它。",
+      "id": "Procurement_Chain",
+      "lifecycle_initial_state": "在途",
+      "lifecycle_state_property": "chain_status",
+      "lifecycle_states": [
+        {
+          "description": "链路执行中，纳入每日偏差扫描范围。",
+          "name": "在途"
+        },
+        {
+          "description": "到货节点完成，退出盯防。",
+          "name": "已完成",
+          "terminal": true
+        },
+        {
+          "description": "计划取消或需求撤销，退出盯防。",
+          "name": "已终止",
+          "terminal": true
+        }
+      ],
+      "lifecycle_transitions": [
+        {
+          "description": "验收完全接收，链路闭环。",
+          "from": "在途",
+          "id": "chain-finish",
+          "to": "已完成",
+          "trigger": "到货节点完成"
+        },
+        {
+          "description": "计划取消，停止盯防。",
+          "from": "在途",
+          "id": "chain-abort",
+          "to": "已终止",
+          "trigger": "需求撤销"
+        }
+      ],
+      "name": "采购执行链路",
+      "primary_key": "chain_id",
+      "properties": [
+        {
+          "description": "采购执行链路编号，主键。",
+          "is_required": true,
+          "is_unique": true,
+          "name": "chain_id",
+          "type": "String"
+        },
+        {
+          "description": "所属采购计划。",
+          "is_foreign_key": true,
+          "is_required": true,
+          "name": "plan_id",
+          "references": "Procurement_Plan",
+          "type": "String"
+        },
+        {
+          "description": "盯防的采购计划行。",
+          "is_foreign_key": true,
+          "is_required": true,
+          "name": "plan_line_id",
+          "references": "Procurement_Plan_Line",
+          "type": "String"
+        },
+        {
+          "description": "业务类型，取自计划头，决定标准周期口径。",
+          "enum_values": [
+            "物资",
+            "工程",
+            "服务"
+          ],
+          "name": "business_type",
+          "type": "Enum"
+        },
+        {
+          "description": "物料编码。",
+          "name": "material_code",
+          "type": "String"
+        },
+        {
+          "description": "物料名称。",
+          "name": "material_name",
+          "type": "String"
+        },
+        {
+          "description": "需求数量。",
+          "name": "quantity",
+          "type": "Float"
+        },
+        {
+          "description": "链路终点：需求到货日期。",
+          "name": "required_arrival_date",
+          "type": "Date"
+        },
+        {
+          "description": "链路当前所处节点。",
+          "enum_values": [
+            "立项",
+            "组包",
+            "询价",
+            "定标",
+            "合同",
+            "订单",
+            "到货"
+          ],
+          "name": "current_stage",
+          "type": "Enum"
+        },
+        {
+          "description": "链路整体状态。",
+          "enum_values": [
+            "在途",
+            "已完成",
+            "已终止"
+          ],
+          "is_required": true,
+          "name": "chain_status",
+          "type": "Enum"
+        },
+        {
+          "description": "计划员，链路盯防与修正确认的第一责任人。",
+          "name": "planner",
+          "type": "String"
+        },
+        {
+          "description": "采购员，链路处置动作的执行人：催办供应商、推进审批、办理调拨手续，并对停滞原因作出澄清。",
+          "name": "buyer",
+          "type": "String"
+        },
+        {
+          "description": "需求部门，需求日期调整须经其确认合理性。",
+          "name": "demand_department",
+          "type": "String"
+        },
+        {
+          "description": "按当前进度推演出的预计到货日期，影响推演的基线。",
+          "name": "forecast_arrival_date",
+          "type": "Date"
+        },
+        {
+          "description": "最近一次节点进度同步时间。",
+          "name": "last_synced_at",
+          "type": "Timestamp"
+        }
+      ],
+      "relationship_description": "【采购执行链路 (Procurement_Chain)】由 7 条【链路节点进度 (Chain_Stage_Progress)】组成，并被【执行偏差 (Execution_Deviation)】逐节点评估。",
+      "synonyms": [
+        "全链路",
+        "在途单",
+        "执行链路"
+      ],
+      "type": "data"
+    },
+    {
+      "agent_facets": {
+        "searchable_fields": [
+          "stage_node",
+          "stage_status",
+          "source_document_no"
+        ],
+        "semantic_summary_template": "{stage_node}节点 {stage_status}，计划 {planned_finish_date} / 实际 {actual_finish_date}"
+      },
+      "description": "链路上某一个节点（立项／组包／询价／定标／合同／订单／到货）的进度记录：计划完成时间由需求到货日期倒排得出，实际完成时间由对应业务单据的状态变更回写。偏差计算的最小可比单元。",
+      "id": "Chain_Stage_Progress",
+      "name": "链路节点进度",
+      "primary_key": "stage_progress_id",
+      "properties": [
+        {
+          "description": "节点进度编号，主键。",
+          "is_required": true,
+          "is_unique": true,
+          "name": "stage_progress_id",
+          "type": "String"
+        },
+        {
+          "description": "所属采购执行链路。",
+          "is_foreign_key": true,
+          "is_required": true,
+          "name": "chain_id",
+          "references": "Procurement_Chain",
+          "type": "String"
+        },
+        {
+          "description": "节点名称。",
+          "enum_values": [
+            "立项",
+            "组包",
+            "询价",
+            "定标",
+            "合同",
+            "订单",
+            "到货"
+          ],
+          "is_required": true,
+          "name": "stage_node",
+          "type": "Enum"
+        },
+        {
+          "description": "节点顺序号 1~7，倒排推算的层级。",
+          "maximum": 7,
+          "minimum": 1,
+          "name": "stage_sequence",
+          "type": "Integer"
+        },
+        {
+          "description": "本节点标准周期天数，取自采购阶段周期标准。",
+          "name": "standard_cycle_days",
+          "type": "Float",
+          "unit": "天"
+        },
+        {
+          "description": "计划完成时间，由需求到货日期按标准周期逐级倒排得出。",
+          "name": "planned_finish_date",
+          "type": "Date"
+        },
+        {
+          "description": "实际完成时间，来自对应业务单据的状态／时间字段。",
+          "name": "actual_finish_date",
+          "type": "Date"
+        },
+        {
+          "description": "节点进度状态。",
+          "enum_values": [
+            "未开始",
+            "进行中",
+            "已完成",
+            "部分完成"
+          ],
+          "is_required": true,
+          "name": "stage_status",
+          "type": "Enum"
+        },
+        {
+          "description": "本节点取数来源的单据类型。",
+          "enum_values": [
+            "采购申请",
+            "采购包",
+            "询价单",
+            "定标结果",
+            "采购合同",
+            "采购订单",
+            "采购验收"
+          ],
+          "name": "source_document_type",
+          "type": "Enum"
+        },
+        {
+          "description": "来源单据编号，进度可追溯凭据。",
+          "name": "source_document_no",
+          "type": "String"
+        },
+        {
+          "description": "本节点开始时间，滞留天数的起算点。",
+          "name": "stage_started_at",
+          "type": "Timestamp"
+        },
+        {
+          "default": false,
+          "description": "计划完成时间是否已按标准周期正排+倒排双向推算并交叉校验补齐——补齐了偏差才可算。",
+          "name": "planned_date_derived",
+          "type": "Boolean"
+        },
+        {
+          "computed_expression": "days(now() - stage_started_at)",
+          "description": "滞留天数：节点未完成时已停留的天数。",
+          "is_computed": true,
+          "name": "dwell_days",
+          "type": "Float",
+          "unit": "天"
+        },
+        {
+          "description": "本节点进度最近刷新时间。",
+          "name": "synced_at",
+          "type": "Timestamp"
+        }
+      ],
+      "relationship_description": "【链路节点进度 (Chain_Stage_Progress)】属于【采购执行链路 (Procurement_Chain)】，其计划完成时间由【采购阶段周期标准 (Stage_Cycle_Standard)】倒排得出，并被【执行偏差 (Execution_Deviation)】逐条比对。",
+      "synonyms": [
+        "节点进度",
+        "阶段进度"
+      ],
+      "type": "data"
+    },
+    {
+      "agent_facets": {
+        "searchable_fields": [
+          "requisition_no",
+          "requisition_status"
+        ],
+        "semantic_summary_template": "申请 {requisition_no} 状态{requisition_status}，审批于 {approved_at}"
+      },
+      "description": "立项节点的业务单据。申请审批通过即代表立项完成——这是链路第一个可确认的实际完成时间。",
+      "extensions": {
+        "erp_api_mapping": {
+          "endpoint": "/pr/external/openapi/v1/queryPrHeader",
+          "method": "POST",
+          "operation": "queryPrHeader",
+          "system": "metaERP 采购申请"
+        }
+      },
+      "id": "Purchase_Requisition",
+      "name": "采购申请",
+      "primary_key": "requisition_id",
+      "properties": [
+        {
+          "description": "采购申请编号，主键。",
+          "is_required": true,
+          "is_unique": true,
+          "name": "requisition_id",
+          "source": "pr_header_t.pr_header_id",
+          "type": "String"
+        },
+        {
+          "description": "申请单号。",
+          "name": "requisition_no",
+          "source": "pr_header_t.pr_number",
+          "type": "String"
+        },
+        {
+          "description": "所属采购执行链路。",
+          "is_foreign_key": true,
+          "name": "chain_id",
+          "references": "Procurement_Chain",
+          "type": "String"
+        },
+        {
+          "description": "来源采购计划行。",
+          "is_foreign_key": true,
+          "name": "plan_line_id",
+          "references": "Procurement_Plan_Line",
+          "source": "pr_line_t.source_doc_line_id",
+          "type": "String"
+        },
+        {
+          "description": "申请审批状态；已审批即立项完成。",
+          "enum_values": [
+            "草稿",
+            "审批中",
+            "已审批",
+            "已驳回"
+          ],
+          "name": "requisition_status",
+          "source": "pr_header_t.pr_header_status",
+          "type": "Enum"
+        },
+        {
+          "description": "申请审批通过时间，即立项节点实际完成时间。",
+          "name": "approved_at",
+          "type": "Timestamp"
+        },
+        {
+          "description": "物料编码。",
+          "name": "material_code",
+          "source": "pr_line_t.item_code",
+          "type": "String"
+        },
+        {
+          "description": "需求部门。",
+          "name": "demand_department",
+          "type": "String"
+        }
+      ],
+      "relationship_description": "【采购申请 (Purchase_Requisition)】由【采购计划行 (Procurement_Plan_Line)】派生，向下被【采购包 (Sourcing_Package)】与【采购订单 (Purchase_Order)】引用。",
+      "synonyms": [
+        "采购需求",
+        "请购单",
+        "PR"
+      ],
+      "type": "data"
+    },
+    {
+      "agent_facets": {
+        "searchable_fields": [
+          "package_no",
+          "package_status"
+        ],
+        "semantic_summary_template": "采购包 {package_no} 状态{package_status}，组包于 {packaged_at}"
+      },
+      "description": "组包节点的业务单据。多条申请合并成一个寻源包，包状态转有效即组包完成；组包等待是常见的滞留成因。",
+      "extensions": {
+        "erp_api_mapping": {
+          "endpoint": "/open/procPackage/v1/queryProcPackageLineExecuteMode",
+          "method": "POST",
+          "operation": "queryProcPackageLineExecuteMode",
+          "system": "metaERP 寻源"
+        }
+      },
+      "id": "Sourcing_Package",
+      "name": "采购包",
+      "primary_key": "package_id",
+      "properties": [
+        {
+          "description": "采购包编号，主键。",
+          "is_required": true,
+          "is_unique": true,
+          "name": "package_id",
+          "source": "ss_proc_package_header_t.PROC_PACKAGE_HEADER_ID",
+          "type": "String"
+        },
+        {
+          "description": "采购包单号。",
+          "name": "package_no",
+          "type": "String"
+        },
+        {
+          "description": "所属采购执行链路。",
+          "is_foreign_key": true,
+          "name": "chain_id",
+          "references": "Procurement_Chain",
+          "type": "String"
+        },
+        {
+          "description": "组入本包的采购申请。",
+          "is_foreign_key": true,
+          "name": "requisition_id",
+          "references": "Purchase_Requisition",
+          "source": "ss_proc_package_line_t.SOURCE_OBJECT_ID",
+          "type": "String"
+        },
+        {
+          "description": "采购包状态；有效即组包完成。",
+          "enum_values": [
+            "草稿",
+            "审批中",
+            "已驳回",
+            "有效",
+            "已取消"
+          ],
+          "name": "package_status",
+          "source": "ss_proc_package_header_t.STATUS",
+          "type": "Enum"
+        },
+        {
+          "description": "组包完成时间，即组包节点实际完成时间。",
+          "name": "packaged_at",
+          "source": "ss_proc_package_header_t.LAST_UPDATE_DATE",
+          "type": "Timestamp"
+        },
+        {
+          "description": "预计完成寻源日期，供应商侧的承诺基线。",
+          "name": "expected_sourcing_finish_date",
+          "source": "ss_proc_package_header_t.EXPECTED_FINISH_SOURCING_DATE",
+          "type": "Date"
+        },
+        {
+          "description": "物料编码。",
+          "name": "material_code",
+          "source": "ss_proc_package_line_t.ITEM_CODE",
+          "type": "String"
+        }
+      ],
+      "relationship_description": "【采购包 (Sourcing_Package)】汇总【采购申请 (Purchase_Requisition)】，向下派生【询价单 (Inquiry_Notice)】。",
+      "synonyms": [
+        "寻源包",
+        "组包"
+      ],
+      "type": "data"
+    },
+    {
+      "agent_facets": {
+        "searchable_fields": [
+          "inquiry_no",
+          "inquiry_status"
+        ],
+        "semantic_summary_template": "询价 {inquiry_no} 状态{inquiry_status}，发标 {published_at}／截标 {bid_close_date}"
+      },
+      "description": "询价与发标节点的业务单据。询价单生效代表询价节点完成，发标日期代表发标动作完成；重新招标次数是「流标重招」成因标签的判据。",
+      "extensions": {
+        "erp_api_mapping": {
+          "endpoint": "/open/rfx/v1/queryRfxList",
+          "method": "POST",
+          "operation": "queryRfxList",
+          "system": "metaERP 寻源"
+        }
+      },
+      "id": "Inquiry_Notice",
+      "name": "询价单",
+      "primary_key": "inquiry_id",
+      "properties": [
+        {
+          "description": "询价单编号，主键。",
+          "is_required": true,
+          "is_unique": true,
+          "name": "inquiry_id",
+          "source": "ss_rfx_header_t.RFX_HEADER_ID",
+          "type": "String"
+        },
+        {
+          "description": "询价单号。",
+          "name": "inquiry_no",
+          "type": "String"
+        },
+        {
+          "description": "所属采购执行链路。",
+          "is_foreign_key": true,
+          "name": "chain_id",
+          "references": "Procurement_Chain",
+          "type": "String"
+        },
+        {
+          "description": "来源采购包。",
+          "is_foreign_key": true,
+          "name": "package_id",
+          "references": "Sourcing_Package",
+          "source": "ss_rfx_header_t.SOURCE_OBJECT_ID",
+          "type": "String"
+        },
+        {
+          "description": "询价单状态。",
+          "enum_values": [
+            "草稿",
+            "激活",
+            "修正",
+            "已锁定",
+            "定标完成",
+            "已结束",
+            "已取消"
+          ],
+          "name": "inquiry_status",
+          "source": "ss_rfx_header_t.RFX_STATUS",
+          "type": "Enum"
+        },
+        {
+          "description": "询价单生效时间，即询价节点实际完成时间。",
+          "name": "effective_at",
+          "source": "ss_rfx_header_t.EFFECTIVE_DATE",
+          "type": "Timestamp"
+        },
+        {
+          "description": "发标日期。",
+          "name": "published_at",
+          "source": "ss_rfx_header_t.PUBLISH_DATE",
+          "type": "Timestamp"
+        },
+        {
+          "description": "截标日期。",
+          "name": "bid_close_date",
+          "source": "ss_rfx_header_t.CLOSE_BIDDING_DATE",
+          "type": "Timestamp"
+        },
+        {
+          "default": 0,
+          "description": "重新招标次数，流标重招成因的判据。",
+          "name": "rebid_count",
+          "type": "Integer"
+        }
+      ],
+      "relationship_description": "【询价单 (Inquiry_Notice)】由【采购包 (Sourcing_Package)】派生，向下产生【定标结果 (Bid_Award)】。",
+      "synonyms": [
+        "招标单",
+        "RFx"
+      ],
+      "type": "data"
+    },
+    {
+      "agent_facets": {
+        "searchable_fields": [
+          "supplier_name",
+          "award_status"
+        ],
+        "semantic_summary_template": "{supplier_name} 于 {awarded_at} 中标"
+      },
+      "description": "定标节点的业务单据。中标日期即定标节点实际完成时间，同时确定了后续合同与订单的供应商——供应商延迟成因由此归属。",
+      "extensions": {
+        "erp_api_mapping": {
+          "endpoint": "/open/rfx/v1/queryAwardList",
+          "method": "POST",
+          "operation": "queryAwardList",
+          "system": "metaERP 寻源"
+        }
+      },
+      "id": "Bid_Award",
+      "name": "定标结果",
+      "primary_key": "award_id",
+      "properties": [
+        {
+          "description": "定标结果编号，主键。",
+          "is_required": true,
+          "is_unique": true,
+          "name": "award_id",
+          "source": "ss_bid_header_t.BID_HEADER_ID",
+          "type": "String"
+        },
+        {
+          "description": "所属采购执行链路。",
+          "is_foreign_key": true,
+          "name": "chain_id",
+          "references": "Procurement_Chain",
+          "type": "String"
+        },
+        {
+          "description": "所属询价单。",
+          "is_foreign_key": true,
+          "name": "inquiry_id",
+          "references": "Inquiry_Notice",
+          "source": "ss_bid_header_t.RFX_HEADER_ID",
+          "type": "String"
+        },
+        {
+          "description": "中标供应商名称。",
+          "name": "supplier_name",
+          "type": "String"
+        },
+        {
+          "description": "定标状态。",
+          "enum_values": [
+            "草稿",
+            "激活",
+            "已归档"
+          ],
+          "name": "award_status",
+          "source": "ss_bid_header_t.BID_STATUS",
+          "type": "Enum"
+        },
+        {
+          "description": "中标日期，即定标节点实际完成时间。",
+          "name": "awarded_at",
+          "source": "ss_bid_header_t.AWARD_DATE",
+          "type": "Timestamp"
+        }
+      ],
+      "relationship_description": "【定标结果 (Bid_Award)】属于【询价单 (Inquiry_Notice)】，向下派生【采购合同 (Purchase_Contract)】。",
+      "synonyms": [
+        "中标结果",
+        "供应商回复"
+      ],
+      "type": "data"
+    },
+    {
+      "agent_facets": {
+        "searchable_fields": [
+          "contract_no",
+          "supplier_name",
+          "signing_status"
+        ],
+        "semantic_summary_template": "合同 {contract_no}（{supplier_name}）{signing_status}，签署于 {signed_at}"
+      },
+      "description": "合同节点的业务单据。签署／生效时间即合同节点实际完成时间；价格协议编号保留了合同的前置寻源凭据。",
+      "extensions": {
+        "erp_api_mapping": {
+          "endpoint": "/open/contract/v1/queryContract",
+          "method": "POST",
+          "operation": "queryContract",
+          "system": "metaERP 合同"
+        }
+      },
+      "id": "Purchase_Contract",
+      "name": "采购合同",
+      "primary_key": "contract_id",
+      "properties": [
+        {
+          "description": "采购合同编号，主键。",
+          "is_required": true,
+          "is_unique": true,
+          "name": "contract_id",
+          "type": "String"
+        },
+        {
+          "description": "合同编号（业务可读）。",
+          "name": "contract_no",
+          "type": "String"
+        },
+        {
+          "description": "所属采购执行链路。",
+          "is_foreign_key": true,
+          "name": "chain_id",
+          "references": "Procurement_Chain",
+          "type": "String"
+        },
+        {
+          "description": "来源定标结果。",
+          "is_foreign_key": true,
+          "name": "award_id",
+          "references": "Bid_Award",
+          "type": "String"
+        },
+        {
+          "description": "供应商价格协议编号，合同的前置凭据。",
+          "name": "price_agreement_no",
+          "source": "ss_spa_header_t.SPA_NUMBER",
+          "type": "String"
+        },
+        {
+          "description": "合同签署状态。",
+          "enum_values": [
+            "待甲方签署",
+            "待乙方签署",
+            "已签署",
+            "已生效"
+          ],
+          "name": "signing_status",
+          "source": "clm_signing_info_t.SIGNING_STATUS",
+          "type": "Enum"
+        },
+        {
+          "description": "合同签署时间，即合同节点实际完成时间。",
+          "name": "signed_at",
+          "source": "clm_signing_info_t.SIGNING_DATE",
+          "type": "Timestamp"
+        },
+        {
+          "description": "合同生效日期。",
+          "name": "effective_at",
+          "source": "clm_contract_t.EFFECTIVE_DATE",
+          "type": "Timestamp"
+        },
+        {
+          "description": "供应商名称。",
+          "name": "supplier_name",
+          "type": "String"
+        }
+      ],
+      "relationship_description": "【采购合同 (Purchase_Contract)】由【定标结果 (Bid_Award)】派生，向下派生【采购订单 (Purchase_Order)】。",
+      "synonyms": [
+        "合同",
+        "供货合同"
+      ],
+      "type": "data"
+    },
+    {
+      "agent_facets": {
+        "searchable_fields": [
+          "order_no",
+          "supplier_name",
+          "approval_status"
+        ],
+        "semantic_summary_template": "订单 {order_no}（{supplier_name}）已到 {received_quantity}/{ordered_quantity}，承诺到货 {promised_arrival_date}"
+      },
+      "description": "订单节点的业务单据，同时承载到货进度。订单生效即订单节点完成；已接收数量／订单数量就是进度偏差的直接来源。",
+      "extensions": {
+        "erp_api_mapping": {
+          "endpoint": "/poquery/open/queryPoService/v1/poHeader",
+          "method": "POST",
+          "operation": "queryPoHeader",
+          "system": "metaERP 采购订单"
+        }
+      },
+      "id": "Purchase_Order",
+      "name": "采购订单",
+      "primary_key": "order_id",
+      "properties": [
+        {
+          "description": "采购订单编号，主键。",
+          "is_required": true,
+          "is_unique": true,
+          "name": "order_id",
+          "source": "po_header_t.po_header_id",
+          "type": "String"
+        },
+        {
+          "description": "订单号（业务可读）。",
+          "name": "order_no",
+          "type": "String"
+        },
+        {
+          "description": "所属采购执行链路。",
+          "is_foreign_key": true,
+          "name": "chain_id",
+          "references": "Procurement_Chain",
+          "type": "String"
+        },
+        {
+          "description": "来源采购合同。",
+          "is_foreign_key": true,
+          "name": "contract_id",
+          "references": "Purchase_Contract",
+          "type": "String"
+        },
+        {
+          "description": "来源采购申请。",
+          "is_foreign_key": true,
+          "name": "requisition_id",
+          "references": "Purchase_Requisition",
+          "source": "po_relation_t.source_doc_header_id",
+          "type": "String"
+        },
+        {
+          "description": "供应商名称。",
+          "name": "supplier_name",
+          "type": "String"
+        },
+        {
+          "description": "订单审批状态。",
+          "enum_values": [
+            "草稿",
+            "审批中",
+            "已审批",
+            "已拒绝"
+          ],
+          "name": "approval_status",
+          "source": "po_header_t.approval_status",
+          "type": "Enum"
+        },
+        {
+          "description": "订单审批时间。",
+          "name": "approved_at",
+          "source": "po_header_t.approved_date",
+          "type": "Timestamp"
+        },
+        {
+          "description": "订单生效日期，即订单节点实际完成时间。",
+          "name": "effective_at",
+          "source": "po_header_t.effective_date",
+          "type": "Timestamp"
+        },
+        {
+          "description": "订单数量（应完量），进度偏差的分母。",
+          "name": "ordered_quantity",
+          "source": "po_line_shipment_t.quantity",
+          "type": "Float"
+        },
+        {
+          "description": "已接收数量（已完量），进度偏差的分子。",
+          "name": "received_quantity",
+          "source": "po_line_shipment_t.received_quantity",
+          "type": "Float"
+        },
+        {
+          "computed_expression": "received_quantity / ordered_quantity",
+          "description": "到货完成率 = 已接收数量 / 订单数量。",
+          "is_computed": true,
+          "name": "receipt_ratio",
+          "type": "Float"
+        },
+        {
+          "description": "供应商承诺到货日期。",
+          "name": "promised_arrival_date",
+          "source": "po_line_shipment_t.need_by_date",
+          "type": "Date"
+        },
+        {
+          "description": "已发生金额，金额偏差的分子。",
+          "name": "incurred_amount",
+          "type": "Float",
+          "unit": "元"
+        }
+      ],
+      "relationship_description": "【采购订单 (Purchase_Order)】由【采购合同 (Purchase_Contract)】与【采购申请 (Purchase_Requisition)】派生，向下被【采购验收 (Goods_Acceptance)】核销。",
+      "synonyms": [
+        "订单",
+        "PO"
+      ],
+      "type": "data"
+    },
+    {
+      "agent_facets": {
+        "searchable_fields": [
+          "acceptance_no",
+          "acceptance_result"
+        ],
+        "semantic_summary_template": "验收 {acceptance_no}：{acceptance_result}，接收 {received_quantity}"
+      },
+      "description": "到货节点的业务单据，也是全链路的终点。接收数量与订单数量相等即完全接收、到货节点完成；小于则为部分接收，链路仍在途。",
+      "extensions": {
+        "erp_api_mapping": {
+          "endpoint": "/actransaction/queryAcAPIService/v1/queryAcceptanceHeader/page",
+          "method": "POST",
+          "operation": "queryAcceptanceHeader",
+          "system": "metaERP 验收"
+        }
+      },
+      "id": "Goods_Acceptance",
+      "name": "采购验收",
+      "primary_key": "acceptance_id",
+      "properties": [
+        {
+          "description": "采购验收编号，主键。",
+          "is_required": true,
+          "is_unique": true,
+          "name": "acceptance_id",
+          "source": "ac_header_t.ac_header_id",
+          "type": "String"
+        },
+        {
+          "description": "验收单号。",
+          "name": "acceptance_no",
+          "type": "String"
+        },
+        {
+          "description": "所属采购执行链路。",
+          "is_foreign_key": true,
+          "name": "chain_id",
+          "references": "Procurement_Chain",
+          "type": "String"
+        },
+        {
+          "description": "来源采购订单。",
+          "is_foreign_key": true,
+          "name": "order_id",
+          "references": "Purchase_Order",
+          "source": "ac_line_t.source_doc_header_id",
+          "type": "String"
+        },
+        {
+          "description": "验收单审批状态。",
+          "enum_values": [
+            "草稿",
+            "审批中",
+            "已审批"
+          ],
+          "name": "approval_status",
+          "source": "ac_header_t.approval_status",
+          "type": "Enum"
+        },
+        {
+          "description": "本次验收接收数量。",
+          "name": "received_quantity",
+          "source": "ac_line_t.received_quantity",
+          "type": "Float"
+        },
+        {
+          "description": "接收数量与订单数量比对结论。",
+          "enum_values": [
+            "部分接收",
+            "完全接收"
+          ],
+          "name": "acceptance_result",
+          "type": "Enum"
+        },
+        {
+          "description": "验收完成时间，即到货节点实际完成时间。",
+          "name": "accepted_at",
+          "type": "Timestamp"
+        },
+        {
+          "description": "验收交易类型（正常验收／退货）。",
+          "name": "transaction_type",
+          "source": "ac_transaction_t.transaction_type",
+          "type": "String"
+        }
+      ],
+      "relationship_description": "【采购验收 (Goods_Acceptance)】核销【采购订单 (Purchase_Order)】，完全接收时使【采购执行链路 (Procurement_Chain)】闭环。",
+      "synonyms": [
+        "验收单",
+        "到货验收"
+      ],
+      "type": "data"
+    },
+    {
+      "agent_facets": {
+        "searchable_fields": [
+          "business_type",
+          "stage_node"
+        ],
+        "semantic_summary_template": "{business_type}·{stage_node} 标准周期 {standard_cycle_days} 天"
+      },
+      "description": "业务类型 × 节点的标准耗时配置。采购执行过程本身没有节点计划时间字段，全靠这张配置从需求到货日期逐级倒排补齐——它是「偏差可算」的前提。",
+      "id": "Stage_Cycle_Standard",
+      "name": "采购阶段周期标准",
+      "primary_key": "cycle_standard_id",
+      "properties": [
+        {
+          "description": "周期标准编号，主键。",
+          "is_required": true,
+          "is_unique": true,
+          "name": "cycle_standard_id",
+          "type": "String"
+        },
+        {
+          "description": "业务类型。",
+          "enum_values": [
+            "物资",
+            "工程",
+            "服务"
+          ],
+          "is_required": true,
+          "name": "business_type",
+          "source": "采购阶段节点周期配置.BUSINESS_TYPE",
+          "type": "Enum"
+        },
+        {
+          "description": "阶段节点。",
+          "enum_values": [
+            "立项",
+            "组包",
+            "询价",
+            "定标",
+            "合同",
+            "订单",
+            "到货"
+          ],
+          "is_required": true,
+          "name": "stage_node",
+          "source": "采购阶段节点周期配置.STAGE_NODE",
+          "type": "Enum"
+        },
+        {
+          "description": "该节点标准完成天数，倒排推算的步长。",
+          "is_required": true,
+          "name": "standard_cycle_days",
+          "source": "采购阶段节点周期配置.STANDARD_CYCLE_DAYS",
+          "type": "Float",
+          "unit": "天"
+        },
+        {
+          "description": "节点顺序号 1~7。",
+          "maximum": 7,
+          "minimum": 1,
+          "name": "stage_sequence",
+          "type": "Integer"
+        },
+        {
+          "description": "配置责任人。",
+          "name": "maintainer",
+          "source": "采购阶段节点周期配置.MAINTAINER",
+          "type": "String"
+        },
+        {
+          "description": "配置生效日期。",
+          "name": "effective_date",
+          "source": "采购阶段节点周期配置.EFFECTIVE_DATE",
+          "type": "Date"
+        }
+      ],
+      "relationship_description": "【采购阶段周期标准 (Stage_Cycle_Standard)】为【链路节点进度 (Chain_Stage_Progress)】提供计划完成时间基准，并为【按期达成概率评估 (Delivery_Probability_Assessment)】提供剩余周期。",
+      "synonyms": [
+        "节点周期配置",
+        "标准周期"
+      ],
+      "type": "reference"
+    },
+    {
+      "agent_facets": {
+        "searchable_fields": [
+          "threshold_code",
+          "threshold_name"
+        ],
+        "semantic_summary_template": "{threshold_code} = {threshold_value}{unit}"
+      },
+      "description": "把「拖一周要不要紧」这种模糊口径落成可算指标的阈值表：时间偏差天数、进度偏差比例、红黄概率分界。误报回收的调参结果最终回流到这里。",
+      "id": "Alert_Threshold_Setting",
+      "name": "预警阈值配置",
+      "primary_key": "threshold_id",
+      "properties": [
+        {
+          "description": "阈值配置编号，主键。",
+          "is_required": true,
+          "is_unique": true,
+          "name": "threshold_id",
+          "type": "String"
+        },
+        {
+          "description": "阈值项编码。",
+          "enum_values": [
+            "时间偏差天数",
+            "进度偏差比例",
+            "红色概率上限",
+            "黄色概率下限"
+          ],
+          "is_required": true,
+          "name": "threshold_code",
+          "type": "Enum"
+        },
+        {
+          "description": "阈值项名称。",
+          "name": "threshold_name",
+          "type": "String"
+        },
+        {
+          "description": "阈值取值，如时间偏差 7 天、进度偏差 0.2、红色概率上限 0.6。",
+          "is_required": true,
+          "name": "threshold_value",
+          "source": "预警阈值配置表.THRESHOLD_VALUE",
+          "type": "Float"
+        },
+        {
+          "description": "取值单位（天／比例）。",
+          "name": "unit",
+          "type": "String"
+        },
+        {
+          "description": "配置责任人。",
+          "name": "maintainer",
+          "type": "String"
+        },
+        {
+          "description": "配置生效日期。",
+          "name": "effective_date",
+          "type": "Date"
+        },
+        {
+          "description": "最近一次因误报回流被调整的时间。",
+          "name": "last_tuned_at",
+          "type": "Timestamp"
+        },
+        {
+          "description": "最近一次调整原因。",
+          "name": "tuning_reason",
+          "type": "String"
+        }
+      ],
+      "relationship_description": "【预警阈值配置 (Alert_Threshold_Setting)】约束【执行偏差 (Execution_Deviation)】的分级判定，并被【规则评审条目 (Rule_Review_Item)】提议调整。",
+      "synonyms": [
+        "阈值表",
+        "预警参数"
+      ],
+      "type": "rule"
+    },
+    {
+      "agent_facets": {
+        "disambiguation_keys": [
+          "chain_id",
+          "stage_node"
+        ],
+        "searchable_fields": [
+          "stage_node",
+          "deviation_level",
+          "cause_tag"
+        ],
+        "semantic_summary_template": "{stage_node}节点偏差 {time_deviation_days} 天，等级{deviation_level}，成因「{cause_tag}」"
+      },
+      "description": "对在途链路逐节点算出的执行偏差，是三级预警的判定依据。时间偏差＝实际−计划，进度偏差＝1−已完量/应完量，金额偏差＝已发生/计划−1；再打上偏差等级与成因标签，支撑根因下钻与方案推荐。",
+      "extensions": {
+        "decision_support": {
+          "decision": "该链路是否需要预警与干预",
+          "writeback_action": "无——系统计算对象，处置写回落在计划／计划行／调拨申请上"
+        }
+      },
+      "id": "Execution_Deviation",
+      "lifecycle_initial_state": "待评分",
+      "lifecycle_state_property": "disposal_state",
+      "lifecycle_states": [
+        {
+          "description": "偏差已算出，等待按期概率评分。",
+          "name": "待评分"
+        },
+        {
+          "description": "已完成评分，等待按级推送。",
+          "name": "待预警"
+        },
+        {
+          "description": "红／黄预警已进入方案决策与执行。",
+          "name": "处置中"
+        },
+        {
+          "description": "偏差消除校验通过，处置留痕完成。",
+          "name": "已闭环",
+          "terminal": true
+        },
+        {
+          "description": "无偏差或蓝色自行处置结束，转为监控留痕。",
+          "name": "已归档",
+          "terminal": true
+        }
+      ],
+      "lifecycle_transitions": [
+        {
+          "description": "存在偏差，进入概率评分与分级。",
+          "from": "待评分",
+          "id": "dev-score",
+          "to": "待预警",
+          "trigger": "识别出偏差"
+        },
+        {
+          "description": "未超阈值，直接归档监控。",
+          "from": "待评分",
+          "id": "dev-archive",
+          "to": "已归档",
+          "trigger": "无偏差"
+        },
+        {
+          "description": "进入方案生成与领导决策。",
+          "from": "待预警",
+          "id": "dev-dispose",
+          "to": "处置中",
+          "trigger": "红／黄预警推送"
+        },
+        {
+          "description": "计划员自行处置后归档。",
+          "from": "待预警",
+          "id": "dev-blue-archive",
+          "to": "已归档",
+          "trigger": "蓝色自行处置"
+        },
+        {
+          "description": "方案执行到位，链路恢复。",
+          "from": "处置中",
+          "id": "dev-close",
+          "to": "已闭环",
+          "trigger": "偏差消除校验通过"
+        }
+      ],
+      "name": "执行偏差",
+      "primary_key": "deviation_id",
+      "properties": [
+        {
+          "description": "执行偏差编号，主键。",
+          "is_required": true,
+          "is_unique": true,
+          "name": "deviation_id",
+          "type": "String"
+        },
+        {
+          "description": "所属采购执行链路。",
+          "is_foreign_key": true,
+          "is_required": true,
+          "name": "chain_id",
+          "references": "Procurement_Chain",
+          "type": "String"
+        },
+        {
+          "description": "偏差归属的节点进度记录。",
+          "is_foreign_key": true,
+          "name": "stage_progress_id",
+          "references": "Chain_Stage_Progress",
+          "type": "String"
+        },
+        {
+          "description": "发生偏差的节点。",
+          "enum_values": [
+            "立项",
+            "组包",
+            "询价",
+            "定标",
+            "合同",
+            "订单",
+            "到货"
+          ],
+          "is_required": true,
+          "name": "stage_node",
+          "type": "Enum"
+        },
+        {
+          "description": "该节点计划完成时间。",
+          "name": "planned_finish_date",
+          "type": "Date"
+        },
+        {
+          "description": "该节点实际完成时间；未完成时取当前扫描日。",
+          "name": "actual_finish_date",
+          "type": "Date"
+        },
+        {
+          "description": "时间偏差 = 实际完成时间 − 计划完成时间，正数为延迟。",
+          "name": "time_deviation_days",
+          "source": "执行偏差.TIME_DEVIATION",
+          "type": "Float",
+          "unit": "天"
+        },
+        {
+          "description": "进度偏差 = 1 − 已接收数量 / 订单数量。",
+          "name": "schedule_deviation_ratio",
+          "source": "执行偏差.SCHEDULE_DEVIATION",
+          "type": "Float"
+        },
+        {
+          "description": "金额偏差 = 已发生金额 / 计划金额 − 1，归因时参考本单金额与历史同类单均值的比对。",
+          "name": "amount_deviation_ratio",
+          "source": "执行偏差.AMOUNT_DEVIATION",
+          "type": "Float"
+        },
+        {
+          "description": "是否存在偏差：时间偏差或进度偏差任一超阈值即为真。",
+          "is_required": true,
+          "name": "has_deviation",
+          "type": "Boolean"
+        },
+        {
+          "description": "偏差等级（三级预警）。",
+          "enum_values": [
+            "无偏差",
+            "蓝色",
+            "黄色",
+            "红色"
+          ],
+          "is_required": true,
+          "name": "deviation_level",
+          "source": "执行偏差.DEVIATION_LEVEL",
+          "type": "Enum"
+        },
+        {
+          "description": "成因标签，支撑根因下钻与方案推荐。",
+          "enum_values": [
+            "供应商延迟",
+            "审批滞留",
+            "组包等待",
+            "流标重招",
+            "物流异常",
+            "其他"
+          ],
+          "name": "cause_tag",
+          "source": "执行偏差.CAUSE_TAG",
+          "type": "Enum"
+        },
+        {
+          "description": "成因归纳说明，一句话讲清为什么慢；采购员澄清结果也写在这里。",
+          "name": "cause_explanation",
+          "type": "String"
+        },
+        {
+          "default": "无需澄清",
+          "description": "停滞原因澄清状态：偏差停滞在采购执行环节且成因无法自动判明时置为待采购员澄清。",
+          "enum_values": [
+            "无需澄清",
+            "待采购员澄清",
+            "已澄清"
+          ],
+          "name": "cause_clarification_status",
+          "type": "Enum"
+        },
+        {
+          "description": "当前节点滞留天数。",
+          "name": "dwell_days",
+          "type": "Float",
+          "unit": "天"
+        },
+        {
+          "description": "偏差处置状态。",
+          "enum_values": [
+            "待评分",
+            "待预警",
+            "处置中",
+            "已闭环",
+            "已归档"
+          ],
+          "is_required": true,
+          "name": "disposal_state",
+          "type": "Enum"
+        },
+        {
+          "description": "本次偏差计算时间。",
+          "is_required": true,
+          "name": "evaluated_at",
+          "type": "Timestamp"
+        }
+      ],
+      "relationship_description": "【执行偏差 (Execution_Deviation)】评估【链路节点进度 (Chain_Stage_Progress)】，被【按期达成概率评估 (Delivery_Probability_Assessment)】打分，并触发【偏差预警 (Deviation_Alert)】。",
+      "synonyms": [
+        "偏差",
+        "执行偏差计算对象"
+      ],
+      "type": "data"
+    },
+    {
+      "agent_facets": {
+        "searchable_fields": [
+          "probability_grade",
+          "current_stage"
+        ],
+        "semantic_summary_template": "按期概率 {on_time_probability}（{probability_grade}），理由：{explanation}"
+      },
+      "description": "回答「这单还能不能按期到」——超 3 天但剩余周期充足不要紧，超 1 天但已到最终节点就很要紧。综合当前节点剩余标准周期、滞留天数与同类历史达成率给出概率，并必须附可解释理由。",
+      "id": "Delivery_Probability_Assessment",
+      "name": "按期达成概率评估",
+      "primary_key": "assessment_id",
+      "properties": [
+        {
+          "description": "概率评估编号，主键。",
+          "is_required": true,
+          "is_unique": true,
+          "name": "assessment_id",
+          "type": "String"
+        },
+        {
+          "description": "被评估的执行偏差。",
+          "is_foreign_key": true,
+          "is_required": true,
+          "name": "deviation_id",
+          "references": "Execution_Deviation",
+          "type": "String"
+        },
+        {
+          "description": "所属采购执行链路。",
+          "is_foreign_key": true,
+          "name": "chain_id",
+          "references": "Procurement_Chain",
+          "type": "String"
+        },
+        {
+          "description": "评估时链路所处节点。",
+          "enum_values": [
+            "立项",
+            "组包",
+            "询价",
+            "定标",
+            "合同",
+            "订单",
+            "到货"
+          ],
+          "name": "current_stage",
+          "type": "Enum"
+        },
+        {
+          "description": "剩余标准周期天数：当前节点之后各节点标准周期之和。",
+          "name": "remaining_standard_cycle_days",
+          "type": "Float",
+          "unit": "天"
+        },
+        {
+          "description": "距需求到货日期剩余天数。",
+          "name": "days_to_required_arrival",
+          "type": "Float",
+          "unit": "天"
+        },
+        {
+          "description": "当前节点滞留天数。",
+          "name": "dwell_days",
+          "type": "Float",
+          "unit": "天"
+        },
+        {
+          "description": "同类历史已完结单的按期达成率。",
+          "maximum": 1,
+          "minimum": 0,
+          "name": "historical_on_time_rate",
+          "type": "Float"
+        },
+        {
+          "description": "历史样本量，样本过少时概率可信度下降。",
+          "name": "historical_sample_size",
+          "type": "Integer"
+        },
+        {
+          "description": "按期完成概率 0~1，分级判定的唯一依据。",
+          "is_required": true,
+          "maximum": 1,
+          "minimum": 0,
+          "name": "on_time_probability",
+          "type": "Float"
+        },
+        {
+          "description": "概率分级：<60% 红、60%~85% 黄、>85% 蓝。",
+          "enum_values": [
+            "红色",
+            "黄色",
+            "蓝色"
+          ],
+          "is_required": true,
+          "name": "probability_grade",
+          "type": "Enum"
+        },
+        {
+          "description": "可解释理由，说明概率为何是这个数——领导据此判断，不能只报超期天数。",
+          "is_required": true,
+          "name": "explanation",
+          "type": "String"
+        },
+        {
+          "description": "评估时间。",
+          "is_required": true,
+          "name": "assessed_at",
+          "type": "Timestamp"
+        }
+      ],
+      "relationship_description": "【按期达成概率评估 (Delivery_Probability_Assessment)】为【执行偏差 (Execution_Deviation)】打分，其分级结果决定【偏差预警 (Deviation_Alert)】的等级与推送对象。",
+      "synonyms": [
+        "按期概率",
+        "达成概率评分"
+      ],
+      "type": "data"
+    },
+    {
+      "agent_facets": {
+        "searchable_fields": [
+          "alert_no",
+          "alert_level",
+          "handling_status",
+          "notified_role"
+        ],
+        "semantic_summary_template": "{alert_level}预警 {alert_no} 推送{notified_role}，状态{handling_status}，已滞留 {overdue_hours} 小时"
+      },
+      "description": "分级推送给人的那条预警：红色报分管领导、黄色报部门领导、蓝色提示计划员。它记录生成时间与处置状态，是超时自动升级与误报回收的锚点。",
+      "id": "Deviation_Alert",
+      "lifecycle_initial_state": "待处理",
+      "lifecycle_state_property": "handling_status",
+      "lifecycle_states": [
+        {
+          "description": "已推送给责任角色，尚无人接手。",
+          "name": "待处理"
+        },
+        {
+          "description": "责任角色已接手，进入方案决策或自行处置。",
+          "name": "处理中"
+        },
+        {
+          "description": "超时未处理，推送对象已上移。",
+          "name": "已升级"
+        },
+        {
+          "description": "偏差消除校验通过，处置结果留痕完成。",
+          "name": "已闭环",
+          "terminal": true
+        },
+        {
+          "description": "核实为误报或链路已终止，预警撤销。",
+          "name": "已撤销",
+          "terminal": true
+        }
+      ],
+      "lifecycle_transitions": [
+        {
+          "description": "领导或计划员开始处置。",
+          "from": "待处理",
+          "id": "alert-ack",
+          "to": "处理中",
+          "trigger": "责任角色接手"
+        },
+        {
+          "description": "黄色超 48h、红色超 24h 自动升级。",
+          "from": "待处理",
+          "id": "alert-escalate",
+          "to": "已升级",
+          "trigger": "超时未处理"
+        },
+        {
+          "description": "上级接手处置。",
+          "from": "已升级",
+          "id": "alert-escalated-ack",
+          "to": "处理中",
+          "trigger": "升级后接手"
+        },
+        {
+          "description": "处置到位，预警闭环。",
+          "from": "处理中",
+          "id": "alert-close",
+          "to": "已闭环",
+          "trigger": "偏差消除校验通过"
+        },
+        {
+          "description": "误报直接撤销并回流阈值评审。",
+          "from": "待处理",
+          "id": "alert-void-pending",
+          "to": "已撤销",
+          "trigger": "核实为误报"
+        },
+        {
+          "description": "处置中发现误报，撤销并回流。",
+          "from": "处理中",
+          "id": "alert-void-handling",
+          "to": "已撤销",
+          "trigger": "核实为误报"
+        }
+      ],
+      "name": "偏差预警",
+      "primary_key": "alert_id",
+      "properties": [
+        {
+          "description": "偏差预警编号，主键。",
+          "is_required": true,
+          "is_unique": true,
+          "name": "alert_id",
+          "type": "String"
+        },
+        {
+          "description": "预警单号（业务可读）。",
+          "name": "alert_no",
+          "type": "String"
+        },
+        {
+          "description": "预警对应的执行偏差。",
+          "is_foreign_key": true,
+          "is_required": true,
+          "name": "deviation_id",
+          "references": "Execution_Deviation",
+          "type": "String"
+        },
+        {
+          "description": "预警定级所依据的概率评估。",
+          "is_foreign_key": true,
+          "name": "assessment_id",
+          "references": "Delivery_Probability_Assessment",
+          "type": "String"
+        },
+        {
+          "description": "所属采购执行链路。",
+          "is_foreign_key": true,
+          "is_required": true,
+          "name": "chain_id",
+          "references": "Procurement_Chain",
+          "type": "String"
+        },
+        {
+          "description": "预警等级。",
+          "enum_values": [
+            "红色",
+            "黄色",
+            "蓝色"
+          ],
+          "is_required": true,
+          "name": "alert_level",
+          "type": "Enum"
+        },
+        {
+          "description": "本级预警的推送对象角色。",
+          "enum_values": [
+            "计划员",
+            "部门领导",
+            "分管领导"
+          ],
+          "is_required": true,
+          "name": "notified_role",
+          "type": "Enum"
+        },
+        {
+          "description": "实际推送人。",
+          "name": "notified_to",
+          "type": "String"
+        },
+        {
+          "description": "预警生成时间，超时升级的起算点。",
+          "is_required": true,
+          "name": "raised_at",
+          "source": "本体事件日志表.预警生成时间",
+          "type": "Timestamp"
+        },
+        {
+          "description": "预警处置状态。",
+          "enum_values": [
+            "待处理",
+            "处理中",
+            "已升级",
+            "已闭环",
+            "已撤销"
+          ],
+          "is_required": true,
+          "name": "handling_status",
+          "source": "本体事件日志表.处置状态",
+          "type": "Enum"
+        },
+        {
+          "description": "预警被接手处理的时间。",
+          "name": "acknowledged_at",
+          "type": "Timestamp"
+        },
+        {
+          "description": "最近一次升级时间。",
+          "name": "escalated_at",
+          "type": "Timestamp"
+        },
+        {
+          "default": 0,
+          "description": "升级次数。",
+          "name": "escalation_count",
+          "type": "Integer"
+        },
+        {
+          "description": "预警闭环时间。",
+          "name": "closed_at",
+          "type": "Timestamp"
+        },
+        {
+          "computed_expression": "hours(now() - raised_at)",
+          "description": "预警滞留小时数 = 当前时间 − 预警生成时间。",
+          "is_computed": true,
+          "name": "overdue_hours",
+          "type": "Float",
+          "unit": "小时"
+        },
+        {
+          "description": "业务核实结果，误报回收的入口。",
+          "enum_values": [
+            "待核实",
+            "属实",
+            "误报"
+          ],
+          "name": "verification_result",
+          "type": "Enum"
+        },
+        {
+          "default": 0,
+          "description": "本次预警已生成的可选调整方案数，齐备为 3。",
+          "minimum": 0,
+          "name": "generated_option_count",
+          "type": "Integer"
+        }
+      ],
+      "relationship_description": "【偏差预警 (Deviation_Alert)】由【执行偏差 (Execution_Deviation)】触发，向下生成【调整方案 (Adjustment_Option)】，全过程写入【预警处置记录 (Alert_Handling_Record)】。",
+      "synonyms": [
+        "三级预警",
+        "预警"
+      ],
+      "type": "data"
+    },
+    {
+      "agent_facets": {
+        "searchable_fields": [
+          "option_type",
+          "option_status",
+          "is_recommended"
+        ],
+        "semantic_summary_template": "{option_type}：{option_summary}，到货影响 {arrival_impact_days} 天"
+      },
+      "description": "红／黄预警下自动生成的可执行补救方案：压缩后续周期、调整需求日期、执行调拨。每个方案必须附到货影响推演，领导选一个即可一键执行。",
+      "id": "Adjustment_Option",
+      "lifecycle_initial_state": "待决策",
+      "lifecycle_state_property": "option_status",
+      "lifecycle_states": [
+        {
+          "description": "已生成并附影响推演，等待领导拍板。",
+          "name": "待决策"
+        },
+        {
+          "description": "领导选中本方案，等待计划员确认执行。",
+          "name": "已选定"
+        },
+        {
+          "description": "同批其他方案被选中，本方案作废。",
+          "name": "未采纳",
+          "terminal": true
+        },
+        {
+          "description": "方案已写回业务系统。",
+          "name": "已执行",
+          "terminal": true
+        }
+      ],
+      "lifecycle_transitions": [
+        {
+          "description": "领导选定该方案。",
+          "from": "待决策",
+          "id": "opt-select",
+          "to": "已选定",
+          "trigger": "领导拍板"
+        },
+        {
+          "description": "同批其他方案被选中。",
+          "from": "待决策",
+          "id": "opt-drop",
+          "to": "未采纳",
+          "trigger": "同批未选中"
+        },
+        {
+          "description": "回写业务系统完成。",
+          "from": "已选定",
+          "id": "opt-execute",
+          "to": "已执行",
+          "trigger": "计划员确认执行"
+        }
+      ],
+      "name": "调整方案",
+      "primary_key": "option_id",
+      "properties": [
+        {
+          "description": "调整方案编号，主键。",
+          "is_required": true,
+          "is_unique": true,
+          "name": "option_id",
+          "type": "String"
+        },
+        {
+          "description": "方案所属的偏差预警。",
+          "is_foreign_key": true,
+          "is_required": true,
+          "name": "alert_id",
+          "references": "Deviation_Alert",
+          "type": "String"
+        },
+        {
+          "description": "方案针对的执行偏差。",
+          "is_foreign_key": true,
+          "name": "deviation_id",
+          "references": "Execution_Deviation",
+          "type": "String"
+        },
+        {
+          "description": "所属采购执行链路。",
+          "is_foreign_key": true,
+          "is_required": true,
+          "name": "chain_id",
+          "references": "Procurement_Chain",
+          "type": "String"
+        },
+        {
+          "description": "方案类型。",
+          "enum_values": [
+            "压缩后续周期",
+            "调整需求日期",
+            "执行调拨"
+          ],
+          "is_required": true,
+          "name": "option_type",
+          "type": "Enum"
+        },
+        {
+          "description": "方案要点，一句话说清做什么。",
+          "is_required": true,
+          "name": "option_summary",
+          "type": "String"
+        },
+        {
+          "description": "执行本方案后的预计到货日期。",
+          "name": "expected_arrival_date_after",
+          "type": "Date"
+        },
+        {
+          "description": "到货影响推演：相对当前预计到货的天数变化，负数为提前。",
+          "name": "arrival_impact_days",
+          "type": "Float",
+          "unit": "天"
+        },
+        {
+          "default": false,
+          "description": "是否已完成到货影响推演——没推演过的方案不允许上会。",
+          "name": "arrival_impact_simulated",
+          "type": "Boolean"
+        },
+        {
+          "description": "可行性与代价说明。",
+          "name": "feasibility_note",
+          "type": "String"
+        },
+        {
+          "default": false,
+          "description": "是否为推荐方案。",
+          "name": "is_recommended",
+          "type": "Boolean"
+        },
+        {
+          "default": false,
+          "description": "是否属于高危动作（暂停申请、整单调剂等），高危必须部门领导强制人工确认。",
+          "name": "is_high_risk",
+          "type": "Boolean"
+        },
+        {
+          "description": "高危动作的部门领导强制确认人；非高危方案留空。",
+          "name": "high_risk_confirmed_by",
+          "type": "String"
+        },
+        {
+          "description": "方案状态。",
+          "enum_values": [
+            "待决策",
+            "已选定",
+            "未采纳",
+            "已执行"
+          ],
+          "is_required": true,
+          "name": "option_status",
+          "type": "Enum"
+        },
+        {
+          "description": "本方案的决策角色：红色由分管领导、黄色由部门领导拍板。",
+          "enum_values": [
+            "部门领导",
+            "分管领导"
+          ],
+          "name": "decision_role",
+          "type": "Enum"
+        },
+        {
+          "description": "决策人。",
+          "name": "decided_by",
+          "type": "String"
+        },
+        {
+          "description": "决策时间。",
+          "name": "decided_at",
+          "type": "Timestamp"
+        },
+        {
+          "description": "执行前确认的计划员——没有确认就不允许回写业务单据。",
+          "name": "planner_confirmed_by",
+          "type": "String"
+        },
+        {
+          "description": "计划员确认执行的时间。",
+          "name": "planner_confirmed_at",
+          "type": "Timestamp"
+        },
+        {
+          "description": "执行完成时间。",
+          "name": "executed_at",
+          "type": "Timestamp"
+        }
+      ],
+      "relationship_description": "【调整方案 (Adjustment_Option)】由【偏差预警 (Deviation_Alert)】派生；「执行调拨」类型的方案会生成【调拨申请 (Stock_Transfer_Request)】。",
+      "synonyms": [
+        "补救方案",
+        "处置方案"
+      ],
+      "type": "data"
+    },
+    {
+      "agent_facets": {
+        "searchable_fields": [
+          "transfer_no",
+          "request_status",
+          "material_code"
+        ],
+        "semantic_summary_template": "调拨 {transfer_no}：{source_warehouse}→{target_warehouse} {transfer_quantity}，状态{request_status}"
+      },
+      "description": "「执行调拨」方案落地生成的库存调拨单（对应 inv_txn_order_header_t）：从其他库点先调物资顶上，跟踪到货后按约定归还。是三个方案里唯一会新建业务单据的一个。",
+      "extensions": {
+        "erp_api_mapping": {
+          "endpoint": "/hinv/minv/openapi/v1/createTransactionOrder",
+          "method": "POST",
+          "note": "写 inv_txn_order_header_t（调拨单头表）",
+          "operation": "createTransactionOrder",
+          "system": "metaERP 库存"
+        }
+      },
+      "id": "Stock_Transfer_Request",
+      "lifecycle_initial_state": "已创建",
+      "lifecycle_state_property": "request_status",
+      "lifecycle_states": [
+        {
+          "description": "调拨申请已生成并取得 ERP 单号。",
+          "name": "已创建"
+        },
+        {
+          "description": "调拨申请在审批流中。",
+          "name": "审批中"
+        },
+        {
+          "description": "物资已从调出库点发出。",
+          "name": "已发出"
+        },
+        {
+          "description": "物资到达调入库点，需求得到临时满足。",
+          "name": "已到货"
+        },
+        {
+          "description": "采购到货后完成归还，调拨闭环。",
+          "name": "已归还",
+          "terminal": true
+        },
+        {
+          "description": "调拨方案被撤销。",
+          "name": "已取消",
+          "terminal": true
+        }
+      ],
+      "lifecycle_transitions": [
+        {
+          "description": "调拨申请进入审批。",
+          "from": "已创建",
+          "id": "tr-submit",
+          "to": "审批中",
+          "trigger": "提交审批"
+        },
+        {
+          "description": "调出库点发货。",
+          "from": "审批中",
+          "id": "tr-ship",
+          "to": "已发出",
+          "trigger": "审批通过并发货"
+        },
+        {
+          "description": "调入库点签收。",
+          "from": "已发出",
+          "id": "tr-arrive",
+          "to": "已到货",
+          "trigger": "到货签收"
+        },
+        {
+          "description": "原采购到货，归还调拨物资。",
+          "from": "已到货",
+          "id": "tr-return",
+          "to": "已归还",
+          "trigger": "采购到货后归还"
+        },
+        {
+          "description": "方案撤销。",
+          "from": "已创建",
+          "id": "tr-cancel-created",
+          "to": "已取消",
+          "trigger": "撤销调拨"
+        },
+        {
+          "description": "审批未通过。",
+          "from": "审批中",
+          "id": "tr-cancel-approving",
+          "to": "已取消",
+          "trigger": "审批否决"
+        }
+      ],
+      "name": "调拨申请",
+      "primary_key": "transfer_request_id",
+      "properties": [
+        {
+          "description": "调拨申请编号，主键。",
+          "is_required": true,
+          "is_unique": true,
+          "name": "transfer_request_id",
+          "type": "String"
+        },
+        {
+          "description": "调拨单号（ERP 正式单号），闭环可查凭据；来源列按文档口径待开发确认。",
+          "name": "transfer_no",
+          "source": "inv_txn_order_header_t.ORDER_NUMBER",
+          "type": "String"
+        },
+        {
+          "description": "来源调整方案。",
+          "is_foreign_key": true,
+          "is_required": true,
+          "name": "option_id",
+          "references": "Adjustment_Option",
+          "type": "String"
+        },
+        {
+          "description": "所属采购执行链路。",
+          "is_foreign_key": true,
+          "is_required": true,
+          "name": "chain_id",
+          "references": "Procurement_Chain",
+          "type": "String"
+        },
+        {
+          "description": "调拨物料编码。",
+          "name": "material_code",
+          "type": "String"
+        },
+        {
+          "description": "调拨数量。",
+          "name": "transfer_quantity",
+          "type": "Float"
+        },
+        {
+          "description": "调出库点。",
+          "name": "source_warehouse",
+          "type": "String"
+        },
+        {
+          "description": "调入库点。",
+          "name": "target_warehouse",
+          "type": "String"
+        },
+        {
+          "description": "调拨申请状态。",
+          "enum_values": [
+            "已创建",
+            "审批中",
+            "已发出",
+            "已到货",
+            "已归还",
+            "已取消"
+          ],
+          "is_required": true,
+          "name": "request_status",
+          "type": "Enum"
+        },
+        {
+          "description": "调拨申请创建时间。",
+          "name": "created_at",
+          "type": "Timestamp"
+        },
+        {
+          "description": "调拨预计到货日期。",
+          "name": "expected_arrival_date",
+          "type": "Date"
+        },
+        {
+          "description": "调拨实际到货日期。",
+          "name": "actual_arrival_date",
+          "type": "Date"
+        },
+        {
+          "description": "归还完成时间，调拨闭环点。",
+          "name": "returned_at",
+          "type": "Timestamp"
+        }
+      ],
+      "relationship_description": "【调拨申请 (Stock_Transfer_Request)】由【调整方案 (Adjustment_Option)】生成，其到货状态回写【采购执行链路 (Procurement_Chain)】的预计到货日期。",
+      "synonyms": [
+        "库存调拨单",
+        "调拨"
+      ],
+      "type": "data"
+    },
+    {
+      "agent_facets": {
+        "searchable_fields": [
+          "handling_action",
+          "operator_role",
+          "verification_result"
+        ],
+        "semantic_summary_template": "{occurred_at} {operator_role}「{handling_action}」：{remark}"
+      },
+      "description": "预警从推送、升级、拍板、执行到闭环的不可变留痕流水。超时升级凭它判定、误报回收凭它归因、闭环校验凭它取证。",
+      "id": "Alert_Handling_Record",
+      "name": "预警处置记录",
+      "primary_key": "handling_record_id",
+      "properties": [
+        {
+          "description": "处置记录编号，主键。",
+          "is_required": true,
+          "is_unique": true,
+          "name": "handling_record_id",
+          "type": "String"
+        },
+        {
+          "description": "对应的偏差预警。",
+          "is_foreign_key": true,
+          "is_required": true,
+          "name": "alert_id",
+          "references": "Deviation_Alert",
+          "type": "String"
+        },
+        {
+          "description": "所属采购执行链路。",
+          "is_foreign_key": true,
+          "is_required": true,
+          "name": "chain_id",
+          "references": "Procurement_Chain",
+          "type": "String"
+        },
+        {
+          "description": "处置动作类型。",
+          "enum_values": [
+            "预警推送",
+            "超时升级",
+            "方案选定",
+            "方案执行",
+            "偏差消除校验",
+            "闭环归档",
+            "标记误报"
+          ],
+          "is_required": true,
+          "name": "handling_action",
+          "type": "Enum"
+        },
+        {
+          "description": "处置人角色。",
+          "enum_values": [
+            "计划员",
+            "部门领导",
+            "分管领导",
+            "系统",
+            "规则评审组"
+          ],
+          "is_required": true,
+          "name": "operator_role",
+          "type": "Enum"
+        },
+        {
+          "description": "处置人。",
+          "name": "operator",
+          "type": "String"
+        },
+        {
+          "description": "处置发生时间。",
+          "is_required": true,
+          "name": "occurred_at",
+          "type": "Timestamp"
+        },
+        {
+          "description": "处置说明，留痕正文。",
+          "name": "remark",
+          "type": "String"
+        },
+        {
+          "description": "偏差是否已消除（闭环校验结论）。",
+          "name": "deviation_eliminated",
+          "type": "Boolean"
+        },
+        {
+          "description": "业务核实结果。",
+          "enum_values": [
+            "待核实",
+            "属实",
+            "误报"
+          ],
+          "name": "verification_result",
+          "type": "Enum"
+        },
+        {
+          "default": "待归因",
+          "description": "误报归因标签；「待归因」表示尚未给出原因。",
+          "enum_values": [
+            "待归因",
+            "阈值过严",
+            "数据质量",
+            "口径问题"
+          ],
+          "name": "false_alarm_cause",
+          "type": "Enum"
+        }
+      ],
+      "relationship_description": "【预警处置记录 (Alert_Handling_Record)】逐条记录【偏差预警 (Deviation_Alert)】的处置过程，其误报归因驱动【规则评审条目 (Rule_Review_Item)】。",
+      "synonyms": [
+        "处置留痕",
+        "本体事件日志"
+      ],
+      "type": "event-sourced"
+    },
+    {
+      "agent_facets": {
+        "searchable_fields": [
+          "false_alarm_cause",
+          "review_status"
+        ],
+        "semantic_summary_template": "因「{false_alarm_cause}」建议阈值 {current_threshold_value}→{suggested_threshold_value}，状态{review_status}"
+      },
+      "description": "误报归因后回流给规则评审组的调参提议：这条阈值为什么过严、建议改成多少、当前误报率是多少。闭环误报率 ≤20% 的抓手，让系统越用越准。",
+      "id": "Rule_Review_Item",
+      "lifecycle_initial_state": "待评审",
+      "lifecycle_state_property": "review_status",
+      "lifecycle_states": [
+        {
+          "description": "已回流评审队列，等待规则评审组处理。",
+          "name": "待评审"
+        },
+        {
+          "description": "评审通过，阈值配置已更新。",
+          "name": "已采纳",
+          "terminal": true
+        },
+        {
+          "description": "评审认为阈值无需调整。",
+          "name": "已驳回",
+          "terminal": true
+        }
+      ],
+      "lifecycle_transitions": [
+        {
+          "description": "阈值按建议值更新。",
+          "from": "待评审",
+          "id": "rri-accept",
+          "to": "已采纳",
+          "trigger": "评审通过"
+        },
+        {
+          "description": "维持原阈值。",
+          "from": "待评审",
+          "id": "rri-reject",
+          "to": "已驳回",
+          "trigger": "评审驳回"
+        }
+      ],
+      "name": "规则评审条目",
+      "primary_key": "review_item_id",
+      "properties": [
+        {
+          "description": "评审条目编号，主键。",
+          "is_required": true,
+          "is_unique": true,
+          "name": "review_item_id",
+          "type": "String"
+        },
+        {
+          "description": "提议调整的阈值配置项。",
+          "is_foreign_key": true,
+          "is_required": true,
+          "name": "threshold_id",
+          "references": "Alert_Threshold_Setting",
+          "type": "String"
+        },
+        {
+          "description": "触发本次回流的误报预警。",
+          "is_foreign_key": true,
+          "name": "alert_id",
+          "references": "Deviation_Alert",
+          "type": "String"
+        },
+        {
+          "description": "误报归因。",
+          "enum_values": [
+            "阈值过严",
+            "数据质量",
+            "口径问题"
+          ],
+          "is_required": true,
+          "name": "false_alarm_cause",
+          "type": "Enum"
+        },
+        {
+          "description": "当前阈值取值。",
+          "name": "current_threshold_value",
+          "type": "Float"
+        },
+        {
+          "description": "建议阈值取值。",
+          "name": "suggested_threshold_value",
+          "type": "Float"
+        },
+        {
+          "description": "统计口径下的误报率，闭环目标 ≤20%。",
+          "maximum": 1,
+          "minimum": 0,
+          "name": "false_alarm_rate",
+          "type": "Float"
+        },
+        {
+          "description": "评审状态。",
+          "enum_values": [
+            "待评审",
+            "已采纳",
+            "已驳回"
+          ],
+          "is_required": true,
+          "name": "review_status",
+          "type": "Enum"
+        },
+        {
+          "description": "回流提交时间。",
+          "name": "submitted_at",
+          "type": "Timestamp"
+        },
+        {
+          "description": "规则评审组评审人。",
+          "name": "reviewer",
+          "type": "String"
+        },
+        {
+          "description": "评审结论说明。",
+          "name": "review_conclusion",
+          "type": "String"
+        }
+      ],
+      "relationship_description": "【规则评审条目 (Rule_Review_Item)】由【预警处置记录 (Alert_Handling_Record)】的误报归因产生，提议调整【预警阈值配置 (Alert_Threshold_Setting)】。",
+      "synonyms": [
+        "阈值评审条目",
+        "规则评审队列条目"
+      ],
+      "type": "data"
+    }
+  ]
+}

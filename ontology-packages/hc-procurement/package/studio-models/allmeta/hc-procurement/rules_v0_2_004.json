@@ -1,0 +1,2100 @@
+{
+  "metadata": {
+    "ai_involved": true,
+    "ai_reasons": [
+      "scenario-doc-modeling"
+    ],
+    "created_at": "2026-08-28T03:12:04.056Z",
+    "created_by": "scenario-modeling",
+    "description": "docx 第三节 R1-01~R1-07 拆到原子粒度的业务规则，外加流程闭环所需的判定规则；一条规则只处理一件事。",
+    "document_type": "业务规则 (Business Rules)",
+    "last_updated": "2026-08-28",
+    "message": "按 2026-08-28 版文档更新：API 清单逐接口落地(queryPr/queryAllPbpLinePage/poShipment/acTransaction/阈值直读)、期望补提升指标",
+    "parent_version": 3,
+    "project_name": "采购-HC-Formal",
+    "source": "draft-from-source",
+    "version": "0.2",
+    "version_number": 4
+  },
+  "payload": [
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "盯防范围(查)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果采购计划状态为「已批准」且链路尚未完结，则必须纳入全链路偏差盯防，不得凭经验抽查遗漏（在途单覆盖率 100%）。",
+      "executor": "System",
+      "id": "BR-COV-01",
+      "kind": "validation",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "plan",
+            "object_id": "Procurement_Plan",
+            "property": "plan_status",
+            "required": true
+          },
+          {
+            "name": "chain",
+            "object_id": "Procurement_Chain",
+            "property": "chain_status",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "plan.plan_status == \"已批准\" && chain.chain_status == \"在途\"",
+        "test_cases": [
+          {
+            "context": {
+              "chain": {
+                "chain_status": "在途"
+              },
+              "plan": {
+                "plan_status": "已批准"
+              }
+            },
+            "expected": true,
+            "id": "tc-cov01-hit"
+          },
+          {
+            "context": {
+              "chain": {
+                "chain_status": "在途"
+              },
+              "plan": {
+                "plan_status": "草稿"
+              }
+            },
+            "expected": false,
+            "id": "tc-cov01-draft"
+          },
+          {
+            "context": {
+              "chain": {
+                "chain_status": "已完成"
+              },
+              "plan": {
+                "plan_status": "已批准"
+              }
+            },
+            "expected": false,
+            "id": "tc-cov01-done"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "已批准在途计划必须全量纳入盯防",
+      "outcome": {
+        "message": "已批准在途计划纳入盯防，其余不参与偏差计算",
+        "on_fail": "no_op",
+        "on_pass": "continue"
+      },
+      "phase": "collect",
+      "priority": 1,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R1-01",
+      "ruleGroupTitle": "节点进度自动同步",
+      "scope": {
+        "objectTypeIds": [
+          "Procurement_Plan",
+          "Procurement_Chain"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-1-procurement-deviation",
+          "documentName": "场景1_采购全链路执行偏差三级预警.docx",
+          "quoteVerified": true,
+          "section": "二、场景目标 2)",
+          "snippet": "针对人工抽查覆盖不全、漏管多，做到在途单100%覆盖：不再凭经验只盯重点单，凡在途单一律纳入监控，每日定时巡检加单据状态变更实时触发，漏管归零"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "计划基准(算)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果某「业务类型×阶段节点」缺少标准周期配置，则该节点计划完成时间不予推算，转系统管理员补配后重算。",
+      "executor": "System",
+      "id": "BR-PLAN-01",
+      "kind": "constraint",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "standard",
+            "object_id": "Stage_Cycle_Standard",
+            "property": "standard_cycle_days",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "standard.standard_cycle_days > 0",
+        "test_cases": [
+          {
+            "context": {
+              "standard": {
+                "standard_cycle_days": 12
+              }
+            },
+            "expected": true,
+            "id": "tc-plan01-hit"
+          },
+          {
+            "context": {
+              "standard": {
+                "standard_cycle_days": 0
+              }
+            },
+            "expected": false,
+            "id": "tc-plan01-miss"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "缺周期配置则不予推算计划时间",
+      "outcome": {
+        "message": "缺少该业务类型×节点的标准周期配置，转系统管理员补配",
+        "on_fail": "require_human_review",
+        "on_pass": "calculate"
+      },
+      "phase": "plan",
+      "priority": 1,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R1-02",
+      "ruleGroupTitle": "计划时间推算",
+      "scope": {
+        "objectTypeIds": [
+          "Stage_Cycle_Standard",
+          "Chain_Stage_Progress"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-1-procurement-deviation",
+          "documentName": "场景1_采购全链路执行偏差三级预警.docx",
+          "quoteVerified": true,
+          "section": "四、场景规则 R1-02",
+          "snippet": "需以需求到货日期为终点按配置的标准周期逐级倒排，补齐各节点计划完成时间，使偏差可算、可对比。如下需增加采购阶段时间配置"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "偏差判定(析)",
+      "complexity": "medium",
+      "confidence": 0.92,
+      "description": "如果节点时间偏差大于 7 天，或进度偏差大于 20%，则判定该链路节点存在执行偏差（阈值可调）。",
+      "executor": "Agent",
+      "id": "BR-DEV-01",
+      "kind": "validation",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "deviation",
+            "object_id": "Execution_Deviation",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "deviation.time_deviation_days > 7 || deviation.schedule_deviation_ratio > 0.2",
+        "test_cases": [
+          {
+            "context": {
+              "deviation": {
+                "schedule_deviation_ratio": 0.05,
+                "time_deviation_days": 9
+              }
+            },
+            "expected": true,
+            "id": "tc-dev01-time"
+          },
+          {
+            "context": {
+              "deviation": {
+                "schedule_deviation_ratio": 0.35,
+                "time_deviation_days": 2
+              }
+            },
+            "expected": true,
+            "id": "tc-dev01-schedule"
+          },
+          {
+            "context": {
+              "deviation": {
+                "schedule_deviation_ratio": 0.1,
+                "time_deviation_days": 3
+              }
+            },
+            "expected": false,
+            "id": "tc-dev01-clean"
+          },
+          {
+            "context": {
+              "deviation": {
+                "schedule_deviation_ratio": 0.2,
+                "time_deviation_days": 7
+              }
+            },
+            "expected": false,
+            "id": "tc-dev01-boundary"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "时间或进度超阈值则判定有偏差",
+      "outcome": {
+        "emit_event": "DEVIATION_DETECTED",
+        "message": "存在执行偏差，进入按期概率评分",
+        "on_fail": "no_op",
+        "on_pass": "route",
+        "route_to": "scoreOnTimeProbability"
+      },
+      "phase": "analyze",
+      "priority": 1,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R1-03",
+      "ruleGroupTitle": "执行偏差三级识别",
+      "scope": {
+        "objectTypeIds": [
+          "Execution_Deviation"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-1-procurement-deviation",
+          "documentName": "场景1_采购全链路执行偏差三级预警.docx",
+          "quoteVerified": true,
+          "section": "四、场景规则 R1-03",
+          "snippet": "阈值从预警阈值配置表.THRESHOLD_VALUE 读取（时间>7天/进度>20%），以达到三级预警自动分级的要求"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "偏差判定(析)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果偏差判定需要阈值，则必须从预警阈值配置读取，不得在规则或代码中写死取值。",
+      "executor": "System",
+      "id": "BR-DEV-02",
+      "kind": "constraint",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "threshold",
+            "object_id": "Alert_Threshold_Setting",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "threshold.threshold_id != \"\" && threshold.threshold_value >= 0",
+        "test_cases": [
+          {
+            "context": {
+              "threshold": {
+                "threshold_id": "TH-TIME-7D",
+                "threshold_value": 7
+              }
+            },
+            "expected": true,
+            "id": "tc-dev02-hit"
+          },
+          {
+            "context": {
+              "threshold": {
+                "threshold_id": "",
+                "threshold_value": 7
+              }
+            },
+            "expected": false,
+            "id": "tc-dev02-miss"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "判定阈值必须取自阈值配置",
+      "outcome": {
+        "message": "阈值必须来自配置表",
+        "on_fail": "block",
+        "on_pass": "continue"
+      },
+      "phase": "analyze",
+      "priority": 2,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R1-03",
+      "ruleGroupTitle": "执行偏差三级识别",
+      "scope": {
+        "objectTypeIds": [
+          "Alert_Threshold_Setting",
+          "Execution_Deviation"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-1-procurement-deviation",
+          "documentName": "场景1_采购全链路执行偏差三级预警.docx",
+          "quoteVerified": true,
+          "section": "四、场景规则 R1-03",
+          "snippet": "阈值从预警阈值配置表.THRESHOLD_VALUE 读取（时间>7天/进度>20%）"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "偏差判定(析)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果偏差成因标签归为「其他」且成因说明为空，则该条偏差不予定稿，须先补充成因说明。",
+      "executor": "Agent",
+      "id": "BR-DEV-03",
+      "kind": "validation",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "deviation",
+            "object_id": "Execution_Deviation",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "deviation.cause_tag != \"其他\" || deviation.cause_explanation != \"\"",
+        "test_cases": [
+          {
+            "context": {
+              "deviation": {
+                "cause_explanation": "",
+                "cause_tag": "供应商延迟"
+              }
+            },
+            "expected": true,
+            "id": "tc-dev03-tagged"
+          },
+          {
+            "context": {
+              "deviation": {
+                "cause_explanation": "供应商产能临时抽调",
+                "cause_tag": "其他"
+              }
+            },
+            "expected": true,
+            "id": "tc-dev03-other-explained"
+          },
+          {
+            "context": {
+              "deviation": {
+                "cause_explanation": "",
+                "cause_tag": "其他"
+              }
+            },
+            "expected": false,
+            "id": "tc-dev03-other-blank"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "成因归为其他则必须附说明",
+      "outcome": {
+        "message": "成因归为「其他」时必须写明成因说明",
+        "on_fail": "require_human_review",
+        "on_pass": "continue",
+        "requires_explanation": true
+      },
+      "phase": "analyze",
+      "priority": 2,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R1-03",
+      "ruleGroupTitle": "执行偏差三级识别",
+      "scope": {
+        "objectTypeIds": [
+          "Execution_Deviation"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-1-procurement-deviation",
+          "documentName": "场景1_采购全链路执行偏差三级预警.docx",
+          "quoteVerified": true,
+          "section": "七、系统计算对象明细 7.1",
+          "snippet": "并打偏差等级与成因标签，支撑根因下钻与方案推荐"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "偏差判定(析)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果偏差停滞在采购执行环节且成因无法自动判明，则必须向采购员发起停滞原因确认，未澄清前成因不得定稿。",
+      "executor": "Agent",
+      "id": "BR-DEV-04",
+      "kind": "validation",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "deviation",
+            "object_id": "Execution_Deviation",
+            "property": "cause_clarification_status",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "deviation.cause_clarification_status == \"无需澄清\" || deviation.cause_clarification_status == \"已澄清\"",
+        "test_cases": [
+          {
+            "context": {
+              "deviation": {
+                "cause_clarification_status": "无需澄清"
+              }
+            },
+            "expected": true,
+            "id": "tc-dev04-none"
+          },
+          {
+            "context": {
+              "deviation": {
+                "cause_clarification_status": "已澄清"
+              }
+            },
+            "expected": true,
+            "id": "tc-dev04-done"
+          },
+          {
+            "context": {
+              "deviation": {
+                "cause_clarification_status": "待采购员澄清"
+              }
+            },
+            "expected": false,
+            "id": "tc-dev04-pending"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "停滞在采购环节则须采购员确认成因",
+      "outcome": {
+        "message": "停滞原因待采购员澄清，已触发确认消息",
+        "on_fail": "notify",
+        "on_pass": "continue",
+        "route_to": "采购员"
+      },
+      "phase": "analyze",
+      "priority": 2,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R1-03",
+      "ruleGroupTitle": "执行偏差三级识别",
+      "scope": {
+        "objectTypeIds": [
+          "Execution_Deviation"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-1-procurement-deviation",
+          "documentName": "场景1_采购全链路执行偏差三级预警.docx",
+          "quoteVerified": true,
+          "section": "五、业务流程 计算类节点推理过程 b-4",
+          "snippet": "如停在采购过程中，则需要触发消息至采购员进行确认，明确停滞不前具体原因"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "概率评分(评)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果按期达成概率低于 60%，则判定为红色。",
+      "executor": "Agent",
+      "id": "BR-PROB-01",
+      "kind": "validation",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "assessment",
+            "object_id": "Delivery_Probability_Assessment",
+            "property": "on_time_probability",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "assessment.on_time_probability < 0.6",
+        "test_cases": [
+          {
+            "context": {
+              "assessment": {
+                "on_time_probability": 0.42
+              }
+            },
+            "expected": true,
+            "id": "tc-prob01-hit"
+          },
+          {
+            "context": {
+              "assessment": {
+                "on_time_probability": 0.6
+              }
+            },
+            "expected": false,
+            "id": "tc-prob01-edge"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "按期概率低于60%则判红色",
+      "outcome": {
+        "message": "红色：按期概率低于 60%",
+        "on_fail": "no_op",
+        "on_pass": "route",
+        "route_to": "raiseDeviationAlert"
+      },
+      "phase": "score",
+      "priority": 1,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R1-04",
+      "ruleGroupTitle": "按期达成概率评分",
+      "scope": {
+        "objectTypeIds": [
+          "Delivery_Probability_Assessment"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-1-procurement-deviation",
+          "documentName": "场景1_采购全链路执行偏差三级预警.docx",
+          "quoteVerified": true,
+          "section": "四、场景规则 R1-04",
+          "snippet": "结合滞留天数计算按期概率：概率<60%判红、60-85%判黄、>85%判蓝，以达到严重度自主评估的要求"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "概率评分(评)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果按期达成概率在 60% 至 85% 之间，则判定为黄色。",
+      "executor": "Agent",
+      "id": "BR-PROB-02",
+      "kind": "validation",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "assessment",
+            "object_id": "Delivery_Probability_Assessment",
+            "property": "on_time_probability",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "assessment.on_time_probability >= 0.6 && assessment.on_time_probability <= 0.85",
+        "test_cases": [
+          {
+            "context": {
+              "assessment": {
+                "on_time_probability": 0.72
+              }
+            },
+            "expected": true,
+            "id": "tc-prob02-hit"
+          },
+          {
+            "context": {
+              "assessment": {
+                "on_time_probability": 0.55
+              }
+            },
+            "expected": false,
+            "id": "tc-prob02-low"
+          },
+          {
+            "context": {
+              "assessment": {
+                "on_time_probability": 0.9
+              }
+            },
+            "expected": false,
+            "id": "tc-prob02-high"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "按期概率60%~85%则判黄色",
+      "outcome": {
+        "message": "黄色：按期概率 60%~85%",
+        "on_fail": "no_op",
+        "on_pass": "route",
+        "route_to": "raiseDeviationAlert"
+      },
+      "phase": "score",
+      "priority": 1,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R1-04",
+      "ruleGroupTitle": "按期达成概率评分",
+      "scope": {
+        "objectTypeIds": [
+          "Delivery_Probability_Assessment"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-1-procurement-deviation",
+          "documentName": "场景1_采购全链路执行偏差三级预警.docx",
+          "quoteVerified": true,
+          "section": "四、场景规则 R1-04",
+          "snippet": "结合滞留天数计算按期概率：概率<60%判红、60-85%判黄、>85%判蓝，以达到严重度自主评估的要求"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "概率评分(评)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果按期达成概率高于 85%，则判定为蓝色。",
+      "executor": "Agent",
+      "id": "BR-PROB-03",
+      "kind": "validation",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "assessment",
+            "object_id": "Delivery_Probability_Assessment",
+            "property": "on_time_probability",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "assessment.on_time_probability > 0.85",
+        "test_cases": [
+          {
+            "context": {
+              "assessment": {
+                "on_time_probability": 0.93
+              }
+            },
+            "expected": true,
+            "id": "tc-prob03-hit"
+          },
+          {
+            "context": {
+              "assessment": {
+                "on_time_probability": 0.85
+              }
+            },
+            "expected": false,
+            "id": "tc-prob03-edge"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "按期概率高于85%则判蓝色",
+      "outcome": {
+        "message": "蓝色：按期概率高于 85%",
+        "on_fail": "no_op",
+        "on_pass": "route",
+        "route_to": "raiseDeviationAlert"
+      },
+      "phase": "score",
+      "priority": 1,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R1-04",
+      "ruleGroupTitle": "按期达成概率评分",
+      "scope": {
+        "objectTypeIds": [
+          "Delivery_Probability_Assessment"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-1-procurement-deviation",
+          "documentName": "场景1_采购全链路执行偏差三级预警.docx",
+          "quoteVerified": true,
+          "section": "四、场景规则 R1-04",
+          "snippet": "结合滞留天数计算按期概率：概率<60%判红、60-85%判黄、>85%判蓝，以达到严重度自主评估的要求"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "概率评分(评)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果按期概率评分没有附可解释理由，则该评分不予采用——只报超期天数不足以支撑决策。",
+      "executor": "Agent",
+      "id": "BR-PROB-04",
+      "kind": "validation",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "assessment",
+            "object_id": "Delivery_Probability_Assessment",
+            "property": "explanation",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "assessment.explanation != \"\"",
+        "test_cases": [
+          {
+            "context": {
+              "assessment": {
+                "explanation": "剩余标准周期 12 天，历史同类达成率 78%"
+              }
+            },
+            "expected": true,
+            "id": "tc-prob04-hit"
+          },
+          {
+            "context": {
+              "assessment": {
+                "explanation": ""
+              }
+            },
+            "expected": false,
+            "id": "tc-prob04-miss"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "概率评分必须附可解释理由",
+      "outcome": {
+        "message": "概率评分缺少可解释理由",
+        "on_fail": "block",
+        "on_pass": "continue",
+        "requires_explanation": true
+      },
+      "phase": "score",
+      "priority": 2,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R1-04",
+      "ruleGroupTitle": "按期达成概率评分",
+      "scope": {
+        "objectTypeIds": [
+          "Delivery_Probability_Assessment"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-1-procurement-deviation",
+          "documentName": "场景1_采购全链路执行偏差三级预警.docx",
+          "quoteVerified": true,
+          "section": "四、场景规则 R1-04",
+          "snippet": "评分类:告诉业务这单大概率能否按期,而非只报超期天数"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "分级预警(警)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果预警等级为红色，则推送分管领导决策并抄送计划员。",
+      "executor": "Agent",
+      "id": "BR-ALERT-01",
+      "kind": "authorization",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "alert",
+            "object_id": "Deviation_Alert",
+            "property": "alert_level",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "alert.alert_level == \"红色\"",
+        "test_cases": [
+          {
+            "context": {
+              "alert": {
+                "alert_level": "红色"
+              }
+            },
+            "expected": true,
+            "id": "tc-alert01-hit"
+          },
+          {
+            "context": {
+              "alert": {
+                "alert_level": "黄色"
+              }
+            },
+            "expected": false,
+            "id": "tc-alert01-miss"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "红色预警报分管领导",
+      "outcome": {
+        "emit_event": "DEVIATION_ALERT_RAISED",
+        "message": "红色预警报分管领导",
+        "on_fail": "no_op",
+        "on_pass": "notify",
+        "route_to": "分管领导"
+      },
+      "phase": "alert",
+      "priority": 1,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R1-03",
+      "ruleGroupTitle": "执行偏差三级识别",
+      "scope": {
+        "objectTypeIds": [
+          "Deviation_Alert"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-1-procurement-deviation",
+          "documentName": "场景1_采购全链路执行偏差三级预警.docx",
+          "quoteVerified": true,
+          "section": "五、业务流程 步骤e",
+          "snippet": "按概率分级推送: 红<60%报分管领导 / 黄60-85%报部门领导 / 蓝>85%提示计划员"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "分级预警(警)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果预警等级为黄色，则推送部门领导决策并抄送计划员。",
+      "executor": "Agent",
+      "id": "BR-ALERT-02",
+      "kind": "authorization",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "alert",
+            "object_id": "Deviation_Alert",
+            "property": "alert_level",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "alert.alert_level == \"黄色\"",
+        "test_cases": [
+          {
+            "context": {
+              "alert": {
+                "alert_level": "黄色"
+              }
+            },
+            "expected": true,
+            "id": "tc-alert02-hit"
+          },
+          {
+            "context": {
+              "alert": {
+                "alert_level": "红色"
+              }
+            },
+            "expected": false,
+            "id": "tc-alert02-miss"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "黄色预警报部门领导",
+      "outcome": {
+        "emit_event": "DEVIATION_ALERT_RAISED",
+        "message": "黄色预警报部门领导",
+        "on_fail": "no_op",
+        "on_pass": "notify",
+        "route_to": "部门领导"
+      },
+      "phase": "alert",
+      "priority": 1,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R1-03",
+      "ruleGroupTitle": "执行偏差三级识别",
+      "scope": {
+        "objectTypeIds": [
+          "Deviation_Alert"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-1-procurement-deviation",
+          "documentName": "场景1_采购全链路执行偏差三级预警.docx",
+          "quoteVerified": true,
+          "section": "五、业务流程 步骤e",
+          "snippet": "按概率分级推送: 红<60%报分管领导 / 黄60-85%报部门领导 / 蓝>85%提示计划员"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "分级预警(警)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果预警等级为蓝色，则只提示计划员自行处置，不上报领导、不生成调整方案。",
+      "executor": "Agent",
+      "id": "BR-ALERT-03",
+      "kind": "authorization",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "alert",
+            "object_id": "Deviation_Alert",
+            "property": "alert_level",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "alert.alert_level == \"蓝色\"",
+        "test_cases": [
+          {
+            "context": {
+              "alert": {
+                "alert_level": "蓝色"
+              }
+            },
+            "expected": true,
+            "id": "tc-alert03-hit"
+          },
+          {
+            "context": {
+              "alert": {
+                "alert_level": "黄色"
+              }
+            },
+            "expected": false,
+            "id": "tc-alert03-miss"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "蓝色预警仅提示计划员",
+      "outcome": {
+        "message": "蓝色预警提示计划员自行处置",
+        "on_fail": "no_op",
+        "on_pass": "notify",
+        "route_to": "计划员"
+      },
+      "phase": "alert",
+      "priority": 1,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R1-03",
+      "ruleGroupTitle": "执行偏差三级识别",
+      "scope": {
+        "objectTypeIds": [
+          "Deviation_Alert"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-1-procurement-deviation",
+          "documentName": "场景1_采购全链路执行偏差三级预警.docx",
+          "quoteVerified": true,
+          "section": "五、业务流程 步骤e1",
+          "snippet": "蓝→e1计划员自行处置(可选调整或仅监控)→结束"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "方案与决策(断)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果预警等级为红色或黄色，则生成调整方案；如果为蓝色，则不生成调整方案。",
+      "executor": "Agent",
+      "id": "BR-OPT-01",
+      "kind": "validation",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "alert",
+            "object_id": "Deviation_Alert",
+            "property": "alert_level",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "alert.alert_level == \"红色\" || alert.alert_level == \"黄色\"",
+        "test_cases": [
+          {
+            "context": {
+              "alert": {
+                "alert_level": "红色"
+              }
+            },
+            "expected": true,
+            "id": "tc-opt01-red"
+          },
+          {
+            "context": {
+              "alert": {
+                "alert_level": "黄色"
+              }
+            },
+            "expected": true,
+            "id": "tc-opt01-yellow"
+          },
+          {
+            "context": {
+              "alert": {
+                "alert_level": "蓝色"
+              }
+            },
+            "expected": false,
+            "id": "tc-opt01-blue"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "仅红黄预警生成调整方案",
+      "outcome": {
+        "message": "红/黄预警生成调整方案",
+        "on_fail": "no_op",
+        "on_pass": "route",
+        "route_to": "generateAdjustmentOptions"
+      },
+      "phase": "decide",
+      "priority": 1,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R1-05",
+      "ruleGroupTitle": "偏差调整方案生成",
+      "scope": {
+        "objectTypeIds": [
+          "Deviation_Alert",
+          "Adjustment_Option"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-1-procurement-deviation",
+          "documentName": "场景1_采购全链路执行偏差三级预警.docx",
+          "quoteVerified": true,
+          "section": "四、场景规则 R1-05",
+          "snippet": "R1-03红色/黄色预警; R1-04概率; → 可执行调整方案(供选择)"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "方案与决策(断)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果本次预警生成的方案不足「压缩后续周期、调整需求日期、执行调拨」三个，则不允许提交领导决策。",
+      "executor": "Agent",
+      "id": "BR-OPT-02",
+      "kind": "validation",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "alert",
+            "object_id": "Deviation_Alert",
+            "property": "generated_option_count",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "alert.generated_option_count == 3",
+        "test_cases": [
+          {
+            "context": {
+              "alert": {
+                "generated_option_count": 3
+              }
+            },
+            "expected": true,
+            "id": "tc-opt02-hit"
+          },
+          {
+            "context": {
+              "alert": {
+                "generated_option_count": 2
+              }
+            },
+            "expected": false,
+            "id": "tc-opt02-miss"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "方案不足三个则不予决策",
+      "outcome": {
+        "message": "调整方案必须三个齐备",
+        "on_fail": "block",
+        "on_pass": "continue"
+      },
+      "phase": "decide",
+      "priority": 1,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R1-05",
+      "ruleGroupTitle": "偏差调整方案生成",
+      "scope": {
+        "objectTypeIds": [
+          "Adjustment_Option",
+          "Deviation_Alert"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-1-procurement-deviation",
+          "documentName": "场景1_采购全链路执行偏差三级预警.docx",
+          "quoteVerified": true,
+          "section": "四、场景规则 R1-05",
+          "snippet": "生成3个方案：①压缩后续周期→changePbp；②调整需求日期→changePbpLine；③执行调拨→createTransactionOrder"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "方案与决策(断)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果某个调整方案未完成到货影响推演，则该方案不允许提交领导决策。",
+      "executor": "Agent",
+      "id": "BR-OPT-03",
+      "kind": "validation",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "option",
+            "object_id": "Adjustment_Option",
+            "property": "arrival_impact_simulated",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "option.arrival_impact_simulated == true",
+        "test_cases": [
+          {
+            "context": {
+              "option": {
+                "arrival_impact_simulated": true
+              }
+            },
+            "expected": true,
+            "id": "tc-opt03-hit"
+          },
+          {
+            "context": {
+              "option": {
+                "arrival_impact_simulated": false
+              }
+            },
+            "expected": false,
+            "id": "tc-opt03-miss"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "未附到货影响推演则不予上会",
+      "outcome": {
+        "message": "方案缺少到货影响推演",
+        "on_fail": "block",
+        "on_pass": "continue",
+        "requires_explanation": true
+      },
+      "phase": "decide",
+      "priority": 1,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R1-05",
+      "ruleGroupTitle": "偏差调整方案生成",
+      "scope": {
+        "objectTypeIds": [
+          "Adjustment_Option"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-1-procurement-deviation",
+          "documentName": "场景1_采购全链路执行偏差三级预警.docx",
+          "quoteVerified": true,
+          "section": "四、场景规则 R1-05",
+          "snippet": "自动生成压缩后续周期/调整需求日期/执行调拨3个可执行方案并附到货影响推演"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "方案与决策(断)",
+      "complexity": "medium",
+      "confidence": 0.92,
+      "description": "如果预警等级为红色，则方案由分管领导拍板；如果为黄色，则方案由部门领导拍板。",
+      "executor": "Human",
+      "id": "BR-OPT-04",
+      "kind": "authorization",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "alert",
+            "object_id": "Deviation_Alert",
+            "property": "alert_level",
+            "required": true
+          },
+          {
+            "name": "option",
+            "object_id": "Adjustment_Option",
+            "property": "decision_role",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "(alert.alert_level == \"红色\" && option.decision_role == \"分管领导\") || (alert.alert_level == \"黄色\" && option.decision_role == \"部门领导\")",
+        "test_cases": [
+          {
+            "context": {
+              "alert": {
+                "alert_level": "红色"
+              },
+              "option": {
+                "decision_role": "分管领导"
+              }
+            },
+            "expected": true,
+            "id": "tc-opt04-red"
+          },
+          {
+            "context": {
+              "alert": {
+                "alert_level": "黄色"
+              },
+              "option": {
+                "decision_role": "部门领导"
+              }
+            },
+            "expected": true,
+            "id": "tc-opt04-yellow"
+          },
+          {
+            "context": {
+              "alert": {
+                "alert_level": "红色"
+              },
+              "option": {
+                "decision_role": "部门领导"
+              }
+            },
+            "expected": false,
+            "id": "tc-opt04-mismatch"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "决策角色须与预警等级匹配",
+      "outcome": {
+        "message": "决策角色必须与预警等级匹配",
+        "on_fail": "block",
+        "on_pass": "route"
+      },
+      "phase": "decide",
+      "priority": 1,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R1-05",
+      "ruleGroupTitle": "偏差调整方案生成",
+      "scope": {
+        "objectTypeIds": [
+          "Deviation_Alert",
+          "Adjustment_Option"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-1-procurement-deviation",
+          "documentName": "场景1_采购全链路执行偏差三级预警.docx",
+          "quoteVerified": true,
+          "section": "四、场景规则 R1-05",
+          "snippet": "决策角色：分管领导(红)/部门领导(黄)"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "方案与决策(断)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果选定方案未经计划员确认，则不允许回写任何业务单据。",
+      "executor": "Human",
+      "id": "BR-OPT-05",
+      "kind": "authorization",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "option",
+            "object_id": "Adjustment_Option",
+            "property": "planner_confirmed_by",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "option.planner_confirmed_by != \"\"",
+        "test_cases": [
+          {
+            "context": {
+              "option": {
+                "planner_confirmed_by": "张计划"
+              }
+            },
+            "expected": true,
+            "id": "tc-opt05-hit"
+          },
+          {
+            "context": {
+              "option": {
+                "planner_confirmed_by": ""
+              }
+            },
+            "expected": false,
+            "id": "tc-opt05-miss"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "未经计划员确认则不回写单据",
+      "outcome": {
+        "message": "方案执行前必须由计划员确认",
+        "on_fail": "block",
+        "on_pass": "allow"
+      },
+      "phase": "execute",
+      "priority": 1,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R1-05",
+      "ruleGroupTitle": "偏差调整方案生成",
+      "scope": {
+        "objectTypeIds": [
+          "Adjustment_Option"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-1-procurement-deviation",
+          "documentName": "场景1_采购全链路执行偏差三级预警.docx",
+          "quoteVerified": true,
+          "section": "四、场景规则 R1-05",
+          "snippet": "执行角色：计划员(确认后系统执行)"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "方案与决策(断)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果处置动作属于高危动作（暂停申请、整单调剂），则必须经部门领导强制人工确认后方可执行。",
+      "executor": "Human",
+      "id": "BR-OPT-06",
+      "kind": "authorization",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "option",
+            "object_id": "Adjustment_Option",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "option.is_high_risk == false || option.high_risk_confirmed_by != \"\"",
+        "test_cases": [
+          {
+            "context": {
+              "option": {
+                "high_risk_confirmed_by": "",
+                "is_high_risk": false
+              }
+            },
+            "expected": true,
+            "id": "tc-opt06-normal"
+          },
+          {
+            "context": {
+              "option": {
+                "high_risk_confirmed_by": "李部长",
+                "is_high_risk": true
+              }
+            },
+            "expected": true,
+            "id": "tc-opt06-confirmed"
+          },
+          {
+            "context": {
+              "option": {
+                "high_risk_confirmed_by": "",
+                "is_high_risk": true
+              }
+            },
+            "expected": false,
+            "id": "tc-opt06-blocked"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "高危动作须部门领导强制确认",
+      "outcome": {
+        "message": "高危动作必须经部门领导强制人工确认",
+        "on_fail": "block",
+        "on_pass": "allow"
+      },
+      "phase": "execute",
+      "priority": 1,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R1-05",
+      "ruleGroupTitle": "偏差调整方案生成",
+      "scope": {
+        "objectTypeIds": [
+          "Adjustment_Option"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-1-procurement-deviation",
+          "documentName": "场景1_采购全链路执行偏差三级预警.docx",
+          "quoteVerified": true,
+          "section": "三、场景期望 角色及职责",
+          "snippet": "部门领导：接收黄色预警，审阅调整方案并拍板，对高危动作（暂停申请、整单调剂）做强制人工确认"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "超时升级(升)",
+      "complexity": "medium",
+      "confidence": 0.92,
+      "description": "如果黄色预警生成后 48 小时仍未被处理，则自动升级为红色并改推送部门领导的上级。",
+      "executor": "System",
+      "id": "BR-ESC-01",
+      "kind": "temporal",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "alert",
+            "object_id": "Deviation_Alert",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "alert.alert_level == \"黄色\" && alert.handling_status == \"待处理\" && alert.overdue_hours > 48",
+        "test_cases": [
+          {
+            "context": {
+              "alert": {
+                "alert_level": "黄色",
+                "handling_status": "待处理",
+                "overdue_hours": 50
+              }
+            },
+            "expected": true,
+            "id": "tc-esc01-hit"
+          },
+          {
+            "context": {
+              "alert": {
+                "alert_level": "黄色",
+                "handling_status": "待处理",
+                "overdue_hours": 12
+              }
+            },
+            "expected": false,
+            "id": "tc-esc01-intime"
+          },
+          {
+            "context": {
+              "alert": {
+                "alert_level": "黄色",
+                "handling_status": "处理中",
+                "overdue_hours": 60
+              }
+            },
+            "expected": false,
+            "id": "tc-esc01-handled"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "黄色超48小时未处理则升为红色",
+      "outcome": {
+        "emit_event": "DEVIATION_ALERT_ESCALATED",
+        "message": "黄色预警超 48 小时未处理，升级为红色",
+        "on_fail": "no_op",
+        "on_pass": "route",
+        "route_to": "escalateOverdueAlert"
+      },
+      "phase": "escalate",
+      "priority": 1,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R1-06",
+      "ruleGroupTitle": "预警超时自动升级",
+      "scope": {
+        "objectTypeIds": [
+          "Deviation_Alert",
+          "Alert_Handling_Record"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-1-procurement-deviation",
+          "documentName": "场景1_采购全链路执行偏差三级预警.docx",
+          "quoteVerified": true,
+          "section": "四、场景规则 R1-06",
+          "snippet": "黄色预警48h未处理自动升级为红色"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "超时升级(升)",
+      "complexity": "medium",
+      "confidence": 0.92,
+      "description": "如果红色预警生成后 24 小时仍未闭环，则自动上报分管领导。",
+      "executor": "System",
+      "id": "BR-ESC-02",
+      "kind": "temporal",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "alert",
+            "object_id": "Deviation_Alert",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "alert.alert_level == \"红色\" && alert.handling_status != \"已闭环\" && alert.overdue_hours > 24",
+        "test_cases": [
+          {
+            "context": {
+              "alert": {
+                "alert_level": "红色",
+                "handling_status": "处理中",
+                "overdue_hours": 30
+              }
+            },
+            "expected": true,
+            "id": "tc-esc02-hit"
+          },
+          {
+            "context": {
+              "alert": {
+                "alert_level": "红色",
+                "handling_status": "已闭环",
+                "overdue_hours": 40
+              }
+            },
+            "expected": false,
+            "id": "tc-esc02-closed"
+          },
+          {
+            "context": {
+              "alert": {
+                "alert_level": "红色",
+                "handling_status": "待处理",
+                "overdue_hours": 6
+              }
+            },
+            "expected": false,
+            "id": "tc-esc02-intime"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "红色超24小时未闭环则上报分管领导",
+      "outcome": {
+        "emit_event": "DEVIATION_ALERT_ESCALATED",
+        "message": "红色预警超 24 小时未闭环，上报分管领导",
+        "on_fail": "no_op",
+        "on_pass": "route",
+        "route_to": "escalateOverdueAlert"
+      },
+      "phase": "escalate",
+      "priority": 1,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R1-06",
+      "ruleGroupTitle": "预警超时自动升级",
+      "scope": {
+        "objectTypeIds": [
+          "Deviation_Alert",
+          "Alert_Handling_Record"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-1-procurement-deviation",
+          "documentName": "场景1_采购全链路执行偏差三级预警.docx",
+          "quoteVerified": true,
+          "section": "四、场景规则 R1-06",
+          "snippet": "红色预警24h未闭环自动报分管领导"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "超时升级(升)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "当预警发生自动升级时，则必须写入一条「超时升级」处置记录，记录升级时间与新的推送对象。",
+      "executor": "System",
+      "id": "BR-ESC-03",
+      "kind": "constraint",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "record",
+            "object_id": "Alert_Handling_Record",
+            "property": "handling_action",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "record.handling_action == \"超时升级\"",
+        "test_cases": [
+          {
+            "context": {
+              "record": {
+                "handling_action": "超时升级"
+              }
+            },
+            "expected": true,
+            "id": "tc-esc03-hit"
+          },
+          {
+            "context": {
+              "record": {
+                "handling_action": "预警推送"
+              }
+            },
+            "expected": false,
+            "id": "tc-esc03-miss"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "发生升级则必须写升级留痕",
+      "outcome": {
+        "message": "升级必须留痕",
+        "on_fail": "block",
+        "on_pass": "continue"
+      },
+      "phase": "escalate",
+      "priority": 2,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R1-06",
+      "ruleGroupTitle": "预警超时自动升级",
+      "scope": {
+        "objectTypeIds": [
+          "Alert_Handling_Record",
+          "Deviation_Alert"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-1-procurement-deviation",
+          "documentName": "场景1_采购全链路执行偏差三级预警.docx",
+          "quoteVerified": true,
+          "section": "四、场景规则 R1-06",
+          "snippet": "并写升级留痕，以达到预警超时自动升级的要求"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "规则评审组",
+      "category": "误报回收(馈)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果预警核实结果为误报而归因仍是「待归因」，则不允许闭环，须先给出阈值过严、数据质量、口径问题之一的原因。",
+      "executor": "Human",
+      "id": "BR-FB-01",
+      "kind": "validation",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "record",
+            "object_id": "Alert_Handling_Record",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "record.verification_result == \"误报\" && record.false_alarm_cause != \"待归因\"",
+        "test_cases": [
+          {
+            "context": {
+              "record": {
+                "false_alarm_cause": "阈值过严",
+                "verification_result": "误报"
+              }
+            },
+            "expected": true,
+            "id": "tc-fb01-hit"
+          },
+          {
+            "context": {
+              "record": {
+                "false_alarm_cause": "待归因",
+                "verification_result": "误报"
+              }
+            },
+            "expected": false,
+            "id": "tc-fb01-nocause"
+          },
+          {
+            "context": {
+              "record": {
+                "false_alarm_cause": "待归因",
+                "verification_result": "属实"
+              }
+            },
+            "expected": false,
+            "id": "tc-fb01-valid"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "误报未归因则不予闭环",
+      "outcome": {
+        "message": "误报必须给出归因",
+        "on_fail": "require_human_review",
+        "on_pass": "continue",
+        "requires_explanation": true
+      },
+      "phase": "feedback",
+      "priority": 2,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R1-07",
+      "ruleGroupTitle": "预警误报回收",
+      "scope": {
+        "objectTypeIds": [
+          "Deviation_Alert",
+          "Alert_Handling_Record"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-1-procurement-deviation",
+          "documentName": "场景1_采购全链路执行偏差三级预警.docx",
+          "quoteVerified": true,
+          "section": "四、场景规则 R1-07",
+          "snippet": "根据 本体事件日志表.核实结果=误报的记录，归因（阈值过严/数据质量/口径问题）"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "规则评审组",
+      "category": "误报回收(馈)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果预警被业务核实为误报，则必须生成阈值评审条目回流规则评审队列，提议调整对应的预警阈值配置。",
+      "executor": "System",
+      "id": "BR-FB-02",
+      "kind": "constraint",
+      "knowledgeOrigin": "source",
+      "name": "核实为误报则必须回流评审队列",
+      "outcome": {
+        "emit_event": "THRESHOLD_REVIEW_ITEM_CREATED",
+        "message": "误报归因已回流阈值评审队列",
+        "on_fail": "warn",
+        "on_pass": "continue"
+      },
+      "phase": "feedback",
+      "priority": 2,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R1-07",
+      "ruleGroupTitle": "预警误报回收",
+      "scope": {
+        "objectTypeIds": [
+          "Rule_Review_Item",
+          "Alert_Threshold_Setting"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-1-procurement-deviation",
+          "documentName": "场景1_采购全链路执行偏差三级预警.docx",
+          "quoteVerified": true,
+          "section": "四、场景规则 R1-07",
+          "snippet": "归因（阈值过严/数据质量/口径问题）并回流更新预警阈值配置表.THRESHOLD_VALUE 评审队列"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "规则评审组",
+      "category": "误报回收(馈)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果统计误报率高于 20%，则触发预警阈值评审——闭环目标是误报率不高于 20%、逐月下降。",
+      "executor": "System",
+      "id": "BR-FB-03",
+      "kind": "validation",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "item",
+            "object_id": "Rule_Review_Item",
+            "property": "false_alarm_rate",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "item.false_alarm_rate > 0.2",
+        "test_cases": [
+          {
+            "context": {
+              "item": {
+                "false_alarm_rate": 0.28
+              }
+            },
+            "expected": true,
+            "id": "tc-fb03-hit"
+          },
+          {
+            "context": {
+              "item": {
+                "false_alarm_rate": 0.2
+              }
+            },
+            "expected": false,
+            "id": "tc-fb03-edge"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "误报率高于20%则触发阈值评审",
+      "outcome": {
+        "message": "误报率超过 20%，触发阈值评审",
+        "on_fail": "no_op",
+        "on_pass": "route",
+        "route_to": "规则评审组"
+      },
+      "phase": "feedback",
+      "priority": 2,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R1-07",
+      "ruleGroupTitle": "预警误报回收",
+      "scope": {
+        "objectTypeIds": [
+          "Rule_Review_Item",
+          "Alert_Threshold_Setting"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-1-procurement-deviation",
+          "documentName": "场景1_采购全链路执行偏差三级预警.docx",
+          "quoteVerified": true,
+          "section": "四、场景规则 R1-07",
+          "snippet": "反馈类:让系统越用越准,闭环误报率≤20%"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "闭环把关(行)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果方案执行后重算的偏差仍超过阈值，则不允许闭环，退回重新生成调整方案。",
+      "executor": "Agent",
+      "id": "BR-CLOSE-01",
+      "kind": "validation",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "record",
+            "object_id": "Alert_Handling_Record",
+            "property": "deviation_eliminated",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "record.deviation_eliminated == true",
+        "test_cases": [
+          {
+            "context": {
+              "record": {
+                "deviation_eliminated": true
+              }
+            },
+            "expected": true,
+            "id": "tc-close01-hit"
+          },
+          {
+            "context": {
+              "record": {
+                "deviation_eliminated": false
+              }
+            },
+            "expected": false,
+            "id": "tc-close01-miss"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "偏差未消除则不予闭环",
+      "outcome": {
+        "message": "偏差未消除，退回重新出方案",
+        "on_fail": "route",
+        "on_pass": "allow",
+        "route_to": "generateAdjustmentOptions"
+      },
+      "phase": "close",
+      "priority": 1,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "WF-G",
+      "ruleGroupTitle": "偏差处置闭环",
+      "scope": {
+        "objectTypeIds": [
+          "Execution_Deviation",
+          "Alert_Handling_Record"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-1-procurement-deviation",
+          "documentName": "场景1_采购全链路执行偏差三级预警.docx",
+          "quoteVerified": true,
+          "section": "五、业务流程 步骤g",
+          "snippet": "偏差消除校验，处置结果留痕，误报回收优化阈值"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "闭环把关(行)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果预警没有「闭环归档」处置留痕，则不允许闭环——每条预警必须有处置记录、全程可追溯。",
+      "executor": "System",
+      "id": "BR-CLOSE-02",
+      "kind": "constraint",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "record",
+            "object_id": "Alert_Handling_Record",
+            "property": "handling_action",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "record.handling_action == \"闭环归档\"",
+        "test_cases": [
+          {
+            "context": {
+              "record": {
+                "handling_action": "闭环归档"
+              }
+            },
+            "expected": true,
+            "id": "tc-close02-hit"
+          },
+          {
+            "context": {
+              "record": {
+                "handling_action": "预警推送"
+              }
+            },
+            "expected": false,
+            "id": "tc-close02-miss"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "无闭环留痕则不予闭环",
+      "outcome": {
+        "message": "处置结果必须留痕",
+        "on_fail": "block",
+        "on_pass": "continue"
+      },
+      "phase": "close",
+      "priority": 1,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "WF-G",
+      "ruleGroupTitle": "偏差处置闭环",
+      "scope": {
+        "objectTypeIds": [
+          "Alert_Handling_Record",
+          "Deviation_Alert"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-1-procurement-deviation",
+          "documentName": "场景1_采购全链路执行偏差三级预警.docx",
+          "quoteVerified": true,
+          "section": "三、场景期望 5)",
+          "snippet": "处置结果全部留痕可追溯，误报自动回收优化阈值；衡量口径：每条预警有处置记录"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,2684 @@
+[
+  {
+    "id": "collectChainExecutionData",
+    "name": "collectChainExecutionData",
+    "description": "【查】按日定时或单据状态变更触发，拉取全集团在途采购计划及其申请/组包/询价/定标/合同/订单/验收全链路单据，逐节点回写实际完成状态与时间，形成一单一档的全链路进度视图：在途单 100% 覆盖、进度零手工录入(R1-01)。",
+    "submission_criteria": "每日定时批次到点，或链路上任一业务单据发生状态/关键时间字段变更时提交。",
+    "object_type": "action",
+    "category": "链路采集(查)",
+    "actor": [
+      "System",
+      "Agent"
+    ],
+    "trigger": [
+      "DAILY_DEVIATION_SCAN_SCHEDULED",
+      "PROCUREMENT_DOCUMENT_STATUS_CHANGED"
+    ],
+    "target_objects": [
+      "Procurement_Chain",
+      "Chain_Stage_Progress"
+    ],
+    "inputs": [
+      {
+        "name": "procurement_plan",
+        "type": "Object",
+        "description": "在途采购计划头：业务类型、状态、三级责任人。",
+        "required": true,
+        "source_object": "Procurement_Plan.plan_id"
+      },
+      {
+        "name": "procurement_plan_line",
+        "type": "Object",
+        "description": "计划行：物料、数量、需求到货日期。",
+        "required": true,
+        "source_object": "Procurement_Plan_Line.plan_line_id"
+      },
+      {
+        "name": "stage_cycle_standard",
+        "type": "List<Object>",
+        "description": "采购阶段周期标准预载：供后续计划时间推算取步长。",
+        "required": false,
+        "source_object": "Stage_Cycle_Standard.cycle_standard_id"
+      },
+      {
+        "name": "purchase_requisition",
+        "type": "Object",
+        "description": "采购申请：立项节点状态与审批时间。",
+        "required": false,
+        "source_object": "Purchase_Requisition.requisition_id"
+      },
+      {
+        "name": "sourcing_package",
+        "type": "Object",
+        "description": "采购包：组包节点状态与完成时间。",
+        "required": false,
+        "source_object": "Sourcing_Package.package_id"
+      },
+      {
+        "name": "inquiry_notice",
+        "type": "Object",
+        "description": "询价单：询价生效、发标、截标时间。",
+        "required": false,
+        "source_object": "Inquiry_Notice.inquiry_id"
+      },
+      {
+        "name": "bid_award",
+        "type": "Object",
+        "description": "定标结果：中标日期与中标供应商。",
+        "required": false,
+        "source_object": "Bid_Award.award_id"
+      },
+      {
+        "name": "purchase_contract",
+        "type": "Object",
+        "description": "采购合同：签署状态与签署/生效日期。",
+        "required": false,
+        "source_object": "Purchase_Contract.contract_id"
+      },
+      {
+        "name": "purchase_order",
+        "type": "Object",
+        "description": "采购订单：审批时间、生效日期、到货数量。",
+        "required": false,
+        "source_object": "Purchase_Order.order_id"
+      },
+      {
+        "name": "goods_acceptance",
+        "type": "Object",
+        "description": "采购验收：接收数量与验收完成时间。",
+        "required": false,
+        "source_object": "Goods_Acceptance.acceptance_id"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "procurement_chain",
+        "type": "Object",
+        "description": "刷新后的采购执行链路：当前节点、链路状态、最近同步时间。",
+        "required": true,
+        "source_object": "Procurement_Chain.chain_id"
+      },
+      {
+        "name": "stage_progress_list",
+        "type": "List<Object>",
+        "description": "七个节点的进度记录：实际完成时间、节点状态、来源单据。",
+        "required": true,
+        "source_object": "Chain_Stage_Progress.stage_progress_id"
+      }
+    ],
+    "action_steps": [
+      {
+        "id": "s1",
+        "order": "1",
+        "name": "queryOpenProcurementPlan",
+        "description": "拉取状态为已批准的在途采购计划头与计划行，确定盯防范围(BR-COV-01：在途单 100% 覆盖)。",
+        "object_type": "tool",
+        "submission_criteria": "每日批次到点或收到单据状态变更事件。"
+      },
+      {
+        "id": "s2",
+        "order": "2",
+        "name": "resolveChainSkeleton",
+        "description": "按计划行建立/更新采购执行链路骨架与七个节点进度占位。",
+        "object_type": "logic"
+      },
+      {
+        "id": "s3",
+        "order": "3",
+        "name": "syncInitiationStage",
+        "description": "采集采购申请状态：已审批即立项节点完成，实际完成时间取审批通过时间。",
+        "object_type": "tool"
+      },
+      {
+        "id": "s4",
+        "order": "4",
+        "name": "syncPackagingStage",
+        "description": "采集采购包状态：有效即组包节点完成，完成时间取包更新时间。",
+        "object_type": "tool"
+      },
+      {
+        "id": "s5",
+        "order": "5",
+        "name": "syncInquiryStage",
+        "description": "采集询价单状态与时间：生效即询价节点完成，另记发标日期为发标时点。",
+        "object_type": "tool"
+      },
+      {
+        "id": "s6",
+        "order": "6",
+        "name": "syncAwardStage",
+        "description": "采集供应商回复的中标日期，中标即定标节点完成。",
+        "object_type": "tool"
+      },
+      {
+        "id": "s7",
+        "order": "7",
+        "name": "syncContractStage",
+        "description": "经价格协议关联采购合同，签署/生效即合同节点完成，时间取签署日期。",
+        "object_type": "tool"
+      },
+      {
+        "id": "s8",
+        "order": "8",
+        "name": "syncOrderStage",
+        "description": "经订单关系关联采购订单，已审批并生效即订单节点完成，另采集到货数量。",
+        "object_type": "tool"
+      },
+      {
+        "id": "s9",
+        "order": "9",
+        "name": "syncDeliveryStage",
+        "description": "采集验收接收数量与订单数量比对：相等为完全接收（到货节点完成），小于为部分接收（链路仍在途）。",
+        "object_type": "tool"
+      },
+      {
+        "id": "s10",
+        "order": "10",
+        "name": "writeBackChainProgress",
+        "description": "回写链路当前节点、节点进度与最近同步时间，形成链路进度快照。",
+        "object_type": "logic"
+      }
+    ],
+    "rule_bindings": [
+      {
+        "id": "arb-collectChainExecutionData-01",
+        "rule_id": "BR-COV-01",
+        "target": {
+          "type": "action",
+          "id": "collectChainExecutionData"
+        },
+        "phase": "guard",
+        "enforcement": "mandatory",
+        "failure_policy": "block",
+        "provenance": "extracted"
+      }
+    ],
+    "side_effects": {
+      "data_changes": [
+        {
+          "target_object": "Procurement_Chain",
+          "mutation_type": "CREATE_OR_MODIFY",
+          "impacted_properties": [
+            "current_stage",
+            "chain_status",
+            "last_synced_at",
+            "forecast_arrival_date"
+          ],
+          "description": "刷新链路当前节点与同步时间。"
+        },
+        {
+          "target_object": "Chain_Stage_Progress",
+          "mutation_type": "CREATE_OR_MODIFY",
+          "impacted_properties": [
+            "actual_finish_date",
+            "stage_status",
+            "source_document_type",
+            "source_document_no",
+            "stage_started_at",
+            "synced_at"
+          ],
+          "description": "逐节点回写实际完成状态与时间。"
+        }
+      ],
+      "external_calls": [
+        {
+          "system": "metaERP 寻源",
+          "endpoint": "/msourcing/openapi/v1/queryPbpHeader",
+          "method": "POST",
+          "description": "查询在途采购计划头(queryOpenPbpHeader)。入参：计划状态=已批准、业务类型、单位范围、分页游标；出参：PBP_HEADER_ID、BUSINESS_TYPE、PLAN_TYPE、STATUS。"
+        },
+        {
+          "system": "metaERP 寻源",
+          "endpoint": "/msourcing/openapi/v1/queryPbpLine",
+          "method": "POST",
+          "description": "查询采购计划行——需求日期来源(queryOpenPbpLine)。入参：计划头ID列表、分页；出参：PBP_LINE_ID、ITEM_CODE、QUANTITY、NEED_BY_DATE。"
+        },
+        {
+          "system": "metaERP 寻源",
+          "endpoint": "/msourcing/openapi/v1/queryAllPbpLinePage",
+          "method": "POST",
+          "description": "分页查询计划头行关系、防止行重复归集(getAllPbpLinePageByQuery)。入参：计划头ID列表、分页；出参：PBP_REL_ID、PBP_HEADER_ID、PBP_LINE_ID。"
+        },
+        {
+          "system": "metaERP 采购申请",
+          "endpoint": "/pr/external/openapi/v1/queryPr",
+          "method": "POST",
+          "description": "采集立项节点状态与时间(queryPr)。入参：来源单据ID列表(计划头ID经头行关系映射)、分页；出参：pr_header_id、pr_number、pr_header_status、审批通过时间、行 item_code、source_doc_header_id/line_id。"
+        },
+        {
+          "system": "metaERP 寻源",
+          "endpoint": "/open/procPackage/v1/queryProcPackageLineExecuteMode",
+          "method": "POST",
+          "description": "采集组包节点状态(getProcPackage)。入参：来源对象ID列表(采购申请ID)；出参：采购包行(PROC_PACKAGE_LINE_ID/PROC_PACKAGE_HEADER_ID)、包头 STATUS、LAST_UPDATE_DATE(组包完成时间)、EXPECTED_FINISH_SOURCING_DATE。"
+        },
+        {
+          "system": "metaERP 寻源",
+          "endpoint": "/open/rfx/v1/queryRfxList",
+          "method": "POST",
+          "description": "采集询价节点状态(getRfxBid)。入参：来源对象ID列表(采购包ID)；出参：RFX_HEADER_ID、RFX_STATUS、EFFECTIVE_DATE(询价生效)、PUBLISH_DATE(发标)、CLOSE_BIDDING_DATE(截标)。"
+        },
+        {
+          "system": "metaERP 寻源",
+          "endpoint": "/open/rfx/v1/queryAwardList",
+          "method": "POST",
+          "description": "采集定标节点状态(getRfxBid)。入参：询价单ID列表；出参：BID_HEADER_ID、AWARD_DATE(中标日期)、BID_STATUS、中标供应商。"
+        },
+        {
+          "system": "metaERP 寻源",
+          "endpoint": "/open/v1/querySPAList",
+          "method": "POST",
+          "description": "采集价格协议——合同前置凭据(getSpa)。入参：来源对象ID列表(询价单ID)；出参：SPA_HEADER_ID、SPA_NUMBER。"
+        },
+        {
+          "system": "metaERP 合同",
+          "endpoint": "/open/contract/v1/queryContract",
+          "method": "POST",
+          "description": "采集合同节点状态(getClmSigning)。入参：价格协议关联的合同ID列表；出参：CONTRACT_STATUS、EFFECTIVE_DATE(生效)、SIGNING_DATE(签署日期)、SIGNING_STATUS。"
+        },
+        {
+          "system": "metaERP 采购订单",
+          "endpoint": "/poquery/open/queryPoService/v1/poHeader",
+          "method": "POST",
+          "description": "采集订单节点审批时间(queryPoHeader)。入参：来源单据(申请头/行ID)列表——订单关系按 R1-01 第8步口径经来源单据关联；出参：po_header_id、approval_status、approved_date、effective_date。"
+        },
+        {
+          "system": "metaERP 采购订单",
+          "endpoint": "/poquery/open/queryPoService/v1/poShipment",
+          "method": "POST",
+          "description": "采集到货进度(queryPoLineShipment)。入参：采购订单头/行ID列表；出参：po_line_shipment_id、quantity、received_quantity、need_by_date。"
+        },
+        {
+          "system": "metaERP 验收",
+          "endpoint": "/actransaction/queryAcAPIService/v1/queryAcceptanceHeader/page",
+          "method": "POST",
+          "description": "采集到货终点状态(queryAcceptHeader，含验收行)。入参：来源单据ID列表(订单头ID)、分页；出参：ac_header_id、approval_status、验收行 received_quantity。"
+        },
+        {
+          "system": "metaERP 验收",
+          "endpoint": "/actransaction/AcQueryAcTransactionOpenApiService/v1/queryAcTransaction",
+          "method": "POST",
+          "description": "采集验收记录(queryAcceptTransaction)。入参：验收行ID列表；出参：ac_transaction_id、transaction_type、交易时间。"
+        }
+      ]
+    },
+    "triggered_event": [
+      "CHAIN_PROGRESS_SYNCED"
+    ],
+    "implementation": {
+      "kind": "http",
+      "operation_id": "queryOpenPbpHeader",
+      "endpoint": "/msourcing/openapi/v1/queryPbpHeader",
+      "method": "POST",
+      "executable": false
+    },
+    "retry_policy": {
+      "max_retries": 3,
+      "backoff_ms": 60000
+    },
+    "timeout_ms": 600000,
+    "provenance": "extracted",
+    "tool_use": [
+      "queryOpenPbpHeader",
+      "queryOpenPbpLine",
+      "getAllPbpLinePageByQuery",
+      "queryPr",
+      "queryProcPackageLineExecuteMode",
+      "queryRfxList",
+      "queryAwardList",
+      "getSpaByQuery",
+      "getContractByQuery",
+      "queryPoHeader",
+      "queryPoLineShipment",
+      "queryAcceptHeader",
+      "queryAcceptTransaction"
+    ]
+  },
+  {
+    "id": "calculateExecutionDeviation",
+    "name": "calculateExecutionDeviation",
+    "description": "【算】先取各环节实际完成时间，再以需求到货日期为基准按标准周期正排+倒排双向推算各节点计划完成时间并交叉校验(R1-02)；逐节点对比实际时间（未到节点以当日代入）算时间偏差，按到货数量算进度偏差，结合本单金额与历史同类单均值算金额偏差；按停滞环节与单据状态归纳成因标签，停滞在采购环节时触发采购员确认，最终汇总成该单的偏差画像(R1-03)。",
+    "submission_criteria": "链路节点进度完成同步且该链路七个节点的标准周期配置齐备时提交。",
+    "object_type": "action",
+    "category": "偏差计算(析)",
+    "actor": [
+      "Agent"
+    ],
+    "trigger": [
+      "CHAIN_PROGRESS_SYNCED"
+    ],
+    "target_objects": [
+      "Execution_Deviation",
+      "Chain_Stage_Progress"
+    ],
+    "inputs": [
+      {
+        "name": "procurement_chain",
+        "type": "Object",
+        "description": "待算偏差的在途链路。",
+        "required": true,
+        "source_object": "Procurement_Chain.chain_id"
+      },
+      {
+        "name": "stage_progress_list",
+        "type": "List<Object>",
+        "description": "七个节点的实际完成情况。",
+        "required": true,
+        "source_object": "Chain_Stage_Progress.stage_progress_id"
+      },
+      {
+        "name": "stage_cycle_standard",
+        "type": "List<Object>",
+        "description": "业务类型×节点的标准周期天数。",
+        "required": true,
+        "source_object": "Stage_Cycle_Standard.cycle_standard_id"
+      },
+      {
+        "name": "plan_line",
+        "type": "Object",
+        "description": "计划行的需求到货日期与计划金额。",
+        "required": true,
+        "source_object": "Procurement_Plan_Line.plan_line_id"
+      },
+      {
+        "name": "purchase_order",
+        "type": "Object",
+        "description": "订单数量、已接收数量与已发生金额。",
+        "required": false,
+        "source_object": "Purchase_Order.order_id"
+      },
+      {
+        "name": "alert_threshold",
+        "type": "List<Object>",
+        "description": "时间与进度的偏差判定阈值。",
+        "required": true,
+        "source_object": "Alert_Threshold_Setting.threshold_id"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "execution_deviation",
+        "type": "Object",
+        "description": "逐节点执行偏差：三项偏差值、是否存在偏差、成因标签。",
+        "required": true,
+        "source_object": "Execution_Deviation.deviation_id"
+      }
+    ],
+    "action_steps": [
+      {
+        "id": "s1",
+        "order": "1",
+        "name": "loadStageCycleStandard",
+        "description": "按业务类型取七个节点的标准周期；缺配置则转系统管理员补配(BR-PLAN-01)。",
+        "object_type": "tool"
+      },
+      {
+        "id": "s2",
+        "order": "2",
+        "name": "deriveplannedDates",
+        "description": "以需求到货日期为基准正排+倒排双向推算各节点计划完成时间，交叉校验一致后置计划基准标志。",
+        "object_type": "logic"
+      },
+      {
+        "id": "s3",
+        "order": "3",
+        "name": "computeTimeDeviation",
+        "description": "逐节点算时间偏差 = 实际完成时间 − 计划完成时间；未到节点以当前日期代入。",
+        "object_type": "logic"
+      },
+      {
+        "id": "s4",
+        "order": "4",
+        "name": "computeScheduleDeviation",
+        "description": "进度偏差 = 1 − 已接收数量/订单数量。",
+        "object_type": "logic"
+      },
+      {
+        "id": "s5",
+        "order": "5",
+        "name": "computeAmountDeviation",
+        "description": "金额偏差 = 已发生金额/计划金额 − 1，并与历史同类单均值比对佐证。",
+        "object_type": "logic"
+      },
+      {
+        "id": "s6",
+        "order": "6",
+        "name": "applyThreshold",
+        "description": "从阈值配置取时间>7天/进度>20%判定是否存在偏差(BR-DEV-01、BR-DEV-02)。",
+        "object_type": "logic"
+      },
+      {
+        "id": "s7",
+        "order": "7",
+        "name": "tagRootCause",
+        "description": "看偏差发生在哪个环节、关联单据停在什么状态，归纳供应商延迟/审批滞留/组包等待/流标重招/物流异常成因标签(BR-DEV-03)。",
+        "object_type": "logic"
+      },
+      {
+        "id": "s8",
+        "order": "8",
+        "name": "requestBuyerClarification",
+        "description": "停滞在采购执行环节且成因无法自动判明时，触发消息至采购员确认停滞原因，澄清结果写入成因说明(BR-DEV-04)。",
+        "object_type": "logic"
+      },
+      {
+        "id": "s9",
+        "order": "9",
+        "name": "composeDeviationProfile",
+        "description": "把偏差天数、偏差金额、停滞原因汇总成偏差画像，交下一阶段判断。",
+        "object_type": "logic"
+      }
+    ],
+    "rule_bindings": [
+      {
+        "id": "arb-calculateExecutionDeviation-01",
+        "rule_id": "BR-PLAN-01",
+        "target": {
+          "type": "action",
+          "id": "calculateExecutionDeviation"
+        },
+        "phase": "precondition",
+        "enforcement": "mandatory",
+        "failure_policy": "block",
+        "provenance": "extracted"
+      },
+      {
+        "id": "arb-calculateExecutionDeviation-02",
+        "rule_id": "BR-DEV-02",
+        "target": {
+          "type": "action",
+          "id": "calculateExecutionDeviation"
+        },
+        "phase": "guard",
+        "enforcement": "mandatory",
+        "failure_policy": "block",
+        "provenance": "extracted"
+      },
+      {
+        "id": "arb-calculateExecutionDeviation-03",
+        "rule_id": "BR-DEV-01",
+        "target": {
+          "type": "action",
+          "id": "calculateExecutionDeviation"
+        },
+        "phase": "postcondition",
+        "enforcement": "mandatory",
+        "failure_policy": "block",
+        "provenance": "extracted"
+      },
+      {
+        "id": "arb-calculateExecutionDeviation-04",
+        "rule_id": "BR-DEV-03",
+        "target": {
+          "type": "action",
+          "id": "calculateExecutionDeviation"
+        },
+        "phase": "postcondition",
+        "enforcement": "mandatory",
+        "failure_policy": "warn",
+        "provenance": "extracted"
+      },
+      {
+        "id": "arb-calculateExecutionDeviation-05",
+        "rule_id": "BR-DEV-04",
+        "target": {
+          "type": "action",
+          "id": "calculateExecutionDeviation"
+        },
+        "phase": "postcondition",
+        "enforcement": "mandatory",
+        "failure_policy": "warn",
+        "provenance": "extracted"
+      }
+    ],
+    "side_effects": {
+      "data_changes": [
+        {
+          "target_object": "Chain_Stage_Progress",
+          "mutation_type": "MODIFY",
+          "impacted_properties": [
+            "planned_finish_date",
+            "standard_cycle_days",
+            "planned_date_derived",
+            "dwell_days"
+          ],
+          "description": "回写倒排出的计划完成时间与标准周期。"
+        },
+        {
+          "target_object": "Execution_Deviation",
+          "mutation_type": "CREATE_OR_MODIFY",
+          "impacted_properties": [
+            "time_deviation_days",
+            "schedule_deviation_ratio",
+            "amount_deviation_ratio",
+            "has_deviation",
+            "deviation_level",
+            "cause_tag",
+            "cause_explanation",
+            "cause_clarification_status",
+            "dwell_days",
+            "disposal_state",
+            "evaluated_at"
+          ],
+          "description": "写入执行偏差计算结果与偏差画像。"
+        }
+      ],
+      "notifications": [
+        {
+          "recipients": [
+            "采购员"
+          ],
+          "channel": [
+            "InApp"
+          ],
+          "logic": "该单偏差停滞在采购执行环节：请确认停滞原因（催办供应商/推进审批/物流异常/其他），澄清结果将写入成因说明并用于概率评分。",
+          "condition": "deviation.cause_clarification_status == '待采购员澄清'"
+        }
+      ]
+    },
+    "triggered_event": [
+      "EXECUTION_DEVIATION_CALCULATED",
+      "DEVIATION_DETECTED",
+      "NO_DEVIATION_CONFIRMED"
+    ],
+    "implementation": {
+      "kind": "typescript",
+      "module_path": "@allmeta/procurement-chain-deviation/actions"
+    },
+    "timeout_ms": 300000,
+    "provenance": "extracted",
+    "tool_use": [
+      "calcDeviation",
+      "getStageCycleConfig"
+    ]
+  },
+  {
+    "id": "archiveDeviationMonitoring",
+    "name": "archiveDeviationMonitoring",
+    "description": "【行】无偏差链路不打扰任何人：直接归档为监控留痕，等待下一次每日扫描，避免噪音消耗计划员注意力。",
+    "submission_criteria": "偏差计算结果判定为不存在偏差时提交。",
+    "object_type": "action",
+    "category": "闭环归档(行)",
+    "actor": [
+      "System"
+    ],
+    "trigger": [
+      "NO_DEVIATION_CONFIRMED"
+    ],
+    "target_objects": [
+      "Execution_Deviation",
+      "Procurement_Chain"
+    ],
+    "inputs": [
+      {
+        "name": "execution_deviation",
+        "type": "Object",
+        "description": "判定为无偏差的执行偏差记录。",
+        "required": true,
+        "source_object": "Execution_Deviation.deviation_id"
+      },
+      {
+        "name": "procurement_chain",
+        "type": "Object",
+        "description": "对应的在途链路。",
+        "required": true,
+        "source_object": "Procurement_Chain.chain_id"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "archived_deviation",
+        "type": "Object",
+        "description": "归档后的偏差记录，状态转为已归档。",
+        "required": true,
+        "source_object": "Execution_Deviation.deviation_id"
+      }
+    ],
+    "action_steps": [
+      {
+        "id": "s1",
+        "order": "1",
+        "name": "confirmNoDeviation",
+        "description": "确认时间与进度偏差均未超阈值（如时间偏差 1 天未达阈值）。",
+        "object_type": "logic"
+      },
+      {
+        "id": "s2",
+        "order": "2",
+        "name": "archiveAsMonitoring",
+        "description": "对计算内容归档记录，链路继续在途盯防、持续监控进度。",
+        "object_type": "logic"
+      }
+    ],
+    "rule_bindings": [
+      {
+        "id": "arb-archiveDeviationMonitoring-01",
+        "rule_id": "BR-DEV-01",
+        "target": {
+          "type": "action",
+          "id": "archiveDeviationMonitoring"
+        },
+        "phase": "guard",
+        "enforcement": "mandatory",
+        "failure_policy": "block",
+        "provenance": "extracted"
+      }
+    ],
+    "side_effects": {
+      "data_changes": [
+        {
+          "target_object": "Execution_Deviation",
+          "mutation_type": "MODIFY",
+          "impacted_properties": [
+            "disposal_state"
+          ],
+          "description": "偏差记录归档。"
+        },
+        {
+          "target_object": "Procurement_Chain",
+          "mutation_type": "MODIFY",
+          "impacted_properties": [
+            "last_synced_at"
+          ],
+          "description": "刷新链路盯防时间戳。"
+        }
+      ]
+    },
+    "triggered_event": [
+      "CHAIN_MONITORING_ARCHIVED"
+    ],
+    "implementation": {
+      "kind": "typescript",
+      "module_path": "@allmeta/procurement-chain-deviation/actions"
+    },
+    "provenance": "extracted"
+  },
+  {
+    "id": "scoreOnTimeProbability",
+    "name": "scoreOnTimeProbability",
+    "description": "【评】超期天数支撑不了决策——超3天但剩余周期充足不要紧，超1天但已到最终节点就很要紧。基于偏差画像，叠加当前节点剩余标准周期、滞留天数、同类历史达成率与采购员澄清的停滞原因加权算出按期概率，附可解释理由并映射红(<60%)/黄(60-85%)/蓝(>85%)三级(R1-04)。",
+    "submission_criteria": "执行偏差判定为存在偏差，且当前节点的剩余标准周期可取时提交。",
+    "object_type": "action",
+    "category": "概率评分(评)",
+    "actor": [
+      "Agent"
+    ],
+    "trigger": [
+      "DEVIATION_DETECTED"
+    ],
+    "target_objects": [
+      "Delivery_Probability_Assessment",
+      "Execution_Deviation"
+    ],
+    "inputs": [
+      {
+        "name": "execution_deviation",
+        "type": "Object",
+        "description": "待评分的执行偏差。",
+        "required": true,
+        "source_object": "Execution_Deviation.deviation_id"
+      },
+      {
+        "name": "procurement_chain",
+        "type": "Object",
+        "description": "链路当前节点与需求到货日期。",
+        "required": true,
+        "source_object": "Procurement_Chain.chain_id"
+      },
+      {
+        "name": "stage_cycle_standard",
+        "type": "List<Object>",
+        "description": "剩余节点的标准周期。",
+        "required": true,
+        "source_object": "Stage_Cycle_Standard.cycle_standard_id"
+      },
+      {
+        "name": "alert_threshold",
+        "type": "List<Object>",
+        "description": "红黄蓝概率分界阈值。",
+        "required": true,
+        "source_object": "Alert_Threshold_Setting.threshold_id"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "probability_assessment",
+        "type": "Object",
+        "description": "按期达成概率评估：概率、分级与可解释理由。",
+        "required": true,
+        "source_object": "Delivery_Probability_Assessment.assessment_id"
+      }
+    ],
+    "action_steps": [
+      {
+        "id": "s1",
+        "order": "1",
+        "name": "sumRemainingCycle",
+        "description": "看当前阶段，按周期配置汇总后续节点标准周期得到剩余天数。",
+        "object_type": "tool"
+      },
+      {
+        "id": "s2",
+        "order": "2",
+        "name": "statHistoricalOnTimeRate",
+        "description": "统计同业务类型历史已完结单（近一两次同等采购各阶段比例）的按期达成率与样本量。",
+        "object_type": "tool"
+      },
+      {
+        "id": "s3",
+        "order": "3",
+        "name": "resolveStallCause",
+        "description": "明确当前偏差原因——含采购员澄清的停滞原因，作为概率修正因子。",
+        "object_type": "logic"
+      },
+      {
+        "id": "s4",
+        "order": "4",
+        "name": "computeProbability",
+        "description": "结合剩余周期、滞留天数、历史达成率与停滞原因加权计算按期概率并明确映射比例。",
+        "object_type": "logic"
+      },
+      {
+        "id": "s5",
+        "order": "5",
+        "name": "gradeProbability",
+        "description": "按映射比例定级：<60%红 / 60~85%黄 / >85%蓝(BR-PROB-01~03)。",
+        "object_type": "logic"
+      },
+      {
+        "id": "s6",
+        "order": "6",
+        "name": "writeExplanation",
+        "description": "输出可解释理由，说明概率为何是这个数(BR-PROB-04)。",
+        "object_type": "logic"
+      }
+    ],
+    "rule_bindings": [
+      {
+        "id": "arb-scoreOnTimeProbability-01",
+        "rule_id": "BR-PROB-01",
+        "target": {
+          "type": "action",
+          "id": "scoreOnTimeProbability"
+        },
+        "phase": "postcondition",
+        "enforcement": "mandatory",
+        "failure_policy": "block",
+        "provenance": "extracted"
+      },
+      {
+        "id": "arb-scoreOnTimeProbability-02",
+        "rule_id": "BR-PROB-02",
+        "target": {
+          "type": "action",
+          "id": "scoreOnTimeProbability"
+        },
+        "phase": "postcondition",
+        "enforcement": "mandatory",
+        "failure_policy": "block",
+        "provenance": "extracted"
+      },
+      {
+        "id": "arb-scoreOnTimeProbability-03",
+        "rule_id": "BR-PROB-03",
+        "target": {
+          "type": "action",
+          "id": "scoreOnTimeProbability"
+        },
+        "phase": "postcondition",
+        "enforcement": "mandatory",
+        "failure_policy": "block",
+        "provenance": "extracted"
+      },
+      {
+        "id": "arb-scoreOnTimeProbability-04",
+        "rule_id": "BR-PROB-04",
+        "target": {
+          "type": "action",
+          "id": "scoreOnTimeProbability"
+        },
+        "phase": "postcondition",
+        "enforcement": "mandatory",
+        "failure_policy": "block",
+        "provenance": "extracted"
+      }
+    ],
+    "side_effects": {
+      "data_changes": [
+        {
+          "target_object": "Delivery_Probability_Assessment",
+          "mutation_type": "CREATE",
+          "impacted_properties": [
+            "on_time_probability",
+            "probability_grade",
+            "explanation",
+            "remaining_standard_cycle_days",
+            "historical_on_time_rate",
+            "historical_sample_size",
+            "dwell_days",
+            "assessed_at"
+          ],
+          "description": "写入按期达成概率评估。"
+        },
+        {
+          "target_object": "Execution_Deviation",
+          "mutation_type": "MODIFY",
+          "impacted_properties": [
+            "deviation_level",
+            "disposal_state"
+          ],
+          "description": "按概率分级回写偏差等级。"
+        }
+      ]
+    },
+    "triggered_event": [
+      "ON_TIME_PROBABILITY_SCORED"
+    ],
+    "implementation": {
+      "kind": "typescript",
+      "module_path": "@allmeta/procurement-chain-deviation/actions",
+      "model_tier": "reasoning"
+    },
+    "provenance": "extracted",
+    "tool_use": [
+      "calcDeviation",
+      "getStageCycleConfig"
+    ]
+  },
+  {
+    "id": "raiseDeviationAlert",
+    "name": "raiseDeviationAlert",
+    "description": "【警】按概率分级生成红/黄/蓝三级预警并按角色推送：红色报分管领导、黄色报部门领导、蓝色提示计划员；同时写入预警生成时间，作为超时升级的起算点。",
+    "submission_criteria": "按期概率评估完成并已定级，或收到超时升级事件需要按新等级重新推送时提交。",
+    "object_type": "action",
+    "category": "分级预警(警)",
+    "actor": [
+      "Agent"
+    ],
+    "trigger": [
+      "ON_TIME_PROBABILITY_SCORED",
+      "DEVIATION_ALERT_ESCALATED"
+    ],
+    "target_objects": [
+      "Deviation_Alert",
+      "Alert_Handling_Record"
+    ],
+    "inputs": [
+      {
+        "name": "probability_assessment",
+        "type": "Object",
+        "description": "概率评估与分级结果。",
+        "required": true,
+        "source_object": "Delivery_Probability_Assessment.assessment_id"
+      },
+      {
+        "name": "execution_deviation",
+        "type": "Object",
+        "description": "偏差画像：三项偏差与成因标签。",
+        "required": true,
+        "source_object": "Execution_Deviation.deviation_id"
+      },
+      {
+        "name": "procurement_chain",
+        "type": "Object",
+        "description": "链路上下文：物料、需求到货日期、责任人。",
+        "required": true,
+        "source_object": "Procurement_Chain.chain_id"
+      },
+      {
+        "name": "procurement_plan",
+        "type": "Object",
+        "description": "计划头上的三级责任人，决定推送对象。",
+        "required": true,
+        "source_object": "Procurement_Plan.plan_id"
+      },
+      {
+        "name": "alert_threshold",
+        "type": "List<Object>",
+        "description": "红/黄/蓝分界阈值，推送前复核定级依据。",
+        "required": false,
+        "source_object": "Alert_Threshold_Setting.threshold_id"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "deviation_alert",
+        "type": "Object",
+        "description": "已推送的偏差预警：等级、推送角色、生成时间。",
+        "required": true,
+        "source_object": "Deviation_Alert.alert_id"
+      }
+    ],
+    "action_steps": [
+      {
+        "id": "s1",
+        "order": "1",
+        "name": "composeDeviationProfile",
+        "description": "组装偏差画像：走到哪一步、慢了几天、为什么慢。",
+        "object_type": "logic"
+      },
+      {
+        "id": "s2",
+        "order": "2",
+        "name": "resolveNotifyTarget",
+        "description": "按等级确定推送角色：红→分管领导、黄→部门领导、蓝→计划员(BR-ALERT-01~03)。",
+        "object_type": "logic"
+      },
+      {
+        "id": "s3",
+        "order": "3",
+        "name": "pushAlert",
+        "description": "推送预警并记录预警生成时间。",
+        "object_type": "tool"
+      },
+      {
+        "id": "s4",
+        "order": "4",
+        "name": "writeHandlingRecord",
+        "description": "写入一条「预警推送」处置留痕。",
+        "object_type": "logic"
+      }
+    ],
+    "rule_bindings": [
+      {
+        "id": "arb-raiseDeviationAlert-01",
+        "rule_id": "BR-ALERT-01",
+        "target": {
+          "type": "action",
+          "id": "raiseDeviationAlert"
+        },
+        "phase": "validation",
+        "enforcement": "mandatory",
+        "failure_policy": "block",
+        "provenance": "extracted"
+      },
+      {
+        "id": "arb-raiseDeviationAlert-02",
+        "rule_id": "BR-ALERT-02",
+        "target": {
+          "type": "action",
+          "id": "raiseDeviationAlert"
+        },
+        "phase": "validation",
+        "enforcement": "mandatory",
+        "failure_policy": "block",
+        "provenance": "extracted"
+      },
+      {
+        "id": "arb-raiseDeviationAlert-03",
+        "rule_id": "BR-ALERT-03",
+        "target": {
+          "type": "action",
+          "id": "raiseDeviationAlert"
+        },
+        "phase": "validation",
+        "enforcement": "mandatory",
+        "failure_policy": "block",
+        "provenance": "extracted"
+      }
+    ],
+    "side_effects": {
+      "data_changes": [
+        {
+          "target_object": "Deviation_Alert",
+          "mutation_type": "CREATE_OR_MODIFY",
+          "impacted_properties": [
+            "alert_level",
+            "notified_role",
+            "notified_to",
+            "raised_at",
+            "handling_status"
+          ],
+          "description": "生成或更新偏差预警。"
+        },
+        {
+          "target_object": "Alert_Handling_Record",
+          "mutation_type": "CREATE",
+          "impacted_properties": [
+            "handling_action",
+            "operator_role",
+            "occurred_at",
+            "remark"
+          ],
+          "description": "预警推送留痕。"
+        }
+      ],
+      "notifications": [
+        {
+          "recipients": [
+            "分管领导",
+            "计划员"
+          ],
+          "channel": [
+            "InApp",
+            "Email",
+            "SMS"
+          ],
+          "logic": "红色预警：偏差画像 + 到货影响 + 三个可执行方案入口，24 小时内需闭环。",
+          "condition": "alert.alert_level == '红色'",
+          "triggered_event": "DEVIATION_ALERT_RAISED"
+        },
+        {
+          "recipients": [
+            "部门领导",
+            "计划员"
+          ],
+          "channel": [
+            "InApp",
+            "Email"
+          ],
+          "logic": "黄色预警：偏差画像 + 到货影响 + 三个可执行方案入口，48 小时内需处理。",
+          "condition": "alert.alert_level == '黄色'",
+          "triggered_event": "DEVIATION_ALERT_RAISED"
+        },
+        {
+          "recipients": [
+            "计划员"
+          ],
+          "channel": [
+            "InApp"
+          ],
+          "logic": "蓝色提示：本单存在轻微偏差但按期概率高，自行判断是否调整。",
+          "condition": "alert.alert_level == '蓝色'",
+          "triggered_event": "DEVIATION_ALERT_RAISED"
+        }
+      ]
+    },
+    "triggered_event": [
+      "DEVIATION_ALERT_RAISED"
+    ],
+    "implementation": {
+      "kind": "typescript",
+      "module_path": "@allmeta/procurement-chain-deviation/actions"
+    },
+    "provenance": "extracted",
+    "tool_use": [
+      "pushAlert"
+    ]
+  },
+  {
+    "id": "handleBlueAlertLocally",
+    "name": "handleBlueAlertLocally",
+    "description": "【行】蓝色预警由计划员自行处置：可选择做轻量调整或仅继续监控，处置完即闭环，不上报领导也不生成方案。",
+    "submission_criteria": "收到蓝色预警且计划员给出处置结论时提交。",
+    "object_type": "action",
+    "category": "闭环归档(行)",
+    "actor": [
+      "Human"
+    ],
+    "trigger": [
+      "DEVIATION_ALERT_RAISED"
+    ],
+    "target_objects": [
+      "Deviation_Alert",
+      "Alert_Handling_Record"
+    ],
+    "inputs": [
+      {
+        "name": "deviation_alert",
+        "type": "Object",
+        "description": "蓝色偏差预警。",
+        "required": true,
+        "source_object": "Deviation_Alert.alert_id"
+      },
+      {
+        "name": "execution_deviation",
+        "type": "Object",
+        "description": "对应的执行偏差。",
+        "required": true,
+        "source_object": "Execution_Deviation.deviation_id"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "handling_record",
+        "type": "Object",
+        "description": "计划员自行处置的留痕记录。",
+        "required": true,
+        "source_object": "Alert_Handling_Record.handling_record_id"
+      }
+    ],
+    "action_steps": [
+      {
+        "id": "s1",
+        "order": "1",
+        "name": "reviewBlueAlert",
+        "description": "计划员查看偏差画像与按期概率。",
+        "object_type": "manual"
+      },
+      {
+        "id": "s2",
+        "order": "2",
+        "name": "decideSelfHandling",
+        "description": "选择做轻量调整或仅继续监控。",
+        "object_type": "manual"
+      },
+      {
+        "id": "s3",
+        "order": "3",
+        "name": "closeBlueAlert",
+        "description": "写入处置留痕并闭环该预警。",
+        "object_type": "logic"
+      }
+    ],
+    "rule_bindings": [
+      {
+        "id": "arb-handleBlueAlertLocally-01",
+        "rule_id": "BR-ALERT-03",
+        "target": {
+          "type": "action",
+          "id": "handleBlueAlertLocally"
+        },
+        "phase": "guard",
+        "enforcement": "mandatory",
+        "failure_policy": "block",
+        "provenance": "extracted"
+      },
+      {
+        "id": "arb-handleBlueAlertLocally-02",
+        "rule_id": "BR-CLOSE-02",
+        "target": {
+          "type": "action",
+          "id": "handleBlueAlertLocally"
+        },
+        "phase": "postcondition",
+        "enforcement": "mandatory",
+        "failure_policy": "block",
+        "provenance": "extracted"
+      }
+    ],
+    "side_effects": {
+      "data_changes": [
+        {
+          "target_object": "Deviation_Alert",
+          "mutation_type": "MODIFY",
+          "impacted_properties": [
+            "handling_status",
+            "closed_at"
+          ],
+          "description": "蓝色预警闭环。"
+        },
+        {
+          "target_object": "Alert_Handling_Record",
+          "mutation_type": "CREATE",
+          "impacted_properties": [
+            "handling_action",
+            "operator_role",
+            "operator",
+            "occurred_at",
+            "remark"
+          ],
+          "description": "计划员自行处置留痕。"
+        },
+        {
+          "target_object": "Execution_Deviation",
+          "mutation_type": "MODIFY",
+          "impacted_properties": [
+            "disposal_state"
+          ],
+          "description": "偏差记录转已归档。"
+        }
+      ]
+    },
+    "triggered_event": [
+      "BLUE_ALERT_SELF_HANDLED"
+    ],
+    "implementation": {
+      "kind": "typescript",
+      "module_path": "@allmeta/procurement-chain-deviation/actions"
+    },
+    "provenance": "extracted"
+  },
+  {
+    "id": "generateAdjustmentOptions",
+    "name": "generateAdjustmentOptions",
+    "description": "【断】红/黄预警意味着按期概率低，不干预就会影响供货：自动生成压缩后续周期、调整需求日期、执行调拨三个可执行方案，每案附到货影响推演，领导选一个即可执行(R1-05)。",
+    "submission_criteria": "预警等级为红色或黄色，且已有按期概率评分与成因标签时提交。",
+    "object_type": "action",
+    "category": "方案生成(断)",
+    "actor": [
+      "Agent"
+    ],
+    "trigger": [
+      "DEVIATION_ALERT_RAISED"
+    ],
+    "target_objects": [
+      "Adjustment_Option"
+    ],
+    "inputs": [
+      {
+        "name": "deviation_alert",
+        "type": "Object",
+        "description": "红色或黄色偏差预警。",
+        "required": true,
+        "source_object": "Deviation_Alert.alert_id"
+      },
+      {
+        "name": "execution_deviation",
+        "type": "Object",
+        "description": "偏差值与成因标签，决定方案取舍。",
+        "required": true,
+        "source_object": "Execution_Deviation.deviation_id"
+      },
+      {
+        "name": "probability_assessment",
+        "type": "Object",
+        "description": "按期概率，决定方案力度。",
+        "required": true,
+        "source_object": "Delivery_Probability_Assessment.assessment_id"
+      },
+      {
+        "name": "stage_cycle_standard",
+        "type": "List<Object>",
+        "description": "后续节点标准周期，压缩方案的可压缩空间。",
+        "required": true,
+        "source_object": "Stage_Cycle_Standard.cycle_standard_id"
+      },
+      {
+        "name": "plan_line",
+        "type": "Object",
+        "description": "需求到货日期与用途场景，调整日期方案的边界。",
+        "required": true,
+        "source_object": "Procurement_Plan_Line.plan_line_id"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "adjustment_options",
+        "type": "List<Object>",
+        "description": "三个可执行调整方案及其到货影响推演。",
+        "required": true,
+        "source_object": "Adjustment_Option.option_id"
+      }
+    ],
+    "action_steps": [
+      {
+        "id": "s1",
+        "order": "1",
+        "name": "buildCompressOption",
+        "description": "方案①压缩后续周期：算出可压缩天数与压缩后到货日期。",
+        "object_type": "logic"
+      },
+      {
+        "id": "s2",
+        "order": "2",
+        "name": "buildNeedDateOption",
+        "description": "方案②调整需求日期：算出可接受的新到货日期及对用途场景的影响。",
+        "object_type": "logic"
+      },
+      {
+        "id": "s3",
+        "order": "3",
+        "name": "buildTransferOption",
+        "description": "方案③执行调拨：定位可调库点与数量，算出调拨到位时效。",
+        "object_type": "tool"
+      },
+      {
+        "id": "s4",
+        "order": "4",
+        "name": "simulateArrivalImpact",
+        "description": "为每个方案附到货影响推演：预计到货日期与影响天数(BR-OPT-03)。",
+        "object_type": "logic"
+      },
+      {
+        "id": "s5",
+        "order": "5",
+        "name": "markRecommendation",
+        "description": "结合成因标签与按期概率标记推荐方案并说明推荐依据；涉及暂停申请、整单调剂的方案标记为高危动作(BR-OPT-06)。",
+        "object_type": "logic"
+      }
+    ],
+    "rule_bindings": [
+      {
+        "id": "arb-generateAdjustmentOptions-01",
+        "rule_id": "BR-OPT-01",
+        "target": {
+          "type": "action",
+          "id": "generateAdjustmentOptions"
+        },
+        "phase": "guard",
+        "enforcement": "mandatory",
+        "failure_policy": "block",
+        "provenance": "extracted"
+      },
+      {
+        "id": "arb-generateAdjustmentOptions-02",
+        "rule_id": "BR-OPT-02",
+        "target": {
+          "type": "action",
+          "id": "generateAdjustmentOptions"
+        },
+        "phase": "postcondition",
+        "enforcement": "mandatory",
+        "failure_policy": "block",
+        "provenance": "extracted"
+      },
+      {
+        "id": "arb-generateAdjustmentOptions-03",
+        "rule_id": "BR-OPT-03",
+        "target": {
+          "type": "action",
+          "id": "generateAdjustmentOptions"
+        },
+        "phase": "postcondition",
+        "enforcement": "mandatory",
+        "failure_policy": "block",
+        "provenance": "extracted"
+      }
+    ],
+    "side_effects": {
+      "data_changes": [
+        {
+          "target_object": "Adjustment_Option",
+          "mutation_type": "CREATE",
+          "impacted_properties": [
+            "option_type",
+            "option_summary",
+            "expected_arrival_date_after",
+            "arrival_impact_days",
+            "arrival_impact_simulated",
+            "feasibility_note",
+            "is_recommended",
+            "is_high_risk",
+            "option_status",
+            "decision_role"
+          ],
+          "description": "生成三个调整方案并标记高危动作。"
+        },
+        {
+          "target_object": "Deviation_Alert",
+          "mutation_type": "MODIFY",
+          "impacted_properties": [
+            "generated_option_count"
+          ],
+          "description": "记录本次预警已生成的方案数，齐备为 3。"
+        },
+        {
+          "target_object": "Execution_Deviation",
+          "mutation_type": "MODIFY",
+          "impacted_properties": [
+            "disposal_state"
+          ],
+          "description": "偏差转入处置中。"
+        }
+      ]
+    },
+    "triggered_event": [
+      "ADJUSTMENT_OPTIONS_GENERATED"
+    ],
+    "implementation": {
+      "kind": "typescript",
+      "module_path": "@allmeta/procurement-chain-deviation/actions",
+      "model_tier": "reasoning"
+    },
+    "provenance": "extracted",
+    "tool_use": [
+      "calcDeviation"
+    ]
+  },
+  {
+    "id": "approveAdjustmentOption",
+    "name": "approveAdjustmentOption",
+    "description": "【断】领导审阅三个方案与到货影响推演后拍板：红色由分管领导、黄色由部门领导决策，选定方案再经计划员确认后系统执行。",
+    "submission_criteria": "三个调整方案齐备且均附到货影响推演，并已推送给对应等级的决策角色时提交。",
+    "object_type": "action",
+    "category": "领导决策(断)",
+    "actor": [
+      "Human"
+    ],
+    "trigger": [
+      "ADJUSTMENT_OPTIONS_GENERATED"
+    ],
+    "target_objects": [
+      "Adjustment_Option",
+      "Deviation_Alert"
+    ],
+    "inputs": [
+      {
+        "name": "adjustment_options",
+        "type": "List<Object>",
+        "description": "待决策的三个方案及其影响推演。",
+        "required": true,
+        "source_object": "Adjustment_Option.option_id"
+      },
+      {
+        "name": "deviation_alert",
+        "type": "Object",
+        "description": "预警等级决定决策角色。",
+        "required": true,
+        "source_object": "Deviation_Alert.alert_id"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "selected_option",
+        "type": "Object",
+        "description": "领导选定的调整方案。",
+        "required": true,
+        "source_object": "Adjustment_Option.option_id"
+      }
+    ],
+    "action_steps": [
+      {
+        "id": "s1",
+        "order": "1",
+        "name": "reviewOptions",
+        "description": "领导对比三个方案的构成、时效与到货影响。",
+        "object_type": "manual"
+      },
+      {
+        "id": "s2",
+        "order": "2",
+        "name": "checkDecisionRole",
+        "description": "校验决策人角色与预警等级匹配(BR-OPT-04)。",
+        "object_type": "logic"
+      },
+      {
+        "id": "s3",
+        "order": "3",
+        "name": "selectOption",
+        "description": "领导拍板选定一个方案，其余置为未采纳。",
+        "object_type": "manual"
+      },
+      {
+        "id": "s4",
+        "order": "4",
+        "name": "confirmHighRisk",
+        "description": "选定方案属高危动作（暂停申请、整单调剂）时，由部门领导强制人工确认(BR-OPT-06)。",
+        "object_type": "manual"
+      },
+      {
+        "id": "s5",
+        "order": "5",
+        "name": "plannerConfirm",
+        "description": "计划员确认执行，系统方可回写业务单据(BR-OPT-05)。",
+        "object_type": "manual"
+      }
+    ],
+    "rule_bindings": [
+      {
+        "id": "arb-approveAdjustmentOption-01",
+        "rule_id": "BR-OPT-04",
+        "target": {
+          "type": "action",
+          "id": "approveAdjustmentOption"
+        },
+        "phase": "approval",
+        "enforcement": "mandatory",
+        "failure_policy": "block",
+        "provenance": "extracted"
+      },
+      {
+        "id": "arb-approveAdjustmentOption-02",
+        "rule_id": "BR-OPT-05",
+        "target": {
+          "type": "action",
+          "id": "approveAdjustmentOption"
+        },
+        "phase": "approval",
+        "enforcement": "mandatory",
+        "failure_policy": "block",
+        "provenance": "extracted"
+      },
+      {
+        "id": "arb-approveAdjustmentOption-03",
+        "rule_id": "BR-OPT-06",
+        "target": {
+          "type": "action",
+          "id": "approveAdjustmentOption"
+        },
+        "phase": "approval",
+        "enforcement": "mandatory",
+        "failure_policy": "block",
+        "provenance": "extracted"
+      }
+    ],
+    "side_effects": {
+      "data_changes": [
+        {
+          "target_object": "Adjustment_Option",
+          "mutation_type": "MODIFY",
+          "impacted_properties": [
+            "option_status",
+            "decided_by",
+            "decided_at",
+            "high_risk_confirmed_by",
+            "planner_confirmed_by",
+            "planner_confirmed_at"
+          ],
+          "description": "选定方案，记录高危强制确认与计划员确认，其余置为未采纳。"
+        },
+        {
+          "target_object": "Deviation_Alert",
+          "mutation_type": "MODIFY",
+          "impacted_properties": [
+            "handling_status",
+            "acknowledged_at"
+          ],
+          "description": "预警转入处理中。"
+        },
+        {
+          "target_object": "Alert_Handling_Record",
+          "mutation_type": "CREATE",
+          "impacted_properties": [
+            "handling_action",
+            "operator_role",
+            "operator",
+            "occurred_at",
+            "remark"
+          ],
+          "description": "方案选定留痕。"
+        }
+      ],
+      "notifications": [
+        {
+          "recipients": [
+            "计划员"
+          ],
+          "channel": [
+            "InApp",
+            "Email"
+          ],
+          "logic": "领导已选定方案，请确认后执行；确认即触发对应的回写动作。",
+          "triggered_event": "ADJUSTMENT_OPTION_APPROVED"
+        }
+      ]
+    },
+    "triggered_event": [
+      "ADJUSTMENT_OPTION_APPROVED"
+    ],
+    "implementation": {
+      "kind": "typescript",
+      "module_path": "@allmeta/procurement-chain-deviation/actions"
+    },
+    "timeout_ms": 172800000,
+    "provenance": "extracted"
+  },
+  {
+    "id": "escalateOverdueAlert",
+    "name": "escalateOverdueAlert",
+    "description": "【升】预警报上去没人管就会错过补救窗口：定时扫描处置时效，黄色超 48 小时未处理自动升级为红色、红色超 24 小时未闭环自动上报分管领导，并写升级留痕(R1-06)。",
+    "submission_criteria": "定时扫描发现预警处置时长超过其等级对应的时限时提交。",
+    "object_type": "action",
+    "category": "超时升级(升)",
+    "actor": [
+      "System"
+    ],
+    "trigger": [
+      "ALERT_TIMEOUT_SCAN_SCHEDULED"
+    ],
+    "target_objects": [
+      "Deviation_Alert",
+      "Alert_Handling_Record"
+    ],
+    "inputs": [
+      {
+        "name": "deviation_alert",
+        "type": "Object",
+        "description": "待检查时效的偏差预警。",
+        "required": true,
+        "source_object": "Deviation_Alert.alert_id"
+      },
+      {
+        "name": "handling_records",
+        "type": "List<Object>",
+        "description": "该预警既有的处置留痕，用于判定是否已被处理。",
+        "required": true,
+        "source_object": "Alert_Handling_Record.handling_record_id"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "escalated_alert",
+        "type": "Object",
+        "description": "升级后的预警：新等级与新推送对象。",
+        "required": true,
+        "source_object": "Deviation_Alert.alert_id"
+      }
+    ],
+    "action_steps": [
+      {
+        "id": "s1",
+        "order": "1",
+        "name": "scanOverdueAlerts",
+        "description": "扫描待处理与处理中的预警，计算滞留小时数。",
+        "object_type": "tool"
+      },
+      {
+        "id": "s2",
+        "order": "2",
+        "name": "escalateYellow",
+        "description": "黄色超 48 小时未处理：升级为红色并改推送部门领导上级(BR-ESC-01)。",
+        "object_type": "logic"
+      },
+      {
+        "id": "s3",
+        "order": "3",
+        "name": "escalateRed",
+        "description": "红色超 24 小时未闭环：上报分管领导(BR-ESC-02)。",
+        "object_type": "logic"
+      },
+      {
+        "id": "s4",
+        "order": "4",
+        "name": "writeEscalationTrace",
+        "description": "写入升级留痕，记录升级时间与新推送对象(BR-ESC-03)。",
+        "object_type": "logic"
+      }
+    ],
+    "rule_bindings": [
+      {
+        "id": "arb-escalateOverdueAlert-01",
+        "rule_id": "BR-ESC-01",
+        "target": {
+          "type": "action",
+          "id": "escalateOverdueAlert"
+        },
+        "phase": "validation",
+        "enforcement": "mandatory",
+        "failure_policy": "block",
+        "provenance": "extracted"
+      },
+      {
+        "id": "arb-escalateOverdueAlert-02",
+        "rule_id": "BR-ESC-02",
+        "target": {
+          "type": "action",
+          "id": "escalateOverdueAlert"
+        },
+        "phase": "validation",
+        "enforcement": "mandatory",
+        "failure_policy": "block",
+        "provenance": "extracted"
+      },
+      {
+        "id": "arb-escalateOverdueAlert-03",
+        "rule_id": "BR-ESC-03",
+        "target": {
+          "type": "action",
+          "id": "escalateOverdueAlert"
+        },
+        "phase": "postcondition",
+        "enforcement": "mandatory",
+        "failure_policy": "block",
+        "provenance": "extracted"
+      }
+    ],
+    "side_effects": {
+      "data_changes": [
+        {
+          "target_object": "Deviation_Alert",
+          "mutation_type": "MODIFY",
+          "impacted_properties": [
+            "alert_level",
+            "notified_role",
+            "notified_to",
+            "handling_status",
+            "escalated_at",
+            "escalation_count"
+          ],
+          "description": "升级预警等级与推送对象。"
+        },
+        {
+          "target_object": "Alert_Handling_Record",
+          "mutation_type": "CREATE",
+          "impacted_properties": [
+            "handling_action",
+            "operator_role",
+            "occurred_at",
+            "remark"
+          ],
+          "description": "升级留痕。"
+        }
+      ],
+      "notifications": [
+        {
+          "recipients": [
+            "分管领导"
+          ],
+          "channel": [
+            "InApp",
+            "SMS"
+          ],
+          "logic": "预警超时未闭环已自动上报，请尽快决策，补救窗口正在收窄。",
+          "triggered_event": "DEVIATION_ALERT_ESCALATED"
+        }
+      ]
+    },
+    "triggered_event": [
+      "DEVIATION_ALERT_ESCALATED"
+    ],
+    "implementation": {
+      "kind": "typescript",
+      "module_path": "@allmeta/procurement-chain-deviation/actions"
+    },
+    "provenance": "extracted",
+    "tool_use": [
+      "pushAlert"
+    ]
+  },
+  {
+    "id": "compressDownstreamCycle",
+    "name": "compressDownstreamCycle",
+    "description": "【行】方案①落地：压缩后续节点周期，把倒排出的各节点计划完成时间回写采购计划，经计划员人工确认后生效。",
+    "submission_criteria": "领导选定「压缩后续周期」方案且计划员已确认执行时提交。",
+    "object_type": "action",
+    "category": "方案执行(行)",
+    "actor": [
+      "System",
+      "Human"
+    ],
+    "trigger": [
+      "ADJUSTMENT_OPTION_APPROVED"
+    ],
+    "target_objects": [
+      "Chain_Stage_Progress",
+      "Adjustment_Option"
+    ],
+    "inputs": [
+      {
+        "name": "selected_option",
+        "type": "Object",
+        "description": "选定的压缩后续周期方案。",
+        "required": true,
+        "source_object": "Adjustment_Option.option_id"
+      },
+      {
+        "name": "stage_cycle_standard",
+        "type": "List<Object>",
+        "description": "各节点标准周期，压缩重算的基准。",
+        "required": true,
+        "source_object": "Stage_Cycle_Standard.cycle_standard_id"
+      },
+      {
+        "name": "stage_progress_list",
+        "type": "List<Object>",
+        "description": "待回写计划完成时间的后续节点。",
+        "required": true,
+        "source_object": "Chain_Stage_Progress.stage_progress_id"
+      },
+      {
+        "name": "procurement_plan",
+        "type": "Object",
+        "description": "回写目标采购计划。",
+        "required": true,
+        "source_object": "Procurement_Plan.plan_id"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "updated_stage_progress",
+        "type": "List<Object>",
+        "description": "压缩后的各节点计划完成时间。",
+        "required": true,
+        "source_object": "Chain_Stage_Progress.stage_progress_id"
+      }
+    ],
+    "action_steps": [
+      {
+        "id": "s1",
+        "order": "1",
+        "name": "recomputeCompressedSchedule",
+        "description": "按压缩比例重算后续各节点的计划完成时间。",
+        "object_type": "logic"
+      },
+      {
+        "id": "s2",
+        "order": "2",
+        "name": "confirmByPlanner",
+        "description": "计划员确认压缩后的时间表可执行(BR-OPT-05)。",
+        "object_type": "manual"
+      },
+      {
+        "id": "s3",
+        "order": "3",
+        "name": "writeBackPlanSchedule",
+        "description": "经 changePbp 回写采购计划的节点计划时间。",
+        "object_type": "tool"
+      }
+    ],
+    "rule_bindings": [
+      {
+        "id": "arb-compressDownstreamCycle-01",
+        "rule_id": "BR-OPT-05",
+        "target": {
+          "type": "action",
+          "id": "compressDownstreamCycle"
+        },
+        "phase": "precondition",
+        "enforcement": "mandatory",
+        "failure_policy": "block",
+        "provenance": "extracted"
+      },
+      {
+        "id": "arb-compressDownstreamCycle-02",
+        "rule_id": "BR-PLAN-01",
+        "target": {
+          "type": "action",
+          "id": "compressDownstreamCycle"
+        },
+        "phase": "validation",
+        "enforcement": "mandatory",
+        "failure_policy": "block",
+        "provenance": "extracted"
+      }
+    ],
+    "side_effects": {
+      "data_changes": [
+        {
+          "target_object": "Chain_Stage_Progress",
+          "mutation_type": "MODIFY",
+          "impacted_properties": [
+            "planned_finish_date",
+            "standard_cycle_days"
+          ],
+          "description": "回写压缩后的计划完成时间。"
+        },
+        {
+          "target_object": "Adjustment_Option",
+          "mutation_type": "MODIFY",
+          "impacted_properties": [
+            "option_status",
+            "executed_at"
+          ],
+          "description": "方案置为已执行。"
+        },
+        {
+          "target_object": "Procurement_Chain",
+          "mutation_type": "MODIFY",
+          "impacted_properties": [
+            "forecast_arrival_date"
+          ],
+          "description": "刷新预计到货日期。"
+        }
+      ],
+      "external_calls": [
+        {
+          "system": "metaERP 寻源",
+          "endpoint": "/msourcing/openapi/v1/changePbp",
+          "method": "POST",
+          "description": "回写各节点计划完成时间——压缩周期方案(changePbp)。入参：PBP_HEADER_ID、压缩后的各节点计划完成时间、调整原因、操作人(计划员)；出参：回写结果状态、失败原因。"
+        }
+      ]
+    },
+    "triggered_event": [
+      "CHAIN_PLAN_SCHEDULE_COMPRESSED"
+    ],
+    "implementation": {
+      "kind": "http",
+      "operation_id": "changePbp",
+      "endpoint": "/msourcing/openapi/v1/changePbp",
+      "method": "POST",
+      "executable": false
+    },
+    "compensation_action": "generateAdjustmentOptions",
+    "provenance": "extracted",
+    "tool_use": [
+      "changePbp"
+    ]
+  },
+  {
+    "id": "adjustRequiredArrivalDate",
+    "name": "adjustRequiredArrivalDate",
+    "description": "【行】方案②落地：改写计划行的需求到货日期，同时保留原始日期用于留痕对比，经计划员人工确认后生效。",
+    "submission_criteria": "领导选定「调整需求日期」方案且计划员已确认执行时提交。",
+    "object_type": "action",
+    "category": "方案执行(行)",
+    "actor": [
+      "System",
+      "Human"
+    ],
+    "trigger": [
+      "ADJUSTMENT_OPTION_APPROVED"
+    ],
+    "target_objects": [
+      "Procurement_Plan_Line",
+      "Adjustment_Option"
+    ],
+    "inputs": [
+      {
+        "name": "selected_option",
+        "type": "Object",
+        "description": "选定的调整需求日期方案。",
+        "required": true,
+        "source_object": "Adjustment_Option.option_id"
+      },
+      {
+        "name": "plan_line",
+        "type": "Object",
+        "description": "待调整的采购计划行。",
+        "required": true,
+        "source_object": "Procurement_Plan_Line.plan_line_id"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "updated_plan_line",
+        "type": "Object",
+        "description": "调整后的计划行，含原始日期留痕。",
+        "required": true,
+        "source_object": "Procurement_Plan_Line.plan_line_id"
+      }
+    ],
+    "action_steps": [
+      {
+        "id": "s1",
+        "order": "1",
+        "name": "preserveOriginalDate",
+        "description": "把当前需求到货日期存入原始日期字段用于留痕。",
+        "object_type": "logic"
+      },
+      {
+        "id": "s2",
+        "order": "2",
+        "name": "confirmByPlanner",
+        "description": "计划员与需求部门确认新到货日期可接受(BR-OPT-05)。",
+        "object_type": "manual"
+      },
+      {
+        "id": "s3",
+        "order": "3",
+        "name": "writeBackNeedByDate",
+        "description": "经 changePbp 回写计划行的需求到货日期。",
+        "object_type": "tool"
+      },
+      {
+        "id": "s4",
+        "order": "4",
+        "name": "rebaselinePlannedDates",
+        "description": "以新到货日期为基准重新双向推算各节点计划完成时间。",
+        "object_type": "logic"
+      }
+    ],
+    "rule_bindings": [
+      {
+        "id": "arb-adjustRequiredArrivalDate-01",
+        "rule_id": "BR-OPT-05",
+        "target": {
+          "type": "action",
+          "id": "adjustRequiredArrivalDate"
+        },
+        "phase": "precondition",
+        "enforcement": "mandatory",
+        "failure_policy": "block",
+        "provenance": "extracted"
+      },
+      {
+        "id": "arb-adjustRequiredArrivalDate-02",
+        "rule_id": "BR-PLAN-01",
+        "target": {
+          "type": "action",
+          "id": "adjustRequiredArrivalDate"
+        },
+        "phase": "postcondition",
+        "enforcement": "mandatory",
+        "failure_policy": "block",
+        "provenance": "extracted"
+      }
+    ],
+    "side_effects": {
+      "data_changes": [
+        {
+          "target_object": "Procurement_Plan_Line",
+          "mutation_type": "MODIFY",
+          "impacted_properties": [
+            "required_arrival_date",
+            "original_required_arrival_date"
+          ],
+          "description": "改写需求到货日期并保留原值。"
+        },
+        {
+          "target_object": "Chain_Stage_Progress",
+          "mutation_type": "MODIFY",
+          "impacted_properties": [
+            "planned_finish_date"
+          ],
+          "description": "按新到货日期重新倒排计划时间。"
+        },
+        {
+          "target_object": "Procurement_Chain",
+          "mutation_type": "MODIFY",
+          "impacted_properties": [
+            "required_arrival_date",
+            "forecast_arrival_date"
+          ],
+          "description": "刷新链路终点与预计到货。"
+        },
+        {
+          "target_object": "Adjustment_Option",
+          "mutation_type": "MODIFY",
+          "impacted_properties": [
+            "option_status",
+            "executed_at"
+          ],
+          "description": "方案置为已执行。"
+        }
+      ],
+      "external_calls": [
+        {
+          "system": "metaERP 寻源",
+          "endpoint": "/msourcing/openapi/v1/changePbp",
+          "method": "POST",
+          "description": "调整需求到货日期(changePbpLine)。入参：PBP_LINE_ID、新 NEED_BY_DATE、调整原因、需求部门确认标识、操作人(计划员)；出参：回写结果状态、生效后的计划行。"
+        }
+      ]
+    },
+    "triggered_event": [
+      "REQUIRED_ARRIVAL_DATE_ADJUSTED"
+    ],
+    "implementation": {
+      "kind": "http",
+      "operation_id": "changePbp",
+      "endpoint": "/msourcing/openapi/v1/changePbp",
+      "method": "POST",
+      "executable": false
+    },
+    "compensation_action": "generateAdjustmentOptions",
+    "provenance": "extracted",
+    "tool_use": [
+      "changePbpLine"
+    ]
+  },
+  {
+    "id": "createStockTransferRequest",
+    "name": "createStockTransferRequest",
+    "description": "【行】方案③落地：生成库存调拨申请单，从其他库点先调物资顶上需求，取得 ERP 正式单号作为闭环可查凭据。",
+    "submission_criteria": "领导选定「执行调拨」方案且计划员已确认执行时提交。",
+    "object_type": "action",
+    "category": "方案执行(行)",
+    "actor": [
+      "System",
+      "Human"
+    ],
+    "trigger": [
+      "ADJUSTMENT_OPTION_APPROVED"
+    ],
+    "target_objects": [
+      "Stock_Transfer_Request"
+    ],
+    "inputs": [
+      {
+        "name": "selected_option",
+        "type": "Object",
+        "description": "选定的执行调拨方案。",
+        "required": true,
+        "source_object": "Adjustment_Option.option_id"
+      },
+      {
+        "name": "procurement_chain",
+        "type": "Object",
+        "description": "链路上的物料与数量需求。",
+        "required": true,
+        "source_object": "Procurement_Chain.chain_id"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "transfer_request",
+        "type": "Object",
+        "description": "已创建的调拨申请单，含 ERP 正式单号。",
+        "required": true,
+        "source_object": "Stock_Transfer_Request.transfer_request_id"
+      }
+    ],
+    "action_steps": [
+      {
+        "id": "s1",
+        "order": "1",
+        "name": "resolveTransferSource",
+        "description": "确定调出库点、调入库点与调拨数量。",
+        "object_type": "logic"
+      },
+      {
+        "id": "s2",
+        "order": "2",
+        "name": "confirmByPlanner",
+        "description": "计划员确认调拨方案(BR-OPT-05)。",
+        "object_type": "manual"
+      },
+      {
+        "id": "s3",
+        "order": "3",
+        "name": "createTransferOrder",
+        "description": "经 createTransactionOrder 生成调拨单（inv_txn_order_header_t）并取回单号。",
+        "object_type": "tool"
+      }
+    ],
+    "rule_bindings": [
+      {
+        "id": "arb-createStockTransferRequest-01",
+        "rule_id": "BR-OPT-05",
+        "target": {
+          "type": "action",
+          "id": "createStockTransferRequest"
+        },
+        "phase": "precondition",
+        "enforcement": "mandatory",
+        "failure_policy": "block",
+        "provenance": "extracted"
+      }
+    ],
+    "side_effects": {
+      "data_changes": [
+        {
+          "target_object": "Stock_Transfer_Request",
+          "mutation_type": "CREATE",
+          "impacted_properties": [
+            "transfer_no",
+            "material_code",
+            "transfer_quantity",
+            "source_warehouse",
+            "target_warehouse",
+            "request_status",
+            "created_at",
+            "expected_arrival_date"
+          ],
+          "description": "生成调拨申请单。"
+        },
+        {
+          "target_object": "Adjustment_Option",
+          "mutation_type": "MODIFY",
+          "impacted_properties": [
+            "option_status",
+            "executed_at"
+          ],
+          "description": "方案置为已执行。"
+        }
+      ],
+      "external_calls": [
+        {
+          "system": "metaERP 库存",
+          "endpoint": "/hinv/minv/openapi/v1/createTransactionOrder",
+          "method": "POST",
+          "description": "生成调拨单(createTransactionOrder，写 inv_txn_order_header_t)。入参：物料编码、调拨数量、调出库存组织/库点、调入库存组织/库点、需求日期、来源方案编号、经办人(采购员)；出参：调拨单号、单据状态。"
+        }
+      ]
+    },
+    "triggered_event": [
+      "STOCK_TRANSFER_REQUEST_CREATED"
+    ],
+    "implementation": {
+      "kind": "http",
+      "operation_id": "createTransactionOrder",
+      "endpoint": "/hinv/minv/openapi/v1/createTransactionOrder",
+      "method": "POST",
+      "executable": false
+    },
+    "compensation_action": "generateAdjustmentOptions",
+    "retry_policy": {
+      "max_retries": 3,
+      "backoff_ms": 30000
+    },
+    "provenance": "extracted",
+    "tool_use": [
+      "createTransactionOrder"
+    ]
+  },
+  {
+    "id": "trackTransferFulfillment",
+    "name": "trackTransferFulfillment",
+    "description": "【行】调拨单状态回传后跟踪到货与归还：物资到位即刷新链路预计到货日期，原采购到货后完成归还，调拨闭环。",
+    "submission_criteria": "调拨申请单创建成功并返回 ERP 单号后提交。",
+    "object_type": "action",
+    "category": "方案执行(行)",
+    "actor": [
+      "System"
+    ],
+    "trigger": [
+      "STOCK_TRANSFER_REQUEST_CREATED"
+    ],
+    "target_objects": [
+      "Stock_Transfer_Request",
+      "Procurement_Chain"
+    ],
+    "inputs": [
+      {
+        "name": "transfer_request",
+        "type": "Object",
+        "description": "待跟踪的调拨申请单。",
+        "required": true,
+        "source_object": "Stock_Transfer_Request.transfer_request_id"
+      },
+      {
+        "name": "purchase_order",
+        "type": "Object",
+        "description": "原采购订单到货情况，决定归还时点。",
+        "required": false,
+        "source_object": "Purchase_Order.order_id"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "fulfilled_transfer",
+        "type": "Object",
+        "description": "已到货/已归还的调拨申请单。",
+        "required": true,
+        "source_object": "Stock_Transfer_Request.transfer_request_id"
+      }
+    ],
+    "action_steps": [
+      {
+        "id": "s1",
+        "order": "1",
+        "name": "pollTransferStatus",
+        "description": "轮询调拨单（inv_txn_order_header_t）状态回传：审批中→已发出→已到货，并回写采购订单发运行。",
+        "object_type": "tool"
+      },
+      {
+        "id": "s2",
+        "order": "2",
+        "name": "refreshForecastArrival",
+        "description": "调拨到货后刷新链路预计到货日期。",
+        "object_type": "logic"
+      },
+      {
+        "id": "s3",
+        "order": "3",
+        "name": "settleReturn",
+        "description": "原采购到货后触发归还，调拨闭环。",
+        "object_type": "logic"
+      }
+    ],
+    "rule_bindings": [],
+    "side_effects": {
+      "data_changes": [
+        {
+          "target_object": "Stock_Transfer_Request",
+          "mutation_type": "MODIFY",
+          "impacted_properties": [
+            "request_status",
+            "actual_arrival_date",
+            "returned_at"
+          ],
+          "description": "回写调拨到货与归还状态。"
+        },
+        {
+          "target_object": "Procurement_Chain",
+          "mutation_type": "MODIFY",
+          "impacted_properties": [
+            "forecast_arrival_date"
+          ],
+          "description": "调拨到位后刷新预计到货日期。"
+        }
+      ],
+      "external_calls": [
+        {
+          "system": "metaERP 库存",
+          "endpoint": "/hinv/minv/openapi/v1/createTransactionOrder",
+          "method": "POST",
+          "description": "调拨单状态回传(轮询/回调)。入参：调拨单号；出参：单据状态(审批中/已发出/已到货/已归还)、实际到货日期、到货数量。"
+        }
+      ]
+    },
+    "triggered_event": [
+      "STOCK_TRANSFER_FULFILLED"
+    ],
+    "implementation": {
+      "kind": "http",
+      "operation_id": "createTransactionOrder",
+      "endpoint": "/hinv/minv/openapi/v1/createTransactionOrder",
+      "method": "POST",
+      "executable": false
+    },
+    "provenance": "extracted"
+  },
+  {
+    "id": "closeDeviationHandling",
+    "name": "closeDeviationHandling",
+    "description": "【行】方案执行后重算偏差做消除校验：确认偏差已回落到阈值以内则闭环并留痕，未消除则退回重新出方案。",
+    "submission_criteria": "任一调整方案执行完成、且链路节点进度已刷新时提交。",
+    "object_type": "action",
+    "category": "闭环归档(行)",
+    "actor": [
+      "Agent",
+      "System"
+    ],
+    "trigger": [
+      "CHAIN_PLAN_SCHEDULE_COMPRESSED",
+      "REQUIRED_ARRIVAL_DATE_ADJUSTED",
+      "STOCK_TRANSFER_FULFILLED"
+    ],
+    "target_objects": [
+      "Execution_Deviation",
+      "Deviation_Alert",
+      "Alert_Handling_Record"
+    ],
+    "inputs": [
+      {
+        "name": "execution_deviation",
+        "type": "Object",
+        "description": "待校验的执行偏差。",
+        "required": true,
+        "source_object": "Execution_Deviation.deviation_id"
+      },
+      {
+        "name": "deviation_alert",
+        "type": "Object",
+        "description": "待闭环的偏差预警。",
+        "required": true,
+        "source_object": "Deviation_Alert.alert_id"
+      },
+      {
+        "name": "selected_option",
+        "type": "Object",
+        "description": "已执行的调整方案。",
+        "required": true,
+        "source_object": "Adjustment_Option.option_id"
+      },
+      {
+        "name": "alert_threshold",
+        "type": "List<Object>",
+        "description": "偏差消除的判定阈值。",
+        "required": true,
+        "source_object": "Alert_Threshold_Setting.threshold_id"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "closed_alert",
+        "type": "Object",
+        "description": "闭环后的偏差预警与处置结论。",
+        "required": true,
+        "source_object": "Deviation_Alert.alert_id"
+      }
+    ],
+    "action_steps": [
+      {
+        "id": "s1",
+        "order": "1",
+        "name": "recomputeDeviation",
+        "description": "按最新计划与实际时间重算三项偏差。",
+        "object_type": "logic"
+      },
+      {
+        "id": "s2",
+        "order": "2",
+        "name": "verifyElimination",
+        "description": "确认偏差已回落到阈值以内(BR-CLOSE-01)。",
+        "object_type": "logic"
+      },
+      {
+        "id": "s3",
+        "order": "3",
+        "name": "writeClosureTrace",
+        "description": "写入处置结果与偏差消除结论留痕(BR-CLOSE-02)。",
+        "object_type": "logic"
+      },
+      {
+        "id": "s4",
+        "order": "4",
+        "name": "collectVerification",
+        "description": "采集业务核实结果：属实或误报，供误报回收使用。",
+        "object_type": "manual"
+      }
+    ],
+    "rule_bindings": [
+      {
+        "id": "arb-closeDeviationHandling-01",
+        "rule_id": "BR-CLOSE-01",
+        "target": {
+          "type": "action",
+          "id": "closeDeviationHandling"
+        },
+        "phase": "validation",
+        "enforcement": "mandatory",
+        "failure_policy": "block",
+        "provenance": "extracted"
+      },
+      {
+        "id": "arb-closeDeviationHandling-02",
+        "rule_id": "BR-CLOSE-02",
+        "target": {
+          "type": "action",
+          "id": "closeDeviationHandling"
+        },
+        "phase": "postcondition",
+        "enforcement": "mandatory",
+        "failure_policy": "block",
+        "provenance": "extracted"
+      }
+    ],
+    "side_effects": {
+      "data_changes": [
+        {
+          "target_object": "Execution_Deviation",
+          "mutation_type": "MODIFY",
+          "impacted_properties": [
+            "time_deviation_days",
+            "schedule_deviation_ratio",
+            "has_deviation",
+            "disposal_state",
+            "evaluated_at"
+          ],
+          "description": "重算并闭环偏差记录。"
+        },
+        {
+          "target_object": "Deviation_Alert",
+          "mutation_type": "MODIFY",
+          "impacted_properties": [
+            "handling_status",
+            "closed_at",
+            "verification_result"
+          ],
+          "description": "预警闭环并记录核实结果。"
+        },
+        {
+          "target_object": "Alert_Handling_Record",
+          "mutation_type": "CREATE",
+          "impacted_properties": [
+            "handling_action",
+            "operator_role",
+            "occurred_at",
+            "remark",
+            "deviation_eliminated",
+            "verification_result"
+          ],
+          "description": "闭环留痕。"
+        }
+      ]
+    },
+    "triggered_event": [
+      "DEVIATION_HANDLING_CLOSED"
+    ],
+    "implementation": {
+      "kind": "typescript",
+      "module_path": "@allmeta/procurement-chain-deviation/actions"
+    },
+    "provenance": "extracted",
+    "tool_use": [
+      "calcDeviation",
+      "writeEventLog"
+    ]
+  },
+  {
+    "id": "recycleFalseAlarm",
+    "name": "recycleFalseAlarm",
+    "description": "【馈】阈值过严或数据质量问题会产生误报：对核实为误报的预警做归因，回流生成阈值评审条目，闭环误报率不高于 20%，让系统越用越准(R1-07)。",
+    "submission_criteria": "预警闭环时业务核实结果为误报，或统计误报率超过 20% 时提交。",
+    "object_type": "action",
+    "category": "误报回收(馈)",
+    "actor": [
+      "System",
+      "Human"
+    ],
+    "trigger": [
+      "DEVIATION_HANDLING_CLOSED"
+    ],
+    "target_objects": [
+      "Rule_Review_Item",
+      "Alert_Threshold_Setting",
+      "Alert_Handling_Record"
+    ],
+    "inputs": [
+      {
+        "name": "deviation_alert",
+        "type": "Object",
+        "description": "核实为误报的偏差预警。",
+        "required": true,
+        "source_object": "Deviation_Alert.alert_id"
+      },
+      {
+        "name": "handling_records",
+        "type": "List<Object>",
+        "description": "该预警的处置留痕与核实结果。",
+        "required": true,
+        "source_object": "Alert_Handling_Record.handling_record_id"
+      },
+      {
+        "name": "alert_threshold",
+        "type": "List<Object>",
+        "description": "被提议调整的阈值配置项。",
+        "required": true,
+        "source_object": "Alert_Threshold_Setting.threshold_id"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "rule_review_item",
+        "type": "Object",
+        "description": "回流评审队列的阈值调整提议。",
+        "required": true,
+        "source_object": "Rule_Review_Item.review_item_id"
+      }
+    ],
+    "action_steps": [
+      {
+        "id": "s1",
+        "order": "1",
+        "name": "classifyFalseAlarm",
+        "description": "归因为阈值过严／数据质量／口径问题之一(BR-FB-01)。",
+        "object_type": "manual"
+      },
+      {
+        "id": "s2",
+        "order": "2",
+        "name": "computeFalseAlarmRate",
+        "description": "统计当前口径下的误报率。",
+        "object_type": "logic"
+      },
+      {
+        "id": "s3",
+        "order": "3",
+        "name": "createReviewItem",
+        "description": "生成规则评审条目并给出建议阈值(BR-FB-02、BR-FB-03)。",
+        "object_type": "logic"
+      },
+      {
+        "id": "s4",
+        "order": "4",
+        "name": "writeFeedbackTrace",
+        "description": "写入误报标记留痕。",
+        "object_type": "logic"
+      }
+    ],
+    "rule_bindings": [
+      {
+        "id": "arb-recycleFalseAlarm-01",
+        "rule_id": "BR-FB-01",
+        "target": {
+          "type": "action",
+          "id": "recycleFalseAlarm"
+        },
+        "phase": "precondition",
+        "enforcement": "mandatory",
+        "failure_policy": "block",
+        "provenance": "extracted"
+      },
+      {
+        "id": "arb-recycleFalseAlarm-02",
+        "rule_id": "BR-FB-02",
+        "target": {
+          "type": "action",
+          "id": "recycleFalseAlarm"
+        },
+        "phase": "postcondition",
+        "enforcement": "mandatory",
+        "failure_policy": "warn",
+        "provenance": "extracted"
+      },
+      {
+        "id": "arb-recycleFalseAlarm-03",
+        "rule_id": "BR-FB-03",
+        "target": {
+          "type": "action",
+          "id": "recycleFalseAlarm"
+        },
+        "phase": "validation",
+        "enforcement": "mandatory",
+        "failure_policy": "warn",
+        "provenance": "extracted"
+      }
+    ],
+    "side_effects": {
+      "data_changes": [
+        {
+          "target_object": "Alert_Handling_Record",
+          "mutation_type": "CREATE",
+          "impacted_properties": [
+            "handling_action",
+            "operator_role",
+            "occurred_at",
+            "verification_result",
+            "false_alarm_cause",
+            "remark"
+          ],
+          "description": "误报归因留痕。"
+        },
+        {
+          "target_object": "Rule_Review_Item",
+          "mutation_type": "CREATE",
+          "impacted_properties": [
+            "false_alarm_cause",
+            "current_threshold_value",
+            "suggested_threshold_value",
+            "false_alarm_rate",
+            "review_status",
+            "submitted_at"
+          ],
+          "description": "生成阈值评审条目。"
+        },
+        {
+          "target_object": "Alert_Threshold_Setting",
+          "mutation_type": "MODIFY",
+          "impacted_properties": [
+            "last_tuned_at",
+            "tuning_reason"
+          ],
+          "description": "评审采纳后更新阈值调整痕迹。"
+        },
+        {
+          "target_object": "Deviation_Alert",
+          "mutation_type": "MODIFY",
+          "impacted_properties": [
+            "verification_result",
+            "handling_status"
+          ],
+          "description": "误报预警撤销。"
+        }
+      ],
+      "notifications": [
+        {
+          "recipients": [
+            "规则评审组"
+          ],
+          "channel": [
+            "InApp"
+          ],
+          "logic": "有新的阈值调整提议待评审：附误报归因、当前误报率与建议取值。",
+          "triggered_event": "THRESHOLD_REVIEW_ITEM_CREATED"
+        }
+      ]
+    },
+    "triggered_event": [
+      "FALSE_ALARM_RECYCLED",
+      "THRESHOLD_REVIEW_ITEM_CREATED"
+    ],
+    "implementation": {
+      "kind": "typescript",
+      "module_path": "@allmeta/procurement-chain-deviation/actions"
+    },
+    "provenance": "extracted",
+    "tool_use": [
+      "writeEventLog"
+    ]
+  }
+]
