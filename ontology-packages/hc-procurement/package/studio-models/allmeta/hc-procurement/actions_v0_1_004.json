@@ -77,7 +77,7 @@
       "Agent"
     ],
     "category": "链路采集(查)",
-    "description": "【查】按日定时或单据状态变更触发，拉取全集团在途采购计划及其申请/组包/询价/定标/合同/订单/验收全链路单据，逐节点回写实际完成状态与时间，形成一单一档的全链路进度视图：在途单 100% 覆盖、进度零手工录入(R1-01)。",
+    "description": "【查】按日定时或单据状态变更触发，拉取全集团在途采购计划及其申请/组包/询价/定标/合同/订单/验收全链路单据，逐节点回写实际完成状态与时间，形成一单一档的全链路进度视图：在途单 100% 覆盖、进度零手工录入(R1-01)。\n\n【取数步骤（在产出 JSON 之前必须先按此执行）】\n\n第 0 步 · 定范围：看触发事件负载有没有 plan_id 或 plan_no。有就**只处理这一个计划**——\n调用 queryOpenPbpHeader 时必须带过滤条件 {\"PBP_HEADER_ID\": \"<该值>\"}，不得拉全量再自己筛。\n没有才按 BR-COV-01 处理全部状态=已批准且在途的计划。\n\n第 1 步 · 寻源段（7 个调用，必发，**同一轮一次性并发全部发出**，不要一个一个串行）：\nqueryOpenPbpHeader、queryOpenPbpLine、queryAllPbpLinePage、queryPr、\nqueryProcPackageLineExecuteMode、queryRfxList、queryAwardList\n拿到结果后判定每条链路的 立项 / 组包 / 询价 / 定标 四个节点是否完成。\n\n第 2 步 · 早停判据：链路是严格串行的——价格协议、合同、订单、验收全部是定标的下游，\n没有定标就一定没有它们。**只有当范围内至少一条链路的定标节点已完成**\n（queryAwardList 查到其询价单对应的定标行且有 AWARD_DATE）时，才允许进入第 3 步。\n若范围内所有链路都停在定标或更早：**立即停止取数，禁止发出执行段那 6 个调用中的任何一个**，\n把停滞节点及其之后的所有节点写成 stage_status='未开始'、actual_finish_date=null，\n该链路的 stalled_at 填停滞节点名，query_rounds_used 填 1，然后直接产出 JSON。\n\n第 3 步 · 执行段（6 个调用，仅在第 2 步放行时发，同样一轮并发全发）：\nquerySpaList、queryContract、queryPoHeader、queryPoLineShipment、\nqueryAcceptHeader、queryAcceptTransaction\n此时 query_rounds_used 填 2。",
     "id": "collectChainExecutionData",
     "implementation": {
       "executable": true,
@@ -233,8 +233,8 @@
           "system": "metaERP"
         },
         {
-          "description": "分页查询计划头行关系，防止行重复归集。",
-          "endpoint": "/metaerp/openapi/v1/getAllPbpLinePageByQuery",
+          "description": "分页查询计划头行关系，防止行重复归集（本体 tool_use 名 getAllPbpLinePageByQuery；编译器只识别 query* 前缀的只读 op）。",
+          "endpoint": "/metaerp/openapi/v1/queryAllPbpLinePage",
           "method": "POST",
           "system": "metaERP"
         },
@@ -263,14 +263,14 @@
           "system": "metaERP"
         },
         {
-          "description": "采集价格协议——合同的前置凭据。",
-          "endpoint": "/metaerp/openapi/v1/getSpaByQuery",
+          "description": "采集价格协议——合同的前置凭据（本体 tool_use 名 getSpaByQuery）。",
+          "endpoint": "/metaerp/openapi/v1/querySpaList",
           "method": "POST",
           "system": "metaERP"
         },
         {
-          "description": "采集合同节点签署/生效状态与日期。",
-          "endpoint": "/metaerp/openapi/v1/getContractByQuery",
+          "description": "采集合同节点签署/生效状态与日期（本体 tool_use 名 getContractByQuery）。",
+          "endpoint": "/metaerp/openapi/v1/queryContract",
           "method": "POST",
           "system": "metaERP"
         },
@@ -564,14 +564,14 @@
       ],
       "external_calls": [
         {
-          "description": "按业务类型取七个节点的标准周期（BR-PLAN-01 的配置来源）。",
-          "endpoint": "/metaerp/openapi/v1/getStageCycleConfig",
+          "description": "按业务类型取七个节点的标准周期（BR-PLAN-01 的配置来源；本体 tool_use 名 getStageCycleConfig）。",
+          "endpoint": "/metaerp/openapi/v1/queryStageCycleConfig",
           "method": "POST",
           "system": "metaERP"
         },
         {
           "description": "取时间/进度偏差判定阈值（BR-DEV-02：阈值必须来自配置，不得写死）。",
-          "endpoint": "/metaerp/openapi/v1/getAlertThresholdConfig",
+          "endpoint": "/metaerp/openapi/v1/queryAlertThresholdConfig",
           "method": "POST",
           "system": "metaERP"
         }
@@ -895,7 +895,7 @@
       "external_calls": [
         {
           "description": "汇总当前节点之后各节点标准周期，得到剩余天数。",
-          "endpoint": "/metaerp/openapi/v1/getStageCycleConfig",
+          "endpoint": "/metaerp/openapi/v1/queryStageCycleConfig",
           "method": "POST",
           "system": "metaERP"
         },
@@ -907,7 +907,7 @@
         },
         {
           "description": "取红/黄概率分界阈值。",
-          "endpoint": "/metaerp/openapi/v1/getAlertThresholdConfig",
+          "endpoint": "/metaerp/openapi/v1/queryAlertThresholdConfig",
           "method": "POST",
           "system": "metaERP"
         }
@@ -1483,7 +1483,7 @@
       "external_calls": [
         {
           "description": "后续节点标准周期，方案①的可压缩空间。",
-          "endpoint": "/metaerp/openapi/v1/getStageCycleConfig",
+          "endpoint": "/metaerp/openapi/v1/queryStageCycleConfig",
           "method": "POST",
           "system": "metaERP"
         },

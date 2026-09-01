@@ -2,36 +2,6 @@
   "base_path": "/metaerp/openapi/v1",
   "endpoints": [
     {
-      "entity": "cfg_alert_threshold_t",
-      "file": "cfg_alert_threshold_t.json",
-      "object_id": "Alert_Threshold_Setting",
-      "operation": "getAlertThresholdConfig"
-    },
-    {
-      "entity": "ss_pbp_rel_t",
-      "file": "ss_pbp_rel_t.json",
-      "object_id": "ss_pbp_rel_t",
-      "operation": "getAllPbpLinePageByQuery"
-    },
-    {
-      "entity": "clm_contract_t",
-      "file": "clm_contract_t.json",
-      "object_id": "Purchase_Contract",
-      "operation": "getContractByQuery"
-    },
-    {
-      "entity": "ss_spa_header_t",
-      "file": "ss_spa_header_t.json",
-      "object_id": "ss_spa_header_t",
-      "operation": "getSpaByQuery"
-    },
-    {
-      "entity": "cfg_stage_cycle_standard_t",
-      "file": "cfg_stage_cycle_standard_t.json",
-      "object_id": "Stage_Cycle_Standard",
-      "operation": "getStageCycleConfig"
-    },
-    {
       "entity": "ac_header_t",
       "file": "ac_header_t.json",
       "object_id": "Goods_Acceptance",
@@ -56,6 +26,18 @@
       "operation": "queryAlertHandlingRecords"
     },
     {
+      "entity": "cfg_alert_threshold_t",
+      "file": "cfg_alert_threshold_t.json",
+      "object_id": "Alert_Threshold_Setting",
+      "operation": "queryAlertThresholdConfig"
+    },
+    {
+      "entity": "ss_pbp_rel_t",
+      "file": "ss_pbp_rel_t.json",
+      "object_id": "ss_pbp_rel_t",
+      "operation": "queryAllPbpLinePage"
+    },
+    {
       "entity": "ss_bid_header_t",
       "file": "ss_bid_header_t.json",
       "object_id": "Bid_Award",
@@ -66,6 +48,12 @@
       "file": "emg_chain_stage_progress_t.json",
       "object_id": "Chain_Stage_Progress",
       "operation": "queryChainStageProgress"
+    },
+    {
+      "entity": "clm_contract_t",
+      "file": "clm_contract_t.json",
+      "object_id": "Purchase_Contract",
+      "operation": "queryContract"
     },
     {
       "entity": "dev_deviation_alert_t",
@@ -144,6 +132,18 @@
       "file": "dev_rule_review_item_t.json",
       "object_id": "Rule_Review_Item",
       "operation": "queryRuleReviewItems"
+    },
+    {
+      "entity": "ss_spa_header_t",
+      "file": "ss_spa_header_t.json",
+      "object_id": "ss_spa_header_t",
+      "operation": "querySpaList"
+    },
+    {
+      "entity": "cfg_stage_cycle_standard_t",
+      "file": "cfg_stage_cycle_standard_t.json",
+      "object_id": "Stage_Cycle_Standard",
+      "operation": "queryStageCycleConfig"
     },
     {
       "entity": "inv_transaction_order_t",

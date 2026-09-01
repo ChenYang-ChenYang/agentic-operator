@@ -7,13 +7,13 @@
       "queries": [
         "queryOpenPbpHeader",
         "queryOpenPbpLine",
-        "getAllPbpLinePageByQuery",
+        "queryAllPbpLinePage",
         "queryPr",
         "queryProcPackageLineExecuteMode",
         "queryRfxList",
         "queryAwardList",
-        "getSpaByQuery",
-        "getContractByQuery",
+        "querySpaList",
+        "queryContract",
         "queryPoHeader",
         "queryPoLineShipment",
         "queryAcceptHeader",
@@ -25,8 +25,8 @@
       "action_name": "calculateExecutionDeviation",
       "kind": "prompt",
       "queries": [
-        "getStageCycleConfig",
-        "getAlertThresholdConfig"
+        "queryStageCycleConfig",
+        "queryAlertThresholdConfig"
       ]
     },
     {
@@ -40,9 +40,9 @@
       "action_name": "scoreOnTimeProbability",
       "kind": "prompt",
       "queries": [
-        "getStageCycleConfig",
+        "queryStageCycleConfig",
         "queryHistoricalOnTimeRate",
-        "getAlertThresholdConfig"
+        "queryAlertThresholdConfig"
       ]
     },
     {
@@ -76,7 +76,7 @@
       "action_name": "generateAdjustmentOptions",
       "kind": "prompt",
       "queries": [
-        "getStageCycleConfig",
+        "queryStageCycleConfig",
         "queryTransferableStock"
       ]
     },
@@ -262,7 +262,7 @@
       "erp_entity": "clm_contract_t",
       "fetch": {
         "method": "POST",
-        "path": "/metaerp/openapi/v1/getContractByQuery"
+        "path": "/metaerp/openapi/v1/queryContract"
       },
       "object_id": "Purchase_Contract",
       "object_name": "采购合同"
@@ -289,7 +289,7 @@
       "erp_entity": "cfg_stage_cycle_standard_t",
       "fetch": {
         "method": "POST",
-        "path": "/metaerp/openapi/v1/getStageCycleConfig"
+        "path": "/metaerp/openapi/v1/queryStageCycleConfig"
       },
       "object_id": "Stage_Cycle_Standard",
       "object_name": "采购阶段周期标准"
@@ -298,7 +298,7 @@
       "erp_entity": "cfg_alert_threshold_t",
       "fetch": {
         "method": "POST",
-        "path": "/metaerp/openapi/v1/getAlertThresholdConfig"
+        "path": "/metaerp/openapi/v1/queryAlertThresholdConfig"
       },
       "object_id": "Alert_Threshold_Setting",
       "object_name": "预警阈值配置"
@@ -370,7 +370,7 @@
       "erp_entity": "ss_pbp_rel_t",
       "fetch": {
         "method": "POST",
-        "path": "/metaerp/openapi/v1/getAllPbpLinePageByQuery"
+        "path": "/metaerp/openapi/v1/queryAllPbpLinePage"
       },
       "object_id": "ss_pbp_rel_t",
       "object_name": "计划头行关系（防止行重复归集）"
@@ -379,7 +379,7 @@
       "erp_entity": "ss_spa_header_t",
       "fetch": {
         "method": "POST",
-        "path": "/metaerp/openapi/v1/getSpaByQuery"
+        "path": "/metaerp/openapi/v1/querySpaList"
       },
       "object_id": "ss_spa_header_t",
       "object_name": "价格协议台账（合同前置凭据）"

@@ -49,41 +49,6 @@
     "path": "/metaerp/openapi/v1/escalateAlert"
   },
   {
-    "entity": "cfg_alert_threshold_t",
-    "kind": "query",
-    "method": "POST",
-    "operation_id": "getAlertThresholdConfig",
-    "path": "/metaerp/openapi/v1/getAlertThresholdConfig"
-  },
-  {
-    "entity": "ss_pbp_rel_t",
-    "kind": "query",
-    "method": "POST",
-    "operation_id": "getAllPbpLinePageByQuery",
-    "path": "/metaerp/openapi/v1/getAllPbpLinePageByQuery"
-  },
-  {
-    "entity": "clm_contract_t",
-    "kind": "query",
-    "method": "POST",
-    "operation_id": "getContractByQuery",
-    "path": "/metaerp/openapi/v1/getContractByQuery"
-  },
-  {
-    "entity": "ss_spa_header_t",
-    "kind": "query",
-    "method": "POST",
-    "operation_id": "getSpaByQuery",
-    "path": "/metaerp/openapi/v1/getSpaByQuery"
-  },
-  {
-    "entity": "cfg_stage_cycle_standard_t",
-    "kind": "query",
-    "method": "POST",
-    "operation_id": "getStageCycleConfig",
-    "path": "/metaerp/openapi/v1/getStageCycleConfig"
-  },
-  {
     "entity": "dev_deviation_alert_t",
     "kind": "write",
     "method": "POST",
@@ -119,6 +84,20 @@
     "path": "/metaerp/openapi/v1/queryAlertHandlingRecords"
   },
   {
+    "entity": "cfg_alert_threshold_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "queryAlertThresholdConfig",
+    "path": "/metaerp/openapi/v1/queryAlertThresholdConfig"
+  },
+  {
+    "entity": "ss_pbp_rel_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "queryAllPbpLinePage",
+    "path": "/metaerp/openapi/v1/queryAllPbpLinePage"
+  },
+  {
     "entity": "ss_bid_header_t",
     "kind": "query",
     "method": "POST",
@@ -131,6 +110,13 @@
     "method": "POST",
     "operation_id": "queryChainStageProgress",
     "path": "/metaerp/openapi/v1/queryChainStageProgress"
+  },
+  {
+    "entity": "clm_contract_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "queryContract",
+    "path": "/metaerp/openapi/v1/queryContract"
   },
   {
     "entity": "dev_deviation_alert_t",
@@ -222,6 +208,20 @@
     "method": "POST",
     "operation_id": "queryRuleReviewItems",
     "path": "/metaerp/openapi/v1/queryRuleReviewItems"
+  },
+  {
+    "entity": "ss_spa_header_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "querySpaList",
+    "path": "/metaerp/openapi/v1/querySpaList"
+  },
+  {
+    "entity": "cfg_stage_cycle_standard_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "queryStageCycleConfig",
+    "path": "/metaerp/openapi/v1/queryStageCycleConfig"
   },
   {
     "entity": "inv_transaction_order_t",

@@ -67,13 +67,13 @@ const ACTION_MAP = {
     queries: [
       { operation: "queryOpenPbpHeader", description: "查询在途采购计划头（状态=已批准）。" },
       { operation: "queryOpenPbpLine", description: "查询采购计划行——需求到货日期来源。" },
-      { operation: "getAllPbpLinePageByQuery", description: "分页查询计划头行关系，防止行重复归集。" },
+      { operation: "queryAllPbpLinePage", description: "分页查询计划头行关系，防止行重复归集（本体 tool_use 名 getAllPbpLinePageByQuery；编译器只识别 query* 前缀的只读 op）。" },
       { operation: "queryPr", description: "采集立项节点状态与审批通过时间。" },
       { operation: "queryProcPackageLineExecuteMode", description: "采集组包节点状态与组包完成时间。" },
       { operation: "queryRfxList", description: "采集询价节点状态、询价生效/发标/截标时间。" },
       { operation: "queryAwardList", description: "采集定标节点中标日期与中标供应商。" },
-      { operation: "getSpaByQuery", description: "采集价格协议——合同的前置凭据。" },
-      { operation: "getContractByQuery", description: "采集合同节点签署/生效状态与日期。" },
+      { operation: "querySpaList", description: "采集价格协议——合同的前置凭据（本体 tool_use 名 getSpaByQuery）。" },
+      { operation: "queryContract", description: "采集合同节点签署/生效状态与日期（本体 tool_use 名 getContractByQuery）。" },
       { operation: "queryPoHeader", description: "采集订单节点审批时间与生效日期。" },
       { operation: "queryPoLineShipment", description: "采集到货进度：订单数量与已接收数量。" },
       { operation: "queryAcceptHeader", description: "采集验收单与验收行接收数量。" },
@@ -84,8 +84,8 @@ const ACTION_MAP = {
   calculateExecutionDeviation: {
     kind: "prompt",
     queries: [
-      { operation: "getStageCycleConfig", description: "按业务类型取七个节点的标准周期（BR-PLAN-01 的配置来源）。" },
-      { operation: "getAlertThresholdConfig", description: "取时间/进度偏差判定阈值（BR-DEV-02：阈值必须来自配置，不得写死）。" },
+      { operation: "queryStageCycleConfig", description: "按业务类型取七个节点的标准周期（BR-PLAN-01 的配置来源；本体 tool_use 名 getStageCycleConfig）。" },
+      { operation: "queryAlertThresholdConfig", description: "取时间/进度偏差判定阈值（BR-DEV-02：阈值必须来自配置，不得写死）。" },
     ],
   },
   archiveDeviationMonitoring: { kind: "prompt", queries: [] },
@@ -93,9 +93,9 @@ const ACTION_MAP = {
   scoreOnTimeProbability: {
     kind: "prompt",
     queries: [
-      { operation: "getStageCycleConfig", description: "汇总当前节点之后各节点标准周期，得到剩余天数。" },
+      { operation: "queryStageCycleConfig", description: "汇总当前节点之后各节点标准周期，得到剩余天数。" },
       { operation: "queryHistoricalOnTimeRate", description: "统计同业务类型历史已完结单的按期达成率与样本量。" },
-      { operation: "getAlertThresholdConfig", description: "取红/黄概率分界阈值。" },
+      { operation: "queryAlertThresholdConfig", description: "取红/黄概率分界阈值。" },
     ],
   },
   // ③警 —— 按等级推送
@@ -114,7 +114,7 @@ const ACTION_MAP = {
   generateAdjustmentOptions: {
     kind: "prompt",
     queries: [
-      { operation: "getStageCycleConfig", description: "后续节点标准周期，方案①的可压缩空间。" },
+      { operation: "queryStageCycleConfig", description: "后续节点标准周期，方案①的可压缩空间。" },
       { operation: "queryTransferableStock", description: "定位可调库点与可调数量，方案③的调拨来源。" },
     ],
   },
@@ -181,11 +181,11 @@ const OBJECT_MAP = {
   Sourcing_Package: { entity: "ss_proc_package_header_t", query: "queryProcPackageLineExecuteMode" },
   Inquiry_Notice: { entity: "ss_rfx_header_t", query: "queryRfxList" },
   Bid_Award: { entity: "ss_bid_header_t", query: "queryAwardList" },
-  Purchase_Contract: { entity: "clm_contract_t", query: "getContractByQuery" },
+  Purchase_Contract: { entity: "clm_contract_t", query: "queryContract" },
   Purchase_Order: { entity: "po_header_t", query: "queryPoHeader" },
   Goods_Acceptance: { entity: "ac_header_t", query: "queryAcceptHeader" },
-  Stage_Cycle_Standard: { entity: "cfg_stage_cycle_standard_t", query: "getStageCycleConfig" },
-  Alert_Threshold_Setting: { entity: "cfg_alert_threshold_t", query: "getAlertThresholdConfig" },
+  Stage_Cycle_Standard: { entity: "cfg_stage_cycle_standard_t", query: "queryStageCycleConfig" },
+  Alert_Threshold_Setting: { entity: "cfg_alert_threshold_t", query: "queryAlertThresholdConfig" },
   Execution_Deviation: { entity: "dev_execution_deviation_t", query: "queryExecutionDeviations" },
   Delivery_Probability_Assessment: {
     entity: "dev_probability_assessment_t",
@@ -203,11 +203,11 @@ const OBJECT_MAP = {
 // them (whitepaper §六: only build what a decision must SEE). They still need a
 // catalog entry, because the analysis agents read them.
 const EXTRA_QUERY_OPS = {
-  getAllPbpLinePageByQuery: {
+  queryAllPbpLinePage: {
     entity: "ss_pbp_rel_t",
     label: "计划头行关系（防止行重复归集）",
   },
-  getSpaByQuery: {
+  querySpaList: {
     entity: "ss_spa_header_t",
     label: "价格协议台账（合同前置凭据）",
   },
@@ -454,7 +454,9 @@ const STUB_TABLES = {
   ],
   // BR-DEV-02：判定阈值必须取自配置，不得在规则或代码里写死。
   cfg_alert_threshold_t: [
-    { THRESHOLD_ID: "TH-TIME-7D", THRESHOLD_CODE: "时间偏差天数", THRESHOLD_NAME: "时间偏差判定阈值", THRESHOLD_VALUE: 7, UNIT: "天", MAINTAINER: "规则评审组", EFFECTIVE_DATE: "2026-01-01" },
+    // 超过当前节点的计划完成时间点即为延期——阈值 0 表示「超期即预警」，不留容忍窗口。
+    // BR-DEV-02 要求阈值必须来自本表，所以这是配置值而不是代码里的常量。
+    { THRESHOLD_ID: "TH-TIME-0D", THRESHOLD_CODE: "时间偏差天数", THRESHOLD_NAME: "时间偏差判定阈值（超期即预警）", THRESHOLD_VALUE: 0, UNIT: "天", MAINTAINER: "规则评审组", EFFECTIVE_DATE: "2026-01-01" },
     { THRESHOLD_ID: "TH-SCHED-20", THRESHOLD_CODE: "进度偏差比例", THRESHOLD_NAME: "进度偏差判定阈值", THRESHOLD_VALUE: 0.2, UNIT: "比例", MAINTAINER: "规则评审组", EFFECTIVE_DATE: "2026-01-01" },
     { THRESHOLD_ID: "TH-PROB-RED", THRESHOLD_CODE: "红色概率上限", THRESHOLD_NAME: "红色分级概率上限", THRESHOLD_VALUE: 0.6, UNIT: "比例", MAINTAINER: "规则评审组", EFFECTIVE_DATE: "2026-01-01" },
     { THRESHOLD_ID: "TH-PROB-YELLOW", THRESHOLD_CODE: "黄色概率下限", THRESHOLD_NAME: "黄色分级概率下限", THRESHOLD_VALUE: 0.85, UNIT: "比例", MAINTAINER: "规则评审组", EFFECTIVE_DATE: "2026-01-01" },
@@ -496,6 +498,43 @@ const STUB_TABLES = {
 const GUARD_AS_PRECONDITION = {
   // BR-ALERT-03「蓝色预警仅提示计划员」— 只有蓝色才走计划员自行处置。
   handleBlueAlertLocally: ["BR-ALERT-03"],
+};
+
+/**
+ * 取数协议：写进 action.description，不是写进 output_contracts。
+ *
+ * 编译器把 `description` 放在 action_prompt 的第一段（buildAnalysisPrompt 的
+ * `parts[0]`），而 overlay 的 output_contracts 字段一律渲染成「字段说明」下的
+ * `- <name>: …` —— 实测模型会把放在那里的协议当成「一个要输出的 JSON 字段」照抄，
+ * 而不是当成要遵守的取数步骤（它甚至如实自述了 query_rounds_used=2）。步骤必须
+ * 出现在步骤区。
+ */
+const PROMPT_PREAMBLE = {
+  collectChainExecutionData: [
+    "",
+    "【取数步骤（在产出 JSON 之前必须先按此执行）】",
+    "",
+    "第 0 步 · 定范围：看触发事件负载有没有 plan_id 或 plan_no。有就**只处理这一个计划**——",
+    "调用 queryOpenPbpHeader 时必须带过滤条件 {\"PBP_HEADER_ID\": \"<该值>\"}，不得拉全量再自己筛。",
+    "没有才按 BR-COV-01 处理全部状态=已批准且在途的计划。",
+    "",
+    "第 1 步 · 寻源段（7 个调用，必发，**同一轮一次性并发全部发出**，不要一个一个串行）：",
+    "queryOpenPbpHeader、queryOpenPbpLine、queryAllPbpLinePage、queryPr、",
+    "queryProcPackageLineExecuteMode、queryRfxList、queryAwardList",
+    "拿到结果后判定每条链路的 立项 / 组包 / 询价 / 定标 四个节点是否完成。",
+    "",
+    "第 2 步 · 早停判据：链路是严格串行的——价格协议、合同、订单、验收全部是定标的下游，",
+    "没有定标就一定没有它们。**只有当范围内至少一条链路的定标节点已完成**",
+    "（queryAwardList 查到其询价单对应的定标行且有 AWARD_DATE）时，才允许进入第 3 步。",
+    "若范围内所有链路都停在定标或更早：**立即停止取数，禁止发出执行段那 6 个调用中的任何一个**，",
+    "把停滞节点及其之后的所有节点写成 stage_status='未开始'、actual_finish_date=null，",
+    "该链路的 stalled_at 填停滞节点名，query_rounds_used 填 1，然后直接产出 JSON。",
+    "",
+    "第 3 步 · 执行段（6 个调用，仅在第 2 步放行时发，同样一轮并发全发）：",
+    "querySpaList、queryContract、queryPoHeader、queryPoLineShipment、",
+    "queryAcceptHeader、queryAcceptTransaction",
+    "此时 query_rounds_used 填 2。",
+  ].join("\n"),
 };
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -611,9 +650,14 @@ function projectActions(rawActions) {
         : binding,
     );
 
+    const preamble = PROMPT_PREAMBLE[action.id];
+
     return {
       ...action,
       actor: projectActors(action.actor),
+      description: preamble
+        ? `${action.description ?? action.name}\n${preamble}`
+        : action.description,
       rule_bindings: ruleBindings,
       trigger,
       side_effects: sideEffects,

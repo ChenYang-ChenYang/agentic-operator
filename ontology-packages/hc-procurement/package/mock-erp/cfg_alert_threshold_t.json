@@ -4,9 +4,9 @@
       "EFFECTIVE_DATE": "2026-01-01",
       "MAINTAINER": "规则评审组",
       "THRESHOLD_CODE": "时间偏差天数",
-      "THRESHOLD_ID": "TH-TIME-7D",
-      "THRESHOLD_NAME": "时间偏差判定阈值",
-      "THRESHOLD_VALUE": 7,
+      "THRESHOLD_ID": "TH-TIME-0D",
+      "THRESHOLD_NAME": "时间偏差判定阈值（超期即预警）",
+      "THRESHOLD_VALUE": 0,
       "UNIT": "天"
     },
     {
