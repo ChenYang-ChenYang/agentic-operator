@@ -35,14 +35,19 @@ const render = (props: Partial<React.ComponentProps<typeof LiveNode>>) =>
   );
 
 describe("LiveNode", () => {
-  it("is clickable only while it blocks on a person", () => {
+  it("stays clickable in every state, because selecting one filters its activity", () => {
+    for (const status of ["idle", "running", "ok", "failed", "waiting_human"] as const) {
+      expect(render({ status })).not.toContain("disabled");
+    }
+  });
+
+  it("offers the human task only on the node that blocks on a person", () => {
     const waiting = render({ status: "waiting_human", waitingCount: 2 });
-    expect(waiting).not.toContain("disabled");
     expect(waiting).toContain("待人工 2");
     expect(waiting).toContain("点开处理人工任务");
 
     for (const status of ["idle", "running", "ok", "failed"] as const) {
-      expect(render({ status })).toContain("disabled");
+      expect(render({ status })).toContain("只看这个智能体的动作");
     }
   });
 

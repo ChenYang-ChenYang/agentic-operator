@@ -9,7 +9,8 @@
  * Composition, not new machinery — every piece already existed:
  *   useDag                 → nodes + edges (the published graph)
  *   useWorkflowLiveState   → per-agent live status, incl. waiting_human + task ids
- *   useStream(onEvent)     → the same tenant SSE feed, projected into the log tail
+ *   useWorkflowLiveState   → …and, through its frame tap, the same SSE frames
+ *                            projected into the activity feed on one connection
  *   useTask/useResolveTask → resolving a blocking task in place
  *   layout.ts              → the identical auto-pack layout the build canvas uses,
  *                            so a node sits where the designer put it
@@ -20,6 +21,7 @@
  */
 "use client";
 
+import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useI18n } from "@/app/portal/lib/preferences-context";
 import { useTenant } from "@/app/portal/lib/use-tenant";
@@ -45,11 +47,12 @@ import {
   linkRunAgent,
   nodeVisual,
   toFeedEntry,
+  visibleFeed,
   type FeedEntry,
 } from "./live-view";
 import { NodeTaskPanel } from "./NodeTaskPanel";
 
-const FEED_W = 340;
+const FEED_W = 400;
 
 export function LiveWorkflowView() {
   const { language } = useI18n();
@@ -77,7 +80,14 @@ export function LiveWorkflowView() {
   const live = useWorkflowLiveState(tenant, onFrame);
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
   const [follow, setFollow] = useState(true);
+  // DEBUG lines are real content but bury the business ones; off by default.
+  const [verbose, setVerbose] = useState(false);
   const feedRef = useRef<HTMLDivElement | null>(null);
+
+  const shown = useMemo(
+    () => visibleFeed(feed, { verbose, agent: selectedAgent }),
+    [feed, verbose, selectedAgent],
+  );
 
   // Tail behaviour: stick to the bottom, but stop fighting the operator the
   // moment they scroll up to read something.
@@ -85,7 +95,7 @@ export function LiveWorkflowView() {
     if (!follow) return;
     const el = feedRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [feed, follow]);
+  }, [shown, follow]);
 
   const agents = useMemo(() => dag.data?.agents ?? [], [dag.data]);
   const edges = useMemo(() => dag.data?.edges ?? [], [dag.data]);
@@ -186,8 +196,8 @@ export function LiveWorkflowView() {
           </Badge>
           <span style={{ fontSize: 11.5, color: "var(--text-3)", marginLeft: "auto" }}>
             {copy(
-              "节点为琥珀色时可点开处理人工任务",
-              "Amber nodes open their human task",
+              "点击节点只看它的动作；琥珀色节点可点开处理人工任务",
+              "Click a node to filter its activity; amber ones open their human task",
             )}
           </span>
         </div>
@@ -262,24 +272,63 @@ export function LiveWorkflowView() {
           <span style={{ fontSize: 12, fontWeight: 600 }}>
             {copy("处理动作流水线", "Activity")}
           </span>
-          <span style={{ fontSize: 11, color: "var(--text-3)" }}>{feed.length}</span>
-          <button
-            type="button"
-            onClick={() => setFollow((prev) => !prev)}
+          <span style={{ fontSize: 11, color: "var(--text-3)" }}>
+            {shown.length}
+            {shown.length !== feed.length && ` / ${feed.length}`}
+          </span>
+          <span style={{ display: "flex", gap: 6, marginLeft: "auto" }}>
+            <FeedToggle
+              on={verbose}
+              onClick={() => setVerbose((prev) => !prev)}
+              title={copy(
+                "显示 DEBUG 级日志",
+                "Include DEBUG log lines",
+              )}
+            >
+              {copy("详细", "Verbose")}
+            </FeedToggle>
+            <FeedToggle
+              on={follow}
+              onClick={() => setFollow((prev) => !prev)}
+              title={copy("自动滚到最新", "Stick to the newest row")}
+            >
+              {copy("跟随", "Follow")}
+            </FeedToggle>
+          </span>
+        </div>
+
+        {selectedAgent && (
+          <div
             style={{
-              marginLeft: "auto",
-              fontSize: 11,
-              background: "transparent",
-              border: `1px solid ${follow ? "var(--signal)" : "var(--border)"}`,
-              color: follow ? "var(--signal)" : "var(--text-3)",
-              borderRadius: "var(--r-sm)",
-              padding: "2px 8px",
-              cursor: "pointer",
+              padding: "6px 12px",
+              borderBottom: "1px solid var(--border)",
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              fontSize: 11.5,
+              color: "var(--text-3)",
             }}
           >
-            {copy("跟随", "Follow")}
-          </button>
-        </div>
+            <span>{copy("只看", "Only")}</span>
+            <strong style={{ color: "var(--text)" }}>{selectedAgent}</strong>
+            <button
+              type="button"
+              onClick={() => setSelectedAgent(null)}
+              style={{
+                marginLeft: "auto",
+                fontSize: 11,
+                background: "transparent",
+                border: "1px solid var(--border)",
+                color: "var(--text-3)",
+                borderRadius: "var(--r-sm)",
+                padding: "1px 7px",
+                cursor: "pointer",
+              }}
+            >
+              {copy("看全部", "Show all")}
+            </button>
+          </div>
+        )}
         <div
           ref={feedRef}
           onScroll={(event) => {
@@ -290,7 +339,7 @@ export function LiveWorkflowView() {
           }}
           style={{ flex: 1, minHeight: 0, overflow: "auto", padding: "6px 0" }}
         >
-          {feed.length === 0 ? (
+          {shown.length === 0 ? (
             <div
               style={{
                 padding: "16px 12px",
@@ -299,13 +348,18 @@ export function LiveWorkflowView() {
                 lineHeight: 1.7,
               }}
             >
-              {copy(
-                "等待事件…触发一次工作流后，这里会像日志一样持续滚动。",
-                "Waiting for events — fire the workflow and this tails like a log.",
-              )}
+              {feed.length > 0
+                ? copy(
+                    "当前筛选下没有动作。",
+                    "Nothing matches the current filter.",
+                  )
+                : copy(
+                    "等待事件…触发一次工作流后，这里会像日志一样持续滚动：每一步、每次工具调用、每次模型调用和日志都会出现。",
+                    "Waiting for events — fire the workflow and this tails like a log: every step, tool call, model call and log line.",
+                  )}
             </div>
           ) : (
-            feed.map((entry) => <FeedRow key={entry.id} entry={entry} />)
+            shown.map((entry) => <FeedRow key={entry.id} entry={entry} />)
           )}
         </div>
       </div>
@@ -321,6 +375,46 @@ const TONE_COLOR: Record<FeedEntry["tone"], string> = {
   waiting: "var(--amber)",
 };
 
+/** A small on/off chip, so the feed's controls read as one set. */
+function FeedToggle({
+  on,
+  onClick,
+  title,
+  children,
+}: {
+  on: boolean;
+  onClick: () => void;
+  title: string;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={title}
+      aria-pressed={on}
+      style={{
+        fontSize: 11,
+        background: "transparent",
+        border: `1px solid ${on ? "var(--signal)" : "var(--border)"}`,
+        color: on ? "var(--signal)" : "var(--text-3)",
+        borderRadius: "var(--r-sm)",
+        padding: "2px 8px",
+        cursor: "pointer",
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
+/**
+ * One line of the tail: who, what action, what happened, and what it cost.
+ *
+ * `label` is the action itself — a step name, a tool name, a model, an event —
+ * so the eye can scan the left edge and follow what an agent is doing without
+ * reading every sentence. `meta` carries the numbers, dimmed, at the end.
+ */
 function FeedRow({ entry }: { entry: FeedEntry }) {
   const time = new Date(entry.at).toLocaleTimeString();
   return (
@@ -348,24 +442,32 @@ function FeedRow({ entry }: { entry: FeedEntry }) {
       <span className="mono" style={{ color: "var(--text-4)", flexShrink: 0 }}>
         {time}
       </span>
-      <span style={{ minWidth: 0 }}>
+      <span style={{ minWidth: 0, overflowWrap: "anywhere" }}>
         {entry.agent && (
           <span style={{ color: "var(--text)", fontWeight: 600 }}>
             {entry.agent}{" "}
           </span>
         )}
-        <span style={{ color: "var(--text-2)", overflowWrap: "anywhere" }}>
-          {entry.detail}
-        </span>
+        {entry.label && (
+          <span
+            className="mono"
+            style={{ color: TONE_COLOR[entry.tone] }}
+          >
+            {entry.label}{" "}
+          </span>
+        )}
+        <span style={{ color: "var(--text-2)" }}>{entry.detail}</span>
+        {entry.meta && (
+          <span className="mono" style={{ color: "var(--text-4)" }}>
+            {" "}
+            {entry.meta}
+          </span>
+        )}
       </span>
     </div>
   );
 }
 
-/**
- * Exported for the SSR test: a `waiting_human` node has to be the one an
- * operator can actually click, and that binding is worth pinning.
- */
 export function LiveNode({
   agent,
   position,
@@ -386,7 +488,6 @@ export function LiveNode({
   copy: (zh: string, en: string) => string;
 }) {
   const visual = nodeVisual(status);
-  const interactive = visual.actionable;
   const label =
     waitingCount > 0
       ? copy(`待人工 ${waitingCount}`, `${waitingCount} waiting`)
@@ -402,12 +503,11 @@ export function LiveNode({
   return (
     <button
       type="button"
-      onClick={interactive ? onSelect : undefined}
-      disabled={!interactive}
+      onClick={onSelect}
       title={
-        interactive
+        visual.actionable
           ? copy("点开处理人工任务", "Open the human task")
-          : agent.title || agent.name
+          : copy("只看这个智能体的动作", "Show only this agent's activity")
       }
       style={{
         position: "absolute",
@@ -423,7 +523,7 @@ export function LiveNode({
           selected ? "var(--signal)" : visual.accent
         }`,
         boxShadow: selected ? "var(--shadow-2)" : "none",
-        cursor: interactive ? "pointer" : "default",
+        cursor: "pointer",
         display: "flex",
         flexDirection: "column",
         gap: 3,
