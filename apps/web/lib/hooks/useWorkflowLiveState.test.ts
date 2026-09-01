@@ -432,3 +432,83 @@ describe("workflowLiveReducer · task frames arriving out of order", () => {
     expect(state.agents).toEqual({});
   });
 });
+
+describe("workflowLiveReducer · a task that dies with its run", () => {
+  const started = (runId: string, agentName: string, at: number) =>
+    ({
+      type: "run.started" as const,
+      tenantId: "t",
+      at,
+      runId,
+      agentName,
+      triggerEvent: null,
+      subject: null,
+      correlationId: "cor-1",
+    });
+  const created = (taskId: string, runId: string, at: number) =>
+    ({
+      type: "task.created" as const,
+      tenantId: "t",
+      at,
+      taskId,
+      runId,
+      taskType: "blue-alert.review",
+      title: "t",
+    });
+
+  // A task only ever gets `task.resolved` when it was actually resolved. One
+  // that FAILED with its run had nothing to clear it, so the node stayed amber
+  // and clicking it could only ever return `task_not_recoverable` — observed on
+  // handleBlueAlertLocally / tsk-c9a0834d349b.
+  it("takes the waiting badge down when the run fails", () => {
+    let state = initialWorkflowLiveState();
+    state = workflowLiveReducer(state, { kind: "stream", event: started("run-1", "blue", 1) });
+    state = workflowLiveReducer(state, { kind: "stream", event: created("tsk-1", "run-1", 2) });
+    expect(state.agents.blue?.state).toBe("waiting_human");
+
+    state = workflowLiveReducer(state, {
+      kind: "stream",
+      event: {
+        type: "run.failed",
+        tenantId: "t",
+        at: 3,
+        runId: "run-1",
+        errorMessage: "resume failed",
+      },
+    });
+    expect(state.agents.blue?.waitingTaskIds).toEqual([]);
+    expect(state.agents.blue?.state).toBe("failed");
+    expect(state.runTasks["run-1"]).toBeUndefined();
+    expect(state.taskAgent["tsk-1"]).toBeUndefined();
+  });
+
+  it("does the same for a completed or cancelled run", () => {
+    for (const event of [
+      { type: "run.completed" as const, tenantId: "t", at: 3, runId: "run-1", durationMs: 1, tokensIn: null, tokensOut: null, emittedEventId: null },
+      { type: "run.cancelled" as const, tenantId: "t", at: 3, runId: "run-1", reason: "operator" },
+    ]) {
+      let state = initialWorkflowLiveState();
+      state = workflowLiveReducer(state, { kind: "stream", event: started("run-1", "blue", 1) });
+      state = workflowLiveReducer(state, { kind: "stream", event: created("tsk-1", "run-1", 2) });
+      state = workflowLiveReducer(state, { kind: "stream", event });
+      expect(state.agents.blue?.waitingTaskIds).toEqual([]);
+      expect(state.agents.blue?.state).not.toBe("waiting_human");
+    }
+  });
+
+  // One dead run must not silently clear a sibling run's live task.
+  it("only takes down the tasks belonging to the run that ended", () => {
+    let state = initialWorkflowLiveState();
+    state = workflowLiveReducer(state, { kind: "stream", event: started("run-1", "blue", 1) });
+    state = workflowLiveReducer(state, { kind: "stream", event: started("run-2", "blue", 2) });
+    state = workflowLiveReducer(state, { kind: "stream", event: created("tsk-1", "run-1", 3) });
+    state = workflowLiveReducer(state, { kind: "stream", event: created("tsk-2", "run-2", 4) });
+
+    state = workflowLiveReducer(state, {
+      kind: "stream",
+      event: { type: "run.failed", tenantId: "t", at: 5, runId: "run-1", errorMessage: "x" },
+    });
+    expect(state.agents.blue?.waitingTaskIds).toEqual(["tsk-2"]);
+    expect(state.agents.blue?.state).toBe("waiting_human");
+  });
+});

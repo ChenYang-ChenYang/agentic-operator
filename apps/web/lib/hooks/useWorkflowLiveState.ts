@@ -61,6 +61,8 @@ export interface WorkflowLiveState {
   runOrder: string[];
   /** taskId → agentName so task.resolved can clear the badge. */
   taskAgent: Record<string, string>;
+  /** runId → its human tasks, so a terminal run can take its badges down. */
+  runTasks: Record<string, string[]>;
   /**
    * runId → taskIds seen before that run was attributed to an agent.
    *
@@ -89,6 +91,7 @@ export function initialWorkflowLiveState(): WorkflowLiveState {
     runAgent: {},
     runOrder: [],
     taskAgent: {},
+    runTasks: {},
     pendingTasks: {},
     pulses: [],
   };
@@ -159,18 +162,44 @@ function resolveRun(
 ): WorkflowLiveState {
   const agentName = state.runAgent[runId];
   if (!agentName) return state;
-  return withAgent(state, agentName, (agent) => {
+
+  // A run that has completed, failed or been cancelled is not waiting on a
+  // person any more — take its badges down with it. Nothing else does: a task
+  // only gets a `task.resolved` frame when it was actually resolved, so a task
+  // that FAILED with its run left the node amber forever and invited a click
+  // that the API can only answer with `task_not_recoverable`.
+  const owned = state.runTasks[runId] ?? [];
+  let base = state;
+  if (owned.length > 0) {
+    const taskAgent = { ...state.taskAgent };
+    for (const taskId of owned) delete taskAgent[taskId];
+    const runTasks = { ...state.runTasks };
+    delete runTasks[runId];
+    base = { ...state, taskAgent, runTasks };
+  }
+  const dropped = new Set(owned);
+
+  return withAgent(base, agentName, (agent) => {
     const next: AgentLiveState = {
       ...agent,
       runningCount: Math.max(0, agent.runningCount - 1),
       lastRunId: runId,
       activeRunId: agent.activeRunId === runId ? null : agent.activeRunId,
+      waitingTaskIds:
+        dropped.size > 0
+          ? agent.waitingTaskIds.filter((id) => !dropped.has(id))
+          : agent.waitingTaskIds,
       lastEventAt: at,
     };
     if (error) next.lastError = error;
     // failed is sticky (red until the next run starts); ok/idle defer to
-    // still-running siblings and open HITL tasks.
-    next.state = settled === "failed" ? "failed" : settledState(next, settled);
+    // still-running siblings and open HITL tasks. A task still open on a
+    // SIBLING run outranks even that, because it is the one state an operator
+    // can act on — a red node labelled 待人工 helps nobody.
+    next.state =
+      settled === "failed" && next.waitingTaskIds.length === 0
+        ? "failed"
+        : settledState(next, settled);
     return next;
   });
 }
@@ -180,11 +209,16 @@ function attachTask(
   state: WorkflowLiveState,
   agentName: string,
   taskId: string,
+  runId: string,
   at: number,
 ): WorkflowLiveState {
+  const owned = state.runTasks[runId] ?? [];
   const next: WorkflowLiveState = {
     ...state,
     taskAgent: { ...state.taskAgent, [taskId]: agentName },
+    runTasks: owned.includes(taskId)
+      ? state.runTasks
+      : { ...state.runTasks, [runId]: [...owned, taskId] },
   };
   return withAgent(next, agentName, (agent) => ({
     ...agent,
@@ -226,7 +260,7 @@ export function workflowLiveReducer(
       delete pendingTasks[event.runId];
       next = { ...next, pendingTasks };
       for (const taskId of parked) {
-        next = attachTask(next, event.agentName, taskId, event.at);
+        next = attachTask(next, event.agentName, taskId, event.runId, event.at);
       }
       return next;
     }
@@ -277,14 +311,19 @@ export function workflowLiveReducer(
           },
         };
       }
-      return attachTask(state, agentName, event.taskId, event.at);
+      return attachTask(state, agentName, event.taskId, event.runId, event.at);
     }
     case "task.resolved": {
       const agentName = state.taskAgent[event.taskId];
       if (!agentName) return state;
       const taskAgent = { ...state.taskAgent };
       delete taskAgent[event.taskId];
-      const next = { ...state, taskAgent };
+      const runTasks: Record<string, string[]> = {};
+      for (const [runId, ids] of Object.entries(state.runTasks)) {
+        const kept = ids.filter((id) => id !== event.taskId);
+        if (kept.length > 0) runTasks[runId] = kept;
+      }
+      const next = { ...state, taskAgent, runTasks };
       return withAgent(next, agentName, (agent) => {
         const waitingTaskIds = agent.waitingTaskIds.filter(
           (id) => id !== event.taskId,
