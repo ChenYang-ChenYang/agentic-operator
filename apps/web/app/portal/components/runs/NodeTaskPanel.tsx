@@ -18,6 +18,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useI18n } from "@/app/portal/lib/preferences-context";
 import { useTenant } from "@/app/portal/lib/use-tenant";
 import { useResolveTask, useTask } from "@/lib/hooks/useTasks";
+import { useRun } from "@/lib/hooks/useRuns";
 import type { DagAgent } from "@/lib/hooks/useAgents";
 import { Badge, Button } from "@/app/portal/components";
 import { TaskFormFields } from "@/app/portal/components/tasks/TaskFormFields";
@@ -28,6 +29,11 @@ import {
   type TaskDecisionOption,
   type TaskFormRawValue,
 } from "@/app/portal/components/tasks/task-form";
+import {
+  contextGroups,
+  prefillFromContext,
+  type ContextGroup,
+} from "./task-context";
 
 export function NodeTaskPanel({
   agent,
@@ -66,13 +72,35 @@ export function NodeTaskPanel({
     [payload.formSchema],
   );
 
+  // The run that opened this task carries what the agents found — the alert,
+  // the deviation, the options. Both halves of this panel come from it: the
+  // identifiers nobody could type, and the context nobody could decide without.
+  const run = useRun(task.data?.runId ?? null);
+  const sources = useMemo(
+    () => [payload.preparedContext, run.data?.run?.inputPayload],
+    [payload.preparedContext, run.data],
+  );
+  const groups = useMemo(
+    () => contextGroups(run.data?.run?.inputPayload),
+    [run.data],
+  );
+
   // Re-seed the form whenever the panel switches task, so a half-typed answer
-  // for one subject can never be submitted against another.
+  // for one subject can never be submitted against another. Prefill lands over
+  // the schema defaults, never blanking a field the context has nothing for.
   useEffect(() => {
-    setValues(initialTaskFormValues(definition));
+    const seeded = initialTaskFormValues(definition);
+    const filled = prefillFromContext(
+      definition.fields.map((field) => field.name),
+      sources,
+    );
+    for (const [name, value] of Object.entries(filled)) {
+      if (name in seeded) seeded[name] = value;
+    }
+    setValues(seeded);
     setErrors({});
     setFailure(null);
-  }, [definition, activeId]);
+  }, [definition, activeId, sources]);
 
   const submit = useCallback(
     (option: TaskDecisionOption) => {
@@ -97,14 +125,12 @@ export function NodeTaskPanel({
 
   if (taskIds.length === 0) return null;
 
-  const context = payload.context ?? payload.decisionContext ?? null;
-
   return (
     <div
       style={{
         borderTop: "1px solid var(--border)",
         background: "var(--panel-2)",
-        maxHeight: "46%",
+        maxHeight: "58%",
         overflow: "auto",
         flexShrink: 0,
       }}
@@ -187,26 +213,7 @@ export function NodeTaskPanel({
               {task.data.title}
             </div>
 
-            {context !== null && (
-              <pre
-                className="mono"
-                style={{
-                  margin: 0,
-                  padding: 10,
-                  fontSize: 11,
-                  lineHeight: 1.6,
-                  background: "var(--panel-3)",
-                  border: "1px solid var(--border)",
-                  borderRadius: "var(--r-sm)",
-                  maxHeight: 160,
-                  overflow: "auto",
-                  whiteSpace: "pre-wrap",
-                  wordBreak: "break-all",
-                }}
-              >
-                {JSON.stringify(context, null, 2)}
-              </pre>
-            )}
+            {groups.length > 0 && <ContextCards groups={groups} copy={copy} />}
 
             <TaskFormFields
               definition={definition}
@@ -224,7 +231,20 @@ export function NodeTaskPanel({
               <span style={{ fontSize: 12, color: "var(--red)" }}>{failure}</span>
             )}
 
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <div
+              style={{
+                display: "flex",
+                gap: 8,
+                flexWrap: "wrap",
+                position: "sticky",
+                bottom: 0,
+                background: "var(--panel-2)",
+                borderTop: "1px solid var(--border)",
+                margin: "0 -14px -12px",
+                padding: "10px 14px",
+                zIndex: "var(--z-overlay)",
+              }}
+            >
               {definition.decisions.map((option) => (
                 <Button
                   key={option.decision}
@@ -251,6 +271,131 @@ export function NodeTaskPanel({
           </>
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * The business context behind the decision, laid out as cards.
+ *
+ * Records carrying a field the form is asking for come first and open by
+ * default — on a procurement deviation that is the alert, the deviation record
+ * and the options, which is precisely what "approve or reject?" turns on. The
+ * remainder stays collapsed rather than being hidden: it is evidence, and an
+ * approver should be able to reach it without leaving the panel.
+ */
+function ContextCards({
+  groups,
+  copy,
+}: {
+  groups: ContextGroup[];
+  copy: (zh: string, en: string) => string;
+}) {
+  const relevant = groups.filter((group) => group.relevant);
+  const rest = groups.filter((group) => !group.relevant);
+  return (
+    <div style={{ display: "grid", gap: 10 }}>
+      <div
+        style={{
+          display: "grid",
+          gap: 10,
+          gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))",
+        }}
+      >
+        {relevant.map((group) => (
+          <ContextCard key={group.key} group={group} />
+        ))}
+      </div>
+      {rest.length > 0 && (
+        <details>
+          <summary
+            style={{
+              fontSize: 11.5,
+              color: "var(--text-3)",
+              cursor: "pointer",
+            }}
+          >
+            {copy(
+              `其余上下文 · ${rest.length} 项`,
+              `More context · ${rest.length}`,
+            )}
+          </summary>
+          <div
+            style={{
+              display: "grid",
+              gap: 10,
+              gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))",
+              marginTop: 8,
+            }}
+          >
+            {rest.map((group) => (
+              <ContextCard key={group.key} group={group} />
+            ))}
+          </div>
+        </details>
+      )}
+    </div>
+  );
+}
+
+function ContextCard({ group }: { group: ContextGroup }) {
+  return (
+    <div
+      style={{
+        border: "1px solid var(--border)",
+        borderRadius: "var(--r-sm)",
+        background: "var(--panel-3)",
+        padding: "8px 10px",
+        minWidth: 0,
+        // One long explanation was growing a card past the whole panel; let it
+        // scroll inside its own box instead of pushing the decision off-screen.
+        maxHeight: 190,
+        overflow: "auto",
+      }}
+    >
+      {group.title && (
+        <div
+          className="mono"
+          style={{
+            fontSize: 10.5,
+            color: "var(--text-3)",
+            marginBottom: 6,
+            overflowWrap: "anywhere",
+          }}
+        >
+          {group.title}
+        </div>
+      )}
+      <dl style={{ margin: 0, display: "grid", gap: 4 }}>
+        {group.facts.map((fact) => (
+          <div
+            key={fact.key}
+            style={{
+              display: "grid",
+              gridTemplateColumns: "minmax(0, 8em) minmax(0, 1fr)",
+              gap: 8,
+              fontSize: 11.5,
+              lineHeight: 1.5,
+            }}
+          >
+            <dt
+              className="mono"
+              style={{ color: "var(--text-3)", overflowWrap: "anywhere" }}
+            >
+              {fact.key}
+            </dt>
+            <dd
+              style={{
+                margin: 0,
+                color: "var(--text)",
+                overflowWrap: "anywhere",
+              }}
+            >
+              {fact.value}
+            </dd>
+          </div>
+        ))}
+      </dl>
     </div>
   );
 }
