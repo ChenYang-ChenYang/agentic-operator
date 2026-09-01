@@ -19,7 +19,7 @@
  */
 "use client";
 
-import { useCallback, useEffect, useMemo, useReducer } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
 import type { RunStreamEvent } from "@agentic/contracts";
 import { useStream } from "./useStream";
 
@@ -271,14 +271,29 @@ export interface UseWorkflowLiveStateResult {
 
 export function useWorkflowLiveState(
   tenant?: string,
+  /**
+   * Optional tap on the same frames the reducer folds. The Runs page's live
+   * view builds an activity feed from them; giving it a passthrough here keeps
+   * the page on ONE EventSource. Its own `useStream` would have to repeat the
+   * `/livefeed` path below — and pointing it at the default `/v1/stream`
+   * silently yields nothing, because that route is buffered.
+   */
+  onFrame?: (event: RunStreamEvent) => void,
 ): UseWorkflowLiveStateResult {
   const [state, dispatch] = useReducer(
     workflowLiveReducer,
     undefined,
     initialWorkflowLiveState,
   );
+  // Held in a ref so a caller passing an inline closure cannot tear down and
+  // reopen the EventSource on every render.
+  const onFrameRef = useRef(onFrame);
+  useEffect(() => {
+    onFrameRef.current = onFrame;
+  }, [onFrame]);
   const onEvent = useCallback((event: RunStreamEvent) => {
     dispatch({ kind: "stream", event });
+    onFrameRef.current?.(event);
   }, []);
   // Connect through the unbuffered `/livefeed` route handler, NOT the default
   // `/v1/stream`: the `/v1/:path*` rewrite in next.config.mjs buffers SSE

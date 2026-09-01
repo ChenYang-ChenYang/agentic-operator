@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { LiveWorkflowView } from "@/app/portal/components/runs/LiveWorkflowView";
 import Link from "next/link";
 import {
   Badge,
@@ -69,6 +70,9 @@ export default function RunsPage() {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
   const [binMode, setBinMode] = useState(false);
+  // The list is the record of what ran; "live" is the same tenant watched as a
+  // moving graph. Workflows owns build time, this owns runtime.
+  const [view, setView] = useState<"list" | "live">("list");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [allMatching, setAllMatching] = useState(false);
   const [excludedIds, setExcludedIds] = useState<Set<string>>(new Set());
@@ -242,16 +246,30 @@ export default function RunsPage() {
           <div style={{ display: "flex", gap: 6 }}>
             <Button
               small
-              tone={binMode ? "ghost" : "primary"}
-              onClick={() => setBinMode(false)}
+              icon="run"
+              tone={view === "live" ? "primary" : "ghost"}
+              onClick={() => setView((prev) => (prev === "live" ? "list" : "live"))}
+            >
+              {copy("实时流程", "Live flow")}
+            </Button>
+            <Button
+              small
+              tone={binMode || view === "live" ? "ghost" : "primary"}
+              onClick={() => {
+                setView("list");
+                setBinMode(false);
+              }}
             >
               {t("runs.activeRecords")}
             </Button>
             <Button
               small
               icon="trash"
-              tone={binMode ? "primary" : "ghost"}
-              onClick={() => setBinMode(true)}
+              tone={binMode && view === "list" ? "primary" : "ghost"}
+              onClick={() => {
+                setView("list");
+                setBinMode(true);
+              }}
             >
               {t("runs.recycleBin")}
             </Button>
@@ -259,11 +277,13 @@ export default function RunsPage() {
         }
       />
 
+      {view === "live" && <LiveWorkflowView />}
+
       <div
         style={{
+          display: view === "live" ? "none" : "flex",
           padding: "12px 16px",
           borderBottom: "1px solid var(--border)",
-          display: "flex",
           gap: 8,
           flexWrap: "wrap",
           alignItems: "center",
@@ -422,7 +442,14 @@ export default function RunsPage() {
         </div>
       )}
 
-      <div style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
+      <div
+        style={{
+          display: view === "live" ? "none" : "block",
+          flex: 1,
+          minHeight: 0,
+          overflow: "auto",
+        }}
+      >
         {runsQuery.isError ? (
           <Empty
             title={t("runs.loadFailed")}
@@ -517,7 +544,8 @@ export default function RunsPage() {
         style={{
           padding: "9px 16px",
           borderTop: "1px solid var(--border)",
-          display: "flex",
+          // Paging belongs to the table; the live canvas has nothing to page.
+          display: view === "live" ? "none" : "flex",
           alignItems: "center",
           gap: 10,
           justifyContent: "space-between",
