@@ -128,6 +128,11 @@ export interface ContextGroup {
    * behind it — the panel opens these and collapses the rest.
    */
   relevant: boolean;
+  /**
+   * True when this is one of several sibling records from the same list — the
+   * alternatives being chosen between, rather than context around the choice.
+   */
+  alternatives: boolean;
 }
 
 /** Longest a single fact renders before the panel clips it. */
@@ -196,7 +201,7 @@ export function contextGroups(payload: unknown): ContextGroup[] {
     if (isRecord(value)) {
       const facts = factsOf(value);
       if (facts.length > 0) {
-        groups.push({ key, title: key, facts, relevant: true });
+        groups.push({ key, title: key, facts, relevant: true, alternatives: false });
       }
       continue;
     }
@@ -208,6 +213,9 @@ export function contextGroups(payload: unknown): ContextGroup[] {
         continue;
       }
       const decisionSized = value.length <= DECISION_LIST_MAX;
+      // Two or three sibling records are alternatives — the set being chosen
+      // between. A single record, however short its list, is just context.
+      const alternatives = decisionSized && value.length > 1;
       value.forEach((item, index) => {
         if (!isRecord(item)) return;
         const facts = factsOf(item);
@@ -217,6 +225,7 @@ export function contextGroups(payload: unknown): ContextGroup[] {
           title: value.length > 1 ? `${key} #${index + 1}` : key,
           facts,
           relevant: decisionSized,
+          alternatives,
         });
       });
       continue;
@@ -226,12 +235,23 @@ export function contextGroups(payload: unknown): ContextGroup[] {
   }
 
   if (topLevel.length > 0) {
-    groups.push({ key: "__root__", title: "", facts: topLevel, relevant: true });
+    groups.push({
+      key: "__root__",
+      title: "",
+      facts: topLevel,
+      relevant: true,
+      alternatives: false,
+    });
   }
 
-  // Relevant first, original order preserved within each half, and capped so a
-  // rich payload does not bury the decision under its own evidence.
-  const promoted = groups.filter((group) => group.relevant);
+  // Alternatives lead. A payload's key order is an accident of how the agent
+  // happened to write its JSON, and on a real approval it put the three options
+  // sixth, seventh and eighth of eight cards — so the one thing the approver is
+  // actually choosing between was the last thing they'd find.
+  const promoted = [
+    ...groups.filter((group) => group.relevant && group.alternatives),
+    ...groups.filter((group) => group.relevant && !group.alternatives),
+  ];
   const kept = promoted.slice(0, MAX_RELEVANT_GROUPS);
   const demoted = new Set(promoted.slice(MAX_RELEVANT_GROUPS));
   return [

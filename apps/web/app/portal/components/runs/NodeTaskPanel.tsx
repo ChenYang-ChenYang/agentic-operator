@@ -14,7 +14,7 @@
  */
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useI18n } from "@/app/portal/lib/preferences-context";
 import { useTenant } from "@/app/portal/lib/use-tenant";
 import { useResolveTask, useTask } from "@/lib/hooks/useTasks";
@@ -85,6 +85,13 @@ export function NodeTaskPanel({
     [run.data],
   );
 
+  const bodyRef = useRef<HTMLDivElement | null>(null);
+  // The panel's own header is sticky, so a scrolled body still looks like the
+  // top of the panel. Land at the actual top whenever the task changes.
+  useEffect(() => {
+    bodyRef.current?.scrollTo({ top: 0 });
+  }, [activeId]);
+
   // Re-seed the form whenever the panel switches task, so a half-typed answer
   // for one subject can never be submitted against another. Prefill lands over
   // the schema defaults, never blanking a field the context has nothing for.
@@ -127,6 +134,7 @@ export function NodeTaskPanel({
 
   return (
     <div
+      ref={bodyRef}
       style={{
         borderTop: "1px solid var(--border)",
         background: "var(--panel-2)",
@@ -339,12 +347,14 @@ function ContextCards({
 }
 
 function ContextCard({ group }: { group: ContextGroup }) {
+  // An alternative is something to pick, not background to read past.
+  const accent = group.alternatives ? "var(--border-3)" : "var(--border)";
   return (
     <div
       style={{
-        border: "1px solid var(--border)",
+        border: `1px solid ${accent}`,
         borderRadius: "var(--r-sm)",
-        background: "var(--panel-3)",
+        background: group.alternatives ? "var(--panel-2)" : "var(--panel-3)",
         padding: "8px 10px",
         minWidth: 0,
         // One long explanation was growing a card past the whole panel; let it

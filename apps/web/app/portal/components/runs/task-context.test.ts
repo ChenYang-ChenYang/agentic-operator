@@ -149,6 +149,25 @@ describe("contextGroups", () => {
     expect(byKey("options[1]")?.title).toBe("options #2");
   });
 
+  // A payload's key order is an accident of how the agent wrote its JSON. On a
+  // real approval it put the three options sixth through eighth of eight cards,
+  // so the thing the approver is choosing between was the last thing they'd
+  // find — and with the panel's sticky header it looked like the top.
+  it("leads with the alternatives, not with the context around them", () => {
+    const relevant = groups.filter((group) => group.relevant);
+    expect(relevant.slice(0, 2).map((group) => group.key)).toEqual([
+      "options[0]",
+      "options[1]",
+    ]);
+  });
+
+  it("does not call a lone record an alternative", () => {
+    // execution_deviation is a one-element list: context, not a choice.
+    expect(byKey("execution_deviation[0]")?.alternatives).toBe(false);
+    expect(byKey("alert_context")?.alternatives).toBe(false);
+    expect(byKey("options[0]")?.alternatives).toBe(true);
+  });
+
   it("keeps a single-element list unnumbered", () => {
     expect(byKey("execution_deviation[0]")?.title).toBe("execution_deviation");
   });
