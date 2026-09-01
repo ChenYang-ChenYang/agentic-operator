@@ -1,0 +1,160 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.allmeta.ai/ontology/3.2.0/events.schema.json",
+  "title": "allmeta Ontology v3 Events family",
+  "description": "Canonical Event array used by the Events Builder and ontology template packages. Event names are the published identity; draft ids remain optional.",
+  "$defs": {
+    "field": {
+      "type": "object",
+      "properties": {
+        "name": { "$ref": "common.schema.json#/$defs/nonEmptyString" },
+        "type": { "$ref": "common.schema.json#/$defs/nonEmptyString" },
+        "target_object": {
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/identifier" }, { "type": "null" }]
+        },
+        "description": { "type": "string" },
+        "required": { "type": "boolean" }
+      },
+      "required": ["name", "type"],
+      "additionalProperties": false
+    },
+    "mutation": {
+      "type": "object",
+      "properties": {
+        "target_object": { "$ref": "common.schema.json#/$defs/identifier" },
+        "mutation_type": { "enum": ["CREATE", "MODIFY", "CREATE_OR_MODIFY", "DELETE"] },
+        "impacted_properties": { "type": "array", "items": { "type": "string" }, "uniqueItems": true }
+      },
+      "required": ["target_object", "mutation_type", "impacted_properties"],
+      "additionalProperties": false
+    },
+    "producer": {
+      "type": "object",
+      "properties": {
+        "type": { "enum": ["Action", "Agent", "System", "ExternalSystem"] },
+        "id": { "$ref": "common.schema.json#/$defs/identifier" },
+        "condition": { "type": "string" }
+      },
+      "required": ["type", "id"],
+      "additionalProperties": false
+    },
+    "subscriber": {
+      "type": "object",
+      "properties": {
+        "type": { "enum": ["Action", "Agent", "System", "Workflow", "ExternalSystem", "Webhook"] },
+        "id": { "$ref": "common.schema.json#/$defs/identifier" },
+        "filter": { "type": "string" },
+        "required": { "type": "boolean" }
+      },
+      "required": ["type", "id"],
+      "additionalProperties": false
+    },
+    "aiSuggestion": {
+      "type": "object",
+      "properties": {
+        "category": { "type": "string" },
+        "message": { "type": "string" },
+        "severity": { "enum": ["high", "medium", "low"] },
+        "field": { "type": "string" }
+      },
+      "required": ["category", "message", "severity"],
+      "additionalProperties": false
+    },
+    "toolTrace": {
+      "type": "object",
+      "properties": {
+        "tool": { "type": "string" },
+        "input_summary": { "type": "string" },
+        "duration_ms": { "type": "number" }
+      },
+      "required": ["tool", "input_summary", "duration_ms"],
+      "additionalProperties": false
+    },
+    "aiReview": {
+      "type": "object",
+      "properties": {
+        "summary": { "type": "string" },
+        "suggestions": { "type": "array", "items": { "$ref": "#/$defs/aiSuggestion" } },
+        "risk_assessment": { "type": "string" },
+        "overall_score": { "type": "number" },
+        "decision_level": { "enum": ["claude", "heuristic"] },
+        "decided_at": { "type": "string" },
+        "decision": { "enum": ["accepted", "rejected", "pending"] },
+        "duration_ms": { "type": "number" },
+        "tool_trace": { "type": "array", "items": { "$ref": "#/$defs/toolTrace" } }
+      },
+      "required": ["summary", "suggestions", "risk_assessment", "overall_score", "decision_level", "decided_at", "decision"],
+      "additionalProperties": false
+    },
+    "lintIssue": {
+      "type": "object",
+      "properties": {
+        "rule_id": { "type": "string" },
+        "severity": { "enum": ["error", "warning", "info"] },
+        "message": { "type": "string" },
+        "message_key": { "type": "string" },
+        "message_params": {
+          "type": "object",
+          "additionalProperties": { "type": ["string", "number"] }
+        },
+        "field": { "type": "string" },
+        "auto_fixable": { "type": "boolean" },
+        "fix_label": { "type": "string" },
+        "fix_label_key": { "type": "string" }
+      },
+      "required": ["rule_id", "severity", "message", "auto_fixable"],
+      "additionalProperties": false
+    },
+    "lintSnapshot": {
+      "type": "object",
+      "properties": {
+        "at": { "type": "string" },
+        "issues": { "type": "array", "items": { "$ref": "#/$defs/lintIssue" } }
+      },
+      "required": ["at", "issues"],
+      "additionalProperties": false
+    },
+    "artifact": {
+      "type": "object",
+      "properties": {
+        "name": { "$ref": "common.schema.json#/$defs/nonEmptyString" },
+        "description": { "type": "string" },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "source_action": {
+              "oneOf": [{ "$ref": "common.schema.json#/$defs/identifier" }, { "type": "null" }]
+            },
+            "event_data": { "type": "array", "items": { "$ref": "#/$defs/field" } },
+            "state_mutations": { "type": "array", "items": { "$ref": "#/$defs/mutation" } }
+          },
+          "required": ["source_action", "event_data", "state_mutations"],
+          "additionalProperties": false
+        },
+        "producers": { "type": "array", "items": { "$ref": "#/$defs/producer" } },
+        "subscribers": { "type": "array", "items": { "$ref": "#/$defs/subscriber" } },
+        "provenance": { "enum": ["explicit", "extracted", "inferred", "human", "system", "generated"] },
+        "sources": { "type": "array", "items": { "$ref": "common.schema.json#/$defs/sourceReference" } },
+        "extensions": { "$ref": "common.schema.json#/$defs/extensionBag" },
+        "event_version": { "type": "string" },
+        "is_breaking_change": { "type": "boolean" },
+        "deprecated_at": { "type": "string" },
+        "id": { "type": "string" },
+        "status": { "enum": ["DRAFT", "AI_REVIEWING", "CONFIRMED", "PUBLISHED", "ACTIVE", "DEPRECATED"] },
+        "version": { "type": "number" },
+        "base_published_version": { "type": "number" },
+        "ai_involved": { "type": "boolean" },
+        "ai_review": { "$ref": "#/$defs/aiReview" },
+        "lint_result": { "$ref": "#/$defs/lintSnapshot" },
+        "source_doc_id": { "type": "string" }
+      },
+      "required": ["name", "description", "payload"],
+      "additionalProperties": false
+    },
+    "artifactArray": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/artifact" }
+    }
+  },
+  "$ref": "#/$defs/artifactArray"
+}

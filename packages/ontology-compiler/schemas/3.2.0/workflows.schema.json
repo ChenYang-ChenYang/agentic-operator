@@ -1,0 +1,904 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.allmeta.ai/ontology/3.2.0/workflows.schema.json",
+  "title": "allmeta Ontology v3 Workflows family",
+  "description": "Canonical WorkflowNode array for ontology packages. The bundle is v3 while each normalized Workflow artifact deliberately retains schema_version 2.0.0.",
+  "$defs": {
+    "nonEmptyString": {
+      "type": "string",
+      "minLength": 1
+    },
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "conditionExpression": {
+      "oneOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "language": { "enum": ["cel", "jsonlogic"] },
+            "expression": { "$ref": "#/$defs/nonEmptyString" },
+            "compiler_version": {
+              "enum": ["allmeta-cel-safe-v1", "allmeta-jsonlogic-safe-v1"]
+            },
+            "test_cases": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": { "$ref": "#/$defs/identifier" },
+                  "context": { "type": "object", "additionalProperties": true },
+                  "expected": { "type": "boolean" }
+                },
+                "required": ["id", "context", "expected"],
+                "additionalProperties": true
+              }
+            }
+          },
+          "required": ["language", "expression"],
+          "additionalProperties": true
+        }
+      ]
+    },
+    "legacyAction": {
+      "type": "object",
+      "properties": {
+        "order": { "type": "string" },
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "type": { "enum": ["tool", "logic", "manual"] },
+        "condition": { "type": "string" }
+      },
+      "required": ["order", "name", "description", "type", "condition"],
+      "additionalProperties": true
+    },
+    "role": {
+      "type": "object",
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "type": { "enum": ["Human", "Agent", "System", "External"] },
+        "role": { "type": "string" },
+        "display_name": { "type": "string" },
+        "description": { "type": "string" },
+        "org_scope": { "type": "string" },
+        "responsibilities": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "agent_id": { "$ref": "#/$defs/identifier" }
+      },
+      "required": ["id", "type"],
+      "additionalProperties": true
+    },
+    "triggerBaseProperties": {
+      "type": "object",
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "description": { "type": "string" },
+        "condition": { "$ref": "#/$defs/conditionExpression" },
+        "input_artifact_ids": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/identifier" },
+          "uniqueItems": true
+        },
+        "entry_step_ids": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/identifier" },
+          "uniqueItems": true
+        },
+        "legacy_value": { "type": "string" }
+      },
+      "required": ["id"]
+    },
+    "structuredTrigger": {
+      "oneOf": [
+        {
+          "allOf": [
+            { "$ref": "#/$defs/triggerBaseProperties" },
+            {
+              "type": "object",
+              "properties": {
+                "kind": { "const": "event" },
+                "event_id": { "$ref": "#/$defs/identifier" }
+              },
+              "required": ["kind", "event_id"],
+              "additionalProperties": true
+            }
+          ]
+        },
+        {
+          "allOf": [
+            { "$ref": "#/$defs/triggerBaseProperties" },
+            {
+              "type": "object",
+              "properties": {
+                "kind": { "const": "manual" },
+                "actor_id": { "$ref": "#/$defs/identifier" }
+              },
+              "required": ["kind"],
+              "additionalProperties": true
+            }
+          ]
+        },
+        {
+          "allOf": [
+            { "$ref": "#/$defs/triggerBaseProperties" },
+            {
+              "type": "object",
+              "properties": {
+                "kind": { "const": "schedule" },
+                "schedule": { "$ref": "#/$defs/nonEmptyString" },
+                "timezone": { "type": "string" }
+              },
+              "required": ["kind", "schedule"],
+              "additionalProperties": true
+            }
+          ]
+        }
+      ]
+    },
+    "humanGate": {
+      "type": "object",
+      "properties": {
+        "mode": { "enum": ["review", "approve", "manual"] },
+        "actor_ids": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/identifier" },
+          "uniqueItems": true
+        },
+        "instructions": { "type": "string" },
+        "preview_required": { "type": "boolean" },
+        "preview_artifact_ids": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/identifier" },
+          "uniqueItems": true
+        }
+      },
+      "required": ["mode"],
+      "additionalProperties": true
+    },
+    "execution": {
+      "type": "object",
+      "properties": {
+        "mode": { "enum": ["human", "agent", "system", "hybrid"] },
+        "actor_ids": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/identifier" },
+          "uniqueItems": true
+        },
+        "autonomy_level": { "enum": ["A0", "A1", "A2", "A3"] },
+        "reversible": { "type": "boolean" },
+        "human_gate": { "$ref": "#/$defs/humanGate" }
+      },
+      "required": ["mode"],
+      "additionalProperties": true
+    },
+    "apiBindingSource": {
+      "type": "object",
+      "properties": {
+        "artifact": { "type": "string" },
+        "sheet": { "type": "string" },
+        "range": { "type": "string" },
+        "note": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "apiBinding": {
+      "type": "object",
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "operation_id": { "$ref": "#/$defs/identifier" },
+        "endpoint": { "$ref": "#/$defs/nonEmptyString" },
+        "name": { "type": "string" },
+        "system": { "type": "string" },
+        "method": { "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"] },
+        "role": { "enum": ["primary", "supporting", "alternate"] },
+        "description": { "type": "string" },
+        "request_mapping": { "type": "object", "additionalProperties": true },
+        "response_mapping": { "type": "object", "additionalProperties": true },
+        "source": { "$ref": "#/$defs/apiBindingSource" }
+      },
+      "required": ["id", "operation_id", "endpoint"],
+      "additionalProperties": true
+    },
+    "edge": {
+      "type": "object",
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "to_step_id": { "$ref": "#/$defs/identifier" },
+        "edge_type": { "enum": ["sequence", "conditional", "event", "error"] },
+        "label": { "type": "string" },
+        "condition": { "$ref": "#/$defs/conditionExpression" },
+        "on_event_id": { "$ref": "#/$defs/identifier" },
+        "rule_ids": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/identifier" },
+          "uniqueItems": true
+        },
+        "is_default": { "type": "boolean" }
+      },
+      "required": ["id", "to_step_id", "edge_type"],
+      "additionalProperties": true
+    },
+    "dependencyEndpoint": {
+      "description": "Endpoint in the non-executable lineage/evidence/configuration graph.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "enum": ["step", "artifact", "object", "event", "configuration", "external"]
+        },
+        "id": { "$ref": "#/$defs/identifier" }
+      },
+      "required": ["type", "id"],
+      "additionalProperties": true
+    },
+    "dependency": {
+      "description": "Non-executable dependency. Runtimes must traverse only steps[].next.",
+      "type": "object",
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "kind": { "enum": ["data", "evidence", "configuration"] },
+        "from": { "$ref": "#/$defs/dependencyEndpoint" },
+        "to": { "$ref": "#/$defs/dependencyEndpoint" },
+        "description": { "type": "string" },
+        "lineage": { "enum": ["source", "copy", "transform", "reference"] },
+        "required": { "type": "boolean" },
+        "sources": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/apiBindingSource" }
+        }
+      },
+      "required": ["id", "kind", "from", "to"],
+      "additionalProperties": true
+    },
+    "step": {
+      "type": "object",
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "order": { "type": "integer", "minimum": 0 },
+        "name": { "$ref": "#/$defs/nonEmptyString" },
+        "description": { "type": "string" },
+        "node_kind": { "enum": ["action", "subflow", "decision", "wait"] },
+        "action_id": { "$ref": "#/$defs/identifier" },
+        "workflow_id": { "$ref": "#/$defs/identifier" },
+        "execution": { "$ref": "#/$defs/execution" },
+        "entry_condition": { "$ref": "#/$defs/conditionExpression" },
+        "guard_rule_ids": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/identifier" },
+          "uniqueItems": true
+        },
+        "input_artifact_ids": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/identifier" },
+          "uniqueItems": true
+        },
+        "output_artifact_ids": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/identifier" },
+          "uniqueItems": true
+        },
+        "emitted_event_ids": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/identifier" },
+          "uniqueItems": true
+        },
+        "api_bindings": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/apiBinding" }
+        },
+        "timeout_ms": { "type": "integer", "minimum": 0 },
+        "next": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/edge" }
+        },
+        "legacy_action": { "$ref": "#/$defs/legacyAction" }
+      },
+      "required": ["id", "order", "name", "description", "node_kind", "next"],
+      "allOf": [
+        {
+          "if": {
+            "properties": { "node_kind": { "const": "action" } },
+            "required": ["node_kind"]
+          },
+          "then": {
+            "properties": { "action_id": { "$ref": "#/$defs/identifier" } },
+            "required": ["action_id"]
+          }
+        },
+        {
+          "if": {
+            "properties": { "node_kind": { "const": "subflow" } },
+            "required": ["node_kind"]
+          },
+          "then": {
+            "properties": { "workflow_id": { "$ref": "#/$defs/identifier" } },
+            "required": ["workflow_id"]
+          }
+        }
+      ],
+      "additionalProperties": true
+    },
+    "ruleBindingReadinessWaiver": {
+      "type": "object",
+      "properties": {
+        "reason": { "type": "string", "minLength": 12, "maxLength": 2000 },
+        "recorded_at": { "type": "string", "format": "date-time" },
+        "status": { "enum": ["checking", "blocked", "error"] },
+        "missing_count": { "type": "integer", "minimum": 0, "maximum": 10000 },
+        "ambiguous_count": { "type": "integer", "minimum": 0, "maximum": 10000 },
+        "source": { "enum": ["local-catalog", "entity-gap-preview"] }
+      },
+      "required": ["reason", "recorded_at", "status", "missing_count", "ambiguous_count", "source"],
+      "additionalProperties": false
+    },
+    "catalogPin": {
+      "type": "object",
+      "properties": {
+        "artifact_type": { "enum": ["objects", "rules", "actions", "events"] },
+        "catalog_version": { "type": "integer", "minimum": 0 },
+        "content_hash": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+        "artifact_count": { "type": "integer", "minimum": 0 }
+      },
+      "required": ["artifact_type", "catalog_version", "content_hash", "artifact_count"],
+      "additionalProperties": false
+    },
+    "objectCatalogPin": {
+      "type": "object",
+      "properties": {
+        "artifact_type": { "const": "objects" },
+        "catalog_version": { "type": "integer", "minimum": 0 },
+        "content_hash": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+        "artifact_count": { "type": "integer", "minimum": 0 }
+      },
+      "required": ["artifact_type", "catalog_version", "content_hash", "artifact_count"],
+      "additionalProperties": false
+    },
+    "ruleSemanticPin": {
+      "type": "object",
+      "properties": {
+        "artifact_type": { "const": "rules" },
+        "catalog_version": { "type": "integer", "minimum": 0 },
+        "content_hash": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+        "artifact_count": { "type": "integer", "minimum": 0 },
+        "rule_id": { "$ref": "#/$defs/identifier" }
+      },
+      "required": ["artifact_type", "catalog_version", "content_hash", "artifact_count", "rule_id"],
+      "additionalProperties": false
+    },
+    "actionSemanticPin": {
+      "type": "object",
+      "properties": {
+        "artifact_type": { "const": "actions" },
+        "catalog_version": { "type": "integer", "minimum": 1 },
+        "content_hash": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+        "artifact_count": { "type": "integer", "minimum": 1 },
+        "action_id": { "$ref": "#/$defs/identifier" }
+      },
+      "required": [
+        "artifact_type",
+        "catalog_version",
+        "content_hash",
+        "artifact_count",
+        "action_id"
+      ],
+      "additionalProperties": false
+    },
+    "eventSemanticPin": {
+      "type": "object",
+      "properties": {
+        "artifact_type": { "const": "events" },
+        "catalog_version": { "type": "integer", "minimum": 1 },
+        "content_hash": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+        "artifact_count": { "type": "integer", "minimum": 1 },
+        "event_id": { "$ref": "#/$defs/identifier" }
+      },
+      "required": [
+        "artifact_type",
+        "catalog_version",
+        "content_hash",
+        "artifact_count",
+        "event_id"
+      ],
+      "additionalProperties": false
+    },
+    "runtimeDependencySeedReceipt": {
+      "type": "object",
+      "properties": {
+        "seed_id": { "$ref": "#/$defs/nonEmptyString" },
+        "seed_hash": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+        "action_catalog_version": { "type": "integer", "minimum": 1 },
+        "event_catalog_version": { "type": "integer", "minimum": 1 },
+        "action_ids": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/identifier" },
+          "uniqueItems": true
+        },
+        "event_ids": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/identifier" },
+          "uniqueItems": true
+        },
+        "provenance": {
+          "type": "object",
+          "properties": {
+            "classification": { "enum": ["workbook-extracted", "derived-design", "mixed"] },
+            "source_artifact": { "$ref": "#/$defs/nonEmptyString" },
+            "source_content_hash": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+            "action_contracts": { "enum": ["workbook-extracted", "derived-design"] },
+            "event_contracts": { "enum": ["workbook-extracted", "derived-design"] }
+          },
+          "required": [
+            "classification",
+            "source_artifact",
+            "source_content_hash",
+            "action_contracts",
+            "event_contracts"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "seed_id",
+        "seed_hash",
+        "action_catalog_version",
+        "event_catalog_version",
+        "action_ids",
+        "event_ids",
+        "provenance"
+      ],
+      "additionalProperties": false
+    },
+    "ruleSeedReceipt": {
+      "type": "object",
+      "properties": {
+        "seed_id": { "$ref": "#/$defs/nonEmptyString" },
+        "seed_hash": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+        "rule_catalog_version": { "type": "integer", "minimum": 0 },
+        "object_catalog_version": { "type": "integer", "minimum": 0 },
+        "ordered_rule_ids": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/identifier" },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "added_rule_ids": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/identifier" },
+          "uniqueItems": true
+        },
+        "unchanged_rule_ids": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/identifier" },
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "seed_id",
+        "seed_hash",
+        "rule_catalog_version",
+        "object_catalog_version",
+        "ordered_rule_ids",
+        "added_rule_ids",
+        "unchanged_rule_ids"
+      ],
+      "additionalProperties": false
+    },
+    "ruleBinding": {
+      "type": "object",
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "rule_id": { "$ref": "#/$defs/identifier" },
+        "action_rule_binding_id": { "$ref": "#/$defs/identifier" },
+        "scope": { "enum": ["workflow", "step", "edge"] },
+        "target_id": { "$ref": "#/$defs/identifier" },
+        "phase": {
+          "enum": ["precondition", "guard", "validation", "approval", "postcondition"]
+        },
+        "description": { "type": "string" },
+        "readiness_waiver": { "$ref": "#/$defs/ruleBindingReadinessWaiver" },
+        "semantic_pin": { "$ref": "#/$defs/ruleSemanticPin" }
+      },
+      "required": ["id", "rule_id", "scope"],
+      "allOf": [
+        {
+          "if": {
+            "properties": { "scope": { "enum": ["step", "edge"] } },
+            "required": ["scope"]
+          },
+          "then": {
+            "properties": { "target_id": { "$ref": "#/$defs/identifier" } },
+            "required": ["target_id"]
+          }
+        }
+      ],
+      "additionalProperties": true
+    },
+    "artifact": {
+      "type": "object",
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "name": { "$ref": "#/$defs/nonEmptyString" },
+        "description": { "type": "string" },
+        "direction": { "enum": ["input", "working", "output"] },
+        "format": { "$ref": "#/$defs/nonEmptyString" },
+        "content_description": { "type": "string" },
+        "content_schema": { "type": "object" },
+        "object_type_id": { "$ref": "#/$defs/identifier" },
+        "required": { "type": "boolean" }
+      },
+      "required": ["id", "name", "direction", "format"],
+      "additionalProperties": true
+    },
+    "outputContent": {
+      "type": "object",
+      "properties": {
+        "name": { "$ref": "#/$defs/nonEmptyString" },
+        "description": { "type": "string" },
+        "data_type": { "type": "string" },
+        "required": { "type": "boolean" }
+      },
+      "required": ["name"],
+      "additionalProperties": true
+    },
+    "outputContract": {
+      "type": "object",
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "name": { "$ref": "#/$defs/nonEmptyString" },
+        "description": { "type": "string" },
+        "artifact_id": { "$ref": "#/$defs/identifier" },
+        "format": { "$ref": "#/$defs/nonEmptyString" },
+        "content_description": { "type": "string" },
+        "contents": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/outputContent" }
+        },
+        "content_schema": { "type": "object" },
+        "required": { "type": "boolean" },
+        "delivery_channel": { "type": "string" }
+      },
+      "required": ["id", "name", "format"],
+      "additionalProperties": true
+    },
+    "emittedEvent": {
+      "type": "object",
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "event_id": { "$ref": "#/$defs/identifier" },
+        "description": { "type": "string" },
+        "source_step_id": { "$ref": "#/$defs/identifier" },
+        "when": { "enum": ["entered", "completed", "success", "failure"] }
+      },
+      "required": ["id", "event_id"],
+      "additionalProperties": true
+    },
+    "scenario": {
+      "type": "object",
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "name": { "$ref": "#/$defs/nonEmptyString" },
+        "description": { "type": "string" },
+        "domain": { "type": "string" },
+        "business_outcome": { "type": "string" },
+        "assumptions": { "type": "array", "items": { "type": "string" } },
+        "out_of_scope": { "type": "array", "items": { "type": "string" } },
+        "success_metrics": { "type": "array", "items": { "type": "string" } }
+      },
+      "required": ["id", "name"],
+      "additionalProperties": true
+    },
+    "position": {
+      "type": "object",
+      "properties": {
+        "x": { "type": "number" },
+        "y": { "type": "number" }
+      },
+      "required": ["x", "y"],
+      "additionalProperties": true
+    },
+    "layoutGroup": {
+      "description": "User-defined canvas group. Presentation only: it carries no execution semantics and is invisible to rule-scope phase matching. Deliberately permissive — this schema is a hard publish gate, so a partially written group must degrade rather than make a whole domain unpublishable. Repair happens in normalizeWorkflowLayoutGroups at the read boundaries.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "pattern": "^grp_[a-z0-9_]{1,48}$" },
+        "name": { "type": "string" },
+        "nameZh": { "type": "string" },
+        "accent": {
+          "type": "object",
+          "properties": {
+            "hue": { "type": "integer", "minimum": 0, "exclusiveMaximum": 360 },
+            "chroma": { "type": "number", "minimum": 0, "maximum": 0.37 },
+            "seed_hex": { "type": "string", "pattern": "^#[0-9a-f]{6}$" }
+          },
+          "additionalProperties": true
+        },
+        "pattern": { "enum": ["solid", "dashed", "dotted", "double", "long-dash", "dash-dot"] },
+        "padding": {
+          "type": "object",
+          "properties": {
+            "top": { "type": "number" },
+            "right": { "type": "number" },
+            "bottom": { "type": "number" },
+            "left": { "type": "number" }
+          },
+          "additionalProperties": true
+        },
+        "members": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^(trigger|step|artifact|event):" }
+        },
+        "anchor": { "$ref": "#/$defs/position" }
+      },
+      "required": ["id", "members"],
+      "additionalProperties": true
+    },
+    "layout": {
+      "type": "object",
+      "properties": {
+        "direction": { "enum": ["LR", "TB"] },
+        "positions": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/position" }
+        },
+        "viewport": {
+          "type": "object",
+          "properties": {
+            "x": { "type": "number" },
+            "y": { "type": "number" },
+            "zoom": { "type": "number", "exclusiveMinimum": 0 }
+          },
+          "required": ["x", "y", "zoom"],
+          "additionalProperties": true
+        },
+        "view": {
+          "type": "object",
+          "properties": {
+            "layer": { "enum": ["process", "data", "events", "execution", "all"] },
+            "show_minimap": { "type": "boolean" }
+          },
+          "additionalProperties": true
+        },
+        "groups": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/layoutGroup" }
+        },
+        "groups_seeded": { "type": "string" },
+        "auto_generated": { "type": "boolean" }
+      },
+      "required": ["positions"],
+      "additionalProperties": true
+    },
+    "agentRoleBinding": {
+      "type": "object",
+      "properties": {
+        "role_id": { "$ref": "#/$defs/identifier" },
+        "agent_id": { "$ref": "#/$defs/identifier" },
+        "prompt_profile": { "type": "string" }
+      },
+      "required": ["role_id", "agent_id"],
+      "additionalProperties": true
+    },
+    "orchestration": {
+      "type": "object",
+      "properties": {
+        "strategy": { "enum": ["sequential", "event_driven", "state_machine"] },
+        "agent_orchestrated": { "type": "boolean" },
+        "agent_roles": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/agentRoleBinding" }
+        },
+        "on_failure": { "enum": ["halt", "compensate", "escalate"] },
+        "timeout_ms": { "type": "integer", "minimum": 0 },
+        "max_concurrency": { "type": "integer", "minimum": 1 }
+      },
+      "required": ["strategy", "agent_orchestrated", "on_failure"],
+      "additionalProperties": true
+    },
+    "workflowRecord": {
+      "type": "object",
+      "properties": {
+        "schema_version": { "const": "2.0.0" },
+        "id": { "$ref": "#/$defs/identifier" },
+        "name": { "$ref": "#/$defs/nonEmptyString" },
+        "nameZh": { "type": "string" },
+        "description": { "type": "string" },
+        "descriptionZh": { "type": "string" },
+        "workflow_version": { "type": "string" },
+        "actor": {
+          "type": "array",
+          "items": { "enum": ["Human", "Agent", "System", "External"] }
+        },
+        "trigger": { "type": "array", "items": { "type": "string" } },
+        "actions": { "type": "array", "items": { "$ref": "#/$defs/legacyAction" } },
+        "triggered_event": { "type": "array", "items": { "type": "string" } },
+        "scenario": { "$ref": "#/$defs/scenario" },
+        "roles": { "type": "array", "items": { "$ref": "#/$defs/role" } },
+        "triggers": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/structuredTrigger" }
+        },
+        "entry_step_ids": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/identifier" },
+          "uniqueItems": true
+        },
+        "steps": { "type": "array", "items": { "$ref": "#/$defs/step" } },
+        "dependencies": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/dependency" }
+        },
+        "object_refs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/identifier" },
+          "uniqueItems": true
+        },
+        "rule_refs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/identifier" },
+          "uniqueItems": true
+        },
+        "rule_bindings": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/ruleBinding" }
+        },
+        "object_catalog_pin": { "$ref": "#/$defs/objectCatalogPin" },
+        "rule_seed_receipt": { "$ref": "#/$defs/ruleSeedReceipt" },
+        "action_semantic_pins": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/actionSemanticPin" }
+        },
+        "event_semantic_pins": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/eventSemanticPin" }
+        },
+        "runtime_dependency_seed_receipt": { "$ref": "#/$defs/runtimeDependencySeedReceipt" },
+        "artifacts": { "type": "array", "items": { "$ref": "#/$defs/artifact" } },
+        "output_contracts": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/outputContract" }
+        },
+        "emitted_events": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/emittedEvent" }
+        },
+        "orchestration": { "$ref": "#/$defs/orchestration" },
+        "compensation_workflow_id": { "$ref": "#/$defs/identifier" },
+        "layout": { "$ref": "#/$defs/layout" },
+        "extensions": { "type": "object", "additionalProperties": true }
+      },
+      "required": ["id", "name", "description", "actor", "trigger", "actions", "triggered_event"],
+      "additionalProperties": true
+    },
+    "artifactArray": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/workflowRecord" }
+    },
+    "canonicalDocument": {
+      "type": "object",
+      "properties": {
+        "metadata": {
+          "type": "object",
+          "properties": {
+            "schema_version": { "const": "2.0.0" },
+            "artifact_type": { "const": "workflows" },
+            "domain": { "$ref": "#/$defs/nonEmptyString" },
+            "tenant_id": { "type": "string" },
+            "snapshot_version": {
+              "oneOf": [{ "type": "integer", "minimum": 0 }, { "$ref": "#/$defs/nonEmptyString" }]
+            },
+            "ontology_version": { "$ref": "#/$defs/nonEmptyString" },
+            "updated_at": { "type": "string", "format": "date-time" },
+            "description": { "type": "string" },
+            "extensions": { "type": "object", "additionalProperties": true }
+          },
+          "required": [
+            "schema_version",
+            "artifact_type",
+            "domain",
+            "snapshot_version",
+            "ontology_version",
+            "updated_at"
+          ],
+          "additionalProperties": true
+        },
+        "workflows": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/workflowRecord" }
+        }
+      },
+      "required": ["metadata", "workflows"],
+      "additionalProperties": false
+    },
+    "importWorkflow": {
+      "type": "object",
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "schema_version": { "type": "string" },
+        "actor": { "type": "array" },
+        "actors": { "type": "array" },
+        "roles": { "type": "array" },
+        "trigger": { "type": "array" },
+        "triggers": { "type": "array" },
+        "actions": { "type": "array" },
+        "steps": { "type": "array" },
+        "triggered_event": { "type": "array" },
+        "emitted_events": { "type": "array" },
+        "emits_events": { "type": "array" },
+        "artifacts": {
+          "oneOf": [
+            { "type": "array" },
+            {
+              "type": "object",
+              "properties": {
+                "IN": {},
+                "WK": {},
+                "OUT": {}
+              },
+              "additionalProperties": true
+            }
+          ]
+        },
+        "outputs": { "type": "array" },
+        "output_contracts": { "type": "array" },
+        "rules": { "type": "array" },
+        "rule_refs": { "type": "array" },
+        "rule_bindings": { "type": "array" },
+        "layout": { "type": "object" }
+      },
+      "required": ["id"],
+      "additionalProperties": true
+    },
+    "compatibleDocument": {
+      "type": "object",
+      "properties": {
+        "metadata": { "type": "object", "additionalProperties": true },
+        "workflows": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/importWorkflow" }
+        },
+        "payload": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/importWorkflow" }
+        }
+      },
+      "anyOf": [
+        {
+          "properties": { "workflows": { "type": "array" } },
+          "required": ["workflows"]
+        },
+        {
+          "properties": { "payload": { "type": "array" } },
+          "required": ["payload"]
+        }
+      ],
+      "additionalProperties": true
+    },
+    "legacyArray": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/importWorkflow" }
+    },
+    "erpWorkingPack": {
+      "type": "object",
+      "properties": {
+        "meta": { "type": "object", "additionalProperties": true },
+        "workflow": { "$ref": "#/$defs/importWorkflow" },
+        "roles": { "type": "array" },
+        "steps": { "type": "array" },
+        "rules": { "type": "array" },
+        "artifacts": {
+          "oneOf": [{ "type": "array" }, { "type": "object", "additionalProperties": true }]
+        },
+        "agents": { "type": "array" }
+      },
+      "required": ["workflow"],
+      "additionalProperties": true
+    }
+  },
+  "$ref": "#/$defs/artifactArray"
+}

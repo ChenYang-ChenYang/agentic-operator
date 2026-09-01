@@ -21,7 +21,8 @@
     "./config": "./src/config/index.ts",
     "./search": "./src/search/index.ts",
     "./browser": "./src/browser/index.ts",
-    "./comms": "./src/comms/index.ts"
+    "./comms": "./src/comms/index.ts",
+    "./power-purchase": "./src/power-purchase/index.ts"
   },
   "scripts": {
     "test": "vitest run",

@@ -1,0 +1,210 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.allmeta.ai/ontology/3.2.0/objects.schema.json",
+  "title": "allmeta Ontology v3 Objects family",
+  "description": "Canonical Object array used by the Data Object Builder and ontology template packages.",
+  "$defs": {
+    "property": {
+      "type": "object",
+      "properties": {
+        "name": { "$ref": "common.schema.json#/$defs/nonEmptyString" },
+        "type": { "$ref": "common.schema.json#/$defs/nonEmptyString" },
+        "description": { "type": "string" },
+        "is_foreign_key": { "type": "boolean" },
+        "references": { "$ref": "common.schema.json#/$defs/identifier" },
+        "is_pii": { "type": "boolean" },
+        "is_required": { "type": "boolean" },
+        "nullable": { "type": "boolean" },
+        "cardinality": { "enum": ["one", "zero_or_one", "many", "one_or_many"] },
+        "is_unique": { "type": "boolean" },
+        "is_immutable": { "type": "boolean" },
+        "is_computed": { "type": "boolean" },
+        "computed_expression": { "type": "string" },
+        "data_classification": {
+          "enum": ["public", "internal", "confidential", "sensitive", "pii", "pci", "phi", "secret"]
+        },
+        "default": true,
+        "enum_values": {
+          "type": "array",
+          "items": { "type": "string" },
+          "uniqueItems": true
+        },
+        "unit": { "type": "string" },
+        "format": { "type": "string" },
+        "pattern": { "type": "string" },
+        "minimum": { "type": "number" },
+        "maximum": { "type": "number" },
+        "min_length": { "type": "integer", "minimum": 0 },
+        "max_length": { "type": "integer", "minimum": 0 },
+        "precision": { "type": "integer", "minimum": 0 },
+        "scale": { "type": "integer", "minimum": 0 },
+        "valid_range": {
+          "type": "object",
+          "properties": {
+            "minimum": { "type": "number" },
+            "maximum": { "type": "number" },
+            "exclusive_minimum": { "type": "boolean" },
+            "exclusive_maximum": { "type": "boolean" }
+          },
+          "additionalProperties": false
+        },
+        "synonyms": {
+          "type": "array",
+          "items": { "type": "string" },
+          "uniqueItems": true
+        },
+        "historical_names": {
+          "type": "array",
+          "items": { "type": "string" },
+          "uniqueItems": true
+        },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "source": {
+          "description": "Upstream system-of-record column lineage, '<table>.<COLUMN>'. Free-form; the empty string means a synthetic or derived property with no upstream column, so this is deliberately not nonEmptyString. Distinct from grounding.source_quote, which cites a source document rather than a system of record.",
+          "type": "string"
+        },
+        "grounding": { "$ref": "common.schema.json#/$defs/grounding" },
+        "sources": {
+          "type": "array",
+          "items": { "$ref": "common.schema.json#/$defs/sourceReference" }
+        },
+        "extensions": { "$ref": "common.schema.json#/$defs/extensionBag" }
+      },
+      "required": ["name", "type", "description"],
+      "allOf": [
+        {
+          "if": {
+            "properties": { "is_foreign_key": { "const": true } },
+            "required": ["is_foreign_key"]
+          },
+          "then": { "required": ["references"] }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "lifecycleState": {
+      "type": "object",
+      "properties": {
+        "name": { "$ref": "common.schema.json#/$defs/nonEmptyString" },
+        "description": { "type": "string" },
+        "nameZh": { "type": "string" },
+        "descriptionZh": { "type": "string" },
+        "terminal": { "type": "boolean" },
+        "grounding": { "$ref": "common.schema.json#/$defs/grounding" },
+        "sources": {
+          "type": "array",
+          "items": { "$ref": "common.schema.json#/$defs/sourceReference" }
+        },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "extensions": { "$ref": "common.schema.json#/$defs/extensionBag" }
+      },
+      "required": ["name"],
+      "additionalProperties": false
+    },
+    "lifecycleTransition": {
+      "type": "object",
+      "properties": {
+        "id": { "$ref": "common.schema.json#/$defs/identifier" },
+        "from": { "$ref": "common.schema.json#/$defs/nonEmptyString" },
+        "to": { "$ref": "common.schema.json#/$defs/nonEmptyString" },
+        "trigger": { "$ref": "common.schema.json#/$defs/identifier" },
+        "description": { "type": "string" },
+        "guard_rule": { "$ref": "common.schema.json#/$defs/identifier" },
+        "action": { "$ref": "common.schema.json#/$defs/identifier" },
+        "event": { "$ref": "common.schema.json#/$defs/identifier" },
+        "requires_human_approval": { "type": "boolean" },
+        "grounding": { "$ref": "common.schema.json#/$defs/grounding" },
+        "sources": {
+          "type": "array",
+          "items": { "$ref": "common.schema.json#/$defs/sourceReference" }
+        },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "extensions": { "$ref": "common.schema.json#/$defs/extensionBag" }
+      },
+      "required": ["from", "to"],
+      "additionalProperties": false
+    },
+    "lifecycleResearch": {
+      "type": "object",
+      "properties": {
+        "applicability": { "enum": ["stateful", "stateless", "undetermined"] },
+        "status": { "enum": ["not_researched", "researched", "needs_review", "verified"] },
+        "completeness": { "enum": ["unknown", "partial", "complete"] },
+        "rationale": { "type": "string" },
+        "sources": {
+          "type": "array",
+          "items": { "$ref": "common.schema.json#/$defs/sourceReference" }
+        },
+        "unresolved_questions": {
+          "type": "array",
+          "items": { "$ref": "common.schema.json#/$defs/nonEmptyString" },
+          "uniqueItems": true
+        },
+        "researched_at": { "$ref": "common.schema.json#/$defs/dateTime" },
+        "reviewed_at": { "$ref": "common.schema.json#/$defs/dateTime" },
+        "extensions": { "$ref": "common.schema.json#/$defs/extensionBag" }
+      },
+      "required": ["applicability", "status", "completeness"],
+      "additionalProperties": false
+    },
+    "agentFacets": {
+      "type": "object",
+      "properties": {
+        "searchable_fields": {
+          "type": "array",
+          "items": { "$ref": "common.schema.json#/$defs/nonEmptyString" },
+          "uniqueItems": true
+        },
+        "semantic_summary_template": { "type": "string" },
+        "disambiguation_keys": {
+          "type": "array",
+          "items": { "$ref": "common.schema.json#/$defs/nonEmptyString" },
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "artifact": {
+      "type": "object",
+      "properties": {
+        "id": { "$ref": "common.schema.json#/$defs/identifier" },
+        "name": { "$ref": "common.schema.json#/$defs/nonEmptyString" },
+        "description": { "type": "string" },
+        "type": { "enum": ["data", "reference", "rule", "system", "event-sourced"] },
+        "primary_key": { "$ref": "common.schema.json#/$defs/nonEmptyString" },
+        "properties": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/property" }
+        },
+        "relationship_description": { "type": "string" },
+        "lifecycle_state_property": { "$ref": "common.schema.json#/$defs/nonEmptyString" },
+        "lifecycle_initial_state": { "$ref": "common.schema.json#/$defs/nonEmptyString" },
+        "lifecycle_states": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/lifecycleState" }
+        },
+        "lifecycle_transitions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/lifecycleTransition" }
+        },
+        "lifecycle_research": { "$ref": "#/$defs/lifecycleResearch" },
+        "synonyms": {
+          "type": "array",
+          "items": { "type": "string" },
+          "uniqueItems": true
+        },
+        "agent_facets": { "$ref": "#/$defs/agentFacets" },
+        "grounding": { "$ref": "common.schema.json#/$defs/grounding" },
+        "governance": { "$ref": "common.schema.json#/$defs/objectGovernance" },
+        "extensions": { "$ref": "common.schema.json#/$defs/extensionBag" }
+      },
+      "required": ["id", "name", "description", "type", "primary_key", "properties"],
+      "additionalProperties": false
+    },
+    "artifactArray": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/artifact" }
+    }
+  },
+  "$ref": "#/$defs/artifactArray"
+}

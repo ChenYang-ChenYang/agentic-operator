@@ -300,6 +300,7 @@ export interface CompiledStep {
   name: string;
   description?: string;
   type: "logic" | "condition" | "manual" | "tool" | "emit" | "decision";
+  task_type?: string;
   action_prompt?: string;
   condition?: string;
   form_schema?: Record<string, unknown>;

@@ -19,6 +19,7 @@ import {
   TaskClassIdSchema,
   TextVerbositySchema,
   WorkflowManifestCompatSchema,
+  assertExecutableWorkflowManifestSource,
 } from "@agentic/contracts";
 
 export const ActorEnum = z.enum(["Agent", "Human"]);
@@ -1255,6 +1256,7 @@ export async function loadManifestFromDisk(
   const rawWorkflow = JSON.parse(
     await readFile(workflowPath, "utf8"),
   ) as unknown;
+  assertExecutableWorkflowManifestSource(rawWorkflow);
   // Canonical compatibility boundary (v2): a bare array stays on the legacy
   // parser so registration behavior does not change merely because a loader
   // was upgraded. A versioned Studio/import envelope (`{$schemaVersion,

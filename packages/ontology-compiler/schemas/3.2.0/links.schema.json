@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.allmeta.ai/ontology/3.2.0/links.schema.json",
+  "title": "allmeta Ontology v3.2 Links family",
+  "description": "Canonical Link array. Rule-to-Action execution semantics are owned exclusively by Action.rule_bindings; a parallel rule-governs Link is not canonical in bundle 3.2.0.",
+  "$defs": {
+    "displayName": {
+      "type": "object",
+      "properties": {
+        "zh": { "type": "string" },
+        "en": { "type": "string" }
+      },
+      "required": ["zh", "en"],
+      "additionalProperties": false
+    },
+    "endpoint": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "enum": [
+            "Object",
+            "Rule",
+            "Action",
+            "Event",
+            "ActionStep",
+            "Workflow",
+            "Agent",
+            "System",
+            "ExternalSystem",
+            "HumanRole"
+          ]
+        },
+        "id": { "$ref": "common.schema.json#/$defs/identifier" },
+        "displayName": { "$ref": "#/$defs/displayName" }
+      },
+      "required": ["type", "id"],
+      "additionalProperties": false
+    },
+    "packageProjection": {
+      "type": "object",
+      "properties": {
+        "type": { "const": "ontology-template-package" },
+        "package_id": { "$ref": "common.schema.json#/$defs/identifier" },
+        "release": { "$ref": "common.schema.json#/$defs/identifier" },
+        "generator_id": { "$ref": "common.schema.json#/$defs/identifier" },
+        "generator_version": { "$ref": "common.schema.json#/$defs/identifier" },
+        "projection": {
+          "enum": [
+            "action-input",
+            "action-output",
+            "action-target",
+            "action-step-membership",
+            "action-trigger",
+            "action-emission",
+            "rule-object-reference",
+            "event-payload",
+            "event-state-mutation",
+            "workflow-action-membership",
+            "logical-physical-candidate"
+          ]
+        }
+      },
+      "required": [
+        "type",
+        "package_id",
+        "release",
+        "generator_id",
+        "generator_version",
+        "projection"
+      ],
+      "additionalProperties": false
+    },
+    "artifact": {
+      "type": "object",
+      "properties": {
+        "id": { "$ref": "common.schema.json#/$defs/identifier" },
+        "kind": {
+          "enum": [
+            "object-fk",
+            "object-composition",
+            "action-trigger",
+            "action-emission",
+            "action-targets-object",
+            "action-mutates",
+            "action-reads",
+            "action-includes-step",
+            "rule-references-object",
+            "action-step-reads",
+            "action-step-dataflow",
+            "event-carries-object",
+            "event-mutates-object",
+            "workflow-includes"
+          ]
+        },
+        "from": { "$ref": "#/$defs/endpoint" },
+        "to": { "$ref": "#/$defs/endpoint" },
+        "name": { "type": "string" },
+        "inverse_name": { "type": "string" },
+        "cardinality": { "enum": ["1:1", "1:N", "N:N"] },
+        "derived": { "type": "boolean" },
+        "package_projection": { "$ref": "#/$defs/packageProjection" },
+        "locked": { "type": "boolean" },
+        "extensions": { "$ref": "common.schema.json#/$defs/extensionBag" }
+      },
+      "required": ["id", "kind", "from", "to"],
+      "allOf": [
+        {
+          "if": { "required": ["package_projection"] },
+          "then": {
+            "properties": {
+              "derived": { "const": true },
+              "locked": { "const": true }
+            },
+            "required": ["derived", "locked"]
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "artifactArray": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/artifact" }
+    }
+  },
+  "$ref": "#/$defs/artifactArray"
+}

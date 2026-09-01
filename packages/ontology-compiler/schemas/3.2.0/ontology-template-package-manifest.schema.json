@@ -1,0 +1,205 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.allmeta.ai/ontology/3.2.0/ontology-template-package-manifest.schema.json",
+  "title": "allmeta Ontology template package manifest v1",
+  "description": "Immutable six-family package manifest. Family counts, ordered ids, and hashes are additionally verified by validateOntologyTemplatePackage.",
+  "$defs": {
+    "familyManifest": {
+      "type": "object",
+      "properties": {
+        "family": { "enum": ["objects", "rules", "actions", "events", "links", "workflows"] },
+        "schema_id": { "$ref": "common.schema.json#/$defs/nonEmptyString" },
+        "filename": {
+          "allOf": [
+            { "$ref": "common.schema.json#/$defs/nonEmptyString" },
+            { "pattern": "^[^/\\\\]+$" },
+            { "not": { "enum": [".", ".."] } }
+          ]
+        },
+        "artifact_count": { "type": "integer", "minimum": 0 },
+        "ordered_artifact_ids": {
+          "type": "array",
+          "items": { "$ref": "common.schema.json#/$defs/identifier" },
+          "uniqueItems": true
+        },
+        "content_hash": { "$ref": "common.schema.json#/$defs/sha256" }
+      },
+      "required": ["family", "schema_id", "filename", "artifact_count", "ordered_artifact_ids", "content_hash"],
+      "additionalProperties": false
+    },
+    "source": {
+      "type": "object",
+      "properties": {
+        "id": { "$ref": "common.schema.json#/$defs/identifier" },
+        "name": { "$ref": "common.schema.json#/$defs/nonEmptyString" },
+        "content_hash": { "$ref": "common.schema.json#/$defs/sha256" },
+        "role": { "enum": ["primary", "clarification", "baseline", "derived"] },
+        "description": { "type": "string" },
+        "references": { "type": "array", "items": { "$ref": "common.schema.json#/$defs/sourceReference" } }
+      },
+      "required": ["id", "name", "content_hash", "role"],
+      "additionalProperties": false
+    },
+    "finding": {
+      "type": "object",
+      "properties": {
+        "id": { "$ref": "common.schema.json#/$defs/identifier" },
+        "severity": { "enum": ["info", "warning", "error"] },
+        "summary": { "$ref": "common.schema.json#/$defs/nonEmptyString" },
+        "disposition": { "enum": ["accepted", "resolved", "deferred", "requires_user_choice"] },
+        "source_ids": { "type": "array", "items": { "$ref": "common.schema.json#/$defs/identifier" }, "uniqueItems": true },
+        "resolution": { "type": "string" }
+      },
+      "required": ["id", "severity", "summary", "disposition"],
+      "additionalProperties": false
+    },
+    "dependency": {
+      "type": "object",
+      "properties": {
+        "package_id": { "type": "string", "pattern": "^[a-z0-9](?:[a-z0-9-]{0,126}[a-z0-9])?$" },
+        "version_range": { "$ref": "common.schema.json#/$defs/nonEmptyString" },
+        "required": { "type": "boolean" },
+        "description": { "type": "string" }
+      },
+      "required": ["package_id", "version_range", "required"],
+      "additionalProperties": false
+    },
+    "migration": {
+      "type": "object",
+      "properties": {
+        "from_package_id": { "type": "string" },
+        "from_release": { "type": "string" },
+        "strategy": { "enum": ["install", "merge", "replace_seed_only"] },
+        "preserves_user_changes": { "type": "boolean" },
+        "conflict_policy": { "enum": ["require_choice", "reuse", "rename", "skip"] },
+        "description": { "type": "string" }
+      },
+      "required": ["strategy", "preserves_user_changes", "conflict_policy"],
+      "additionalProperties": false
+    },
+    "coverage": {
+      "type": "object",
+      "properties": {
+        "objects": { "type": "integer", "minimum": 0 },
+        "rules": { "type": "integer", "minimum": 0 },
+        "actions": { "type": "integer", "minimum": 0 },
+        "events": { "type": "integer", "minimum": 0 },
+        "links": { "type": "integer", "minimum": 0 },
+        "workflows": { "type": "integer", "minimum": 0 },
+        "workflow_steps": { "type": "integer", "minimum": 0 },
+        "source_requirements": { "type": "integer", "minimum": 0 },
+        "represented_source_requirements": { "type": "integer", "minimum": 0 },
+        "extensions": {
+          "type": "object",
+          "additionalProperties": { "type": ["number", "string", "boolean"] }
+        }
+      },
+      "required": ["objects", "rules", "actions", "events", "links", "workflows", "workflow_steps"],
+      "dependentRequired": {
+        "source_requirements": ["represented_source_requirements"],
+        "represented_source_requirements": ["source_requirements"]
+      },
+      "additionalProperties": false
+    },
+    "acceptance": {
+      "type": "object",
+      "properties": {
+        "gate": { "$ref": "common.schema.json#/$defs/nonEmptyString" },
+        "status": { "enum": ["passed", "failed", "waived"] },
+        "checked_at": { "$ref": "common.schema.json#/$defs/dateTime" },
+        "checked_by": { "$ref": "common.schema.json#/$defs/nonEmptyString" },
+        "evidence": { "type": "array", "items": { "type": "string" } }
+      },
+      "required": ["gate", "status", "checked_at", "checked_by"],
+      "additionalProperties": false
+    },
+    "manifest": {
+      "type": "object",
+      "properties": {
+        "schema_version": { "const": "1.0.0" },
+        "package_id": { "type": "string", "pattern": "^[a-z0-9](?:[a-z0-9-]{0,126}[a-z0-9])?$" },
+        "release": { "type": "string", "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,126}[A-Za-z0-9])?$" },
+        "name": { "$ref": "common.schema.json#/$defs/nonEmptyString" },
+        "description": { "$ref": "common.schema.json#/$defs/nonEmptyString" },
+        "immutable": { "const": true },
+        "schema_bundle_version": { "const": "3.2.0" },
+        "default_locale": { "$ref": "common.schema.json#/$defs/nonEmptyString" },
+        "supported_locales": {
+          "type": "array",
+          "items": { "$ref": "common.schema.json#/$defs/nonEmptyString" },
+          "uniqueItems": true
+        },
+        "created_at": { "$ref": "common.schema.json#/$defs/dateTime" },
+        "compatible_studio_versions": { "type": "string" },
+        "sources": { "type": "array", "items": { "$ref": "#/$defs/source" } },
+        "findings": { "type": "array", "items": { "$ref": "#/$defs/finding" } },
+        "families": {
+          "type": "object",
+          "properties": {
+            "objects": {
+              "allOf": [
+                { "$ref": "#/$defs/familyManifest" },
+                { "properties": { "family": { "const": "objects" }, "schema_id": { "const": "https://schemas.allmeta.ai/ontology/3.2.0/objects.schema.json" } } }
+              ]
+            },
+            "rules": {
+              "allOf": [
+                { "$ref": "#/$defs/familyManifest" },
+                { "properties": { "family": { "const": "rules" }, "schema_id": { "const": "https://schemas.allmeta.ai/ontology/3.2.0/rules.schema.json" } } }
+              ]
+            },
+            "actions": {
+              "allOf": [
+                { "$ref": "#/$defs/familyManifest" },
+                { "properties": { "family": { "const": "actions" }, "schema_id": { "const": "https://schemas.allmeta.ai/ontology/3.2.0/actions.schema.json" } } }
+              ]
+            },
+            "events": {
+              "allOf": [
+                { "$ref": "#/$defs/familyManifest" },
+                { "properties": { "family": { "const": "events" }, "schema_id": { "const": "https://schemas.allmeta.ai/ontology/3.2.0/events.schema.json" } } }
+              ]
+            },
+            "links": {
+              "allOf": [
+                { "$ref": "#/$defs/familyManifest" },
+                { "properties": { "family": { "const": "links" }, "schema_id": { "const": "https://schemas.allmeta.ai/ontology/3.2.0/links.schema.json" } } }
+              ]
+            },
+            "workflows": {
+              "allOf": [
+                { "$ref": "#/$defs/familyManifest" },
+                { "properties": { "family": { "const": "workflows" }, "schema_id": { "const": "https://schemas.allmeta.ai/ontology/3.2.0/workflows.schema.json" } } }
+              ]
+            }
+          },
+          "required": ["objects", "rules", "actions", "events", "links", "workflows"],
+          "additionalProperties": false
+        },
+        "package_hash": { "$ref": "common.schema.json#/$defs/sha256" },
+        "dependencies": { "type": "array", "items": { "$ref": "#/$defs/dependency" } },
+        "migrations": { "type": "array", "items": { "$ref": "#/$defs/migration" } },
+        "coverage": { "$ref": "#/$defs/coverage" },
+        "acceptance": { "type": "array", "items": { "$ref": "#/$defs/acceptance" } },
+        "extensions": { "$ref": "common.schema.json#/$defs/extensionBag" }
+      },
+      "required": [
+        "schema_version",
+        "package_id",
+        "release",
+        "name",
+        "description",
+        "immutable",
+        "schema_bundle_version",
+        "default_locale",
+        "created_at",
+        "sources",
+        "families",
+        "package_hash",
+        "coverage"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "$ref": "#/$defs/manifest"
+}

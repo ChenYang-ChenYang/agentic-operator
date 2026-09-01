@@ -301,7 +301,7 @@ export function buildManualTaskResolution(input: {
   decision?: unknown;
   payload?: unknown;
 }): ManualTaskResolution {
-  const decision = input.decision ?? "approve";
+  const decision = input.decision;
   if (
     decision !== "approve" &&
     decision !== "reject" &&
@@ -3461,19 +3461,17 @@ export function registerAgent(
             resumeMarker?: string;
             actorUserId?: string | null;
           };
-          // Canonical manual-decision envelope (v2 contract). Unknown decision
-          // values from the transport degrade to "approve" (historical
-          // behavior) instead of poisoning the durable resume with a throw.
-          const manualDecision: ManualTaskDecision =
-            resolution.decision === "reject" ||
-            resolution.decision === "supplement"
-              ? resolution.decision
-              : "approve";
           const manualResolutionEnvelope = buildManualTaskResolution({
             taskId: initStep.taskId,
-            decision: manualDecision,
+            decision: resolution.decision,
             payload: resolution.payload,
           });
+          // Resolve from the already validated envelope. The public task API
+          // validates this enum too, but the durable event boundary must not
+          // trust that every producer came through the HTTP route. Missing or
+          // unknown values therefore fail closed instead of becoming approval.
+          const manualDecision: ManualTaskDecision =
+            manualResolutionEnvelope.decision;
 
           if (
             resolution.decision !== "reject" &&

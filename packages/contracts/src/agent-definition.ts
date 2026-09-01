@@ -18,6 +18,27 @@ import { TaskClassIdSchema } from "./llm-settings";
 
 export const AGENT_DEFINITION_SCHEMA_VERSION = 2 as const;
 
+const NON_RUNTIME_ONTOLOGY_PACKAGE_CANDIDATE_SCHEMA =
+  /^agentic-operator\.ontology-package-(?:shadow|runtime-plan)-candidate\/v\d+$/u;
+
+/**
+ * Ontology Package receipts and runtime plans are evidence artifacts, not
+ * executable workflow manifests. Reject them before any permissive legacy
+ * envelope normalization can unwrap an `agents`-shaped field.
+ */
+export function assertExecutableWorkflowManifestSource(input: unknown): void {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return;
+  const schema = (input as Record<string, unknown>).schema;
+  if (
+    typeof schema === "string" &&
+    NON_RUNTIME_ONTOLOGY_PACKAGE_CANDIDATE_SCHEMA.test(schema)
+  ) {
+    throw new TypeError(
+      `[workflow-manifest:non-runtime-candidate] ${schema} cannot be normalized, migrated, imported, or bootstrapped as an executable workflow manifest`,
+    );
+  }
+}
+
 /** JSON Schema draft 2020-12 document. Semantic limits are checked separately. */
 export const JsonSchemaSchema = z.record(z.string(), z.unknown());
 export type JsonSchema = z.infer<typeof JsonSchemaSchema>;
@@ -597,6 +618,9 @@ export function normalizeAgentDefinition(input: unknown): AgentDefinitionV2 {
                 "condition",
                 "delay",
                 "subflow",
+                "invoke",
+                "foreach",
+                "emit",
               ].includes(legacyType)
             ? legacyType
             : "logic";
@@ -849,6 +873,7 @@ export function normalizeAgentDefinition(input: unknown): AgentDefinitionV2 {
 }
 
 export function normalizeWorkflowManifest(input: unknown): WorkflowManifestV2 {
+  assertExecutableWorkflowManifestSource(input);
   if (Array.isArray(input)) {
     return WorkflowManifestV2Schema.parse({
       $schemaVersion: AGENT_DEFINITION_SCHEMA_VERSION,

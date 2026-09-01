@@ -1,0 +1,256 @@
+{
+  "schema": "agentic-operator.power-purchase-shadow-overlay/v1",
+  "overlay_id": "power-purchase-shadow-decision-assist",
+  "overlay_version": "1.0.0",
+  "tenant_slug": "power-purchase",
+  "domain_id": "power-purchase",
+  "environment": "local-shadow",
+  "deployment_mode": "shadow_decision_assist",
+  "enforcement_status": "descriptive_policy_receipt_not_loaded_by_runtime",
+  "source": {
+    "package_id": "power-purchase",
+    "release": "1.0.3",
+    "schema_bundle_version": "3.2.0",
+    "package_hash": "sha256:893a26cf8c65b4194023301269f246d43f74fc75a181d78731cc9dd273b8ca1c",
+    "package_file_sha256": "e182a2c9e9607d0f27b10c1c5dd7ade5d00da24303694699b6f674005ffa46c6",
+    "admission_receipt_hash": "sha256:84a6164c9c791503bb960cd3f78d7701178c84ef6b644a15d78ac42708f1e6af",
+    "runtime_plan_file_sha256": "8ca270a1436d04da517d8e5d7b3c5d8635ffc61391f77f5d21cf07648746c68a",
+    "family_hashes": {
+      "objects": "sha256:679236a21a33216d439426c3a8e3b39608198828951d4655c9fceb7f1c84b00d",
+      "rules": "sha256:b88a87fb0a0f3492cafd9c4ee80fa53b4b8b6e06a383d62ad824a0202ec3bd31",
+      "actions": "sha256:97794838bc281c648f29c27be293ba03fcd7c8d9088fdd56f3f6db534a8416d2",
+      "events": "sha256:2ceae8900b91aff17716c5b4e53a2f44657fafb1847e479f19367b895ab4c88a",
+      "links": "sha256:7cc13c627c22d97619a7c6a34dc04ca6058b2fa9290f1a6a239bc4d0e93121ef",
+      "workflows": "sha256:a6dd34e36312b35c44feb34708eb071a8dc4fc1426afcb693e703829699d0c85"
+    }
+  },
+  "source_contract": {
+    "workflow_count": 11,
+    "workflow_step_count": 84,
+    "action_count": 52,
+    "event_count": 29,
+    "rule_count": 24,
+    "synchronous_child_count": 7,
+    "wait_count": 2,
+    "human_gate_count": 3,
+    "candidate_agent_count": 1,
+    "candidate_eval_count": 3
+  },
+  "runtime_manifest": {
+    "path": "models/power-purchase-v1/workflow_v1.json",
+    "sha256": "7f5076e94a2973175b6fbe9c1e0348634aa7fbc17bf4df5c8c868c61b504c533",
+    "runtime_unit_count": 11,
+    "llm_assistant_count": 6,
+    "deterministic_machine_unit_count": 4,
+    "human_shadow_review_unit_count": 1,
+    "persist_run_input": false,
+    "persist_raw_response": false,
+    "retention_days": 30,
+    "admission_status": "descriptive_receipt_not_runtime_enforced"
+  },
+  "runtime_scope": {
+    "status": "shadow_manifest_runnable_overlay_not_admitted",
+    "production_activation": "denied",
+    "candidate_runtime_plan_import": "denied",
+    "real_metaerp_network": "denied",
+    "real_business_notifications": "denied",
+    "amount_deviation": "disabled",
+    "score_semantics": "classifies_only_an_explicit_upstream_on_time_score_at_formal_candidate_stage; PP-RULE-SCORE-001 is not implemented here",
+    "supported_path": "explicit case snapshot -> deterministic stage gate -> formal-only classification/routing -> bounded agent proposals -> operator shadow review -> denied external execution",
+    "full_11_84_projection": "requires_ontology_package_deployment_lane"
+  },
+  "r1_enforcement": {
+    "runtime_loaded_overlay": false,
+    "runtime_package_hash_admission": false,
+    "runtime_evidence_hash_validation": false,
+    "runtime_business_role_and_sod": false,
+    "enforced_by_manifest_and_runtime": [
+      "only powerPurchase.evaluateTimeliness is tool-granted",
+      "six LLM agents have no tool grants",
+      "manual decision enum fails closed",
+      "shadow review has no business approval or external execution authority",
+      "approved shadow review emits a blocked receipt and performs no dispatch"
+    ],
+    "deny_list_role": "reviewed policy evidence; external dispatch is technically prevented by absent tool grants and absent adapters, not by loading this JSON"
+  },
+  "agents": [
+    {
+      "id": "procurement-evidence-analyst",
+      "version": "1.0.0",
+      "grant": "internal_cause_assessment_proposal_only",
+      "tools": [],
+      "prohibited": [
+        "confirm_cause",
+        "reclassify_alert",
+        "approve",
+        "execute",
+        "metaerp"
+      ]
+    },
+    {
+      "id": "procurement-timeliness-agent",
+      "version": "1.1.0-overlay",
+      "grant": "internal_unbound_shadow_remediation_dto_only",
+      "tools": [],
+      "prohibited": ["approve", "execute", "close_alert", "metaerp"]
+    },
+    {
+      "id": "procurement-dq-triage-assistant",
+      "version": "1.0.0",
+      "grant": "internal_dq_resolution_proposal_only",
+      "tools": [],
+      "prohibited": [
+        "modify_erp",
+        "resolve_dq",
+        "waive_critical_field",
+        "metaerp"
+      ]
+    },
+    {
+      "id": "procurement-alert-briefing-assistant",
+      "version": "1.0.0",
+      "grant": "internal_alert_brief_only",
+      "tools": [],
+      "prohibited": [
+        "select_arbitrary_recipient",
+        "send_notification",
+        "escalate",
+        "metaerp"
+      ]
+    },
+    {
+      "id": "procurement-execution-reconciliation-assistant",
+      "version": "1.0.0",
+      "grant": "internal_reconciliation_proposal_only",
+      "tools": [],
+      "prohibited": [
+        "retry_write",
+        "assert_unverified_success",
+        "compensate",
+        "metaerp"
+      ]
+    },
+    {
+      "id": "procurement-feedback-review-assistant",
+      "version": "1.0.0",
+      "grant": "internal_threshold_review_recommendation_only",
+      "tools": [],
+      "prohibited": [
+        "publish_threshold",
+        "modify_rule",
+        "reopen_alert",
+        "metaerp"
+      ]
+    }
+  ],
+  "allowed_tools": [
+    {
+      "name": "powerPurchase.evaluateTimeliness",
+      "operation": "compute",
+      "effect_scope": "none",
+      "sandbox_policy": "pure"
+    }
+  ],
+  "external_action_bindings": [
+    {
+      "action_id": "action-metaerp-query-open-pbp-header",
+      "adapter": "deny",
+      "reason": "contract_not_approved"
+    },
+    {
+      "action_id": "action-metaerp-query-open-pbp-line",
+      "adapter": "deny",
+      "reason": "contract_not_approved"
+    },
+    {
+      "action_id": "action-metaerp-get-all-pbp-line-page-by-query",
+      "adapter": "deny",
+      "reason": "contract_not_approved"
+    },
+    {
+      "action_id": "action-metaerp-query-pr",
+      "adapter": "deny",
+      "reason": "contract_not_approved"
+    },
+    {
+      "action_id": "action-metaerp-query-proc-package-line-execute-mode",
+      "adapter": "deny",
+      "reason": "contract_not_approved"
+    },
+    {
+      "action_id": "action-metaerp-query-rfx-list",
+      "adapter": "deny",
+      "reason": "contract_not_approved"
+    },
+    {
+      "action_id": "action-metaerp-query-award-list",
+      "adapter": "deny",
+      "reason": "contract_not_approved"
+    },
+    {
+      "action_id": "action-metaerp-get-spa-by-query",
+      "adapter": "deny",
+      "reason": "contract_not_approved"
+    },
+    {
+      "action_id": "action-metaerp-get-contract-by-query",
+      "adapter": "deny",
+      "reason": "contract_not_approved"
+    },
+    {
+      "action_id": "action-metaerp-query-po-header",
+      "adapter": "deny",
+      "reason": "contract_not_approved"
+    },
+    {
+      "action_id": "action-metaerp-query-po-line-shipment",
+      "adapter": "deny",
+      "reason": "contract_not_approved"
+    },
+    {
+      "action_id": "action-metaerp-query-accept-header",
+      "adapter": "deny",
+      "reason": "contract_not_approved"
+    },
+    {
+      "action_id": "action-metaerp-query-accept-transaction",
+      "adapter": "deny",
+      "reason": "contract_not_approved"
+    },
+    {
+      "action_id": "action-metaerp-change-pbp",
+      "adapter": "deny",
+      "reason": "write_contract_not_approved"
+    },
+    {
+      "action_id": "action-metaerp-create-transaction-order",
+      "adapter": "deny",
+      "reason": "write_contract_not_approved"
+    }
+  ],
+  "human_authority": {
+    "decision_enum": ["approve", "reject", "supplement"],
+    "missing_or_unknown_decision": "fail_closed",
+    "r1_enforced_checks": [
+      "authenticated_operator_tenant_rbac",
+      "decision_enum",
+      "external_execution_authority_false"
+    ],
+    "target_checks_not_enforced_in_r1": [
+      "tenant_domain_case_scope",
+      "case_business_role",
+      "exact_artifact_and_request_hash",
+      "object_version",
+      "segregation_of_duties"
+    ]
+  },
+  "approvals": {
+    "architecture": "approved_r1_local_fixture_shadow_only",
+    "agentic_engineering": "approved_r1_local_fixture_shadow_only",
+    "product_owner": "conditionally_approved_r1_local_fixture_shadow_only",
+    "security": "pending",
+    "ontology_release_1_1_0": "not_publishable_agent_family_governance_missing",
+    "customer_business_owner": "pending",
+    "production_activation": "rejected"
+  }
+}

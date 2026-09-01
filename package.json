@@ -43,6 +43,8 @@
     "hc:compile": "node scripts/stage-hc-procurement-ontology.mjs && node scripts/ontology-compile.mjs --source ontology-packages/hc-procurement/package --tenant hc-procurement --overlay overlays/hc-procurement.json",
     "hc:seed": "node scripts/seed-hc-procurement-tenant.mjs && node scripts/grant-hc-procurement-membership.mjs",
     "hc:erp": "node scripts/run-hc-procurement-erp.mjs",
+    "power-purchase:seed": "node scripts/seed-power-purchase-tenant.mjs",
+    "ontology-package:inspect": "node scripts/ontology-package-inspect.mjs",
     "preview:agents-generation-ontology-release": "node scripts/allmeta-full-domain-release-client.mjs",
     "test:agents-generation-ontology-release": "node --test scripts/allmeta-full-domain-release-client.test.mjs",
     "watch:factory-production-images": "pnpm --filter @agentic/api run watch:factory-production-images",

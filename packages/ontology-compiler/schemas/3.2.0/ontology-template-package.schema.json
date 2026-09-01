@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.allmeta.ai/ontology/3.2.0/ontology-template-package.schema.json",
+  "title": "allmeta Ontology immutable six-family template package",
+  "description": "One reviewable and installable ontology unit. JSON Schema verifies structure; the core package validator verifies ids, references, graph reachability, Action-owned Rule bindings, counts, and SHA-256 integrity.",
+  "type": "object",
+  "properties": {
+    "manifest": { "$ref": "ontology-template-package-manifest.schema.json" },
+    "artifacts": {
+      "type": "object",
+      "properties": {
+        "objects": { "$ref": "objects.schema.json#/$defs/artifactArray" },
+        "rules": { "$ref": "rules.schema.json#/$defs/artifactArray" },
+        "actions": { "$ref": "actions.schema.json#/$defs/artifactArray" },
+        "events": { "$ref": "events.schema.json#/$defs/artifactArray" },
+        "links": { "$ref": "links.schema.json#/$defs/artifactArray" },
+        "workflows": { "$ref": "workflows.schema.json#/$defs/artifactArray" }
+      },
+      "required": ["objects", "rules", "actions", "events", "links", "workflows"],
+      "additionalProperties": false
+    }
+  },
+  "required": ["manifest", "artifacts"],
+  "additionalProperties": false
+}

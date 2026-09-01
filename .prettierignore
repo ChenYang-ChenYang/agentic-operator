@@ -1,0 +1,3 @@
+# Deterministic, hash-checked generated receipts. Reformatting makes --check fail.
+artifacts/ontology/**/shadow_candidate_*.json
+artifacts/ontology/**/runtime_plan_candidate_*.json

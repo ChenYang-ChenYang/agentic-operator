@@ -3,17 +3,24 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Deterministic compiler from an allmetaOntology domain export to an Agentic Operator tenant manifest (design G1).",
+  "description": "Deterministic legacy compiler plus immutable Ontology Package admission and non-deployable runtime planning.",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "exports": {
     ".": "./src/index.ts",
-    "./cli": "./src/cli.ts"
+    "./cli": "./src/cli.ts",
+    "./package-admission": "./src/package-admission.ts",
+    "./package-cli": "./src/package-cli.ts",
+    "./package-runtime-plan": "./src/package-runtime-plan.ts"
   },
   "scripts": {
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist .turbo"
+  },
+  "dependencies": {
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1"
   },
   "devDependencies": {
     "@agentic/runtime": "workspace:*",

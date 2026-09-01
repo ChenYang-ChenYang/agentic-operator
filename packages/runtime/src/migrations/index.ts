@@ -28,6 +28,8 @@
  * as v1). Always emit `$schemaVersion` after the first save through the editor.
  */
 
+import { assertExecutableWorkflowManifestSource } from "@agentic/contracts";
+
 export const CURRENT_SCHEMA_VERSION = 2;
 
 export interface MigrationStep {
@@ -107,6 +109,7 @@ export function migrate(input: unknown): {
   payload: unknown;
   applied: ReadonlyArray<string>;
 } {
+  assertExecutableWorkflowManifestSource(input);
   const fromVersion = detectSchemaVersion(input);
   let payload = unwrapManifest(input);
   const applied: string[] = [];

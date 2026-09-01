@@ -452,6 +452,13 @@ importers:
         version: 4.1.6(@opentelemetry/api@1.9.1)(@types/node@26.1.1)(@vitest/coverage-v8@4.1.10)(vite@7.3.3(@types/node@26.1.1)(tsx@4.22.0)(yaml@2.9.0))
 
   packages/ontology-compiler:
+    dependencies:
+      ajv:
+        specifier: ^8.20.0
+        version: 8.20.0
+      ajv-formats:
+        specifier: ^3.0.1
+        version: 3.0.1(ajv@8.20.0)
     devDependencies:
       '@agentic/runtime':
         specifier: workspace:*

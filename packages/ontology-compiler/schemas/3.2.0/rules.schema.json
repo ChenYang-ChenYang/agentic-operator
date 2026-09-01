@@ -1,0 +1,182 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.allmeta.ai/ontology/3.2.0/rules.schema.json",
+  "title": "allmeta Ontology v3 Rules family",
+  "description": "Canonical Business Rule array used by Rule Studio and ontology template packages.",
+  "$defs": {
+    "selector": {
+      "type": "object",
+      "properties": {
+        "dimension": { "$ref": "common.schema.json#/$defs/nonEmptyString" },
+        "operator": { "enum": ["equals", "not_equals", "in", "not_in", "exists", "matches"] },
+        "values": {
+          "type": "array",
+          "items": { "type": ["string", "number", "boolean", "null"] },
+          "minItems": 1
+        }
+      },
+      "required": ["dimension", "operator"],
+      "allOf": [
+        {
+          "if": {
+            "properties": { "operator": { "const": "exists" } },
+            "required": ["operator"]
+          },
+          "then": { "not": { "required": ["values"] } },
+          "else": { "required": ["values"] }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "scope": {
+      "type": "object",
+      "properties": {
+        "clients": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+        "departments": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+        "phases": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+        "objectTypeIds": {
+          "type": "array",
+          "items": { "$ref": "common.schema.json#/$defs/identifier" },
+          "uniqueItems": true
+        },
+        "roles": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+        "jurisdictions": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+        "selectors": { "type": "array", "items": { "$ref": "#/$defs/selector" } },
+        "effectiveFrom": { "type": "string" },
+        "effectiveTo": { "type": "string" },
+        "extensions": { "$ref": "common.schema.json#/$defs/extensionBag" }
+      },
+      "required": ["objectTypeIds"],
+      "additionalProperties": false
+    },
+    "source": {
+      "type": "object",
+      "properties": {
+        "documentId": { "$ref": "common.schema.json#/$defs/identifier" },
+        "documentName": { "$ref": "common.schema.json#/$defs/nonEmptyString" },
+        "snippet": { "type": "string" },
+        "page": { "type": "number" },
+        "line": { "type": "number" },
+        "section": { "type": "string" },
+        "sentenceRefs": { "type": "array", "items": { "type": "number" }, "uniqueItems": true },
+        "quoteVerified": { "type": "boolean" }
+      },
+      "required": ["documentId", "documentName", "snippet"],
+      "additionalProperties": false
+    },
+    "conditionTest": {
+      "type": "object",
+      "properties": {
+        "id": { "$ref": "common.schema.json#/$defs/identifier" },
+        "context": { "type": "object", "additionalProperties": true },
+        "expected": { "type": "boolean" }
+      },
+      "required": ["id", "context", "expected"],
+      "additionalProperties": true
+    },
+    "machineBinding": {
+      "type": "object",
+      "properties": {
+        "name": { "$ref": "common.schema.json#/$defs/nonEmptyString" },
+        "object_id": { "$ref": "common.schema.json#/$defs/identifier" },
+        "property": { "type": "string" },
+        "required": { "type": "boolean" }
+      },
+      "required": ["name", "object_id"],
+      "additionalProperties": false
+    },
+    "machineExpression": {
+      "type": "object",
+      "properties": {
+        "language": { "enum": ["cel", "jsonlogic", "rego", "datalog", "sql", "python", "natural"] },
+        "source": { "$ref": "common.schema.json#/$defs/nonEmptyString" },
+        "version": { "type": "string" },
+        "bindings": { "type": "array", "items": { "$ref": "#/$defs/machineBinding" } },
+        "test_cases": { "type": "array", "items": { "$ref": "#/$defs/conditionTest" } }
+      },
+      "required": ["language", "source"],
+      "additionalProperties": false
+    },
+    "outcome": {
+      "type": "object",
+      "properties": {
+        "on_pass": { "enum": ["allow", "continue", "route", "calculate", "notify", "no_op"] },
+        "on_fail": { "enum": ["block", "warn", "route", "require_human_review", "notify", "no_op"] },
+        "message": { "type": "string" },
+        "route_to": { "type": "string" },
+        "human_review_action": { "$ref": "common.schema.json#/$defs/identifier" },
+        "emit_event": { "$ref": "common.schema.json#/$defs/identifier" },
+        "requires_explanation": { "type": "boolean" }
+      },
+      "required": ["on_pass", "on_fail"],
+      "allOf": [
+        {
+          "if": {
+            "properties": { "on_fail": { "const": "route" } },
+            "required": ["on_fail"]
+          },
+          "then": { "required": ["route_to"] }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "reviewAcceptance": {
+      "type": "object",
+      "properties": {
+        "schema_version": { "const": 1 },
+        "review_run_id": { "$ref": "common.schema.json#/$defs/nonEmptyString" },
+        "rule_revision": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "evidence_rule_version": { "type": "integer", "minimum": 1 },
+        "accepted_at": { "$ref": "common.schema.json#/$defs/dateTime" }
+      },
+      "required": ["schema_version", "review_run_id", "rule_revision", "evidence_rule_version", "accepted_at"],
+      "additionalProperties": false
+    },
+    "artifact": {
+      "type": "object",
+      "properties": {
+        "id": { "$ref": "common.schema.json#/$defs/identifier" },
+        "name": { "$ref": "common.schema.json#/$defs/nonEmptyString" },
+        "category": { "$ref": "common.schema.json#/$defs/nonEmptyString" },
+        "belongsToClient": { "type": "string" },
+        "belongsToDepartment": { "type": "string" },
+        "description": { "type": "string" },
+        "executor": { "enum": ["Agent", "Human", "Hybrid", "System"] },
+        "priority": { "type": "number" },
+        "complexity": { "enum": ["complex", "medium", "simple"] },
+        "kind": { "enum": ["validation", "constraint", "derivation", "state_transition", "authorization", "temporal"] },
+        "phase": { "type": "string" },
+        "ruleGroupId": { "type": "string" },
+        "ruleGroupTitle": { "type": "string" },
+        "conflictScopeKey": { "type": "string" },
+        "applyAsGroup": { "type": "boolean" },
+        "scope": { "$ref": "#/$defs/scope" },
+        "knowledgeOrigin": { "enum": ["source", "industry_research", "domain_expert", "sop_expert"] },
+        "externalEvidence": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": { "title": { "type": "string" }, "url": { "type": "string" } },
+            "required": ["title", "url"],
+            "additionalProperties": false
+          }
+        },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "provenance": { "enum": ["extracted", "inferred", "web_search", "merged", "human"] },
+        "reviewState": { "enum": ["pending", "accepted", "edited", "merged", "rejected"] },
+        "reviewAcceptance": { "$ref": "#/$defs/reviewAcceptance" },
+        "sources": { "type": "array", "items": { "$ref": "#/$defs/source" } },
+        "formal": { "type": "string" },
+        "machine_expression": { "$ref": "#/$defs/machineExpression" },
+        "outcome": { "$ref": "#/$defs/outcome" }
+      },
+      "required": ["id", "name", "category", "belongsToClient", "belongsToDepartment", "description", "executor"],
+      "additionalProperties": false
+    },
+    "artifactArray": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/artifact" }
+    }
+  },
+  "$ref": "#/$defs/artifactArray"
+}

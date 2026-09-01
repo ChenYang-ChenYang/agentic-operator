@@ -1,0 +1,137 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.allmeta.ai/ontology/3.2.0/common.schema.json",
+  "title": "allmeta Ontology package common definitions",
+  "description": "Shared, domain-neutral definitions for the six-family v3.2 package contract. Bundle version 3.2.0 does not rewrite the nested Workflow artifact version, which remains 2.0.0.",
+  "$defs": {
+    "nonEmptyString": {
+      "type": "string",
+      "minLength": 1
+    },
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "dateTime": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "extensionBag": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "actorType": {
+      "enum": ["Agent", "Human", "System", "External"]
+    },
+    "sourceReference": {
+      "type": "object",
+      "properties": {
+        "documentId": { "$ref": "#/$defs/identifier" },
+        "documentName": { "$ref": "#/$defs/nonEmptyString" },
+        "snippet": { "type": "string" },
+        "page": { "type": "number" },
+        "line": { "type": "number" },
+        "section": { "type": "string" },
+        "charStart": { "type": "integer", "minimum": 0 },
+        "charEnd": { "type": "integer", "minimum": 0 },
+        "sentenceRefs": {
+          "type": "array",
+          "items": { "type": "integer", "minimum": 0 },
+          "uniqueItems": true
+        },
+        "quoteVerified": { "type": "boolean" },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "extensions": { "$ref": "#/$defs/extensionBag" }
+      },
+      "required": ["documentId", "documentName", "snippet"],
+      "additionalProperties": false
+    },
+    "grounding": {
+      "type": "object",
+      "properties": {
+        "provenance": { "enum": ["explicit", "inferred", "web_search"] },
+        "source_quote": { "type": "string" },
+        "quote_verified": { "type": "boolean" },
+        "source_locator": { "type": "string" }
+      },
+      "required": ["provenance"],
+      "additionalProperties": false
+    },
+    "governanceActor": {
+      "type": "object",
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "type": { "$ref": "#/$defs/actorType" },
+        "role": { "type": "string" },
+        "display_name": { "type": "string" }
+      },
+      "required": ["id", "type"],
+      "additionalProperties": false
+    },
+    "governanceDecision": {
+      "type": "object",
+      "properties": {
+        "reviewer": { "$ref": "#/$defs/governanceActor" },
+        "decision": { "enum": ["approve", "reject", "request_changes", "abstain"] },
+        "decided_at": { "$ref": "#/$defs/dateTime" },
+        "comment": { "type": "string" },
+        "evidence_refs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/identifier" },
+          "uniqueItems": true
+        }
+      },
+      "required": ["reviewer", "decision", "decided_at"],
+      "additionalProperties": false
+    },
+    "objectGovernance": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "enum": [
+            "draft",
+            "pending_review",
+            "in_review",
+            "accepted",
+            "edited",
+            "merged",
+            "confirmed",
+            "approved",
+            "published",
+            "active",
+            "rejected",
+            "deprecated"
+          ]
+        },
+        "human_approval_required": { "type": "boolean" },
+        "risk_level": { "enum": ["low", "medium", "high", "critical"] },
+        "owners": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/governanceActor" }
+        },
+        "reviewers": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/governanceActor" }
+        },
+        "decisions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/governanceDecision" }
+        },
+        "minimum_approvals": { "type": "integer", "minimum": 0 },
+        "require_separation_of_duties": { "type": "boolean" },
+        "effective_from": { "$ref": "#/$defs/dateTime" },
+        "effective_to": { "$ref": "#/$defs/dateTime" },
+        "supersedes": { "$ref": "#/$defs/identifier" },
+        "deprecated_at": { "$ref": "#/$defs/dateTime" },
+        "extensions": { "$ref": "#/$defs/extensionBag" }
+      },
+      "required": ["state", "human_approval_required", "risk_level"],
+      "additionalProperties": false
+    }
+  }
+}

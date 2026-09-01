@@ -87,6 +87,7 @@ import { cryptoSha256 } from "./crypto";
 import { documentConvert } from "./document";
 import { inspectEnvironmentReferencesTool } from "./config";
 import { metaerpInvoke } from "./metaerp";
+import { powerPurchaseEvaluateTimeliness } from "./power-purchase";
 import {
   browserOpenSession,
   browserNavigate,
@@ -421,6 +422,111 @@ const GOHIRE_CONFIG_EXAMPLE = {
 };
 
 const REGISTRATIONS: ToolRegistration[] = [
+  // ── power-purchase.* — pure shadow decision support. This intentionally
+  //    declares no external-system capability: computing a recommendation
+  //    must never be mistaken for an ERP integration or alert dispatcher. ──
+  {
+    descriptor: powerPurchaseEvaluateTimeliness,
+    catalog: {
+      name: "powerPurchase.evaluateTimeliness",
+      category: "power-purchase",
+      summary:
+        "Deterministically evaluate Power-Purchase DQ, schedule deviation, overdue state, risk level, and governed routing from an explicit snapshot.",
+      sideEffect: "read",
+      testPolicy: "allow",
+      operation: "compute",
+      effectScope: "none",
+      sandboxPolicy: "pure",
+      credentialPosture: "none",
+      probeRequired: false,
+      description:
+        "Applies PP-RULE-DQ-001, SCHEDULE-001, and OVERDUE-001 first; CLASSIFIER-001 and ROUTING-001 apply only to formal candidates. It uses no clock, database, network, MetaERP call, notification, or write. Missing/invalid stage-required fields return indeterminate and suppress business warning/responsibility attribution. An unresolved formal-candidate role stays routing_pending and uses the governance DQ queue; it never defaults to an administrator. Amount deviation remains null and disabled.",
+      argsSchema: {
+        case_id: {
+          type: "string",
+          description:
+            "Stable purchase-delivery commitment case key. Semantically required by DQ evaluation; omission reaches the tool and returns indeterminate.",
+        },
+        case_status: {
+          type: "string",
+          description:
+            "Explicit non-empty case lifecycle status. Semantically required by DQ evaluation.",
+        },
+        expected_completion_ratio: {
+          type: "number",
+          description:
+            "Expected completion ratio in [0,1]. Semantically required by schedule evaluation.",
+        },
+        actual_completion_ratio: {
+          type: "number",
+          description:
+            "Actual completion ratio in [0,1]. Semantically required by schedule evaluation.",
+        },
+        time_deviation_working_days: {
+          type: "number",
+          description:
+            "Non-negative working-day time deviation. Semantically required by overdue evaluation.",
+        },
+        formal_threshold_working_days: {
+          type: "integer",
+          description:
+            "Explicit positive formal-warning threshold from the pinned threshold version; no runtime default is inferred. Semantically required by overdue evaluation.",
+        },
+        on_time_score: {
+          type: "number",
+          description:
+            "Deterministic on-time proxy score in [0,1]. Required only for a formal candidate; ignored below the formal threshold.",
+        },
+        role_assignments: {
+          type: "object[]",
+          description:
+            "Explicit OrganizationRoleAssignment snapshots: {governance_role, principal_id, resolution_status}. Required only for a formal candidate; ignored below the formal threshold.",
+        },
+      },
+      argsExample: {
+        case_id: "PBP-LINE-001@DELIVERY-01",
+        case_status: "executing",
+        expected_completion_ratio: 0.8,
+        actual_completion_ratio: 0.6,
+        time_deviation_working_days: 7,
+        formal_threshold_working_days: 7,
+        on_time_score: 0.6,
+        role_assignments: [
+          {
+            governance_role: "department_head",
+            principal_id: "principal-procurement-head-01",
+            resolution_status: "resolved",
+          },
+        ],
+      },
+      returnsSchema: {
+        assessment_status: { type: "'complete'|'indeterminate'" },
+        data_quality: { type: "object" },
+        deviation: { type: "object" },
+        overdue: { type: "object" },
+        classification: { type: "object" },
+        routing: { type: "object" },
+        external_dispatch_performed: { type: "false" },
+      },
+      returnsExample: {
+        assessment_status: "complete",
+        deviation: {
+          schedule_deviation: 0.2,
+          amount_deviation: null,
+          signal_state: "formal_candidate",
+        },
+        classification: { on_time_score: 0.6, level: "yellow" },
+        routing: {
+          target_role: "department_head",
+          principal_id: "principal-procurement-head-01",
+          routing_status: "resolved",
+          dispatch_allowed: true,
+        },
+        external_dispatch_performed: false,
+      },
+      sourcePath: "packages/tools/src/power-purchase/evaluate-timeliness.ts",
+    },
+  },
   // ── config.* — non-secret profile diagnostics. These entries never
   //    declare business-system capabilities: presence is not a live probe. ─
   {

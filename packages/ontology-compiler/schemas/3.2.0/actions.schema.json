@@ -1,0 +1,313 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.allmeta.ai/ontology/3.2.0/actions.schema.json",
+  "title": "allmeta Ontology v3 Actions family",
+  "description": "Canonical Action array with stable ActionStep identities and Action-owned many-to-many Rule Type foreign-key bindings.",
+  "$defs": {
+    "io": {
+      "type": "object",
+      "properties": {
+        "name": { "$ref": "common.schema.json#/$defs/nonEmptyString" },
+        "type": { "$ref": "common.schema.json#/$defs/nonEmptyString" },
+        "description": { "type": "string" },
+        "source_object": { "$ref": "common.schema.json#/$defs/identifier" },
+        "required": { "type": "boolean" }
+      },
+      "required": ["name", "type", "description"],
+      "additionalProperties": false
+    },
+    "stepRule": {
+      "type": "object",
+      "properties": {
+        "id": { "$ref": "common.schema.json#/$defs/identifier" },
+        "submission_criteria": { "type": "string" },
+        "description": { "type": "string" },
+        "name": { "type": "string" }
+      },
+      "required": ["id", "submission_criteria", "description"],
+      "additionalProperties": false
+    },
+    "logicStep": {
+      "type": "object",
+      "properties": {
+        "id": { "$ref": "common.schema.json#/$defs/identifier" },
+        "name": { "$ref": "common.schema.json#/$defs/nonEmptyString" },
+        "description": { "type": "string" }
+      },
+      "required": ["id", "name", "description"],
+      "additionalProperties": false
+    },
+    "dataChange": {
+      "type": "object",
+      "properties": {
+        "object_type": { "type": "string" },
+        "action": { "enum": ["CREATE", "MODIFY", "CREATE_OR_MODIFY", "DELETE"] },
+        "property_impacted": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+        "target_object": { "type": "string" },
+        "mutation_type": { "enum": ["CREATE", "MODIFY", "CREATE_OR_MODIFY", "DELETE"] },
+        "impacted_properties": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+        "description": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "notification": {
+      "type": "object",
+      "properties": {
+        "recipient": { "type": "string" },
+        "recipients": { "type": "array", "items": { "type": "string" } },
+        "channel": {
+          "oneOf": [
+            { "type": "string" },
+            { "type": "array", "items": { "type": "string" } }
+          ]
+        },
+        "condition": { "type": "string" },
+        "message": { "type": "string" },
+        "logic": { "type": "string" },
+        "triggered_event": { "type": "string" }
+      },
+      "required": ["channel"],
+      "additionalProperties": false
+    },
+    "externalCall": {
+      "type": "object",
+      "properties": {
+        "system": { "type": "string" },
+        "endpoint": { "type": "string" },
+        "method": { "type": "string" },
+        "description": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "sideEffects": {
+      "type": "object",
+      "properties": {
+        "data_changes": { "type": "array", "items": { "$ref": "#/$defs/dataChange" } },
+        "notifications": { "type": "array", "items": { "$ref": "#/$defs/notification" } },
+        "external_calls": { "type": "array", "items": { "$ref": "#/$defs/externalCall" } }
+      },
+      "additionalProperties": false
+    },
+    "step": {
+      "type": "object",
+      "properties": {
+        "id": { "$ref": "common.schema.json#/$defs/identifier" },
+        "order": { "$ref": "common.schema.json#/$defs/nonEmptyString" },
+        "name": { "$ref": "common.schema.json#/$defs/nonEmptyString" },
+        "description": { "type": "string" },
+        "object_type": { "enum": ["tool", "logic", "action", "manual"] },
+        "condition": { "type": "string" },
+        "submission_criteria": { "type": "string" },
+        "rules": { "type": "array", "items": { "$ref": "#/$defs/stepRule" } },
+        "logic": { "type": "array", "items": { "$ref": "#/$defs/logicStep" } },
+        "inputs": { "type": "array", "items": { "$ref": "#/$defs/io" } },
+        "outputs": { "type": "array", "items": { "$ref": "#/$defs/io" } },
+        "data_changes": { "type": "array", "items": { "$ref": "#/$defs/dataChange" } },
+        "notifications": { "type": "array", "items": { "$ref": "#/$defs/notification" } }
+      },
+      "required": ["order", "name", "description", "object_type"],
+      "additionalProperties": false
+    },
+    "semanticPin": {
+      "type": "object",
+      "properties": {
+        "artifact_type": { "const": "rules" },
+        "catalog_version": { "type": "integer", "minimum": 0 },
+        "content_hash": { "$ref": "common.schema.json#/$defs/sha256" },
+        "artifact_count": { "type": "integer", "minimum": 0 },
+        "rule_id": { "$ref": "common.schema.json#/$defs/identifier" }
+      },
+      "required": ["artifact_type", "catalog_version", "content_hash", "artifact_count", "rule_id"],
+      "additionalProperties": false
+    },
+    "ruleBindingTarget": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": { "const": "action" },
+            "id": { "$ref": "common.schema.json#/$defs/identifier" }
+          },
+          "required": ["type", "id"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": { "const": "action_step" },
+            "id": { "$ref": "common.schema.json#/$defs/identifier" }
+          },
+          "required": ["type", "id"],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "ruleBinding": {
+      "type": "object",
+      "properties": {
+        "id": { "$ref": "common.schema.json#/$defs/identifier" },
+        "rule_id": { "$ref": "common.schema.json#/$defs/identifier" },
+        "target": { "$ref": "#/$defs/ruleBindingTarget" },
+        "phase": { "enum": ["precondition", "guard", "validation", "approval", "postcondition"] },
+        "enforcement": { "enum": ["mandatory", "optional"] },
+        "failure_policy": { "enum": ["block", "warn"] },
+        "provenance": { "enum": ["explicit", "extracted", "inferred", "human", "generated"] },
+        "semantic_pin": { "$ref": "#/$defs/semanticPin" },
+        "sources": { "type": "array", "items": { "$ref": "common.schema.json#/$defs/sourceReference" } },
+        "extensions": { "$ref": "common.schema.json#/$defs/extensionBag" }
+      },
+      "required": ["id", "rule_id", "target", "phase", "enforcement", "failure_policy", "provenance"],
+      "additionalProperties": false
+    },
+    "adapterMapping": {
+      "type": "object",
+      "propertyNames": { "$ref": "common.schema.json#/$defs/nonEmptyString" },
+      "additionalProperties": { "$ref": "common.schema.json#/$defs/nonEmptyString" }
+    },
+    "adapterApproval": {
+      "type": "object",
+      "properties": {
+        "schema_version": { "const": 1 },
+        "adapter_fingerprint": { "$ref": "common.schema.json#/$defs/sha256" },
+        "domain_id": { "$ref": "common.schema.json#/$defs/nonEmptyString" },
+        "approved_by": { "$ref": "common.schema.json#/$defs/nonEmptyString" },
+        "approved_at": { "$ref": "common.schema.json#/$defs/dateTime" },
+        "attestation": { "type": "string", "pattern": "^hmac-sha256:[a-f0-9]{64}$" }
+      },
+      "required": ["schema_version", "adapter_fingerprint", "domain_id", "approved_by", "approved_at", "attestation"],
+      "additionalProperties": false
+    },
+    "runtimeHints": {
+      "type": "object",
+      "properties": {
+        "language": { "enum": ["typescript", "python", "rust", "go", "other"] },
+        "package_manager": { "type": "string" },
+        "image": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "implementation": {
+      "type": "object",
+      "properties": {
+        "kind": { "enum": ["typescript", "http", "mcp", "subprocess", "prompt", "external"] },
+        "operation_id": { "type": "string" },
+        "executable": { "type": "boolean" },
+        "module_path": { "type": "string" },
+        "endpoint": { "type": "string" },
+        "method": { "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"] },
+        "credential_ref": { "type": "string" },
+        "request_mapping": { "$ref": "#/$defs/adapterMapping" },
+        "response_mapping": { "$ref": "#/$defs/adapterMapping" },
+        "adapter_approval": { "$ref": "#/$defs/adapterApproval" },
+        "mcp_tool_name": { "type": "string" },
+        "command": { "type": "array", "items": { "type": "string" } },
+        "prompt_template_id": { "type": "string" },
+        "prompt_template_version": { "type": "string" },
+        "model_tier": { "enum": ["reasoning", "fast", "cheap", "default"] },
+        "runtime_hints": { "$ref": "#/$defs/runtimeHints" }
+      },
+      "required": ["kind"],
+      "allOf": [
+        {
+          "if": {
+            "properties": { "kind": { "const": "external" } },
+            "required": ["kind"]
+          },
+          "then": {
+            "properties": { "executable": { "const": false } },
+            "required": ["operation_id", "endpoint", "executable"]
+          }
+        },
+        {
+          "if": {
+            "properties": { "kind": { "const": "http" }, "executable": { "const": true } },
+            "required": ["kind", "executable"]
+          },
+          "then": {
+            "properties": {
+              "request_mapping": { "minProperties": 1 },
+              "response_mapping": { "minProperties": 1 }
+            },
+            "required": ["operation_id", "endpoint", "method", "credential_ref", "request_mapping", "response_mapping", "adapter_approval"]
+          }
+        },
+        {
+          "if": {
+            "properties": { "kind": { "not": { "const": "http" } } },
+            "required": ["kind"]
+          },
+          "then": { "not": { "required": ["adapter_approval"] } }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "retryPolicy": {
+      "type": "object",
+      "properties": {
+        "max_retries": { "type": "number" },
+        "backoff_ms": { "type": "number" }
+      },
+      "required": ["max_retries", "backoff_ms"],
+      "additionalProperties": false
+    },
+    "artifact": {
+      "type": "object",
+      "properties": {
+        "id": { "$ref": "common.schema.json#/$defs/identifier" },
+        "name": { "$ref": "common.schema.json#/$defs/nonEmptyString" },
+        "description": { "type": "string" },
+        "submission_criteria": { "type": "string" },
+        "category": { "type": "string" },
+        "object_type": { "const": "action" },
+        "actor": { "type": "array", "items": { "$ref": "common.schema.json#/$defs/actorType" }, "uniqueItems": true },
+        "trigger": { "type": "array", "items": { "type": "string" } },
+        "target_objects": { "type": "array", "items": { "$ref": "common.schema.json#/$defs/identifier" }, "uniqueItems": true },
+        "inputs": { "type": "array", "items": { "$ref": "#/$defs/io" } },
+        "outputs": { "type": "array", "items": { "$ref": "#/$defs/io" } },
+        "action_steps": { "type": "array", "items": { "$ref": "#/$defs/step" } },
+        "rule_bindings": { "type": "array", "items": { "$ref": "#/$defs/ruleBinding" } },
+        "side_effects": { "$ref": "#/$defs/sideEffects" },
+        "triggered_event": { "type": "array", "items": { "type": "string" } },
+        "idempotency_key": { "type": "string" },
+        "retry_policy": { "$ref": "#/$defs/retryPolicy" },
+        "timeout_ms": { "type": "number" },
+        "compensation_action": { "type": "string" },
+        "implementation": { "$ref": "#/$defs/implementation" },
+        "provenance": { "enum": ["explicit", "extracted", "inferred", "human", "system", "generated"] },
+        "sources": { "type": "array", "items": { "$ref": "common.schema.json#/$defs/sourceReference" } },
+        "extensions": { "$ref": "common.schema.json#/$defs/extensionBag" },
+        "system_prompt": { "type": "string" },
+        "user_prompt": { "type": "string" },
+        "typescript_code": { "type": "string" },
+        "tool_use": { "type": "array", "items": { "type": "string" } },
+        "notifications": { "type": "array", "items": { "$ref": "#/$defs/notification" } }
+      },
+      "required": ["id", "name", "description", "actor", "trigger"],
+      "not": {
+        "description": "Rules are canonical many-to-many entries in rule_bindings; a bare scalar Rule foreign-key shortcut is not canonical.",
+        "anyOf": [
+          { "required": ["rule_id"] },
+          { "required": ["ruleId"] },
+          { "required": ["ruleID"] },
+          { "required": ["rule_type_id"] },
+          { "required": ["ruleTypeId"] },
+          { "required": ["ruleTypeID"] },
+          { "required": ["rule_fk"] },
+          { "required": ["ruleFk"] }
+        ]
+      },
+      "patternProperties": {
+        "^(?!rule_bindings$).*[Rr][Uu][Ll][Ee].*$": {
+          "description": "Top-level Action properties containing 'rule' must not be scalar Rule-FK shortcuts.",
+          "not": { "type": ["string", "number", "boolean", "null"] }
+        }
+      },
+      "additionalProperties": true
+    },
+    "artifactArray": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/artifact" }
+    }
+  },
+  "$ref": "#/$defs/artifactArray"
+}

@@ -161,4 +161,14 @@ describe("manual task payload", () => {
       /invalid manual task decision/,
     );
   });
+
+  it("rejects a missing manual decision instead of silently approving it", () => {
+    assert.throws(
+      () =>
+        buildManualTaskResolution({
+          taskId: "tsk-42",
+        }),
+      /invalid manual task decision/,
+    );
+  });
 });

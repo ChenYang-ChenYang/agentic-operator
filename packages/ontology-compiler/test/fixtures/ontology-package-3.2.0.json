@@ -1,0 +1,550 @@
+{
+  "manifest": {
+    "schema_version": "1.0.0",
+    "package_id": "synthetic-procurement-template",
+    "release": "v1",
+    "name": "Synthetic procurement package",
+    "description": "Product-owned conformance fixture for a coherent six-family install.",
+    "immutable": true,
+    "schema_bundle_version": "3.2.0",
+    "default_locale": "en",
+    "supported_locales": [
+      "en",
+      "zh-CN"
+    ],
+    "created_at": "2026-08-06T00:00:00.000Z",
+    "sources": [],
+    "families": {
+      "objects": {
+        "family": "objects",
+        "schema_id": "https://schemas.allmeta.ai/ontology/3.2.0/objects.schema.json",
+        "filename": "objects_package.json",
+        "artifact_count": 1,
+        "ordered_artifact_ids": [
+          "Object-Plan"
+        ],
+        "content_hash": "sha256:cd0de3b20658d52629cb2afd322163cc0153a6156399c123c02ee334cb823852"
+      },
+      "rules": {
+        "family": "rules",
+        "schema_id": "https://schemas.allmeta.ai/ontology/3.2.0/rules.schema.json",
+        "filename": "rules_package.json",
+        "artifact_count": 1,
+        "ordered_artifact_ids": [
+          "Rule-Plan-Required"
+        ],
+        "content_hash": "sha256:76d3b35732fb250f0a23bff0d4d4406f5b4c5eac6eef0483adcb22123751ac48"
+      },
+      "actions": {
+        "family": "actions",
+        "schema_id": "https://schemas.allmeta.ai/ontology/3.2.0/actions.schema.json",
+        "filename": "actions_package.json",
+        "artifact_count": 1,
+        "ordered_artifact_ids": [
+          "Action-Create-Plan"
+        ],
+        "content_hash": "sha256:e16236ec77fed151010fc79d5491bb39275f391c6f725534d4eee163c030f58c"
+      },
+      "events": {
+        "family": "events",
+        "schema_id": "https://schemas.allmeta.ai/ontology/3.2.0/events.schema.json",
+        "filename": "events_package.json",
+        "artifact_count": 1,
+        "ordered_artifact_ids": [
+          "Event-Plan-Created"
+        ],
+        "content_hash": "sha256:47302b10c3adcd4712e8bda13338c4b9511b1991ad7d6b95b0d802246e18f452"
+      },
+      "links": {
+        "family": "links",
+        "schema_id": "https://schemas.allmeta.ai/ontology/3.2.0/links.schema.json",
+        "filename": "links_package.json",
+        "artifact_count": 7,
+        "ordered_artifact_ids": [
+          "Link-Action-Includes-Step",
+          "Link-Action-Targets-Object",
+          "Link-Action-Emits-Event",
+          "Link-Rule-References-Object",
+          "Link-Event-Carries-Object",
+          "Link-Event-Mutates-Object",
+          "Link-Workflow-Includes-Action"
+        ],
+        "content_hash": "sha256:ca6c0479a8973446f3895c4be993ec1469bfa99b64320ab1a77cb7b90cb5b014"
+      },
+      "workflows": {
+        "family": "workflows",
+        "schema_id": "https://schemas.allmeta.ai/ontology/3.2.0/workflows.schema.json",
+        "filename": "workflows_package.json",
+        "artifact_count": 1,
+        "ordered_artifact_ids": [
+          "Workflow-Create-Plan"
+        ],
+        "content_hash": "sha256:c9a2bd38aac2d8d2662fa88424b2abb5a28be43c2261409b3daeeb848ce0ddee"
+      }
+    },
+    "package_hash": "sha256:73674e38b2dcededd70a059133821844d713f02cdf93d9125e4785e099e9ff49",
+    "migrations": [
+      {
+        "strategy": "merge",
+        "preserves_user_changes": true,
+        "conflict_policy": "require_choice",
+        "description": "Never overwrite tenant-authored ontology changes without a user decision."
+      }
+    ],
+    "coverage": {
+      "objects": 1,
+      "rules": 1,
+      "actions": 1,
+      "events": 1,
+      "links": 7,
+      "workflows": 1,
+      "workflow_steps": 1,
+      "source_requirements": 1,
+      "represented_source_requirements": 1
+    },
+    "acceptance": [
+      {
+        "gate": "schema-conformance",
+        "status": "passed",
+        "checked_at": "2026-08-06T00:00:00.000Z",
+        "checked_by": "automated-test"
+      }
+    ]
+  },
+  "artifacts": {
+    "objects": [
+      {
+        "id": "Object-Plan",
+        "name": "Plan",
+        "description": "A synthetic procurement plan.",
+        "type": "data",
+        "primary_key": "plan_id",
+        "properties": [
+          {
+            "name": "plan_id",
+            "type": "String",
+            "description": "Stable plan identifier.",
+            "is_required": true
+          }
+        ]
+      }
+    ],
+    "rules": [
+      {
+        "id": "Rule-Plan-Required",
+        "name": "Plan identifier required",
+        "category": "data-quality",
+        "belongsToClient": "Universal",
+        "belongsToDepartment": "Procurement",
+        "description": "A plan must have an identifier.",
+        "executor": "Agent",
+        "scope": {
+          "objectTypeIds": [
+            "Object-Plan"
+          ]
+        },
+        "machine_expression": {
+          "language": "natural",
+          "source": "The plan identifier is present.",
+          "bindings": [
+            {
+              "name": "planId",
+              "object_id": "Object-Plan",
+              "property": "plan_id",
+              "required": true
+            }
+          ]
+        },
+        "outcome": {
+          "on_pass": "continue",
+          "on_fail": "block"
+        }
+      }
+    ],
+    "actions": [
+      {
+        "id": "Action-Create-Plan",
+        "name": "Create plan",
+        "description": "Create the synthetic plan.",
+        "actor": [
+          "Agent"
+        ],
+        "trigger": [
+          "MANUAL"
+        ],
+        "target_objects": [
+          "Object-Plan"
+        ],
+        "action_steps": [
+          {
+            "id": "ActionStep-Validate-Plan",
+            "order": "1",
+            "name": "Validate plan",
+            "description": "Validate the plan identifier.",
+            "object_type": "logic"
+          }
+        ],
+        "rule_bindings": [
+          {
+            "id": "ActionRuleBinding-Plan-Required",
+            "rule_id": "Rule-Plan-Required",
+            "target": {
+              "type": "action",
+              "id": "Action-Create-Plan"
+            },
+            "phase": "validation",
+            "enforcement": "mandatory",
+            "failure_policy": "block",
+            "provenance": "explicit"
+          }
+        ],
+        "triggered_event": [
+          "Event-Plan-Created"
+        ]
+      }
+    ],
+    "events": [
+      {
+        "name": "Event-Plan-Created",
+        "description": "The plan was created.",
+        "payload": {
+          "source_action": "Action-Create-Plan",
+          "event_data": [
+            {
+              "name": "plan_id",
+              "type": "String",
+              "target_object": "Object-Plan",
+              "required": true
+            }
+          ],
+          "state_mutations": [
+            {
+              "target_object": "Object-Plan",
+              "mutation_type": "CREATE",
+              "impacted_properties": [
+                "plan_id"
+              ]
+            }
+          ]
+        },
+        "producers": [
+          {
+            "type": "Action",
+            "id": "Action-Create-Plan"
+          }
+        ],
+        "subscribers": [
+          {
+            "type": "Workflow",
+            "id": "Workflow-Create-Plan"
+          }
+        ]
+      }
+    ],
+    "links": [
+      {
+        "id": "Link-Action-Includes-Step",
+        "kind": "action-includes-step",
+        "from": {
+          "type": "Action",
+          "id": "Action-Create-Plan"
+        },
+        "to": {
+          "type": "ActionStep",
+          "id": "ActionStep-Validate-Plan"
+        },
+        "name": "includes",
+        "cardinality": "1:N",
+        "derived": true,
+        "locked": true,
+        "package_projection": {
+          "type": "ontology-template-package",
+          "package_id": "synthetic-procurement-template",
+          "release": "v1",
+          "generator_id": "ontology-core-example",
+          "generator_version": "1.0.0",
+          "projection": "action-step-membership"
+        }
+      },
+      {
+        "id": "Link-Action-Targets-Object",
+        "kind": "action-targets-object",
+        "from": {
+          "type": "Action",
+          "id": "Action-Create-Plan"
+        },
+        "to": {
+          "type": "Object",
+          "id": "Object-Plan"
+        },
+        "name": "targets",
+        "cardinality": "N:N",
+        "derived": true,
+        "locked": true,
+        "package_projection": {
+          "type": "ontology-template-package",
+          "package_id": "synthetic-procurement-template",
+          "release": "v1",
+          "generator_id": "ontology-core-example",
+          "generator_version": "1.0.0",
+          "projection": "action-target"
+        }
+      },
+      {
+        "id": "Link-Action-Emits-Event",
+        "kind": "action-emission",
+        "from": {
+          "type": "Action",
+          "id": "Action-Create-Plan"
+        },
+        "to": {
+          "type": "Event",
+          "id": "Event-Plan-Created"
+        },
+        "name": "emits",
+        "cardinality": "1:N",
+        "derived": true,
+        "locked": true,
+        "package_projection": {
+          "type": "ontology-template-package",
+          "package_id": "synthetic-procurement-template",
+          "release": "v1",
+          "generator_id": "ontology-core-example",
+          "generator_version": "1.0.0",
+          "projection": "action-emission"
+        }
+      },
+      {
+        "id": "Link-Rule-References-Object",
+        "kind": "rule-references-object",
+        "from": {
+          "type": "Rule",
+          "id": "Rule-Plan-Required"
+        },
+        "to": {
+          "type": "Object",
+          "id": "Object-Plan"
+        },
+        "name": "references",
+        "cardinality": "N:N",
+        "derived": true,
+        "locked": true,
+        "package_projection": {
+          "type": "ontology-template-package",
+          "package_id": "synthetic-procurement-template",
+          "release": "v1",
+          "generator_id": "ontology-core-example",
+          "generator_version": "1.0.0",
+          "projection": "rule-object-reference"
+        }
+      },
+      {
+        "id": "Link-Event-Carries-Object",
+        "kind": "event-carries-object",
+        "from": {
+          "type": "Event",
+          "id": "Event-Plan-Created"
+        },
+        "to": {
+          "type": "Object",
+          "id": "Object-Plan"
+        },
+        "name": "carries",
+        "cardinality": "N:N",
+        "derived": true,
+        "locked": true,
+        "package_projection": {
+          "type": "ontology-template-package",
+          "package_id": "synthetic-procurement-template",
+          "release": "v1",
+          "generator_id": "ontology-core-example",
+          "generator_version": "1.0.0",
+          "projection": "event-payload"
+        }
+      },
+      {
+        "id": "Link-Event-Mutates-Object",
+        "kind": "event-mutates-object",
+        "from": {
+          "type": "Event",
+          "id": "Event-Plan-Created"
+        },
+        "to": {
+          "type": "Object",
+          "id": "Object-Plan"
+        },
+        "name": "mutates",
+        "cardinality": "N:N",
+        "derived": true,
+        "locked": true,
+        "package_projection": {
+          "type": "ontology-template-package",
+          "package_id": "synthetic-procurement-template",
+          "release": "v1",
+          "generator_id": "ontology-core-example",
+          "generator_version": "1.0.0",
+          "projection": "event-state-mutation"
+        }
+      },
+      {
+        "id": "Link-Workflow-Includes-Action",
+        "kind": "workflow-includes",
+        "from": {
+          "type": "Workflow",
+          "id": "Workflow-Create-Plan"
+        },
+        "to": {
+          "type": "Action",
+          "id": "Action-Create-Plan"
+        },
+        "name": "includes",
+        "cardinality": "1:N",
+        "derived": true,
+        "locked": true,
+        "package_projection": {
+          "type": "ontology-template-package",
+          "package_id": "synthetic-procurement-template",
+          "release": "v1",
+          "generator_id": "ontology-core-example",
+          "generator_version": "1.0.0",
+          "projection": "workflow-action-membership"
+        }
+      }
+    ],
+    "workflows": [
+      {
+        "schema_version": "2.0.0",
+        "id": "Workflow-Create-Plan",
+        "name": "Create plan workflow",
+        "description": "A one-step synthetic workflow.",
+        "actor": [
+          "Agent"
+        ],
+        "trigger": [
+          "MANUAL"
+        ],
+        "actions": [
+          {
+            "order": "1",
+            "name": "Action-Create-Plan",
+            "description": "Create the plan.",
+            "type": "tool",
+            "condition": "Ready"
+          }
+        ],
+        "triggered_event": [
+          "Event-Plan-Created"
+        ],
+        "roles": [
+          {
+            "id": "Role-Planner-Agent",
+            "type": "Agent"
+          }
+        ],
+        "triggers": [
+          {
+            "id": "Trigger-Manual",
+            "kind": "manual",
+            "actor_id": "Role-Planner-Agent",
+            "entry_step_ids": [
+              "WorkflowStep-Create-Plan"
+            ]
+          }
+        ],
+        "entry_step_ids": [
+          "WorkflowStep-Create-Plan"
+        ],
+        "steps": [
+          {
+            "id": "WorkflowStep-Create-Plan",
+            "order": 1,
+            "name": "Create plan",
+            "description": "Create the plan.",
+            "node_kind": "action",
+            "action_id": "Action-Create-Plan",
+            "execution": {
+              "mode": "agent",
+              "actor_ids": [
+                "Role-Planner-Agent"
+              ],
+              "autonomy_level": "A1",
+              "reversible": true
+            },
+            "guard_rule_ids": [
+              "Rule-Plan-Required"
+            ],
+            "input_artifact_ids": [],
+            "output_artifact_ids": [
+              "Artifact-Plan"
+            ],
+            "emitted_event_ids": [
+              "WorkflowEmission-Plan-Created"
+            ],
+            "next": []
+          }
+        ],
+        "dependencies": [
+          {
+            "id": "Dependency-Plan-Source",
+            "kind": "data",
+            "from": {
+              "type": "object",
+              "id": "Object-Plan"
+            },
+            "to": {
+              "type": "step",
+              "id": "WorkflowStep-Create-Plan"
+            },
+            "lineage": "source",
+            "required": true
+          }
+        ],
+        "object_refs": [
+          "Object-Plan"
+        ],
+        "rule_refs": [
+          "Rule-Plan-Required"
+        ],
+        "rule_bindings": [
+          {
+            "id": "WorkflowRuleBinding-Plan-Required",
+            "rule_id": "Rule-Plan-Required",
+            "action_rule_binding_id": "ActionRuleBinding-Plan-Required",
+            "scope": "step",
+            "target_id": "WorkflowStep-Create-Plan",
+            "phase": "validation"
+          }
+        ],
+        "artifacts": [
+          {
+            "id": "Artifact-Plan",
+            "name": "Plan",
+            "direction": "output",
+            "format": "application/json",
+            "object_type_id": "Object-Plan",
+            "required": true
+          }
+        ],
+        "output_contracts": [],
+        "emitted_events": [
+          {
+            "id": "WorkflowEmission-Plan-Created",
+            "event_id": "Event-Plan-Created",
+            "source_step_id": "WorkflowStep-Create-Plan",
+            "when": "completed"
+          }
+        ],
+        "layout": {
+          "direction": "LR",
+          "positions": {
+            "step:WorkflowStep-Create-Plan": {
+              "x": 320,
+              "y": 120
+            }
+          },
+          "auto_generated": false
+        }
+      }
+    ]
+  }
+}

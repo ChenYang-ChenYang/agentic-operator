@@ -21,23 +21,24 @@ MCP/tool integrations, and observability views run as one workspace.
 
 ## Workspace
 
-| Area                      | Responsibility                                                          |
-| ------------------------- | ----------------------------------------------------------------------- |
-| `apps/web`                | Next.js 16 + React 19 operator portal                                   |
-| `apps/api`                | Fastify 5 REST API, auth, SSE, Inngest handlers, health and metrics     |
-| `apps/cli`                | Operator CLI                                                            |
-| `packages/agents`         | Canonical code-agent contract, registry, tool loop and execution engine |
-| `packages/runtime`        | Manifest registration and workflow step engine                          |
-| `packages/llm-gateway`    | Credentialed provider adapters, budgets, usage telemetry                |
-| `packages/codex-harness`  | Fail-closed Codex app-server lifecycle and JSON-RPC adapter             |
-| `packages/codex-protocol` | Generated bindings/schema for the pinned Codex app-server protocol      |
-| `packages/tools`          | Real tool dispatch and credential gating                                |
-| `packages/mcp`            | MCP process/server lifecycle                                            |
-| `packages/db`             | Drizzle schema, migrations, seed and SQLite access                      |
-| `packages/contracts`      | Shared API and stream schemas                                           |
-| `packages/agent-factory`  | Domain-grounded agent generation and verification                       |
-| `tenants/*`               | Tenant-specific agents, prompts, skills and real integrations           |
-| `models/*`                | Versioned workflow/ontology manifests                                   |
+| Area                         | Responsibility                                                                                 |
+| ---------------------------- | ---------------------------------------------------------------------------------------------- |
+| `apps/web`                   | Next.js 16 + React 19 operator portal                                                          |
+| `apps/api`                   | Fastify 5 REST API, auth, SSE, Inngest handlers, health and metrics                            |
+| `apps/cli`                   | Operator CLI                                                                                   |
+| `packages/agents`            | Canonical code-agent contract, registry, tool loop and execution engine                        |
+| `packages/runtime`           | Manifest registration and workflow step engine                                                 |
+| `packages/llm-gateway`       | Credentialed provider adapters, budgets, usage telemetry                                       |
+| `packages/codex-harness`     | Fail-closed Codex app-server lifecycle and JSON-RPC adapter                                    |
+| `packages/codex-protocol`    | Generated bindings/schema for the pinned Codex app-server protocol                             |
+| `packages/tools`             | Real tool dispatch and credential gating                                                       |
+| `packages/mcp`               | MCP process/server lifecycle                                                                   |
+| `packages/db`                | Drizzle schema, migrations, seed and SQLite access                                             |
+| `packages/contracts`         | Shared API and stream schemas                                                                  |
+| `packages/agent-factory`     | Domain-grounded agent generation and verification                                              |
+| `packages/ontology-compiler` | Legacy Studio compilation plus immutable package admission and non-deployable runtime planning |
+| `tenants/*`                  | Tenant-specific agents, prompts, skills and real integrations                                  |
+| `models/*`                   | Versioned workflow/ontology manifests                                                          |
 
 Workflows and agents can also be authored from the portal: Agent Studio edits
 per-agent V2 definitions, the workflow-authoring API drafts/validates/publishes
@@ -88,6 +89,28 @@ pnpm codex:protocol:check
 pnpm verify:codex-harness
 pnpm --filter @agentic/api verify:observability
 ```
+
+An immutable OntoPlanet package is admitted through a separate, non-runtime
+boundary. The command below validates the vendored OntoPlanet 3.2.0 envelope
+and all six family schemas, then verifies family/package hashes,
+workflow/subflow pins and candidate Agent restrictions. Persistent output
+requires all three exact trust pins. It emits an explicitly non-deployable
+shadow receipt and, optionally, a closed-world non-deployable runtime plan. It
+refuses the source package, aliased outputs and runtime `models/` roots, and
+never imports a manifest or registers a workflow:
+
+```bash
+pnpm ontology-package:inspect -- \
+  --package /path/to/package.json \
+  --expected-id <package-id> \
+  --expected-release <release> \
+  --expected-hash sha256:<digest> \
+  --out artifacts/ontology/<domain>/<release>/shadow-candidate.json \
+  --runtime-plan-out artifacts/ontology/<domain>/<release>/runtime-plan-candidate.json
+```
+
+See [the Ontology Package handoff contract](docs/power-purchase-ontology-package-handoff.md)
+for the current runtime boundary.
 
 `/health` reports the database, event broker, storage/fanout backends, selected
 model provider/model and whether the gateway is mock-backed. A production-ready

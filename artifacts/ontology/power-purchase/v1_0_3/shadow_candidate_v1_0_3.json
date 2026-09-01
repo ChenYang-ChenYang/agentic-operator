@@ -1,0 +1,705 @@
+{
+  "admission": {
+    "activation_blockers": [
+      {
+        "code": "actions-not-runtime-bound",
+        "count": 52,
+        "evidence": [
+          "every Action is hash-verified with implementation.executable=false"
+        ]
+      },
+      {
+        "code": "workflows-not-activated",
+        "count": 11,
+        "evidence": [
+          "workflow-alert-escalation@1.0.3:specified_not_activated",
+          "workflow-alert-quality-feedback@1.0.3:specified_not_activated",
+          "workflow-baseline-deviation-assessment@1.0.3:specified_not_activated",
+          "workflow-closure-feedback@1.0.3:specified_not_activated",
+          "workflow-metaerp-source-acquisition@1.0.3:blocked_pending_adapter_contracts_and_sandbox",
+          "workflow-procurement-deviation-warning@1.0.3:specified_not_activated",
+          "workflow-progress-synchronization@1.0.3:specified_not_activated",
+          "workflow-remediation-compensation@1.0.3:specified_not_activated",
+          "workflow-remediation-decision@1.0.3:specified_not_activated",
+          "workflow-remediation-execution@1.0.3:specified_not_activated",
+          "workflow-risk-classification-alert-routing@1.0.3:specified_not_activated"
+        ]
+      },
+      {
+        "code": "agent-contracts-not-deployed",
+        "count": 1,
+        "evidence": [
+          "procurement-timeliness-agent@1.0.0:specified_not_activated/not_deployed/candidate_shadow_fixture_only"
+        ]
+      },
+      {
+        "code": "subflow-runtime-enforcement-disabled",
+        "count": 7,
+        "evidence": [
+          "workflow-procurement-deviation-warning@1.0.3:step-call-baseline-deviation-assessment->workflow-baseline-deviation-assessment@1.0.3",
+          "workflow-procurement-deviation-warning@1.0.3:step-call-closure-feedback->workflow-closure-feedback@1.0.3",
+          "workflow-procurement-deviation-warning@1.0.3:step-call-progress-synchronization->workflow-progress-synchronization@1.0.3",
+          "workflow-procurement-deviation-warning@1.0.3:step-call-remediation-decision->workflow-remediation-decision@1.0.3",
+          "workflow-procurement-deviation-warning@1.0.3:step-call-remediation-execution->workflow-remediation-execution@1.0.3",
+          "workflow-procurement-deviation-warning@1.0.3:step-call-risk-classification-alert-routing->workflow-risk-classification-alert-routing@1.0.3",
+          "workflow-remediation-execution@1.0.3:step-call-compensation->workflow-remediation-compensation@1.0.3"
+        ]
+      },
+      {
+        "code": "production-agentic-operator-activation-not-passed",
+        "count": 1,
+        "evidence": [
+          "status=failed",
+          "MetaERP adapters executable=false",
+          "internal runtime module unbound",
+          "candidate Agent contract not deployed and evals not production-executed",
+          "durable SLA wait scheduler unbound",
+          "full parent graph is rejected by the candidate Operator fixture",
+          "real status mapping unresolved",
+          "context-patch merge/role/hash/SoD and invocation-receipt signature enforcement not production-bound"
+        ]
+      }
+    ],
+    "checks": [
+      {
+        "evidence": [
+          "3.2.0:bundle_sha256=0c7ee809a0049c2ae4baabbf672bcb412ed49a8380ab42ab1ecace32658b0d86",
+          "Ajv 2020 envelope, manifest and six-family schemas validated"
+        ],
+        "id": "vendored-ontology-package-schema",
+        "status": "passed"
+      },
+      {
+        "evidence": [
+          "sha256:893a26cf8c65b4194023301269f246d43f74fc75a181d78731cc9dd273b8ca1c"
+        ],
+        "id": "immutable-package-digest",
+        "status": "passed"
+      },
+      {
+        "evidence": [
+          "objects:65:sha256:679236a21a33216d439426c3a8e3b39608198828951d4655c9fceb7f1c84b00d",
+          "rules:24:sha256:b88a87fb0a0f3492cafd9c4ee80fa53b4b8b6e06a383d62ad824a0202ec3bd31",
+          "actions:52:sha256:97794838bc281c648f29c27be293ba03fcd7c8d9088fdd56f3f6db534a8416d2",
+          "events:29:sha256:2ceae8900b91aff17716c5b4e53a2f44657fafb1847e479f19367b895ab4c88a",
+          "links:490:sha256:7cc13c627c22d97619a7c6a34dc04ca6058b2fa9290f1a6a239bc4d0e93121ef",
+          "workflows:11:sha256:a6dd34e36312b35c44feb34708eb071a8dc4fc1426afcb693e703829699d0c85"
+        ],
+        "id": "six-family-integrity",
+        "status": "passed"
+      },
+      {
+        "evidence": [
+          "11 workflows",
+          "84 steps",
+          "7 child workflow edges"
+        ],
+        "id": "workflow-reference-and-version-pin-integrity",
+        "status": "passed"
+      },
+      {
+        "evidence": [
+          "0 executable Actions",
+          "0 executable external Actions",
+          "1 inactive candidate Agent contract(s)",
+          "Agent grants are human-approved proposal-only, target Agent-authored Actions with no external/tool capabilities, notifications, or data changes, and form a bidirectional closure with agent-mode steps",
+          "Agent subscriptions are non-autonomous workflow-bound fixtures with exact source emissions and target bindings"
+        ],
+        "id": "shadow-capability-boundary",
+        "status": "passed"
+      }
+    ],
+    "deployable": false,
+    "runtime_import_allowed": false,
+    "runtime_scope": "candidate_shadow_fixture_only",
+    "status": "verified_shadow_candidate"
+  },
+  "agent_contracts": [
+    {
+      "activation_status": "specified_not_activated",
+      "contract_hash": "sha256:b162201dd5c268f755aaeca76fa95fbd01372a96dac313da394b35830b1f7413",
+      "deployment_status": "not_deployed",
+      "eval_cases": [
+        {
+          "expected_action_ids": [
+            "action-propose-remediation"
+          ],
+          "expected_outcome": "proposal_pending_human_approval",
+          "id": "eval-propose-with-evidence",
+          "input": {
+            "alert_state": "formal",
+            "assessment_status": "complete",
+            "cause_evidence_status": "sufficient",
+            "classification_level": "red"
+          },
+          "invariants": [
+            "no_external_action",
+            "no_approval_or_execution",
+            "proposal_evidence_ids_required"
+          ]
+        },
+        {
+          "expected_action_ids": [],
+          "expected_outcome": "abstain_data_quality_handoff",
+          "id": "eval-abstain-on-indeterminate-evidence",
+          "input": {
+            "alert_state": "indeterminate",
+            "cause_evidence_status": "missing_required_evidence"
+          },
+          "invariants": [
+            "no_external_action",
+            "no_proposal_without_evidence"
+          ]
+        },
+        {
+          "expected_action_ids": [
+            "action-propose-remediation"
+          ],
+          "expected_outcome": "proposal_requires_inventory_feasibility_review",
+          "id": "eval-inventory-feasibility-boundary",
+          "input": {
+            "alert_state": "formal",
+            "classification_level": "yellow",
+            "inventory_evidence_status": "unavailable",
+            "proposed_remediation_type": "inventory_transfer"
+          },
+          "invariants": [
+            "no_external_action",
+            "no_stock_location_or_quantity_claim",
+            "human_approval_required"
+          ]
+        }
+      ],
+      "grants": [
+        {
+          "action_id": "action-propose-remediation",
+          "consequential_write": false,
+          "effect": "internal_proposal_only",
+          "external": false,
+          "permission": "invoke_candidate_internal_action"
+        }
+      ],
+      "id": "procurement-timeliness-agent",
+      "prompt_profile": {
+        "content_hash": "sha256:d4d1598c045b0d12e86e0020cc370f879dcf36c3c1f9acfffa0f00e66d1e11e2",
+        "id": "power-purchase-propose-only",
+        "version": "1.0.0"
+      },
+      "runtime_scope": "candidate_shadow_fixture_only",
+      "subscriptions": [
+        {
+          "autonomous_start": false,
+          "delivery": "workflow_bound_fixture",
+          "event_id": "DeviationCauseAssessed",
+          "source_step_id": "step-assess-cause",
+          "target_step_id": "step-propose",
+          "workflow_id": "workflow-remediation-decision"
+        }
+      ],
+      "version": "1.0.0"
+    }
+  ],
+  "artifact_counts": {
+    "actions": 52,
+    "events": 29,
+    "links": 490,
+    "objects": 65,
+    "rules": 24,
+    "workflow_steps": 84,
+    "workflows": 11
+  },
+  "capabilities": {
+    "action_count": 52,
+    "agent_step_count": 1,
+    "executable_action_count": 0,
+    "executable_external_action_count": 0,
+    "external_action_count": 15,
+    "human_step_count": 2,
+    "internal_action_count": 37,
+    "subflow_step_count": 7,
+    "wait_step_count": 2
+  },
+  "family_hashes": {
+    "actions": "sha256:97794838bc281c648f29c27be293ba03fcd7c8d9088fdd56f3f6db534a8416d2",
+    "events": "sha256:2ceae8900b91aff17716c5b4e53a2f44657fafb1847e479f19367b895ab4c88a",
+    "links": "sha256:7cc13c627c22d97619a7c6a34dc04ca6058b2fa9290f1a6a239bc4d0e93121ef",
+    "objects": "sha256:679236a21a33216d439426c3a8e3b39608198828951d4655c9fceb7f1c84b00d",
+    "rules": "sha256:b88a87fb0a0f3492cafd9c4ee80fa53b4b8b6e06a383d62ad824a0202ec3bd31",
+    "workflows": "sha256:a6dd34e36312b35c44feb34708eb071a8dc4fc1426afcb693e703829699d0c85"
+  },
+  "receipt_hash": "sha256:84a6164c9c791503bb960cd3f78d7701178c84ef6b644a15d78ac42708f1e6af",
+  "schema": "agentic-operator.ontology-package-shadow-candidate/v1",
+  "source_package": {
+    "domain_id": "power-purchase",
+    "immutable": true,
+    "package_hash": "sha256:893a26cf8c65b4194023301269f246d43f74fc75a181d78731cc9dd273b8ca1c",
+    "package_id": "power-purchase",
+    "package_kind": "domain",
+    "primary_workflow_id": "workflow-procurement-deviation-warning",
+    "project_id": "Power-Purchase",
+    "release": "1.0.3",
+    "schema_bundle_version": "3.2.0",
+    "schema_version": "1.0.0"
+  },
+  "workflow_graph": {
+    "child_edges": [
+      {
+        "child_workflow_id": "workflow-baseline-deviation-assessment",
+        "child_workflow_version": "1.0.3",
+        "parent_workflow_id": "workflow-procurement-deviation-warning",
+        "parent_workflow_version": "1.0.3",
+        "runtime_enforcement": false,
+        "step_id": "step-call-baseline-deviation-assessment"
+      },
+      {
+        "child_workflow_id": "workflow-closure-feedback",
+        "child_workflow_version": "1.0.3",
+        "parent_workflow_id": "workflow-procurement-deviation-warning",
+        "parent_workflow_version": "1.0.3",
+        "runtime_enforcement": false,
+        "step_id": "step-call-closure-feedback"
+      },
+      {
+        "child_workflow_id": "workflow-progress-synchronization",
+        "child_workflow_version": "1.0.3",
+        "parent_workflow_id": "workflow-procurement-deviation-warning",
+        "parent_workflow_version": "1.0.3",
+        "runtime_enforcement": false,
+        "step_id": "step-call-progress-synchronization"
+      },
+      {
+        "child_workflow_id": "workflow-remediation-decision",
+        "child_workflow_version": "1.0.3",
+        "parent_workflow_id": "workflow-procurement-deviation-warning",
+        "parent_workflow_version": "1.0.3",
+        "runtime_enforcement": false,
+        "step_id": "step-call-remediation-decision"
+      },
+      {
+        "child_workflow_id": "workflow-remediation-execution",
+        "child_workflow_version": "1.0.3",
+        "parent_workflow_id": "workflow-procurement-deviation-warning",
+        "parent_workflow_version": "1.0.3",
+        "runtime_enforcement": false,
+        "step_id": "step-call-remediation-execution"
+      },
+      {
+        "child_workflow_id": "workflow-risk-classification-alert-routing",
+        "child_workflow_version": "1.0.3",
+        "parent_workflow_id": "workflow-procurement-deviation-warning",
+        "parent_workflow_version": "1.0.3",
+        "runtime_enforcement": false,
+        "step_id": "step-call-risk-classification-alert-routing"
+      },
+      {
+        "child_workflow_id": "workflow-remediation-compensation",
+        "child_workflow_version": "1.0.3",
+        "parent_workflow_id": "workflow-remediation-execution",
+        "parent_workflow_version": "1.0.3",
+        "runtime_enforcement": false,
+        "step_id": "step-call-compensation"
+      }
+    ],
+    "primary_workflow_id": "workflow-procurement-deviation-warning",
+    "workflow_ids": [
+      "workflow-alert-escalation",
+      "workflow-alert-quality-feedback",
+      "workflow-baseline-deviation-assessment",
+      "workflow-closure-feedback",
+      "workflow-metaerp-source-acquisition",
+      "workflow-procurement-deviation-warning",
+      "workflow-progress-synchronization",
+      "workflow-remediation-compensation",
+      "workflow-remediation-decision",
+      "workflow-remediation-execution",
+      "workflow-risk-classification-alert-routing"
+    ]
+  },
+  "workflows": [
+    {
+      "action_ids": [
+        "action-escalate-overdue-alert",
+        "action-open-escalation-data-quality-incident",
+        "action-recheck-escalation-eligibility"
+      ],
+      "activation_status": "specified_not_activated",
+      "agent_step_ids": [],
+      "child_workflows": [],
+      "entry_step_ids": [
+        "step-wait-sla"
+      ],
+      "execution_modes": {
+        "system": 6
+      },
+      "id": "workflow-alert-escalation",
+      "step_count": 6,
+      "step_kinds": {
+        "action": 3,
+        "decision": 2,
+        "wait": 1
+      },
+      "trigger_events": [
+        "DeviationAlertRouted"
+      ],
+      "trigger_kinds": [
+        "event"
+      ],
+      "version": "1.0.3",
+      "wait_step_ids": [
+        "step-wait-sla"
+      ]
+    },
+    {
+      "action_ids": [
+        "action-record-false-positive-review"
+      ],
+      "activation_status": "specified_not_activated",
+      "agent_step_ids": [],
+      "child_workflows": [],
+      "entry_step_ids": [
+        "step-review-false-positive"
+      ],
+      "execution_modes": {
+        "human": 1
+      },
+      "id": "workflow-alert-quality-feedback",
+      "step_count": 1,
+      "step_kinds": {
+        "action": 1
+      },
+      "trigger_events": [
+        "DeviationAlertClosed"
+      ],
+      "trigger_kinds": [
+        "event"
+      ],
+      "version": "1.0.3",
+      "wait_step_ids": []
+    },
+    {
+      "action_ids": [
+        "action-calculate-execution-deviation",
+        "action-freeze-case-baseline",
+        "action-open-baseline-policy-data-quality-incident"
+      ],
+      "activation_status": "specified_not_activated",
+      "agent_step_ids": [],
+      "child_workflows": [],
+      "entry_step_ids": [
+        "step-policy-resolution-gate"
+      ],
+      "execution_modes": {
+        "system": 4
+      },
+      "id": "workflow-baseline-deviation-assessment",
+      "step_count": 4,
+      "step_kinds": {
+        "action": 3,
+        "decision": 1
+      },
+      "trigger_events": [],
+      "trigger_kinds": [
+        "manual"
+      ],
+      "version": "1.0.3",
+      "wait_step_ids": []
+    },
+    {
+      "action_ids": [
+        "action-assess-alert-closure-eligibility",
+        "action-close-deviation-alert",
+        "action-project-closure-state"
+      ],
+      "activation_status": "specified_not_activated",
+      "agent_step_ids": [],
+      "child_workflows": [],
+      "entry_step_ids": [
+        "step-assess-closure-eligibility"
+      ],
+      "execution_modes": {
+        "system": 5
+      },
+      "id": "workflow-closure-feedback",
+      "step_count": 5,
+      "step_kinds": {
+        "action": 3,
+        "decision": 2
+      },
+      "trigger_events": [],
+      "trigger_kinds": [
+        "manual"
+      ],
+      "version": "1.0.3",
+      "wait_step_ids": []
+    },
+    {
+      "action_ids": [
+        "action-capture-source-snapshot",
+        "action-metaerp-get-all-pbp-line-page-by-query",
+        "action-metaerp-get-contract-by-query",
+        "action-metaerp-get-spa-by-query",
+        "action-metaerp-query-accept-header",
+        "action-metaerp-query-accept-transaction",
+        "action-metaerp-query-award-list",
+        "action-metaerp-query-open-pbp-header",
+        "action-metaerp-query-open-pbp-line",
+        "action-metaerp-query-po-header",
+        "action-metaerp-query-po-line-shipment",
+        "action-metaerp-query-pr",
+        "action-metaerp-query-proc-package-line-execute-mode",
+        "action-metaerp-query-rfx-list"
+      ],
+      "activation_status": "blocked_pending_adapter_contracts_and_sandbox",
+      "agent_step_ids": [],
+      "child_workflows": [],
+      "entry_step_ids": [
+        "step-query-open-pbp-header"
+      ],
+      "execution_modes": {
+        "system": 14
+      },
+      "id": "workflow-metaerp-source-acquisition",
+      "step_count": 14,
+      "step_kinds": {
+        "action": 14
+      },
+      "trigger_events": [],
+      "trigger_kinds": [
+        "manual"
+      ],
+      "version": "1.0.3",
+      "wait_step_ids": []
+    },
+    {
+      "action_ids": [
+        "action-initialize-procurement-case",
+        "action-open-data-quality-incident"
+      ],
+      "activation_status": "specified_not_activated",
+      "agent_step_ids": [],
+      "child_workflows": [
+        {
+          "runtime_enforcement": false,
+          "step_id": "step-call-baseline-deviation-assessment",
+          "workflow_id": "workflow-baseline-deviation-assessment",
+          "workflow_version": "1.0.3"
+        },
+        {
+          "runtime_enforcement": false,
+          "step_id": "step-call-closure-feedback",
+          "workflow_id": "workflow-closure-feedback",
+          "workflow_version": "1.0.3"
+        },
+        {
+          "runtime_enforcement": false,
+          "step_id": "step-call-progress-synchronization",
+          "workflow_id": "workflow-progress-synchronization",
+          "workflow_version": "1.0.3"
+        },
+        {
+          "runtime_enforcement": false,
+          "step_id": "step-call-remediation-decision",
+          "workflow_id": "workflow-remediation-decision",
+          "workflow_version": "1.0.3"
+        },
+        {
+          "runtime_enforcement": false,
+          "step_id": "step-call-remediation-execution",
+          "workflow_id": "workflow-remediation-execution",
+          "workflow_version": "1.0.3"
+        },
+        {
+          "runtime_enforcement": false,
+          "step_id": "step-call-risk-classification-alert-routing",
+          "workflow_id": "workflow-risk-classification-alert-routing",
+          "workflow_version": "1.0.3"
+        }
+      ],
+      "entry_step_ids": [
+        "step-initialize-case"
+      ],
+      "execution_modes": {
+        "system": 15
+      },
+      "id": "workflow-procurement-deviation-warning",
+      "step_count": 15,
+      "step_kinds": {
+        "action": 2,
+        "decision": 7,
+        "subflow": 6
+      },
+      "trigger_events": [],
+      "trigger_kinds": [
+        "manual"
+      ],
+      "version": "1.0.3",
+      "wait_step_ids": []
+    },
+    {
+      "action_ids": [
+        "action-diff-source-snapshots",
+        "action-synchronize-stage-progress"
+      ],
+      "activation_status": "specified_not_activated",
+      "agent_step_ids": [],
+      "child_workflows": [],
+      "entry_step_ids": [
+        "step-diff"
+      ],
+      "execution_modes": {
+        "system": 2
+      },
+      "id": "workflow-progress-synchronization",
+      "step_count": 2,
+      "step_kinds": {
+        "action": 2
+      },
+      "trigger_events": [],
+      "trigger_kinds": [
+        "manual"
+      ],
+      "version": "1.0.3",
+      "wait_step_ids": []
+    },
+    {
+      "action_ids": [
+        "action-compensate-remediation"
+      ],
+      "activation_status": "specified_not_activated",
+      "agent_step_ids": [],
+      "child_workflows": [],
+      "entry_step_ids": [
+        "step-compensation-eligibility"
+      ],
+      "execution_modes": {
+        "hybrid": 1,
+        "system": 2
+      },
+      "id": "workflow-remediation-compensation",
+      "step_count": 3,
+      "step_kinds": {
+        "action": 1,
+        "decision": 2
+      },
+      "trigger_events": [],
+      "trigger_kinds": [
+        "manual"
+      ],
+      "version": "1.0.3",
+      "wait_step_ids": []
+    },
+    {
+      "action_ids": [
+        "action-assess-deviation-cause",
+        "action-project-remediation-state",
+        "action-propose-remediation",
+        "action-record-remediation-decision"
+      ],
+      "activation_status": "specified_not_activated",
+      "agent_step_ids": [
+        "step-propose"
+      ],
+      "child_workflows": [],
+      "entry_step_ids": [
+        "step-assess-cause"
+      ],
+      "execution_modes": {
+        "agent": 1,
+        "human": 1,
+        "system": 2
+      },
+      "id": "workflow-remediation-decision",
+      "step_count": 4,
+      "step_kinds": {
+        "action": 4
+      },
+      "trigger_events": [],
+      "trigger_kinds": [
+        "manual"
+      ],
+      "version": "1.0.3",
+      "wait_step_ids": []
+    },
+    {
+      "action_ids": [
+        "action-approve-inventory-transfer",
+        "action-authorize-compensation-invocation",
+        "action-metaerp-change-pbp",
+        "action-metaerp-create-transaction-order",
+        "action-metaerp-query-open-pbp-line",
+        "action-record-compress-execution-result",
+        "action-record-date-execution-blocked",
+        "action-record-date-execution-result",
+        "action-record-invalid-execution-request",
+        "action-record-remediation-execution",
+        "action-record-transfer-execution-blocked",
+        "action-record-transfer-execution-result",
+        "action-revise-case-baseline",
+        "action-version-delivery-commitment"
+      ],
+      "activation_status": "specified_not_activated",
+      "agent_step_ids": [],
+      "child_workflows": [
+        {
+          "runtime_enforcement": false,
+          "step_id": "step-call-compensation",
+          "workflow_id": "workflow-remediation-compensation",
+          "workflow_version": "1.0.3"
+        }
+      ],
+      "entry_step_ids": [
+        "step-record-execution-request"
+      ],
+      "execution_modes": {
+        "system": 20
+      },
+      "id": "workflow-remediation-execution",
+      "step_count": 20,
+      "step_kinds": {
+        "action": 14,
+        "decision": 5,
+        "subflow": 1
+      },
+      "trigger_events": [],
+      "trigger_kinds": [
+        "manual"
+      ],
+      "version": "1.0.3",
+      "wait_step_ids": []
+    },
+    {
+      "action_ids": [
+        "action-classify-timeliness-risk",
+        "action-create-deviation-alert",
+        "action-open-risk-assessment-data-quality-incident",
+        "action-open-routing-data-quality-incident",
+        "action-resolve-alert-routing",
+        "action-route-deviation-alert"
+      ],
+      "activation_status": "specified_not_activated",
+      "agent_step_ids": [],
+      "child_workflows": [],
+      "entry_step_ids": [
+        "step-classify"
+      ],
+      "execution_modes": {
+        "system": 10
+      },
+      "id": "workflow-risk-classification-alert-routing",
+      "step_count": 10,
+      "step_kinds": {
+        "action": 6,
+        "decision": 3,
+        "wait": 1
+      },
+      "trigger_events": [],
+      "trigger_kinds": [
+        "manual"
+      ],
+      "version": "1.0.3",
+      "wait_step_ids": [
+        "step-wait-routing-resolution"
+      ]
+    }
+  ]
+}
