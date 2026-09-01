@@ -471,7 +471,12 @@
         ],
         "description": "选择做轻量调整或仅继续监控。",
         "form_schema": {
+          "description": "预警编号由系统从本次预警上下文带出，不需要手工填写。",
           "properties": {
+            "alert_id": {
+              "title": "预警编号",
+              "type": "string"
+            },
             "handling_action": {
               "enum": [
                 "轻量调整",
@@ -486,6 +491,7 @@
             }
           },
           "required": [
+            "alert_id",
             "handling_action"
           ],
           "title": "蓝色预警 · 自行处置",
@@ -1720,10 +1726,23 @@
         "awaiting_role": "计划员",
         "description": "采集业务核实结果：属实或误报，供误报回收使用。",
         "form_schema": {
+          "description": "闭环留痕需要的标识由系统从本次预警上下文带出，不需要手工填写；只需给出核实结论（BR-CLOSE-02：无留痕不予闭环）。",
           "properties": {
+            "alert_id": {
+              "title": "预警编号",
+              "type": "string"
+            },
+            "chain_id": {
+              "title": "采购执行链路编号",
+              "type": "string"
+            },
             "deviation_eliminated": {
               "title": "重算后偏差是否已消除（BR-CLOSE-01）",
               "type": "boolean"
+            },
+            "deviation_id": {
+              "title": "偏差编号",
+              "type": "string"
             },
             "remark": {
               "title": "核实说明",
@@ -1740,7 +1759,8 @@
           },
           "required": [
             "verification_result",
-            "deviation_eliminated"
+            "deviation_eliminated",
+            "alert_id"
           ],
           "title": "偏差处置闭环 · 业务核实",
           "type": "object"

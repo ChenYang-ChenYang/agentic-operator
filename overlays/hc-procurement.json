@@ -178,11 +178,17 @@
             "remark": {
               "type": "string",
               "title": "处置说明"
+            },
+            "alert_id": {
+              "type": "string",
+              "title": "预警编号"
             }
           },
           "required": [
+            "alert_id",
             "handling_action"
-          ]
+          ],
+          "description": "预警编号由系统从本次预警上下文带出，不需要手工填写。"
         }
       }
     },
@@ -442,12 +448,26 @@
             "remark": {
               "type": "string",
               "title": "核实说明"
+            },
+            "alert_id": {
+              "type": "string",
+              "title": "预警编号"
+            },
+            "chain_id": {
+              "type": "string",
+              "title": "采购执行链路编号"
+            },
+            "deviation_id": {
+              "type": "string",
+              "title": "偏差编号"
             }
           },
           "required": [
             "verification_result",
-            "deviation_eliminated"
-          ]
+            "deviation_eliminated",
+            "alert_id"
+          ],
+          "description": "闭环留痕需要的标识由系统从本次预警上下文带出，不需要手工填写；只需给出核实结论（BR-CLOSE-02：无留痕不予闭环）。"
         }
       }
     },
