@@ -459,3 +459,51 @@ describe("deriveWorkflowEntrypoints · which entry the console defaults to", () 
     ).toBe(true);
   });
 });
+
+describe("workflowInputExampleValue · usable defaults", () => {
+  const port = (schema: Record<string, unknown>, id = "field") => ({
+    id,
+    label: id,
+    description: null,
+    kind: "value" as const,
+    required: true,
+    schema,
+    sensitivity: "none" as const,
+    consumers: ["agent"],
+    bindings: [{ agentId: "agent", mode: "direct" as const }],
+    conflict: false,
+  });
+
+  // Every field rendered the literal placeholder 示例值 because the compiled
+  // ports carried a bare {type:"string"}. The console could always do better
+  // than that — it just had nothing to go on.
+  it("uses the first declared choice rather than a placeholder", () => {
+    expect(
+      workflowInputExampleValue(
+        port({ type: "string", examples: ["全集团", "指定单位"] }, "chain_scope"),
+      ),
+    ).toBe("全集团");
+  });
+
+  // A frozen example is stale the day after it is written, and a scan date is
+  // what the entire run is anchored on.
+  it("dates default to today, not to whenever this code was written", () => {
+    const today = new Date().toISOString().slice(0, 10);
+    expect(
+      workflowInputExampleValue(port({ type: "string", format: "date" }, "scan_date")),
+    ).toBe(today);
+    expect(
+      String(
+        workflowInputExampleValue(
+          port({ type: "string", format: "date-time" }, "changed_at"),
+        ),
+      ).startsWith(today),
+    ).toBe(true);
+  });
+
+  it("still shapes an identifier from its name", () => {
+    expect(
+      workflowInputExampleValue(port({ type: "string" }, "scan_batch_id")),
+    ).toBe("SB-2026-001");
+  });
+});

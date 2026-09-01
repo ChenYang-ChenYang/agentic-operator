@@ -37,6 +37,7 @@ import type {
   StudioAction,
   StudioDomainModel,
   StudioEvent,
+  StudioEventDataField,
   StudioRule,
 } from "./types.ts";
 
@@ -93,29 +94,64 @@ function inputPortsFor(ctx: CompileContext, trigger: string[]): AgentInputPort[]
         ...(field.description ? { description: field.description } : {}),
         kind: "value",
         required: field.required === true,
-        schema: { type: ontologyTypeToJsonType(field.type) },
+        schema: ontologyFieldSchema(field),
       });
     }
   }
   return [...ports.values()];
 }
 
-/** Ontology scalar names → JSON Schema types. Anything richer stays a string;
- *  the console renders a text field and the agent parses it, which is what the
- *  ontology's own Date/Decimal fields already are on the wire. */
-function ontologyTypeToJsonType(type: string | undefined): string {
-  switch ((type ?? "").toLowerCase()) {
-    case "integer":
-      return "integer";
-    case "number":
-    case "decimal":
-    case "float":
-      return "number";
-    case "boolean":
-      return "boolean";
-    default:
-      return "string";
+/**
+ * Ontology scalar names → a JSON Schema the run console can actually generate a
+ * value from.
+ *
+ * A bare `{type:"string"}` is why every field defaulted to the literal
+ * placeholder 示例值: the console already knows how to render a date from
+ * `format` and a choice from `enum`/`examples`, it was just never given either.
+ * Carrying the ontology's own type through is what makes the default payload
+ * runnable instead of decorative.
+ */
+function ontologyFieldSchema(field: StudioEventDataField): Record<string, unknown> {
+  const type = (field.type ?? "").toLowerCase();
+  if (type === "integer") return { type: "integer" };
+  if (type === "number" || type === "decimal" || type === "float") {
+    return { type: "number" };
   }
+  if (type === "boolean") return { type: "boolean" };
+  if (type === "date") return { type: "string", format: "date" };
+  if (type === "datetime" || type === "timestamp") {
+    return { type: "string", format: "date-time" };
+  }
+  const choices = choicesFromDescription(field.description);
+  return choices ? { type: "string", examples: choices } : { type: "string" };
+}
+
+/** A description longer than this is prose, not a list of choices. */
+const CHOICE_TEXT_MAX = 14;
+
+/**
+ * Pull the options out of a description that enumerates them, e.g.
+ * 「变更单据类型：采购申请/采购包/询价单/…」or「扫描范围：全集团或指定单位」.
+ *
+ * Emitted as `examples`, deliberately NOT as `enum`: the console picks the
+ * first one as the default value either way, but `enum` would also CONSTRAIN
+ * the field, and a description is documentation — it is not authority to reject
+ * a value the ontology never actually restricted.
+ */
+function choicesFromDescription(description: string | undefined): string[] | null {
+  const body = (description ?? "").split(/[：:]/).slice(1).join(":");
+  if (!body) return null;
+  const cleaned = body.replace(/[。.\s]+$/, "").trim();
+  const parts = cleaned.includes("/")
+    ? cleaned.split("/")
+    : cleaned.includes("或")
+      ? cleaned.split("或")
+      : [];
+  const choices = parts.map((part) => part.trim()).filter(Boolean);
+  if (choices.length < 2) return null;
+  // One long member means the split cut through a sentence, not a list.
+  if (choices.some((choice) => choice.length > CHOICE_TEXT_MAX)) return null;
+  return choices;
 }
 
 function fail(message: string): never {

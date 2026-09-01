@@ -465,3 +465,91 @@ describe("dependency gating consistency", () => {
     }
   });
 });
+
+describe("compiled input ports", () => {
+  const model = loadStudioDomain(FIXTURE_SOURCE);
+  const agents = compilePowerScm().workflow;
+
+  const eventFields = (agent: CompiledAgent) =>
+    agent.trigger.flatMap(
+      (event) =>
+        model.events.find((candidate) => candidate.name === event)?.payload
+          ?.event_data ?? [],
+    );
+
+  // Without `inputs` the run console falls back to a generic payload/prompt
+  // pair, and the default event body carries none of the fields the agent's own
+  // prompt requires. The ports come from the trigger event's own schema.
+  it("gives every triggered agent the fields its trigger declares", () => {
+    for (const agent of agents) {
+      const declared = new Set(eventFields(agent).map((field) => field.name));
+      const actual = new Set(agent.inputs.map((port) => port.id));
+      for (const name of declared) expect(actual.has(name)).toBe(true);
+    }
+  });
+
+  it("carries `required` through, so the console can mark it", () => {
+    for (const agent of agents) {
+      for (const port of agent.inputs) {
+        const field = eventFields(agent).find(
+          (candidate) => candidate.name === port.id,
+        );
+        expect(port.required).toBe(field?.required === true);
+      }
+    }
+  });
+
+  /** Compile one probe field and hand back the port it produced. */
+  function probePort(field: Record<string, unknown>) {
+    const probed = {
+      ...model,
+      events: [
+        { name: "__PROBE__", payload: { event_data: [field] } },
+        ...model.events,
+      ],
+      actions: model.actions.map((action, index) =>
+        index === 0 ? { ...action, trigger: ["__PROBE__"] } : action,
+      ),
+    };
+    const [port] = compile(probed, loadOverlayFixture(), {
+      tenant: "power-scm",
+    }).workflow[0]!.inputs;
+    return (port?.schema ?? {}) as Record<string, unknown>;
+  }
+
+  // A bare {type:"string"} is what made every field render the placeholder
+  // 示例值 — the console can generate a real value, given something to go on.
+  it("translates the ontology's own type into something generatable", () => {
+    const of = (type: string) =>
+      probePort({ name: "probe_field", type, required: true });
+    expect(of("Date").format).toBe("date");
+    expect(of("DateTime").format).toBe("date-time");
+    expect(of("Integer").type).toBe("integer");
+    expect(of("Decimal").type).toBe("number");
+    expect(of("Boolean").type).toBe("boolean");
+    expect(of("String")).toEqual({ type: "string" });
+  });
+
+  it("lifts an enumerated description into examples, not into an enum", () => {
+    const schema = probePort({
+      name: "document_type",
+      type: "String",
+      description: "变更单据类型：采购申请/采购包/询价单。",
+      required: true,
+    });
+    expect(schema.examples).toEqual(["采购申请", "采购包", "询价单"]);
+    // A description documents; it is not authority to reject a value the
+    // ontology never actually restricted.
+    expect(schema.enum).toBeUndefined();
+  });
+
+  it("leaves prose alone rather than splitting a sentence into choices", () => {
+    const schema = probePort({
+      name: "note",
+      type: "String",
+      description: "说明：请描述本次变更的业务背景与预期结果。",
+      required: false,
+    });
+    expect(schema.examples).toBeUndefined();
+  });
+});

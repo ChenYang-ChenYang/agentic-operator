@@ -401,9 +401,13 @@ function schemaExample(
   if (type === "null") return null;
 
   const format = typeof schema.format === "string" ? schema.format : "";
-  if (format === "date-time") return "2026-07-17T09:00:00Z";
-  if (format === "date") return "2026-07-17";
-  if (format === "time") return "09:00:00Z";
+  // Today, not a frozen date. A hard-coded example is stale the day after it is
+  // written, and for a field like a scan date it is worse than stale: the whole
+  // run is anchored on it, so a date from months ago quietly produces a
+  // different — and unrepresentative — result.
+  if (format === "date-time") return `${new Date().toISOString().slice(0, 19)}Z`;
+  if (format === "date") return new Date().toISOString().slice(0, 10);
+  if (format === "time") return `${new Date().toISOString().slice(11, 19)}Z`;
   if (format === "email") return "alex.morgan@example.com";
   if (format === "uuid") return "123e4567-e89b-12d3-a456-426614174000";
   if (format === "uri" || format === "url") {

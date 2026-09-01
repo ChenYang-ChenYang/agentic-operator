@@ -36,6 +36,7 @@
         "label": "scan_date",
         "required": true,
         "schema": {
+          "format": "date",
           "type": "string"
         }
       },
@@ -56,6 +57,10 @@
         "label": "chain_scope",
         "required": false,
         "schema": {
+          "examples": [
+            "全集团",
+            "指定单位"
+          ],
           "type": "string"
         }
       },
@@ -66,6 +71,15 @@
         "label": "document_type",
         "required": true,
         "schema": {
+          "examples": [
+            "采购申请",
+            "采购包",
+            "询价单",
+            "定标结果",
+            "采购合同",
+            "采购订单",
+            "采购验收"
+          ],
           "type": "string"
         }
       },
@@ -106,6 +120,7 @@
         "label": "changed_at",
         "required": true,
         "schema": {
+          "format": "date-time",
           "type": "string"
         }
       }
@@ -312,6 +327,7 @@
         "label": "last_synced_at",
         "required": true,
         "schema": {
+          "format": "date-time",
           "type": "string"
         }
       }
@@ -421,6 +437,7 @@
         "label": "evaluated_at",
         "required": true,
         "schema": {
+          "format": "date-time",
           "type": "string"
         }
       }
@@ -651,6 +668,11 @@
         "label": "probability_grade",
         "required": true,
         "schema": {
+          "examples": [
+            "红色",
+            "黄色",
+            "蓝色"
+          ],
           "type": "string"
         }
       },
@@ -711,6 +733,7 @@
         "label": "escalated_at",
         "required": true,
         "schema": {
+          "format": "date-time",
           "type": "string"
         }
       }
@@ -935,6 +958,11 @@
         "label": "alert_level",
         "required": true,
         "schema": {
+          "examples": [
+            "红色",
+            "黄色",
+            "蓝色"
+          ],
           "type": "string"
         }
       },
@@ -955,6 +983,7 @@
         "label": "raised_at",
         "required": true,
         "schema": {
+          "format": "date-time",
           "type": "string"
         }
       }
@@ -1100,6 +1129,11 @@
         "label": "alert_level",
         "required": true,
         "schema": {
+          "examples": [
+            "红色",
+            "黄色",
+            "蓝色"
+          ],
           "type": "string"
         }
       },
@@ -1120,6 +1154,7 @@
         "label": "raised_at",
         "required": true,
         "schema": {
+          "format": "date-time",
           "type": "string"
         }
       }
@@ -1484,6 +1519,7 @@
         "label": "generated_at",
         "required": true,
         "schema": {
+          "format": "date-time",
           "type": "string"
         }
       }
@@ -1607,6 +1643,7 @@
         "label": "scan_at",
         "required": true,
         "schema": {
+          "format": "date-time",
           "type": "string"
         }
       },
@@ -1802,6 +1839,7 @@
         "label": "decided_at",
         "required": true,
         "schema": {
+          "format": "date-time",
           "type": "string"
         }
       }
@@ -1987,6 +2025,7 @@
         "label": "decided_at",
         "required": true,
         "schema": {
+          "format": "date-time",
           "type": "string"
         }
       }
@@ -2172,6 +2211,7 @@
         "label": "decided_at",
         "required": true,
         "schema": {
+          "format": "date-time",
           "type": "string"
         }
       }
@@ -2345,6 +2385,7 @@
         "label": "expected_arrival_date",
         "required": true,
         "schema": {
+          "format": "date",
           "type": "string"
         }
       }
@@ -2451,6 +2492,7 @@
         "label": "executed_at",
         "required": true,
         "schema": {
+          "format": "date-time",
           "type": "string"
         }
       },
@@ -2471,6 +2513,7 @@
         "label": "original_required_arrival_date",
         "required": true,
         "schema": {
+          "format": "date",
           "type": "string"
         }
       },
@@ -2481,6 +2524,7 @@
         "label": "required_arrival_date",
         "required": true,
         "schema": {
+          "format": "date",
           "type": "string"
         }
       },
@@ -2511,6 +2555,7 @@
         "label": "actual_arrival_date",
         "required": true,
         "schema": {
+          "format": "date",
           "type": "string"
         }
       },
@@ -2521,6 +2566,7 @@
         "label": "returned_at",
         "required": false,
         "schema": {
+          "format": "date-time",
           "type": "string"
         }
       }
@@ -2749,6 +2795,10 @@
         "label": "verification_result",
         "required": true,
         "schema": {
+          "examples": [
+            "属实",
+            "误报"
+          ],
           "type": "string"
         }
       },
@@ -2759,6 +2809,7 @@
         "label": "closed_at",
         "required": true,
         "schema": {
+          "format": "date-time",
           "type": "string"
         }
       }

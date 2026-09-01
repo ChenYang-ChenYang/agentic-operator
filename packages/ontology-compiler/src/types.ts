@@ -325,7 +325,9 @@ export interface AgentInputPort {
   description?: string;
   kind: "value";
   required: boolean;
-  schema: { type: string };
+  /** JSON Schema fragment — carries `format`/`examples` so the run console
+   *  can generate a usable default rather than a placeholder. */
+  schema: Record<string, unknown>;
 }
 
 export interface CompiledAgent {
