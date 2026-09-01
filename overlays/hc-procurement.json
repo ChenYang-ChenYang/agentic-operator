@@ -543,10 +543,10 @@
     },
     "scoreOnTimeProbability": {
       "fields": {
-        "execution_deviation": "原样透传上游执行偏差对象。",
-        "procurement_chain": "原样透传上游链路对象。",
-        "probability_assessment": "按期达成概率评估：{assessment_id, deviation_id, chain_id, current_stage, remaining_standard_cycle_days:number（当前节点之后各节点标准周期之和，取自 getStageCycleConfig）, days_to_required_arrival:number, dwell_days:number, historical_on_time_rate:number（取自 queryHistoricalOnTimeRate）, historical_sample_size:integer, on_time_probability:number（0~1）, probability_grade:'红色'|'黄色'|'蓝色', explanation:string（不得为空，BR-PROB-04）, assessed_at}。【定级硬性】必须用 getAlertThresholdConfig 返回的分界值：概率<红色概率上限判红、介于红色上限与黄色下限之间判黄、>黄色概率下限判蓝（BR-PROB-01~03）。【explanation 硬性】必须同时说明剩余周期、滞留天数、历史达成率与样本量这四项如何影响了概率——只报超期天数不足以支撑决策。",
-        "alert_level": "与 probability_grade 同值，供下游预警推送直接取用。",
+        "execution_deviation": "只透传 has_deviation=true 的那些偏差对象，逐字原样，不得改写。上游 execution_deviation 里 has_deviation=false 的链路（未完成但未延期）**必须整条丢弃**——它没有偏差，不评分、不定级、不预警。",
+        "procurement_chain": "只透传上述保留下来的偏差所对应的链路对象，逐字原样。被丢弃的链路一并丢弃。",
+        "probability_assessment": "**只对 has_deviation=true 的链路评估**，每条一个对象；被丢弃的链路不得出现。\n按期达成概率评估：{assessment_id, deviation_id, chain_id, current_stage, remaining_standard_cycle_days:number（当前节点之后各节点标准周期之和，取自 getStageCycleConfig）, days_to_required_arrival:number, dwell_days:number, historical_on_time_rate:number（取自 queryHistoricalOnTimeRate）, historical_sample_size:integer, on_time_probability:number（0~1）, probability_grade:'红色'|'黄色'|'蓝色', explanation:string（不得为空，BR-PROB-04）, assessed_at}。【定级硬性】必须用 getAlertThresholdConfig 返回的分界值：概率<红色概率上限判红、介于红色上限与黄色下限之间判黄、>黄色概率下限判蓝（BR-PROB-01~03）。【explanation 硬性】必须同时说明剩余周期、滞留天数、历史达成率与样本量这四项如何影响了概率——只报超期天数不足以支撑决策。",
+        "alert_level": "与 probability_grade 同值，供下游预警推送直接取用。**与 probability_assessment 一一对应、条数一致**——被丢弃的链路不得在这里留下等级。",
         "_parallel_tool_calls": "【并发取数（硬性）】本步的这些查询彼此独立、没有先后依赖，请在**同一轮**里一次性发出全部 metaerp.invoke 工具调用，不要一个一个串行来回——运行时支持一轮多调用（step-engine 按数组逐个执行），串行会把这一步拖成十几分钟。只有当后一个查询确实要用前一个的返回值做入参时，才允许分轮。本步需要的查询：queryStageCycleConfig、queryHistoricalOnTimeRate、queryAlertThresholdConfig。第一轮一次性发出。本字段只是取数纪律说明，输出 JSON 里填一句确认语即可。",
         "scan_date": "触发事件负载里 scan_date 的值，**原样照抄**（YYYY-MM-DD 字符串，例如事件给 \"2026-09-01\" 就填 \"2026-09-01\"）。这是业务扫描日期，不是系统时间——与你认知里的今天不同也以它为准。**此字段必填，不得留空**。剩余天数、滞留天数以它为「今天」。"
       }
