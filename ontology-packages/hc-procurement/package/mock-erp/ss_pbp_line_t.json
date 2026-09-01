@@ -1,0 +1,30 @@
+{
+  "rows": [
+    {
+      "DEMAND_DEPARTMENT": "检修一部",
+      "ITEM_CODE": "M-BRK-126",
+      "ITEM_NAME": "126kV SF6 断路器",
+      "NEED_BY_DATE": "2026-11-30",
+      "ORIGINAL_NEED_BY_DATE": "",
+      "PBP_HEADER_ID": "PBP-2026-0873",
+      "PBP_LINE_ID": "PBPL-2026-0873-01",
+      "PLANNED_AMOUNT": 4560000,
+      "QUANTITY": 12,
+      "UNIT": "台",
+      "USAGE_SCENARIO": "大修"
+    },
+    {
+      "DEMAND_DEPARTMENT": "检修二部",
+      "ITEM_CODE": "M-CT-110",
+      "ITEM_NAME": "110kV 电流互感器",
+      "NEED_BY_DATE": "2027-01-20",
+      "ORIGINAL_NEED_BY_DATE": "",
+      "PBP_HEADER_ID": "PBP-2026-0914",
+      "PBP_LINE_ID": "PBPL-2026-0914-03",
+      "PLANNED_AMOUNT": 1740000,
+      "QUANTITY": 30,
+      "UNIT": "台",
+      "USAGE_SCENARIO": "生产"
+    }
+  ]
+}

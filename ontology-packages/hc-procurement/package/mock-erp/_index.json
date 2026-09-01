@@ -1,0 +1,161 @@
+{
+  "base_path": "/metaerp/openapi/v1",
+  "endpoints": [
+    {
+      "entity": "ac_header_t",
+      "file": "ac_header_t.json",
+      "object_id": "Goods_Acceptance",
+      "operation": "queryAcceptHeader"
+    },
+    {
+      "entity": "ac_transaction_t",
+      "file": "ac_transaction_t.json",
+      "object_id": "ac_transaction_t",
+      "operation": "queryAcceptTransaction"
+    },
+    {
+      "entity": "dev_adjustment_option_t",
+      "file": "dev_adjustment_option_t.json",
+      "object_id": "Adjustment_Option",
+      "operation": "queryAdjustmentOptions"
+    },
+    {
+      "entity": "dev_alert_handling_record_t",
+      "file": "dev_alert_handling_record_t.json",
+      "object_id": "Alert_Handling_Record",
+      "operation": "queryAlertHandlingRecords"
+    },
+    {
+      "entity": "cfg_alert_threshold_t",
+      "file": "cfg_alert_threshold_t.json",
+      "object_id": "Alert_Threshold_Setting",
+      "operation": "queryAlertThresholdConfig"
+    },
+    {
+      "entity": "ss_pbp_rel_t",
+      "file": "ss_pbp_rel_t.json",
+      "object_id": "ss_pbp_rel_t",
+      "operation": "queryAllPbpLinePage"
+    },
+    {
+      "entity": "ss_bid_header_t",
+      "file": "ss_bid_header_t.json",
+      "object_id": "Bid_Award",
+      "operation": "queryAwardList"
+    },
+    {
+      "entity": "emg_chain_stage_progress_t",
+      "file": "emg_chain_stage_progress_t.json",
+      "object_id": "Chain_Stage_Progress",
+      "operation": "queryChainStageProgress"
+    },
+    {
+      "entity": "clm_contract_t",
+      "file": "clm_contract_t.json",
+      "object_id": "Purchase_Contract",
+      "operation": "queryContract"
+    },
+    {
+      "entity": "dev_deviation_alert_t",
+      "file": "dev_deviation_alert_t.json",
+      "object_id": "Deviation_Alert",
+      "operation": "queryDeviationAlerts"
+    },
+    {
+      "entity": "dev_execution_deviation_t",
+      "file": "dev_execution_deviation_t.json",
+      "object_id": "Execution_Deviation",
+      "operation": "queryExecutionDeviations"
+    },
+    {
+      "entity": "stat_historical_on_time_rate_t",
+      "file": "stat_historical_on_time_rate_t.json",
+      "object_id": "stat_historical_on_time_rate_t",
+      "operation": "queryHistoricalOnTimeRate"
+    },
+    {
+      "entity": "ss_pbp_header_t",
+      "file": "ss_pbp_header_t.json",
+      "object_id": "Procurement_Plan",
+      "operation": "queryOpenPbpHeader"
+    },
+    {
+      "entity": "ss_pbp_line_t",
+      "file": "ss_pbp_line_t.json",
+      "object_id": "Procurement_Plan_Line",
+      "operation": "queryOpenPbpLine"
+    },
+    {
+      "entity": "po_header_t",
+      "file": "po_header_t.json",
+      "object_id": "Purchase_Order",
+      "operation": "queryPoHeader"
+    },
+    {
+      "entity": "po_line_shipment_t",
+      "file": "po_line_shipment_t.json",
+      "object_id": "po_line_shipment_t",
+      "operation": "queryPoLineShipment"
+    },
+    {
+      "entity": "pr_header_t",
+      "file": "pr_header_t.json",
+      "object_id": "Purchase_Requisition",
+      "operation": "queryPr"
+    },
+    {
+      "entity": "dev_probability_assessment_t",
+      "file": "dev_probability_assessment_t.json",
+      "object_id": "Delivery_Probability_Assessment",
+      "operation": "queryProbabilityAssessments"
+    },
+    {
+      "entity": "ss_proc_package_header_t",
+      "file": "ss_proc_package_header_t.json",
+      "object_id": "Sourcing_Package",
+      "operation": "queryProcPackageLineExecuteMode"
+    },
+    {
+      "entity": "emg_procurement_chain_t",
+      "file": "emg_procurement_chain_t.json",
+      "object_id": "Procurement_Chain",
+      "operation": "queryProcurementChains"
+    },
+    {
+      "entity": "ss_rfx_header_t",
+      "file": "ss_rfx_header_t.json",
+      "object_id": "Inquiry_Notice",
+      "operation": "queryRfxList"
+    },
+    {
+      "entity": "dev_rule_review_item_t",
+      "file": "dev_rule_review_item_t.json",
+      "object_id": "Rule_Review_Item",
+      "operation": "queryRuleReviewItems"
+    },
+    {
+      "entity": "ss_spa_header_t",
+      "file": "ss_spa_header_t.json",
+      "object_id": "ss_spa_header_t",
+      "operation": "querySpaList"
+    },
+    {
+      "entity": "cfg_stage_cycle_standard_t",
+      "file": "cfg_stage_cycle_standard_t.json",
+      "object_id": "Stage_Cycle_Standard",
+      "operation": "queryStageCycleConfig"
+    },
+    {
+      "entity": "inv_transaction_order_t",
+      "file": "inv_transaction_order_t.json",
+      "object_id": "Stock_Transfer_Request",
+      "operation": "queryTransactionOrders"
+    },
+    {
+      "entity": "inv_transferable_stock_t",
+      "file": "inv_transferable_stock_t.json",
+      "object_id": "inv_transferable_stock_t",
+      "operation": "queryTransferableStock"
+    }
+  ]
+}

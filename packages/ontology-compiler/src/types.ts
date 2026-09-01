@@ -197,6 +197,12 @@ export interface OverlayRuleGate {
 export interface OverlayManualStep {
   awaiting_role?: string;
   form_schema?: Record<string, unknown>;
+  /** Typed task class surfaced to the operator. Defaults to the ontology
+   * manual-step name, which is exactly what register.ts already falls back to
+   * (`action.task_type ?? action.name`), so the default changes no behaviour —
+   * it only makes the contract explicit, which the authoring lint requires
+   * before a human-actor agent can be draft-tested or published. */
+  task_type?: string;
 }
 
 export type OverlayToolArgumentSource =
@@ -235,6 +241,19 @@ export interface CompilerOverlay {
   output_contracts?: Record<string, { fields?: Record<string, string> }>;
   /** actionId → extra read-only tools granted to that agent's LLM steps. */
   extra_tools?: Record<string, OverlayExtraTool[]>;
+  /**
+   * actionId → the ontology event that undoes this action's side effect.
+   *
+   * An ontology action often declares BOTH its success event and its failure
+   * event in `triggered_event` (e.g. `TRANSFER_ORDERS_CREATED` alongside
+   * `ORDER_WRITEBACK_FAILED`). Compiling both as emit steps would fire the
+   * failure event on every SUCCESSFUL write. Naming the failure event here
+   * instead compiles it to the agent's `compensation_event`, which
+   * register.ts emits exactly once on a hard failure — the saga semantics the
+   * ontology's rule actually describes. The named event is removed from the
+   * auto-emit list.
+   */
+  compensation_events?: Record<string, string>;
 }
 
 // ── compiled output ───────────────────────────────────────────────────────────
@@ -305,6 +324,8 @@ export interface CompiledAgent {
   triggered_event: string[];
   retries: number;
   generated: true;
+  /** Emitted once by register.ts when the run fails hard (overlay-declared). */
+  compensation_event?: string;
   ontology_instructions?: string;
   tool_use: CompiledToolUseEntry[];
   actions: CompiledStep[];

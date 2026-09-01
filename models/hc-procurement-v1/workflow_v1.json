@@ -1,0 +1,1996 @@
+[
+  {
+    "actions": [
+      {
+        "action_prompt": "【查】按日定时或单据状态变更触发，拉取全集团在途采购计划及其申请/组包/询价/定标/合同/订单/验收全链路单据，逐节点回写实际完成状态与时间，形成一单一档的全链路进度视图：在途单 100% 覆盖、进度零手工录入(R1-01)。\n\n【取数步骤（在产出 JSON 之前必须先按此执行）】\n\n第 0 步 · 定范围：看触发事件负载有没有 plan_id 或 plan_no。有就**只处理这一个计划**——\n调用 queryOpenPbpHeader 时必须带过滤条件 {\"PBP_HEADER_ID\": \"<该值>\"}，不得拉全量再自己筛。\n没有才按 BR-COV-01 处理全部状态=已批准且在途的计划。\n\n第 1 步 · 寻源段（7 个调用，必发，**同一轮一次性并发全部发出**，不要一个一个串行）：\nqueryOpenPbpHeader、queryOpenPbpLine、queryAllPbpLinePage、queryPr、\nqueryProcPackageLineExecuteMode、queryRfxList、queryAwardList\n拿到结果后判定每条链路的 立项 / 组包 / 询价 / 定标 四个节点是否完成。\n\n第 2 步 · 早停判据：链路是严格串行的——价格协议、合同、订单、验收全部是定标的下游，\n没有定标就一定没有它们。**只有当范围内至少一条链路的定标节点已完成**\n（queryAwardList 查到其询价单对应的定标行且有 AWARD_DATE）时，才允许进入第 3 步。\n若范围内所有链路都停在定标或更早：**立即停止取数，禁止发出执行段那 6 个调用中的任何一个**，\n把停滞节点及其之后的所有节点写成 stage_status='未开始'、actual_finish_date=null，\n该链路的 stalled_at 填停滞节点名，query_rounds_used 填 1，然后直接产出 JSON。\n\n第 3 步 · 执行段（6 个调用，仅在第 2 步放行时发，同样一轮并发全发）：\nquerySpaList、queryContract、queryPoHeader、queryPoLineShipment、\nqueryAcceptHeader、queryAcceptTransaction\n此时 query_rounds_used 填 2。\n\n执行步骤：\n1. resolveChainSkeleton：按计划行建立/更新采购执行链路骨架与七个节点进度占位。\n2. writeBackChainProgress：回写链路当前节点、节点进度与最近同步时间，形成链路进度快照。\n\n输出契约（硬性）：仅输出一个 JSON 对象，不得输出任何其他文本。\n顶层键必须且只能是：`procurement_chain`、`stage_progress_list`、`synced_stage_count`、`coverage_note`、`identifier_discipline`、`query_rounds_used`、`queried_operations`、`scan_date` —— 不得增删、不得改名、不得另立自创结构（如 decision/result/summary 等一律不允许作为顶层键）。\n骨架：\n{\n  \"procurement_chain\": <见字段说明>,\n  \"stage_progress_list\": <见字段说明>,\n  \"synced_stage_count\": <见字段说明>,\n  \"coverage_note\": <见字段说明>,\n  \"identifier_discipline\": <见字段说明>,\n  \"query_rounds_used\": <见字段说明>,\n  \"queried_operations\": <见字段说明>,\n  \"scan_date\": <见字段说明>\n}\n字段说明：\n- chain_id: 采购执行链路编号。（事件 CHAIN_PROGRESS_SYNCED 的 payload 段）\n- current_stage: 刷新后的链路当前节点。（事件 CHAIN_PROGRESS_SYNCED 的 payload 段）\n- synced_stage_count: 本次刷新的节点数。（事件 CHAIN_PROGRESS_SYNCED 的 payload 段）\n- last_synced_at: 本次同步时间。（事件 CHAIN_PROGRESS_SYNCED 的 payload 段）\n- procurement_chain: 采购执行链路列表（范围内每条计划行一条）：[{chain_id, plan_id, plan_line_id, business_type, material_code, material_name, quantity, unit, required_arrival_date, current_stage:'立项'|'组包'|'询价'|'定标'|'合同'|'订单'|'到货', chain_status:'在途'|'已完成'|'已终止', planner, buyer, demand_department, forecast_arrival_date, last_synced_at, stalled_at:string|null（本链路停滞在哪一节——「已完成节点之后的第一个未完成节点」；七节点全完成时为 null）}]。current_stage 取该链路当前所处节点。\n- stage_progress_list: 七个节点的进度记录，顺序固定为 立项/组包/询价/定标/合同/订单/到货：[{stage_progress_id, chain_id, stage_node, stage_sequence:1-7, actual_finish_date, stage_status:'未开始'|'进行中'|'已完成'|'部分完成', source_document_type, source_document_no, stage_started_at, synced_at}]。每个节点的实际完成时间必须来自对应单据的真实字段：立项=采购申请审批通过时间、组包=采购包 LAST_UPDATE_DATE、询价=询价单 EFFECTIVE_DATE、定标=定标 AWARD_DATE、合同=合同 SIGNING_DATE、订单=订单 EFFECTIVE_DATE、到货=验收完成时间（接收数量=订单数量才算完成，小于为部分完成）。查不到对应单据的节点写 stage_status='未开始'、actual_finish_date=null，不得编造。\n- coverage_note: 本次盯防范围说明：若触发事件带 plan_id/plan_no，写明「按事件指定范围只处理 <该计划>」；否则写明已按 BR-COV-01 全量纳入所有状态=已批准且在途的计划、未做抽查。\n- identifier_discipline: 【标识符纪律】plan_id / plan_line_id / 各单据号一律使用 metaERP 查询返回的原值（如 PBP-2026-0873、PBPL-2026-0873-01、PR-2026-11832、RFX-2026-0662），不得自造或翻译编码——下游按这些值 join ERP 台账。本字段填写一句确认语。\n- query_rounds_used: 本次实际发出的取数轮次（整数）：1=只发了寻源段 7 个调用（早停）；2=寻源段 7 + 执行段 6。如实填写实际发生的轮次。\n- queried_operations: 本次实际调用过的 op 名清单（数组，去重）。早停时其中**不得出现** querySpaList / queryContract / queryPoHeader / queryPoLineShipment / queryAcceptHeader / queryAcceptTransaction 中的任何一个。\n- scan_date: 触发事件负载里 scan_date 的值，**原样照抄**（YYYY-MM-DD 字符串，例如事件给 \"2026-09-01\" 就填 \"2026-09-01\"）。这是业务扫描日期，不是系统时间——与你认知里的今天不同也以它为准。**此字段必填，不得留空**。下游判定「今天」全部以它为准。\n下游步骤按上述键名逐字段取数，键名不符将导致整条业务链路中断（fail-closed）。",
+        "allowed_tools": [
+          "metaerp.invoke"
+        ],
+        "description": "【查】按日定时或单据状态变更触发，拉取全集团在途采购计划及其申请/组包/询价/定标/合同/订单/验收全链路单据，逐节点回写实际完成状态与时间，形成一单一档的全链路进度视图：在途单 100% 覆盖、进度零手工录入(R1-01)。\n\n【取数步骤（在产出 JSON 之前必须先按此执行）】\n\n第 0 步 · 定范围：看触发事件负载有没有 plan_id 或 plan_no。有就**只处理这一个计划**——\n调用 queryOpenPbpHeader 时必须带过滤条件 {\"PBP_HEADER_ID\": \"<该值>\"}，不得拉全量再自己筛。\n没有才按 BR-COV-01 处理全部状态=已批准且在途的计划。\n\n第 1 步 · 寻源段（7 个调用，必发，**同一轮一次性并发全部发出**，不要一个一个串行）：\nqueryOpenPbpHeader、queryOpenPbpLine、queryAllPbpLinePage、queryPr、\nqueryProcPackageLineExecuteMode、queryRfxList、queryAwardList\n拿到结果后判定每条链路的 立项 / 组包 / 询价 / 定标 四个节点是否完成。\n\n第 2 步 · 早停判据：链路是严格串行的——价格协议、合同、订单、验收全部是定标的下游，\n没有定标就一定没有它们。**只有当范围内至少一条链路的定标节点已完成**\n（queryAwardList 查到其询价单对应的定标行且有 AWARD_DATE）时，才允许进入第 3 步。\n若范围内所有链路都停在定标或更早：**立即停止取数，禁止发出执行段那 6 个调用中的任何一个**，\n把停滞节点及其之后的所有节点写成 stage_status='未开始'、actual_finish_date=null，\n该链路的 stalled_at 填停滞节点名，query_rounds_used 填 1，然后直接产出 JSON。\n\n第 3 步 · 执行段（6 个调用，仅在第 2 步放行时发，同样一轮并发全发）：\nquerySpaList、queryContract、queryPoHeader、queryPoLineShipment、\nqueryAcceptHeader、queryAcceptTransaction\n此时 query_rounds_used 填 2。",
+        "name": "analyze",
+        "order": "1",
+        "result_key": "collectChainExecutionData",
+        "type": "logic"
+      },
+      {
+        "description": "发射事件 CHAIN_PROGRESS_SYNCED（无条件）。",
+        "emit_event": "CHAIN_PROGRESS_SYNCED",
+        "emit_payload_from": "results.collectChainExecutionData",
+        "name": "emit:CHAIN_PROGRESS_SYNCED",
+        "order": "2",
+        "result_key": "emit-CHAIN_PROGRESS_SYNCED",
+        "type": "emit"
+      }
+    ],
+    "actor": [
+      "Agent"
+    ],
+    "description": "【查】按日定时或单据状态变更触发，拉取全集团在途采购计划及其申请/组包/询价/定标/合同/订单/验收全链路单据，逐节点回写实际完成状态与时间，形成一单一档的全链路进度视图：在途单 100% 覆盖、进度零手工录入(R1-01)。\n\n【取数步骤（在产出 JSON 之前必须先按此执行）】\n\n第 0 步 · 定范围：看触发事件负载有没有 plan_id 或 plan_no。有就**只处理这一个计划**——\n调用 queryOpenPbpHeader 时必须带过滤条件 {\"PBP_HEADER_ID\": \"<该值>\"}，不得拉全量再自己筛。\n没有才按 BR-COV-01 处理全部状态=已批准且在途的计划。\n\n第 1 步 · 寻源段（7 个调用，必发，**同一轮一次性并发全部发出**，不要一个一个串行）：\nqueryOpenPbpHeader、queryOpenPbpLine、queryAllPbpLinePage、queryPr、\nqueryProcPackageLineExecuteMode、queryRfxList、queryAwardList\n拿到结果后判定每条链路的 立项 / 组包 / 询价 / 定标 四个节点是否完成。\n\n第 2 步 · 早停判据：链路是严格串行的——价格协议、合同、订单、验收全部是定标的下游，\n没有定标就一定没有它们。**只有当范围内至少一条链路的定标节点已完成**\n（queryAwardList 查到其询价单对应的定标行且有 AWARD_DATE）时，才允许进入第 3 步。\n若范围内所有链路都停在定标或更早：**立即停止取数，禁止发出执行段那 6 个调用中的任何一个**，\n把停滞节点及其之后的所有节点写成 stage_status='未开始'、actual_finish_date=null，\n该链路的 stalled_at 填停滞节点名，query_rounds_used 填 1，然后直接产出 JSON。\n\n第 3 步 · 执行段（6 个调用，仅在第 2 步放行时发，同样一轮并发全发）：\nquerySpaList、queryContract、queryPoHeader、queryPoLineShipment、\nqueryAcceptHeader、queryAcceptTransaction\n此时 query_rounds_used 填 2。",
+    "generated": true,
+    "id": "collectChainExecutionData",
+    "name": "collectChainExecutionData",
+    "ontology_instructions": "【目标对象】\n- 采购执行链路：决策属性 chain_id, plan_id, plan_line_id, business_type, material_code, material_name, quantity, required_arrival_date, current_stage, chain_status, planner, buyer, demand_department, forecast_arrival_date, last_synced_at\n- 链路节点进度：决策属性 stage_progress_id, chain_id, stage_node, stage_sequence, standard_cycle_days, planned_finish_date, actual_finish_date, stage_status, source_document_type, source_document_no, stage_started_at, planned_date_derived, dwell_days（推导＝days(now() - stage_started_at)）, synced_at\n\n【绑定规则】\n- BR-COV-01 已批准在途计划必须全量纳入盯防（guard·mandatory）：plan.plan_status == \"已批准\" && chain.chain_status == \"在途\"",
+    "retries": 3,
+    "title": "collectChainExecutionData",
+    "tool_use": [
+      {
+        "config": {
+          "base_url_env": "METAERP_BASE_URL",
+          "catalog_path": "models/hc-procurement-v1/erp-operations.json"
+        },
+        "description": "实时查询 Meta ERP。可用操作：queryOpenPbpHeader（查询在途采购计划头（状态=已批准）。）、queryOpenPbpLine（查询采购计划行——需求到货日期来源。）、queryAllPbpLinePage（分页查询计划头行关系，防止行重复归集（本体 tool_use 名 getAllPbpLinePageByQuery；编译器只识别 query* 前缀的只读 op）。）、queryPr（采集立项节点状态与审批通过时间。）、queryProcPackageLineExecuteMode（采集组包节点状态与组包完成时间。）、queryRfxList（采集询价节点状态、询价生效/发标/截标时间。）、queryAwardList（采集定标节点中标日期与中标供应商。）、querySpaList（采集价格协议——合同的前置凭据（本体 tool_use 名 getSpaByQuery）。）、queryContract（采集合同节点签署/生效状态与日期（本体 tool_use 名 getContractByQuery）。）、queryPoHeader（采集订单节点审批时间与生效日期。）、queryPoLineShipment（采集到货进度：订单数量与已接收数量。）、queryAcceptHeader（采集验收单与验收行接收数量。）、queryAcceptTransaction（采集验收交易记录与交易时间。）。",
+        "execution_policy": {
+          "effect_scope": "external",
+          "operation": "read_write",
+          "sandbox_policy": "requires_attempt_grant"
+        },
+        "input_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "operation": {
+              "description": "要调用的 Meta ERP 查询操作",
+              "enum": [
+                "queryOpenPbpHeader",
+                "queryOpenPbpLine",
+                "queryAllPbpLinePage",
+                "queryPr",
+                "queryProcPackageLineExecuteMode",
+                "queryRfxList",
+                "queryAwardList",
+                "querySpaList",
+                "queryContract",
+                "queryPoHeader",
+                "queryPoLineShipment",
+                "queryAcceptHeader",
+                "queryAcceptTransaction"
+              ],
+              "type": "string"
+            },
+            "payload": {
+              "description": "可选过滤条件：按返回行的列做精确匹配（如 {\"STATUS\":\"dormant\"}）",
+              "type": "object"
+            }
+          },
+          "required": [
+            "operation"
+          ],
+          "type": "object"
+        },
+        "name": "metaerp.invoke",
+        "side_effect": "read"
+      }
+    ],
+    "trigger": [
+      "DAILY_DEVIATION_SCAN_SCHEDULED",
+      "PROCUREMENT_DOCUMENT_STATUS_CHANGED"
+    ],
+    "triggered_event": [
+      "CHAIN_PROGRESS_SYNCED"
+    ]
+  },
+  {
+    "actions": [
+      {
+        "action_prompt": "【算】先取各环节实际完成时间，再以需求到货日期为基准按标准周期正排+倒排双向推算各节点计划完成时间并交叉校验(R1-02)；逐节点对比实际时间（未到节点以当日代入）算时间偏差，按到货数量算进度偏差，结合本单金额与历史同类单均值算金额偏差；按停滞环节与单据状态归纳成因标签，停滞在采购环节时触发采购员确认，最终汇总成该单的偏差画像(R1-03)。\n\n执行步骤：\n1. deriveplannedDates：以需求到货日期为基准正排+倒排双向推算各节点计划完成时间，交叉校验一致后置计划基准标志。\n2. computeTimeDeviation：逐节点算时间偏差 = 实际完成时间 − 计划完成时间；未到节点以当前日期代入。\n3. computeScheduleDeviation：进度偏差 = 1 − 已接收数量/订单数量。\n4. computeAmountDeviation：金额偏差 = 已发生金额/计划金额 − 1，并与历史同类单均值比对佐证。\n5. applyThreshold：从阈值配置取时间>7天/进度>20%判定是否存在偏差(BR-DEV-01、BR-DEV-02)。\n6. tagRootCause：看偏差发生在哪个环节、关联单据停在什么状态，归纳供应商延迟/审批滞留/组包等待/流标重招/物流异常成因标签(BR-DEV-03)。\n7. requestBuyerClarification：停滞在采购执行环节且成因无法自动判明时，触发消息至采购员确认停滞原因，澄清结果写入成因说明(BR-DEV-04)。\n8. composeDeviationProfile：把偏差天数、偏差金额、停滞原因汇总成偏差画像，交下一阶段判断。\n\n输出契约（硬性）：仅输出一个 JSON 对象，不得输出任何其他文本。\n顶层键必须且只能是：`procurement_chain`、`planned_dates`、`thresholds_used`、`execution_deviation`、`blocking_note`、`_parallel_tool_calls`、`scan_date` —— 不得增删、不得改名、不得另立自创结构（如 decision/result/summary 等一律不允许作为顶层键）。\n骨架：\n{\n  \"procurement_chain\": <见字段说明>,\n  \"planned_dates\": <见字段说明>,\n  \"thresholds_used\": <见字段说明>,\n  \"execution_deviation\": <见字段说明>,\n  \"blocking_note\": <见字段说明>,\n  \"_parallel_tool_calls\": <见字段说明>,\n  \"scan_date\": <见字段说明>\n}\n字段说明：\n- deviation_id: 执行偏差编号。（事件 EXECUTION_DEVIATION_CALCULATED 的 payload 段）\n- chain_id: 所属采购执行链路。（事件 EXECUTION_DEVIATION_CALCULATED 的 payload 段）\n- stage_node: 发生偏差的节点。（事件 EXECUTION_DEVIATION_CALCULATED 的 payload 段）\n- time_deviation_days: 时间偏差天数。（事件 EXECUTION_DEVIATION_CALCULATED 的 payload 段）\n- schedule_deviation_ratio: 进度偏差比例。（事件 EXECUTION_DEVIATION_CALCULATED 的 payload 段）\n- amount_deviation_ratio: 金额偏差比例。（事件 EXECUTION_DEVIATION_CALCULATED 的 payload 段）\n- cause_tag: 成因标签。（事件 EXECUTION_DEVIATION_CALCULATED 的 payload 段）\n- evaluated_at: 判定时间。（事件 NO_DEVIATION_CONFIRMED 的 payload 段）\n- procurement_chain: 原样透传上游链路对象，字段值不得改写或重新生成。\n- planned_dates: 各节点计划完成时间：[{stage_node, stage_sequence:1-7, standard_cycle_days, planned_finish_date:'YYYY-MM-DD', planned_date_derived:boolean}]。\n【倒排公式（逐字照算，不得凭感觉）】节点按 立项1/组包2/询价3/定标4/合同5/订单6/到货7 排序，标准周期取自 queryStageCycleConfig 中该 business_type 的行。\n  planned_finish(k) = required_arrival_date − Σ standard_cycle_days(j)，j 从 k+1 到 7\n即：到货(k=7) 的计划完成时间**就是** required_arrival_date 本身（不减任何东西）；其余节点 = 需求到货日期 减去**它之后**所有节点的标准周期之和，**不含本节点周期**。\n举例（物资类：立项10/组包15/询价20/定标15/合同15/订单10/到货70，需求到货 2026-11-30）：\n  到货 = 2026-11-30\n  订单 = 2026-11-30 − 70 = 2026-09-21\n  合同 = 2026-11-30 − (70+10) = 2026-09-11\n  定标 = 2026-11-30 − (70+10+15) = 2026-08-27\n  询价 = 2026-11-30 − (70+10+15+15) = 2026-08-12\n  组包 = 2026-11-30 − (70+10+15+15+20) = 2026-07-23\n  立项 = 2026-11-30 − (70+10+15+15+20+15) = 2026-07-08\n正排交叉校验：planned_finish(k) 应等于 planned_finish(k−1) + standard_cycle_days(k)；两向一致才置 planned_date_derived=true。缺任一节点周期配置则该节点不予推算并在 blocking_note 说明（BR-PLAN-01）。\n- thresholds_used: 本次判定实际采用的阈值，必须取自 getAlertThresholdConfig 返回值，不得写死：{time_deviation_days, schedule_deviation_ratio, threshold_ids:[string]}（BR-DEV-02）。\n- execution_deviation: 执行偏差列表（范围内每条链路一条）：[{deviation_id, chain_id, stage_progress_id, stage_node（发生偏差的节点＝「已完成节点之后的第一个未完成节点」）, planned_finish_date（取 planned_dates 里该节点的值）, actual_finish_date, time_deviation_days:number, schedule_deviation_ratio:number, amount_deviation_ratio:number|null, has_deviation:boolean, deviation_level:'待定级', cause_tag, cause_explanation, cause_clarification_status, dwell_days:number, disposal_state:'待评分', evaluated_at}]。\n\n【actual_finish_date（硬性）】只有节点 stage_status 为「已完成」时才取对应单据的完成字段。「未开始」「进行中」**以及「部分完成」**一律视为未完成——到货节点的接收数量小于订单数量就是部分接收，链路仍在途，**不得**拿验收单时间戳当完成时间——此时**逐字填入上游透传的 scan_date 字符串**（不是你认为的今天，也不是任何单据上的时间戳）——不得凭空生成一个日期、不得使用系统当前时间、不得沿用上游任何别的时间戳。实跑曾出现定标节点从未完成却被填了一个过去的日期，导致时间偏差算成负数（「提前 32 天」），延期判定整体失效。\n\n【time_deviation_days（硬性）】= actual_finish_date − planned_finish_date，单位天，**正数表示延迟**。未完成节点因为代入了 scan_date，这个值就等于「今天比该节点的计划完成时间晚了几天」。若算出负数，意味着该节点尚未到期。\n\n【evaluated_at（硬性·必填）】直接填 scan_date 的那个字符串，与 actual_finish_date 未完成时代入的值完全相同。本体里它是 is_required 字段，留空即为不合规。\n【dwell_days（必填）】= scan_date − 该节点开始时间，单位天（整数或小数）。取不到节点开始时间时填 0，不要填 null。\n【deviation_level】本步一律填 '待定级'——等级由下游 scoreOnTimeProbability 按按期概率映射。\n【has_deviation】按 BR-DEV-01 判定：time_deviation_days > 时间阈值 或 schedule_deviation_ratio > 进度阈值（两个阈值都取自 queryAlertThresholdConfig，不得写死，BR-DEV-02）。\n- blocking_note: 若因缺周期配置等原因无法完成推算，写明缺哪个「业务类型×节点」并置 has_deviation=false；否则填空字符串。\n- _parallel_tool_calls: 【并发取数（硬性）】本步的这些查询彼此独立、没有先后依赖，请在**同一轮**里一次性发出全部 metaerp.invoke 工具调用，不要一个一个串行来回——运行时支持一轮多调用（step-engine 按数组逐个执行），串行会把这一步拖成十几分钟。只有当后一个查询确实要用前一个的返回值做入参时，才允许分轮。本步需要的查询：queryStageCycleConfig、queryAlertThresholdConfig。第一轮一次性发出。本字段只是取数纪律说明，输出 JSON 里填一句确认语即可。\n- scan_date: 触发事件负载里 scan_date 的值，**原样照抄**（YYYY-MM-DD 字符串，例如事件给 \"2026-09-01\" 就填 \"2026-09-01\"）。这是业务扫描日期，不是系统时间——与你认知里的今天不同也以它为准。**此字段必填，不得留空**。本步所有涉及「今天」的计算一律用它。\n下游步骤按上述键名逐字段取数，键名不符将导致整条业务链路中断（fail-closed）。",
+        "allowed_tools": [
+          "metaerp.invoke"
+        ],
+        "description": "【算】先取各环节实际完成时间，再以需求到货日期为基准按标准周期正排+倒排双向推算各节点计划完成时间并交叉校验(R1-02)；逐节点对比实际时间（未到节点以当日代入）算时间偏差，按到货数量算进度偏差，结合本单金额与历史同类单均值算金额偏差；按停滞环节与单据状态归纳成因标签，停滞在采购环节时触发采购员确认，最终汇总成该单的偏差画像(R1-03)。",
+        "name": "analyze",
+        "order": "1",
+        "result_key": "calculateExecutionDeviation",
+        "type": "logic"
+      },
+      {
+        "description": "发射事件 EXECUTION_DEVIATION_CALCULATED（无条件）。",
+        "emit_event": "EXECUTION_DEVIATION_CALCULATED",
+        "emit_payload_from": "results.calculateExecutionDeviation",
+        "name": "emit:EXECUTION_DEVIATION_CALCULATED",
+        "order": "2",
+        "result_key": "emit-EXECUTION_DEVIATION_CALCULATED",
+        "type": "emit"
+      },
+      {
+        "condition": "lastResult.execution_deviation.has_deviation == true",
+        "description": "事件 DEVIATION_DETECTED 的发射条件。",
+        "name": "emit-when:DEVIATION_DETECTED",
+        "order": "3",
+        "result_key": "emit-when-DEVIATION_DETECTED",
+        "type": "condition"
+      },
+      {
+        "depends_on": [
+          "emit-when-DEVIATION_DETECTED"
+        ],
+        "description": "条件命中时发射事件 DEVIATION_DETECTED。",
+        "emit_event": "DEVIATION_DETECTED",
+        "emit_payload_from": "results.calculateExecutionDeviation",
+        "name": "emit:DEVIATION_DETECTED",
+        "order": "4",
+        "result_key": "emit-DEVIATION_DETECTED",
+        "type": "emit"
+      },
+      {
+        "condition": "lastResult.execution_deviation.has_deviation == false",
+        "description": "事件 NO_DEVIATION_CONFIRMED 的发射条件。",
+        "name": "emit-when:NO_DEVIATION_CONFIRMED",
+        "order": "5",
+        "result_key": "emit-when-NO_DEVIATION_CONFIRMED",
+        "type": "condition"
+      },
+      {
+        "depends_on": [
+          "emit-when-NO_DEVIATION_CONFIRMED"
+        ],
+        "description": "条件命中时发射事件 NO_DEVIATION_CONFIRMED。",
+        "emit_event": "NO_DEVIATION_CONFIRMED",
+        "emit_payload_from": "results.calculateExecutionDeviation",
+        "name": "emit:NO_DEVIATION_CONFIRMED",
+        "order": "6",
+        "result_key": "emit-NO_DEVIATION_CONFIRMED",
+        "type": "emit"
+      },
+      {
+        "decision_table": {
+          "default": {
+            "outcome": "suppressed",
+            "payload": {
+              "_emits": []
+            }
+          },
+          "description": "无显式发射记录时写入空 _emits，阻断隐式首事件回退。",
+          "id": "suppress-implicit-emit",
+          "missing": {
+            "outcome": "suppressed",
+            "payload": {
+              "_emits": []
+            }
+          },
+          "rows": [
+            {
+              "all": [
+                {
+                  "op": "exists",
+                  "path": "lastResult._emits"
+                }
+              ],
+              "id": "explicit-emit-recorded",
+              "outcome": "explicit"
+            }
+          ]
+        },
+        "description": "规则拦截或条件未命中时抑制隐式 triggered_event[0] 发射（显式 emit 已记录则本步为空操作）。",
+        "name": "suppress-implicit-emit",
+        "order": "7",
+        "result_key": "suppress-implicit-emit",
+        "type": "decision"
+      }
+    ],
+    "actor": [
+      "Agent"
+    ],
+    "description": "【算】先取各环节实际完成时间，再以需求到货日期为基准按标准周期正排+倒排双向推算各节点计划完成时间并交叉校验(R1-02)；逐节点对比实际时间（未到节点以当日代入）算时间偏差，按到货数量算进度偏差，结合本单金额与历史同类单均值算金额偏差；按停滞环节与单据状态归纳成因标签，停滞在采购环节时触发采购员确认，最终汇总成该单的偏差画像(R1-03)。",
+    "generated": true,
+    "id": "calculateExecutionDeviation",
+    "name": "calculateExecutionDeviation",
+    "ontology_instructions": "【目标对象】\n- 执行偏差：决策属性 deviation_id, chain_id, stage_progress_id, stage_node, planned_finish_date, actual_finish_date, time_deviation_days, schedule_deviation_ratio, amount_deviation_ratio, has_deviation, deviation_level, cause_tag, cause_explanation, cause_clarification_status, dwell_days, disposal_state, evaluated_at\n- 链路节点进度：决策属性 stage_progress_id, chain_id, stage_node, stage_sequence, standard_cycle_days, planned_finish_date, actual_finish_date, stage_status, source_document_type, source_document_no, stage_started_at, planned_date_derived, dwell_days（推导＝days(now() - stage_started_at)）, synced_at\n\n【绑定规则】\n- BR-PLAN-01 缺周期配置则不予推算计划时间（precondition·mandatory）：standard.standard_cycle_days > 0\n- BR-DEV-02 判定阈值必须取自阈值配置（guard·mandatory）：threshold.threshold_id != \"\" && threshold.threshold_value >= 0\n- BR-DEV-01 时间或进度超阈值则判定有偏差（postcondition·mandatory）：deviation.time_deviation_days > 7 || deviation.schedule_deviation_ratio > 0.2\n- BR-DEV-03 成因归为其他则必须附说明（postcondition·mandatory）：deviation.cause_tag != \"其他\" || deviation.cause_explanation != \"\"\n- BR-DEV-04 停滞在采购环节则须采购员确认成因（postcondition·mandatory）：deviation.cause_clarification_status == \"无需澄清\" || deviation.cause_clarification_status == \"已澄清\"",
+    "retries": 3,
+    "title": "calculateExecutionDeviation",
+    "tool_use": [
+      {
+        "config": {
+          "base_url_env": "METAERP_BASE_URL",
+          "catalog_path": "models/hc-procurement-v1/erp-operations.json"
+        },
+        "description": "实时查询 Meta ERP。可用操作：queryStageCycleConfig（按业务类型取七个节点的标准周期（BR-PLAN-01 的配置来源；本体 tool_use 名 getStageCycleConfig）。）、queryAlertThresholdConfig（取时间/进度偏差判定阈值（BR-DEV-02：阈值必须来自配置，不得写死）。）。",
+        "execution_policy": {
+          "effect_scope": "external",
+          "operation": "read_write",
+          "sandbox_policy": "requires_attempt_grant"
+        },
+        "input_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "operation": {
+              "description": "要调用的 Meta ERP 查询操作",
+              "enum": [
+                "queryStageCycleConfig",
+                "queryAlertThresholdConfig"
+              ],
+              "type": "string"
+            },
+            "payload": {
+              "description": "可选过滤条件：按返回行的列做精确匹配（如 {\"STATUS\":\"dormant\"}）",
+              "type": "object"
+            }
+          },
+          "required": [
+            "operation"
+          ],
+          "type": "object"
+        },
+        "name": "metaerp.invoke",
+        "side_effect": "read"
+      }
+    ],
+    "trigger": [
+      "CHAIN_PROGRESS_SYNCED"
+    ],
+    "triggered_event": [
+      "EXECUTION_DEVIATION_CALCULATED",
+      "DEVIATION_DETECTED",
+      "NO_DEVIATION_CONFIRMED"
+    ]
+  },
+  {
+    "actions": [
+      {
+        "action_prompt": "【行】无偏差链路不打扰任何人：直接归档为监控留痕，等待下一次每日扫描，避免噪音消耗计划员注意力。\n\n执行步骤：\n1. confirmNoDeviation：确认时间与进度偏差均未超阈值（如时间偏差 1 天未达阈值）。\n2. archiveAsMonitoring：对计算内容归档记录，链路继续在途盯防、持续监控进度。\n\n输出契约（硬性）：仅输出一个 JSON 对象，不得输出任何其他文本。\n顶层键必须且只能是：`archived_deviation`、`monitoring_note` —— 不得增删、不得改名、不得另立自创结构（如 decision/result/summary 等一律不允许作为顶层键）。\n骨架：\n{\n  \"archived_deviation\": <见字段说明>,\n  \"monitoring_note\": <见字段说明>\n}\n字段说明：\n- deviation_id: 已归档的偏差记录。（事件 CHAIN_MONITORING_ARCHIVED 的 payload 段）\n- chain_id: 所属采购执行链路。（事件 CHAIN_MONITORING_ARCHIVED 的 payload 段）\n- archived_at: 归档时间。（事件 CHAIN_MONITORING_ARCHIVED 的 payload 段）\n- archived_deviation: 归档后的偏差记录：{deviation_id, chain_id, disposal_state:'已归档', archived_at}。\n- monitoring_note: 一句话说明为何无需打扰任何人（如「时间偏差 1 天、进度偏差 0，均未达阈值」），链路继续在途盯防。\n下游步骤按上述键名逐字段取数，键名不符将导致整条业务链路中断（fail-closed）。",
+        "allowed_tools": [],
+        "description": "【行】无偏差链路不打扰任何人：直接归档为监控留痕，等待下一次每日扫描，避免噪音消耗计划员注意力。",
+        "name": "analyze",
+        "order": "1",
+        "result_key": "archiveDeviationMonitoring",
+        "type": "logic"
+      },
+      {
+        "description": "发射事件 CHAIN_MONITORING_ARCHIVED（无条件）。",
+        "emit_event": "CHAIN_MONITORING_ARCHIVED",
+        "emit_payload_from": "results.archiveDeviationMonitoring",
+        "name": "emit:CHAIN_MONITORING_ARCHIVED",
+        "order": "2",
+        "result_key": "emit-CHAIN_MONITORING_ARCHIVED",
+        "type": "emit"
+      }
+    ],
+    "actor": [
+      "Agent"
+    ],
+    "description": "【行】无偏差链路不打扰任何人：直接归档为监控留痕，等待下一次每日扫描，避免噪音消耗计划员注意力。",
+    "generated": true,
+    "id": "archiveDeviationMonitoring",
+    "name": "archiveDeviationMonitoring",
+    "ontology_instructions": "【目标对象】\n- 执行偏差：决策属性 deviation_id, chain_id, stage_progress_id, stage_node, planned_finish_date, actual_finish_date, time_deviation_days, schedule_deviation_ratio, amount_deviation_ratio, has_deviation, deviation_level, cause_tag, cause_explanation, cause_clarification_status, dwell_days, disposal_state, evaluated_at\n- 采购执行链路：决策属性 chain_id, plan_id, plan_line_id, business_type, material_code, material_name, quantity, required_arrival_date, current_stage, chain_status, planner, buyer, demand_department, forecast_arrival_date, last_synced_at\n\n【绑定规则】\n- BR-DEV-01 时间或进度超阈值则判定有偏差（guard·mandatory）：deviation.time_deviation_days > 7 || deviation.schedule_deviation_ratio > 0.2",
+    "retries": 3,
+    "title": "archiveDeviationMonitoring",
+    "tool_use": [],
+    "trigger": [
+      "NO_DEVIATION_CONFIRMED"
+    ],
+    "triggered_event": [
+      "CHAIN_MONITORING_ARCHIVED"
+    ]
+  },
+  {
+    "actions": [
+      {
+        "action_prompt": "【评】超期天数支撑不了决策——超3天但剩余周期充足不要紧，超1天但已到最终节点就很要紧。基于偏差画像，叠加当前节点剩余标准周期、滞留天数、同类历史达成率与采购员澄清的停滞原因加权算出按期概率，附可解释理由并映射红(<60%)/黄(60-85%)/蓝(>85%)三级(R1-04)。\n\n执行步骤：\n1. resolveStallCause：明确当前偏差原因——含采购员澄清的停滞原因，作为概率修正因子。\n2. computeProbability：结合剩余周期、滞留天数、历史达成率与停滞原因加权计算按期概率并明确映射比例。\n3. gradeProbability：按映射比例定级：<60%红 / 60~85%黄 / >85%蓝(BR-PROB-01~03)。\n4. writeExplanation：输出可解释理由，说明概率为何是这个数(BR-PROB-04)。\n\n输出契约（硬性）：仅输出一个 JSON 对象，不得输出任何其他文本。\n顶层键必须且只能是：`execution_deviation`、`procurement_chain`、`probability_assessment`、`alert_level`、`_parallel_tool_calls`、`scan_date` —— 不得增删、不得改名、不得另立自创结构（如 decision/result/summary 等一律不允许作为顶层键）。\n骨架：\n{\n  \"execution_deviation\": <见字段说明>,\n  \"procurement_chain\": <见字段说明>,\n  \"probability_assessment\": <见字段说明>,\n  \"alert_level\": <见字段说明>,\n  \"_parallel_tool_calls\": <见字段说明>,\n  \"scan_date\": <见字段说明>\n}\n字段说明：\n- assessment_id: 概率评估编号。（事件 ON_TIME_PROBABILITY_SCORED 的 payload 段）\n- deviation_id: 被评估的执行偏差。（事件 ON_TIME_PROBABILITY_SCORED 的 payload 段）\n- chain_id: 所属采购执行链路。（事件 ON_TIME_PROBABILITY_SCORED 的 payload 段）\n- on_time_probability: 按期完成概率。（事件 ON_TIME_PROBABILITY_SCORED 的 payload 段）\n- probability_grade: 概率分级：红色/黄色/蓝色。（事件 ON_TIME_PROBABILITY_SCORED 的 payload 段）\n- explanation: 可解释理由。（事件 ON_TIME_PROBABILITY_SCORED 的 payload 段）\n- execution_deviation: 原样透传上游执行偏差对象。\n- procurement_chain: 原样透传上游链路对象。\n- probability_assessment: 按期达成概率评估：{assessment_id, deviation_id, chain_id, current_stage, remaining_standard_cycle_days:number（当前节点之后各节点标准周期之和，取自 getStageCycleConfig）, days_to_required_arrival:number, dwell_days:number, historical_on_time_rate:number（取自 queryHistoricalOnTimeRate）, historical_sample_size:integer, on_time_probability:number（0~1）, probability_grade:'红色'|'黄色'|'蓝色', explanation:string（不得为空，BR-PROB-04）, assessed_at}。【定级硬性】必须用 getAlertThresholdConfig 返回的分界值：概率<红色概率上限判红、介于红色上限与黄色下限之间判黄、>黄色概率下限判蓝（BR-PROB-01~03）。【explanation 硬性】必须同时说明剩余周期、滞留天数、历史达成率与样本量这四项如何影响了概率——只报超期天数不足以支撑决策。\n- alert_level: 与 probability_grade 同值，供下游预警推送直接取用。\n- _parallel_tool_calls: 【并发取数（硬性）】本步的这些查询彼此独立、没有先后依赖，请在**同一轮**里一次性发出全部 metaerp.invoke 工具调用，不要一个一个串行来回——运行时支持一轮多调用（step-engine 按数组逐个执行），串行会把这一步拖成十几分钟。只有当后一个查询确实要用前一个的返回值做入参时，才允许分轮。本步需要的查询：queryStageCycleConfig、queryHistoricalOnTimeRate、queryAlertThresholdConfig。第一轮一次性发出。本字段只是取数纪律说明，输出 JSON 里填一句确认语即可。\n- scan_date: 触发事件负载里 scan_date 的值，**原样照抄**（YYYY-MM-DD 字符串，例如事件给 \"2026-09-01\" 就填 \"2026-09-01\"）。这是业务扫描日期，不是系统时间——与你认知里的今天不同也以它为准。**此字段必填，不得留空**。剩余天数、滞留天数以它为「今天」。\n下游步骤按上述键名逐字段取数，键名不符将导致整条业务链路中断（fail-closed）。",
+        "allowed_tools": [
+          "metaerp.invoke"
+        ],
+        "description": "【评】超期天数支撑不了决策——超3天但剩余周期充足不要紧，超1天但已到最终节点就很要紧。基于偏差画像，叠加当前节点剩余标准周期、滞留天数、同类历史达成率与采购员澄清的停滞原因加权算出按期概率，附可解释理由并映射红(<60%)/黄(60-85%)/蓝(>85%)三级(R1-04)。",
+        "name": "analyze",
+        "order": "1",
+        "result_key": "scoreOnTimeProbability",
+        "type": "logic"
+      },
+      {
+        "description": "发射事件 ON_TIME_PROBABILITY_SCORED（无条件）。",
+        "emit_event": "ON_TIME_PROBABILITY_SCORED",
+        "emit_payload_from": "results.scoreOnTimeProbability",
+        "name": "emit:ON_TIME_PROBABILITY_SCORED",
+        "order": "2",
+        "result_key": "emit-ON_TIME_PROBABILITY_SCORED",
+        "type": "emit"
+      }
+    ],
+    "actor": [
+      "Agent"
+    ],
+    "description": "【评】超期天数支撑不了决策——超3天但剩余周期充足不要紧，超1天但已到最终节点就很要紧。基于偏差画像，叠加当前节点剩余标准周期、滞留天数、同类历史达成率与采购员澄清的停滞原因加权算出按期概率，附可解释理由并映射红(<60%)/黄(60-85%)/蓝(>85%)三级(R1-04)。",
+    "generated": true,
+    "id": "scoreOnTimeProbability",
+    "name": "scoreOnTimeProbability",
+    "ontology_instructions": "【目标对象】\n- 按期达成概率评估：决策属性 assessment_id, deviation_id, chain_id, current_stage, remaining_standard_cycle_days, days_to_required_arrival, dwell_days, historical_on_time_rate, historical_sample_size, on_time_probability, probability_grade, explanation, assessed_at\n- 执行偏差：决策属性 deviation_id, chain_id, stage_progress_id, stage_node, planned_finish_date, actual_finish_date, time_deviation_days, schedule_deviation_ratio, amount_deviation_ratio, has_deviation, deviation_level, cause_tag, cause_explanation, cause_clarification_status, dwell_days, disposal_state, evaluated_at\n\n【绑定规则】\n- BR-PROB-01 按期概率低于60%则判红色（postcondition·mandatory）：assessment.on_time_probability < 0.6\n- BR-PROB-02 按期概率60%~85%则判黄色（postcondition·mandatory）：assessment.on_time_probability >= 0.6 && assessment.on_time_probability <= 0.85\n- BR-PROB-03 按期概率高于85%则判蓝色（postcondition·mandatory）：assessment.on_time_probability > 0.85\n- BR-PROB-04 概率评分必须附可解释理由（postcondition·mandatory）：assessment.explanation != \"\"",
+    "retries": 3,
+    "title": "scoreOnTimeProbability",
+    "tool_use": [
+      {
+        "config": {
+          "base_url_env": "METAERP_BASE_URL",
+          "catalog_path": "models/hc-procurement-v1/erp-operations.json"
+        },
+        "description": "实时查询 Meta ERP。可用操作：queryStageCycleConfig（汇总当前节点之后各节点标准周期，得到剩余天数。）、queryHistoricalOnTimeRate（统计同业务类型历史已完结单的按期达成率与样本量。）、queryAlertThresholdConfig（取红/黄概率分界阈值。）。",
+        "execution_policy": {
+          "effect_scope": "external",
+          "operation": "read_write",
+          "sandbox_policy": "requires_attempt_grant"
+        },
+        "input_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "operation": {
+              "description": "要调用的 Meta ERP 查询操作",
+              "enum": [
+                "queryStageCycleConfig",
+                "queryHistoricalOnTimeRate",
+                "queryAlertThresholdConfig"
+              ],
+              "type": "string"
+            },
+            "payload": {
+              "description": "可选过滤条件：按返回行的列做精确匹配（如 {\"STATUS\":\"dormant\"}）",
+              "type": "object"
+            }
+          },
+          "required": [
+            "operation"
+          ],
+          "type": "object"
+        },
+        "name": "metaerp.invoke",
+        "side_effect": "read"
+      }
+    ],
+    "trigger": [
+      "DEVIATION_DETECTED"
+    ],
+    "triggered_event": [
+      "ON_TIME_PROBABILITY_SCORED"
+    ]
+  },
+  {
+    "actions": [
+      {
+        "allowed_tools": [
+          "metaerp.invoke"
+        ],
+        "description": "写回 Meta ERP：pushAlert。",
+        "name": "metaerp.invoke",
+        "order": "1",
+        "result_key": "raiseDeviationAlert",
+        "tool_arguments": {
+          "payload": {
+            "from": "event.data"
+          }
+        },
+        "type": "tool"
+      },
+      {
+        "depends_on": [
+          "raiseDeviationAlert"
+        ],
+        "description": "发射事件 DEVIATION_ALERT_RAISED（无条件）。",
+        "emit_event": "DEVIATION_ALERT_RAISED",
+        "emit_payload_from": "lastResult.alert_context",
+        "name": "emit:DEVIATION_ALERT_RAISED",
+        "order": "2",
+        "result_key": "emit-DEVIATION_ALERT_RAISED",
+        "type": "emit"
+      }
+    ],
+    "actor": [
+      "Agent"
+    ],
+    "description": "【警】按概率分级生成红/黄/蓝三级预警并按角色推送：红色报分管领导、黄色报部门领导、蓝色提示计划员；同时写入预警生成时间，作为超时升级的起算点。",
+    "generated": true,
+    "id": "raiseDeviationAlert",
+    "name": "raiseDeviationAlert",
+    "ontology_instructions": "【目标对象】\n- 偏差预警：决策属性 alert_id, alert_no, deviation_id, assessment_id, chain_id, alert_level, notified_role, notified_to, raised_at, handling_status, acknowledged_at, escalated_at, escalation_count, closed_at, overdue_hours（推导＝hours(now() - raised_at)）, verification_result, generated_option_count\n- 预警处置记录：决策属性 handling_record_id, alert_id, chain_id, handling_action, operator_role, operator, occurred_at, remark, deviation_eliminated, verification_result, false_alarm_cause\n\n【绑定规则】\n- BR-ALERT-01 红色预警报分管领导（validation·mandatory）：alert.alert_level == \"红色\"\n- BR-ALERT-02 黄色预警报部门领导（validation·mandatory）：alert.alert_level == \"黄色\"\n- BR-ALERT-03 蓝色预警仅提示计划员（validation·mandatory）：alert.alert_level == \"蓝色\"",
+    "retries": 3,
+    "title": "raiseDeviationAlert",
+    "tool_use": [
+      {
+        "config": {
+          "base_url_env": "METAERP_BASE_URL",
+          "catalog_path": "models/hc-procurement-v1/erp-operations.json",
+          "operation": "pushAlert"
+        },
+        "description": "pushAlert：raiseDeviationAlert 写回 metaERP。",
+        "execution_policy": {
+          "effect_scope": "external",
+          "operation": "read_write",
+          "sandbox_policy": "requires_attempt_grant"
+        },
+        "name": "metaerp.invoke",
+        "side_effect": "write"
+      }
+    ],
+    "trigger": [
+      "ON_TIME_PROBABILITY_SCORED",
+      "DEVIATION_ALERT_ESCALATED"
+    ],
+    "triggered_event": [
+      "DEVIATION_ALERT_RAISED"
+    ]
+  },
+  {
+    "actions": [
+      {
+        "condition": "input.alert_level == '蓝色'",
+        "description": "规则闸口（确定性判定）：蓝色预警仅提示计划员。判假即拦截后续人工/写入/发射步骤。",
+        "name": "rule-gate:BR-ALERT-03",
+        "order": "1",
+        "result_key": "rule-gate-BR-ALERT-03",
+        "type": "condition"
+      },
+      {
+        "awaiting_role": "计划员",
+        "depends_on": [
+          "rule-gate-BR-ALERT-03"
+        ],
+        "description": "计划员查看偏差画像与按期概率。",
+        "form_schema": {
+          "properties": {
+            "note": {
+              "title": "备注（可选）",
+              "type": "string"
+            },
+            "reviewed": {
+              "title": "已查看偏差画像、按期概率与可解释理由",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "reviewed"
+          ],
+          "title": "蓝色预警 · 查看偏差画像与按期概率",
+          "type": "object"
+        },
+        "name": "reviewBlueAlert",
+        "order": "2",
+        "result_key": "manual-1",
+        "task_type": "blue-alert.review",
+        "type": "manual"
+      },
+      {
+        "awaiting_role": "计划员",
+        "depends_on": [
+          "rule-gate-BR-ALERT-03",
+          "manual-1"
+        ],
+        "description": "选择做轻量调整或仅继续监控。",
+        "form_schema": {
+          "properties": {
+            "handling_action": {
+              "enum": [
+                "轻量调整",
+                "仅继续监控"
+              ],
+              "title": "处置方式",
+              "type": "string"
+            },
+            "remark": {
+              "title": "处置说明",
+              "type": "string"
+            }
+          },
+          "required": [
+            "handling_action"
+          ],
+          "title": "蓝色预警 · 自行处置",
+          "type": "object"
+        },
+        "name": "decideSelfHandling",
+        "order": "3",
+        "result_key": "manual-2",
+        "task_type": "blue-alert.decide",
+        "type": "manual"
+      },
+      {
+        "allowed_tools": [
+          "metaerp.invoke"
+        ],
+        "depends_on": [
+          "rule-gate-BR-ALERT-03",
+          "manual-1",
+          "manual-2"
+        ],
+        "description": "写回 Meta ERP：closeBlueAlert。",
+        "name": "metaerp.invoke",
+        "order": "4",
+        "result_key": "handleBlueAlertLocally",
+        "tool_arguments": {
+          "payload": {
+            "from": "results.manual-2"
+          }
+        },
+        "type": "tool"
+      },
+      {
+        "depends_on": [
+          "handleBlueAlertLocally"
+        ],
+        "description": "发射事件 BLUE_ALERT_SELF_HANDLED（无条件）。",
+        "emit_event": "BLUE_ALERT_SELF_HANDLED",
+        "emit_payload_from": "lastResult",
+        "name": "emit:BLUE_ALERT_SELF_HANDLED",
+        "order": "5",
+        "result_key": "emit-BLUE_ALERT_SELF_HANDLED",
+        "type": "emit"
+      },
+      {
+        "decision_table": {
+          "default": {
+            "outcome": "suppressed",
+            "payload": {
+              "_emits": []
+            }
+          },
+          "description": "无显式发射记录时写入空 _emits，阻断隐式首事件回退。",
+          "id": "suppress-implicit-emit",
+          "missing": {
+            "outcome": "suppressed",
+            "payload": {
+              "_emits": []
+            }
+          },
+          "rows": [
+            {
+              "all": [
+                {
+                  "op": "exists",
+                  "path": "lastResult._emits"
+                }
+              ],
+              "id": "explicit-emit-recorded",
+              "outcome": "explicit"
+            }
+          ]
+        },
+        "description": "规则拦截或条件未命中时抑制隐式 triggered_event[0] 发射（显式 emit 已记录则本步为空操作）。",
+        "name": "suppress-implicit-emit",
+        "order": "6",
+        "result_key": "suppress-implicit-emit",
+        "type": "decision"
+      }
+    ],
+    "actor": [
+      "Human"
+    ],
+    "description": "【行】蓝色预警由计划员自行处置：可选择做轻量调整或仅继续监控，处置完即闭环，不上报领导也不生成方案。",
+    "generated": true,
+    "id": "handleBlueAlertLocally",
+    "name": "handleBlueAlertLocally",
+    "ontology_instructions": "【目标对象】\n- 偏差预警：决策属性 alert_id, alert_no, deviation_id, assessment_id, chain_id, alert_level, notified_role, notified_to, raised_at, handling_status, acknowledged_at, escalated_at, escalation_count, closed_at, overdue_hours（推导＝hours(now() - raised_at)）, verification_result, generated_option_count\n- 预警处置记录：决策属性 handling_record_id, alert_id, chain_id, handling_action, operator_role, operator, occurred_at, remark, deviation_eliminated, verification_result, false_alarm_cause\n\n【绑定规则】\n- BR-ALERT-03 蓝色预警仅提示计划员（precondition·mandatory）：alert.alert_level == \"蓝色\"\n- BR-CLOSE-02 无闭环留痕则不予闭环（postcondition·mandatory）：record.handling_action == \"闭环归档\"",
+    "retries": 3,
+    "title": "handleBlueAlertLocally",
+    "tool_use": [
+      {
+        "config": {
+          "base_url_env": "METAERP_BASE_URL",
+          "catalog_path": "models/hc-procurement-v1/erp-operations.json",
+          "operation": "closeBlueAlert"
+        },
+        "description": "closeBlueAlert：handleBlueAlertLocally 写回 metaERP。",
+        "execution_policy": {
+          "effect_scope": "external",
+          "operation": "read_write",
+          "sandbox_policy": "requires_attempt_grant"
+        },
+        "name": "metaerp.invoke",
+        "side_effect": "write"
+      }
+    ],
+    "trigger": [
+      "DEVIATION_ALERT_RAISED"
+    ],
+    "triggered_event": [
+      "BLUE_ALERT_SELF_HANDLED"
+    ]
+  },
+  {
+    "actions": [
+      {
+        "action_prompt": "【断】红/黄预警意味着按期概率低，不干预就会影响供货：自动生成压缩后续周期、调整需求日期、执行调拨三个可执行方案，每案附到货影响推演，领导选一个即可执行(R1-05)。\n\n执行步骤：\n1. buildCompressOption：方案①压缩后续周期：算出可压缩天数与压缩后到货日期。\n2. buildNeedDateOption：方案②调整需求日期：算出可接受的新到货日期及对用途场景的影响。\n3. simulateArrivalImpact：为每个方案附到货影响推演：预计到货日期与影响天数(BR-OPT-03)。\n4. markRecommendation：结合成因标签与按期概率标记推荐方案并说明推荐依据；涉及暂停申请、整单调剂的方案标记为高危动作(BR-OPT-06)。\n\n输出契约（硬性）：仅输出一个 JSON 对象，不得输出任何其他文本。\n顶层键必须且只能是：`options_generated`、`options`、`recommended_option`、`transfer_source`、`alert_context`、`_parallel_tool_calls` —— 不得增删、不得改名、不得另立自创结构（如 decision/result/summary 等一律不允许作为顶层键）。\n骨架：\n{\n  \"options_generated\": <见字段说明>,\n  \"options\": <见字段说明>,\n  \"recommended_option\": <见字段说明>,\n  \"transfer_source\": <见字段说明>,\n  \"alert_context\": <见字段说明>,\n  \"_parallel_tool_calls\": <见字段说明>\n}\n字段说明：\n- alert_id: 触发方案生成的预警。（事件 ADJUSTMENT_OPTIONS_GENERATED 的 payload 段）\n- chain_id: 所属采购执行链路。（事件 ADJUSTMENT_OPTIONS_GENERATED 的 payload 段）\n- option_ids: 三个方案的编号。（事件 ADJUSTMENT_OPTIONS_GENERATED 的 payload 段）\n- recommended_option_type: 推荐方案类型。（事件 ADJUSTMENT_OPTIONS_GENERATED 的 payload 段）\n- generated_at: 方案生成时间。（事件 ADJUSTMENT_OPTIONS_GENERATED 的 payload 段）\n- options_generated: 布尔值：预警等级为红色或黄色时为 true 并给出三个方案；蓝色时为 false 且 options 为空数组（BR-OPT-01：蓝色不生成方案）。\n- options: 三个可执行方案，缺一不可（BR-OPT-02）：[{option_id, alert_id, chain_id, option_type:'压缩后续周期'|'调整需求日期'|'执行调拨', option_summary, expected_arrival_date_after:Date, arrival_impact_days:number, arrival_impact_simulated:true（未完成推演的方案不得上会，BR-OPT-03）, feasibility_note, is_recommended:boolean, is_high_risk:boolean（暂停申请、整单调剂标为 true，BR-OPT-06）, option_status:'待决策', decision_role:'分管领导'（红色）|'部门领导'（黄色）（BR-OPT-04）}]。三个 option_type 必须各出现一次。\n- recommended_option: 被推荐的那一条方案对象（is_recommended=true），另附 recommendation_basis 说明为何推荐它：结合成因标签、按期概率与三个方案的到货影响天数对比。\n- transfer_source: 方案③的调拨来源，取自 queryTransferableStock：{warehouse_id, warehouse_name, item_code, available_qty, transfer_lead_days, transfer_quantity}。无可调库存时给出 {transfer_quantity: 0} 并在该方案的 feasibility_note 说明。\n- alert_context: 原样透传预警上下文：{alert_id, chain_id, deviation_id, alert_level, notified_role}。\n- _parallel_tool_calls: 【并发取数（硬性）】本步的这些查询彼此独立、没有先后依赖，请在**同一轮**里一次性发出全部 metaerp.invoke 工具调用，不要一个一个串行来回——运行时支持一轮多调用（step-engine 按数组逐个执行），串行会把这一步拖成十几分钟。只有当后一个查询确实要用前一个的返回值做入参时，才允许分轮。本步需要的查询：queryStageCycleConfig、queryTransferableStock。第一轮一次性发出。本字段只是取数纪律说明，输出 JSON 里填一句确认语即可。\n下游步骤按上述键名逐字段取数，键名不符将导致整条业务链路中断（fail-closed）。",
+        "allowed_tools": [
+          "metaerp.invoke"
+        ],
+        "description": "【断】红/黄预警意味着按期概率低，不干预就会影响供货：自动生成压缩后续周期、调整需求日期、执行调拨三个可执行方案，每案附到货影响推演，领导选一个即可执行(R1-05)。",
+        "name": "analyze",
+        "order": "1",
+        "result_key": "generateAdjustmentOptions",
+        "type": "logic"
+      },
+      {
+        "condition": "lastResult.options_generated == true",
+        "description": "事件 ADJUSTMENT_OPTIONS_GENERATED 的发射条件。",
+        "name": "emit-when:ADJUSTMENT_OPTIONS_GENERATED",
+        "order": "2",
+        "result_key": "emit-when-ADJUSTMENT_OPTIONS_GENERATED",
+        "type": "condition"
+      },
+      {
+        "depends_on": [
+          "emit-when-ADJUSTMENT_OPTIONS_GENERATED"
+        ],
+        "description": "条件命中时发射事件 ADJUSTMENT_OPTIONS_GENERATED。",
+        "emit_event": "ADJUSTMENT_OPTIONS_GENERATED",
+        "emit_payload_from": "results.generateAdjustmentOptions",
+        "name": "emit:ADJUSTMENT_OPTIONS_GENERATED",
+        "order": "3",
+        "result_key": "emit-ADJUSTMENT_OPTIONS_GENERATED",
+        "type": "emit"
+      },
+      {
+        "decision_table": {
+          "default": {
+            "outcome": "suppressed",
+            "payload": {
+              "_emits": []
+            }
+          },
+          "description": "无显式发射记录时写入空 _emits，阻断隐式首事件回退。",
+          "id": "suppress-implicit-emit",
+          "missing": {
+            "outcome": "suppressed",
+            "payload": {
+              "_emits": []
+            }
+          },
+          "rows": [
+            {
+              "all": [
+                {
+                  "op": "exists",
+                  "path": "lastResult._emits"
+                }
+              ],
+              "id": "explicit-emit-recorded",
+              "outcome": "explicit"
+            }
+          ]
+        },
+        "description": "规则拦截或条件未命中时抑制隐式 triggered_event[0] 发射（显式 emit 已记录则本步为空操作）。",
+        "name": "suppress-implicit-emit",
+        "order": "4",
+        "result_key": "suppress-implicit-emit",
+        "type": "decision"
+      }
+    ],
+    "actor": [
+      "Agent"
+    ],
+    "description": "【断】红/黄预警意味着按期概率低，不干预就会影响供货：自动生成压缩后续周期、调整需求日期、执行调拨三个可执行方案，每案附到货影响推演，领导选一个即可执行(R1-05)。",
+    "generated": true,
+    "id": "generateAdjustmentOptions",
+    "name": "generateAdjustmentOptions",
+    "ontology_instructions": "【目标对象】\n- 调整方案：决策属性 option_id, alert_id, deviation_id, chain_id, option_type, option_summary, expected_arrival_date_after, arrival_impact_days, arrival_impact_simulated, feasibility_note, is_recommended, is_high_risk, high_risk_confirmed_by, option_status, decision_role, decided_by, decided_at, planner_confirmed_by, planner_confirmed_at, executed_at\n\n【绑定规则】\n- BR-OPT-01 仅红黄预警生成调整方案（guard·mandatory）：alert.alert_level == \"红色\" || alert.alert_level == \"黄色\"\n- BR-OPT-02 方案不足三个则不予决策（postcondition·mandatory）：alert.generated_option_count == 3\n- BR-OPT-03 未附到货影响推演则不予上会（postcondition·mandatory）：option.arrival_impact_simulated == true",
+    "retries": 3,
+    "title": "generateAdjustmentOptions",
+    "tool_use": [
+      {
+        "config": {
+          "base_url_env": "METAERP_BASE_URL",
+          "catalog_path": "models/hc-procurement-v1/erp-operations.json"
+        },
+        "description": "实时查询 Meta ERP。可用操作：queryStageCycleConfig（后续节点标准周期，方案①的可压缩空间。）、queryTransferableStock（定位可调库点与可调数量，方案③的调拨来源。）。",
+        "execution_policy": {
+          "effect_scope": "external",
+          "operation": "read_write",
+          "sandbox_policy": "requires_attempt_grant"
+        },
+        "input_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "operation": {
+              "description": "要调用的 Meta ERP 查询操作",
+              "enum": [
+                "queryStageCycleConfig",
+                "queryTransferableStock"
+              ],
+              "type": "string"
+            },
+            "payload": {
+              "description": "可选过滤条件：按返回行的列做精确匹配（如 {\"STATUS\":\"dormant\"}）",
+              "type": "object"
+            }
+          },
+          "required": [
+            "operation"
+          ],
+          "type": "object"
+        },
+        "name": "metaerp.invoke",
+        "side_effect": "read"
+      }
+    ],
+    "trigger": [
+      "DEVIATION_ALERT_RAISED"
+    ],
+    "triggered_event": [
+      "ADJUSTMENT_OPTIONS_GENERATED"
+    ]
+  },
+  {
+    "actions": [
+      {
+        "awaiting_role": "部门领导",
+        "description": "领导对比三个方案的构成、时效与到货影响。",
+        "form_schema": {
+          "properties": {
+            "focus": {
+              "title": "关注点（可选）",
+              "type": "string"
+            },
+            "reviewed": {
+              "title": "已对比三个方案的构成、时效与到货影响天数",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "reviewed"
+          ],
+          "title": "调整方案 · 对比三个方案与到货影响推演",
+          "type": "object"
+        },
+        "name": "reviewOptions",
+        "order": "1",
+        "result_key": "manual-1",
+        "task_type": "adjustment.review",
+        "type": "manual"
+      },
+      {
+        "awaiting_role": "部门领导",
+        "depends_on": [
+          "manual-1"
+        ],
+        "description": "领导拍板选定一个方案，其余置为未采纳。",
+        "form_schema": {
+          "properties": {
+            "comment": {
+              "title": "决策意见",
+              "type": "string"
+            },
+            "decided_by": {
+              "title": "决策人姓名",
+              "type": "string"
+            },
+            "decision_role": {
+              "enum": [
+                "分管领导",
+                "部门领导"
+              ],
+              "title": "决策角色（须与预警等级匹配，BR-OPT-04）",
+              "type": "string"
+            },
+            "option_id": {
+              "title": "选定方案编号",
+              "type": "string"
+            },
+            "option_type": {
+              "enum": [
+                "压缩后续周期",
+                "调整需求日期",
+                "执行调拨"
+              ],
+              "title": "方案类型",
+              "type": "string"
+            }
+          },
+          "required": [
+            "option_id",
+            "option_type",
+            "decision_role",
+            "decided_by"
+          ],
+          "title": "调整方案 · 领导拍板",
+          "type": "object"
+        },
+        "name": "selectOption",
+        "order": "2",
+        "result_key": "manual-3",
+        "task_type": "adjustment.select",
+        "type": "manual"
+      },
+      {
+        "awaiting_role": "部门领导",
+        "depends_on": [
+          "manual-1",
+          "manual-3"
+        ],
+        "description": "选定方案属高危动作（暂停申请、整单调剂）时，由部门领导强制人工确认(BR-OPT-06)。",
+        "form_schema": {
+          "properties": {
+            "high_risk_confirmed_by": {
+              "title": "高危确认人（部门领导；非高危可留空）",
+              "type": "string"
+            },
+            "is_high_risk": {
+              "title": "选定方案是否属于高危动作（暂停申请、整单调剂）",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "is_high_risk"
+          ],
+          "title": "高危动作强制确认（BR-OPT-06）",
+          "type": "object"
+        },
+        "name": "confirmHighRisk",
+        "order": "3",
+        "result_key": "manual-4",
+        "task_type": "adjustment.confirm-high-risk",
+        "type": "manual"
+      },
+      {
+        "awaiting_role": "计划员",
+        "depends_on": [
+          "manual-1",
+          "manual-3",
+          "manual-4"
+        ],
+        "description": "计划员确认执行，系统方可回写业务单据(BR-OPT-05)。",
+        "form_schema": {
+          "description": "这是回写业务单据前的最后一次人工确认；执行分支所需的字段在此收齐。alert_id / chain_id / option_id / option_type 照抄上一步领导选定的方案。",
+          "properties": {
+            "alert_id": {
+              "title": "预警编号",
+              "type": "string"
+            },
+            "chain_id": {
+              "title": "采购执行链路编号",
+              "type": "string"
+            },
+            "decision": {
+              "enum": [
+                "approved",
+                "rejected"
+              ],
+              "title": "确认结果",
+              "type": "string"
+            },
+            "option_id": {
+              "title": "选定方案编号",
+              "type": "string"
+            },
+            "option_type": {
+              "enum": [
+                "压缩后续周期",
+                "调整需求日期",
+                "执行调拨"
+              ],
+              "title": "方案类型（决定走哪条执行分支）",
+              "type": "string"
+            },
+            "planner_confirmed_by": {
+              "title": "计划员姓名（BR-OPT-05：未确认不得回写单据）",
+              "type": "string"
+            },
+            "remark": {
+              "title": "备注",
+              "type": "string"
+            }
+          },
+          "required": [
+            "decision",
+            "planner_confirmed_by",
+            "alert_id",
+            "chain_id",
+            "option_id",
+            "option_type"
+          ],
+          "title": "计划员确认执行（BR-OPT-05）· 执行决策卡",
+          "type": "object"
+        },
+        "name": "plannerConfirm",
+        "order": "4",
+        "result_key": "manual-5",
+        "task_type": "adjustment.planner-confirm",
+        "type": "manual"
+      },
+      {
+        "allowed_tools": [
+          "metaerp.invoke"
+        ],
+        "depends_on": [
+          "manual-1",
+          "manual-3",
+          "manual-4",
+          "manual-5"
+        ],
+        "description": "写回 Meta ERP：approveAdjustmentOption。",
+        "name": "metaerp.invoke",
+        "order": "5",
+        "result_key": "approveAdjustmentOption",
+        "tool_arguments": {
+          "payload": {
+            "from": "results.manual-5"
+          }
+        },
+        "type": "tool"
+      },
+      {
+        "condition": "results.manual-5.decision == 'approved'",
+        "depends_on": [
+          "approveAdjustmentOption"
+        ],
+        "description": "事件 ADJUSTMENT_OPTION_APPROVED 的发射条件。",
+        "name": "emit-when:ADJUSTMENT_OPTION_APPROVED",
+        "order": "6",
+        "result_key": "emit-when-ADJUSTMENT_OPTION_APPROVED",
+        "type": "condition"
+      },
+      {
+        "depends_on": [
+          "approveAdjustmentOption",
+          "emit-when-ADJUSTMENT_OPTION_APPROVED"
+        ],
+        "description": "条件命中时发射事件 ADJUSTMENT_OPTION_APPROVED。",
+        "emit_event": "ADJUSTMENT_OPTION_APPROVED",
+        "emit_payload_from": "lastResult.decision_context",
+        "name": "emit:ADJUSTMENT_OPTION_APPROVED",
+        "order": "7",
+        "result_key": "emit-ADJUSTMENT_OPTION_APPROVED",
+        "type": "emit"
+      },
+      {
+        "decision_table": {
+          "default": {
+            "outcome": "suppressed",
+            "payload": {
+              "_emits": []
+            }
+          },
+          "description": "无显式发射记录时写入空 _emits，阻断隐式首事件回退。",
+          "id": "suppress-implicit-emit",
+          "missing": {
+            "outcome": "suppressed",
+            "payload": {
+              "_emits": []
+            }
+          },
+          "rows": [
+            {
+              "all": [
+                {
+                  "op": "exists",
+                  "path": "lastResult._emits"
+                }
+              ],
+              "id": "explicit-emit-recorded",
+              "outcome": "explicit"
+            }
+          ]
+        },
+        "description": "规则拦截或条件未命中时抑制隐式 triggered_event[0] 发射（显式 emit 已记录则本步为空操作）。",
+        "name": "suppress-implicit-emit",
+        "order": "8",
+        "result_key": "suppress-implicit-emit",
+        "type": "decision"
+      }
+    ],
+    "actor": [
+      "Human"
+    ],
+    "description": "【断】领导审阅三个方案与到货影响推演后拍板：红色由分管领导、黄色由部门领导决策，选定方案再经计划员确认后系统执行。",
+    "generated": true,
+    "id": "approveAdjustmentOption",
+    "name": "approveAdjustmentOption",
+    "ontology_instructions": "【目标对象】\n- 调整方案：决策属性 option_id, alert_id, deviation_id, chain_id, option_type, option_summary, expected_arrival_date_after, arrival_impact_days, arrival_impact_simulated, feasibility_note, is_recommended, is_high_risk, high_risk_confirmed_by, option_status, decision_role, decided_by, decided_at, planner_confirmed_by, planner_confirmed_at, executed_at\n- 偏差预警：决策属性 alert_id, alert_no, deviation_id, assessment_id, chain_id, alert_level, notified_role, notified_to, raised_at, handling_status, acknowledged_at, escalated_at, escalation_count, closed_at, overdue_hours（推导＝hours(now() - raised_at)）, verification_result, generated_option_count\n\n【绑定规则】\n- BR-OPT-04 决策角色须与预警等级匹配（approval·mandatory）：(alert.alert_level == \"红色\" && option.decision_role == \"分管领导\") || (alert.alert_level == \"黄色\" && option.decision_role == \"部门领导\")\n- BR-OPT-05 未经计划员确认则不回写单据（approval·mandatory）：option.planner_confirmed_by != \"\"\n- BR-OPT-06 高危动作须部门领导强制确认（approval·mandatory）：option.is_high_risk == false || option.high_risk_confirmed_by != \"\"",
+    "retries": 3,
+    "title": "approveAdjustmentOption",
+    "tool_use": [
+      {
+        "config": {
+          "base_url_env": "METAERP_BASE_URL",
+          "catalog_path": "models/hc-procurement-v1/erp-operations.json",
+          "operation": "approveAdjustmentOption"
+        },
+        "description": "approveAdjustmentOption：approveAdjustmentOption 写回 metaERP。",
+        "execution_policy": {
+          "effect_scope": "external",
+          "operation": "read_write",
+          "sandbox_policy": "requires_attempt_grant"
+        },
+        "name": "metaerp.invoke",
+        "side_effect": "write"
+      }
+    ],
+    "trigger": [
+      "ADJUSTMENT_OPTIONS_GENERATED"
+    ],
+    "triggered_event": [
+      "ADJUSTMENT_OPTION_APPROVED"
+    ]
+  },
+  {
+    "actions": [
+      {
+        "allowed_tools": [
+          "metaerp.invoke"
+        ],
+        "description": "写回 Meta ERP：escalateAlert。",
+        "name": "metaerp.invoke",
+        "order": "1",
+        "result_key": "escalateOverdueAlert",
+        "tool_arguments": {
+          "payload": {
+            "from": "event.data"
+          }
+        },
+        "type": "tool"
+      },
+      {
+        "condition": "lastResult.escalated == true",
+        "depends_on": [
+          "escalateOverdueAlert"
+        ],
+        "description": "事件 DEVIATION_ALERT_ESCALATED 的发射条件。",
+        "name": "emit-when:DEVIATION_ALERT_ESCALATED",
+        "order": "2",
+        "result_key": "emit-when-DEVIATION_ALERT_ESCALATED",
+        "type": "condition"
+      },
+      {
+        "depends_on": [
+          "escalateOverdueAlert",
+          "emit-when-DEVIATION_ALERT_ESCALATED"
+        ],
+        "description": "条件命中时发射事件 DEVIATION_ALERT_ESCALATED。",
+        "emit_event": "DEVIATION_ALERT_ESCALATED",
+        "emit_payload_from": "lastResult.alert_context",
+        "name": "emit:DEVIATION_ALERT_ESCALATED",
+        "order": "3",
+        "result_key": "emit-DEVIATION_ALERT_ESCALATED",
+        "type": "emit"
+      },
+      {
+        "decision_table": {
+          "default": {
+            "outcome": "suppressed",
+            "payload": {
+              "_emits": []
+            }
+          },
+          "description": "无显式发射记录时写入空 _emits，阻断隐式首事件回退。",
+          "id": "suppress-implicit-emit",
+          "missing": {
+            "outcome": "suppressed",
+            "payload": {
+              "_emits": []
+            }
+          },
+          "rows": [
+            {
+              "all": [
+                {
+                  "op": "exists",
+                  "path": "lastResult._emits"
+                }
+              ],
+              "id": "explicit-emit-recorded",
+              "outcome": "explicit"
+            }
+          ]
+        },
+        "description": "规则拦截或条件未命中时抑制隐式 triggered_event[0] 发射（显式 emit 已记录则本步为空操作）。",
+        "name": "suppress-implicit-emit",
+        "order": "4",
+        "result_key": "suppress-implicit-emit",
+        "type": "decision"
+      }
+    ],
+    "actor": [
+      "Agent"
+    ],
+    "description": "【升】预警报上去没人管就会错过补救窗口：定时扫描处置时效，黄色超 48 小时未处理自动升级为红色、红色超 24 小时未闭环自动上报分管领导，并写升级留痕(R1-06)。",
+    "generated": true,
+    "id": "escalateOverdueAlert",
+    "name": "escalateOverdueAlert",
+    "ontology_instructions": "【目标对象】\n- 偏差预警：决策属性 alert_id, alert_no, deviation_id, assessment_id, chain_id, alert_level, notified_role, notified_to, raised_at, handling_status, acknowledged_at, escalated_at, escalation_count, closed_at, overdue_hours（推导＝hours(now() - raised_at)）, verification_result, generated_option_count\n- 预警处置记录：决策属性 handling_record_id, alert_id, chain_id, handling_action, operator_role, operator, occurred_at, remark, deviation_eliminated, verification_result, false_alarm_cause\n\n【绑定规则】\n- BR-ESC-01 黄色超48小时未处理则升为红色（validation·mandatory）：alert.alert_level == \"黄色\" && alert.handling_status == \"待处理\" && alert.overdue_hours > 48\n- BR-ESC-02 红色超24小时未闭环则上报分管领导（validation·mandatory）：alert.alert_level == \"红色\" && alert.handling_status != \"已闭环\" && alert.overdue_hours > 24\n- BR-ESC-03 发生升级则必须写升级留痕（postcondition·mandatory）：record.handling_action == \"超时升级\"",
+    "retries": 3,
+    "title": "escalateOverdueAlert",
+    "tool_use": [
+      {
+        "config": {
+          "base_url_env": "METAERP_BASE_URL",
+          "catalog_path": "models/hc-procurement-v1/erp-operations.json",
+          "operation": "escalateAlert"
+        },
+        "description": "escalateAlert：escalateOverdueAlert 写回 metaERP。",
+        "execution_policy": {
+          "effect_scope": "external",
+          "operation": "read_write",
+          "sandbox_policy": "requires_attempt_grant"
+        },
+        "name": "metaerp.invoke",
+        "side_effect": "write"
+      }
+    ],
+    "trigger": [
+      "ALERT_TIMEOUT_SCAN_SCHEDULED"
+    ],
+    "triggered_event": [
+      "DEVIATION_ALERT_ESCALATED"
+    ]
+  },
+  {
+    "actions": [
+      {
+        "condition": "input.planner_confirmed_by",
+        "description": "规则闸口（确定性判定）：未经计划员确认则不回写单据。判假即拦截后续人工/写入/发射步骤。",
+        "name": "rule-gate:BR-OPT-05",
+        "order": "1",
+        "result_key": "rule-gate-BR-OPT-05",
+        "type": "condition"
+      },
+      {
+        "awaiting_role": "计划员",
+        "depends_on": [
+          "rule-gate-BR-OPT-05"
+        ],
+        "description": "计划员确认压缩后的时间表可执行(BR-OPT-05)。",
+        "form_schema": {
+          "properties": {
+            "decision": {
+              "enum": [
+                "approved",
+                "rejected"
+              ],
+              "title": "确认结果",
+              "type": "string"
+            },
+            "planner_confirmed_by": {
+              "title": "确认人姓名",
+              "type": "string"
+            }
+          },
+          "required": [
+            "decision",
+            "planner_confirmed_by"
+          ],
+          "title": "方案① · 确认压缩后的节点时间表可执行",
+          "type": "object"
+        },
+        "name": "confirmByPlanner",
+        "order": "2",
+        "result_key": "manual-2",
+        "task_type": "execute.compress.planner-confirm",
+        "type": "manual"
+      },
+      {
+        "allowed_tools": [
+          "metaerp.invoke"
+        ],
+        "depends_on": [
+          "rule-gate-BR-OPT-05",
+          "manual-2"
+        ],
+        "description": "写回 Meta ERP：changePbp。",
+        "name": "metaerp.invoke",
+        "order": "3",
+        "result_key": "compressDownstreamCycle",
+        "tool_arguments": {
+          "payload": {
+            "from": "event.data"
+          }
+        },
+        "type": "tool"
+      },
+      {
+        "condition": "lastResult.applied == true",
+        "depends_on": [
+          "compressDownstreamCycle"
+        ],
+        "description": "事件 CHAIN_PLAN_SCHEDULE_COMPRESSED 的发射条件。",
+        "name": "emit-when:CHAIN_PLAN_SCHEDULE_COMPRESSED",
+        "order": "4",
+        "result_key": "emit-when-CHAIN_PLAN_SCHEDULE_COMPRESSED",
+        "type": "condition"
+      },
+      {
+        "depends_on": [
+          "compressDownstreamCycle",
+          "emit-when-CHAIN_PLAN_SCHEDULE_COMPRESSED"
+        ],
+        "description": "条件命中时发射事件 CHAIN_PLAN_SCHEDULE_COMPRESSED。",
+        "emit_event": "CHAIN_PLAN_SCHEDULE_COMPRESSED",
+        "emit_payload_from": "lastResult",
+        "name": "emit:CHAIN_PLAN_SCHEDULE_COMPRESSED",
+        "order": "5",
+        "result_key": "emit-CHAIN_PLAN_SCHEDULE_COMPRESSED",
+        "type": "emit"
+      },
+      {
+        "decision_table": {
+          "default": {
+            "outcome": "suppressed",
+            "payload": {
+              "_emits": []
+            }
+          },
+          "description": "无显式发射记录时写入空 _emits，阻断隐式首事件回退。",
+          "id": "suppress-implicit-emit",
+          "missing": {
+            "outcome": "suppressed",
+            "payload": {
+              "_emits": []
+            }
+          },
+          "rows": [
+            {
+              "all": [
+                {
+                  "op": "exists",
+                  "path": "lastResult._emits"
+                }
+              ],
+              "id": "explicit-emit-recorded",
+              "outcome": "explicit"
+            }
+          ]
+        },
+        "description": "规则拦截或条件未命中时抑制隐式 triggered_event[0] 发射（显式 emit 已记录则本步为空操作）。",
+        "name": "suppress-implicit-emit",
+        "order": "6",
+        "result_key": "suppress-implicit-emit",
+        "type": "decision"
+      }
+    ],
+    "actor": [
+      "Agent",
+      "Human"
+    ],
+    "description": "【行】方案①落地：压缩后续节点周期，把倒排出的各节点计划完成时间回写采购计划，经计划员人工确认后生效。",
+    "generated": true,
+    "id": "compressDownstreamCycle",
+    "name": "compressDownstreamCycle",
+    "ontology_instructions": "【目标对象】\n- 链路节点进度：决策属性 stage_progress_id, chain_id, stage_node, stage_sequence, standard_cycle_days, planned_finish_date, actual_finish_date, stage_status, source_document_type, source_document_no, stage_started_at, planned_date_derived, dwell_days（推导＝days(now() - stage_started_at)）, synced_at\n- 调整方案：决策属性 option_id, alert_id, deviation_id, chain_id, option_type, option_summary, expected_arrival_date_after, arrival_impact_days, arrival_impact_simulated, feasibility_note, is_recommended, is_high_risk, high_risk_confirmed_by, option_status, decision_role, decided_by, decided_at, planner_confirmed_by, planner_confirmed_at, executed_at\n\n【绑定规则】\n- BR-OPT-05 未经计划员确认则不回写单据（precondition·mandatory）：option.planner_confirmed_by != \"\"\n- BR-PLAN-01 缺周期配置则不予推算计划时间（validation·mandatory）：standard.standard_cycle_days > 0",
+    "retries": 3,
+    "title": "compressDownstreamCycle",
+    "tool_use": [
+      {
+        "config": {
+          "base_url_env": "METAERP_BASE_URL",
+          "catalog_path": "models/hc-procurement-v1/erp-operations.json",
+          "operation": "changePbp"
+        },
+        "description": "回写各节点计划完成时间——压缩周期方案(changePbp)。入参：PBP_HEADER_ID、压缩后的各节点计划完成时间、调整原因、操作人(计划员)；出参：回写结果状态、失败原因。",
+        "execution_policy": {
+          "effect_scope": "external",
+          "operation": "read_write",
+          "sandbox_policy": "requires_attempt_grant"
+        },
+        "name": "metaerp.invoke",
+        "side_effect": "write"
+      }
+    ],
+    "trigger": [
+      "ADJUSTMENT_OPTION_APPROVED"
+    ],
+    "triggered_event": [
+      "CHAIN_PLAN_SCHEDULE_COMPRESSED"
+    ]
+  },
+  {
+    "actions": [
+      {
+        "condition": "input.planner_confirmed_by",
+        "description": "规则闸口（确定性判定）：未经计划员确认则不回写单据。判假即拦截后续人工/写入/发射步骤。",
+        "name": "rule-gate:BR-OPT-05",
+        "order": "1",
+        "result_key": "rule-gate-BR-OPT-05",
+        "type": "condition"
+      },
+      {
+        "awaiting_role": "计划员",
+        "depends_on": [
+          "rule-gate-BR-OPT-05"
+        ],
+        "description": "计划员与需求部门确认新到货日期可接受(BR-OPT-05)。",
+        "form_schema": {
+          "properties": {
+            "decision": {
+              "enum": [
+                "approved",
+                "rejected"
+              ],
+              "title": "确认结果",
+              "type": "string"
+            },
+            "demand_department_agreed": {
+              "title": "需求部门已确认",
+              "type": "boolean"
+            },
+            "planner_confirmed_by": {
+              "title": "确认人姓名",
+              "type": "string"
+            }
+          },
+          "required": [
+            "decision",
+            "planner_confirmed_by"
+          ],
+          "title": "方案② · 计划员与需求部门确认新到货日期可接受",
+          "type": "object"
+        },
+        "name": "confirmByPlanner",
+        "order": "2",
+        "result_key": "manual-2",
+        "task_type": "execute.need-date.planner-confirm",
+        "type": "manual"
+      },
+      {
+        "allowed_tools": [
+          "metaerp.invoke"
+        ],
+        "depends_on": [
+          "rule-gate-BR-OPT-05",
+          "manual-2"
+        ],
+        "description": "写回 Meta ERP：changePbpLine。",
+        "name": "metaerp.invoke",
+        "order": "3",
+        "result_key": "adjustRequiredArrivalDate",
+        "tool_arguments": {
+          "payload": {
+            "from": "event.data"
+          }
+        },
+        "type": "tool"
+      },
+      {
+        "condition": "lastResult.applied == true",
+        "depends_on": [
+          "adjustRequiredArrivalDate"
+        ],
+        "description": "事件 REQUIRED_ARRIVAL_DATE_ADJUSTED 的发射条件。",
+        "name": "emit-when:REQUIRED_ARRIVAL_DATE_ADJUSTED",
+        "order": "4",
+        "result_key": "emit-when-REQUIRED_ARRIVAL_DATE_ADJUSTED",
+        "type": "condition"
+      },
+      {
+        "depends_on": [
+          "adjustRequiredArrivalDate",
+          "emit-when-REQUIRED_ARRIVAL_DATE_ADJUSTED"
+        ],
+        "description": "条件命中时发射事件 REQUIRED_ARRIVAL_DATE_ADJUSTED。",
+        "emit_event": "REQUIRED_ARRIVAL_DATE_ADJUSTED",
+        "emit_payload_from": "lastResult",
+        "name": "emit:REQUIRED_ARRIVAL_DATE_ADJUSTED",
+        "order": "5",
+        "result_key": "emit-REQUIRED_ARRIVAL_DATE_ADJUSTED",
+        "type": "emit"
+      },
+      {
+        "decision_table": {
+          "default": {
+            "outcome": "suppressed",
+            "payload": {
+              "_emits": []
+            }
+          },
+          "description": "无显式发射记录时写入空 _emits，阻断隐式首事件回退。",
+          "id": "suppress-implicit-emit",
+          "missing": {
+            "outcome": "suppressed",
+            "payload": {
+              "_emits": []
+            }
+          },
+          "rows": [
+            {
+              "all": [
+                {
+                  "op": "exists",
+                  "path": "lastResult._emits"
+                }
+              ],
+              "id": "explicit-emit-recorded",
+              "outcome": "explicit"
+            }
+          ]
+        },
+        "description": "规则拦截或条件未命中时抑制隐式 triggered_event[0] 发射（显式 emit 已记录则本步为空操作）。",
+        "name": "suppress-implicit-emit",
+        "order": "6",
+        "result_key": "suppress-implicit-emit",
+        "type": "decision"
+      }
+    ],
+    "actor": [
+      "Agent",
+      "Human"
+    ],
+    "description": "【行】方案②落地：改写计划行的需求到货日期，同时保留原始日期用于留痕对比，经计划员人工确认后生效。",
+    "generated": true,
+    "id": "adjustRequiredArrivalDate",
+    "name": "adjustRequiredArrivalDate",
+    "ontology_instructions": "【目标对象】\n- 采购计划行：决策属性 plan_line_id, plan_id, material_code, material_name, quantity, unit, required_arrival_date, original_required_arrival_date, planned_amount, demand_department, usage_scenario\n- 调整方案：决策属性 option_id, alert_id, deviation_id, chain_id, option_type, option_summary, expected_arrival_date_after, arrival_impact_days, arrival_impact_simulated, feasibility_note, is_recommended, is_high_risk, high_risk_confirmed_by, option_status, decision_role, decided_by, decided_at, planner_confirmed_by, planner_confirmed_at, executed_at\n\n【绑定规则】\n- BR-OPT-05 未经计划员确认则不回写单据（precondition·mandatory）：option.planner_confirmed_by != \"\"\n- BR-PLAN-01 缺周期配置则不予推算计划时间（postcondition·mandatory）：standard.standard_cycle_days > 0",
+    "retries": 3,
+    "title": "adjustRequiredArrivalDate",
+    "tool_use": [
+      {
+        "config": {
+          "base_url_env": "METAERP_BASE_URL",
+          "catalog_path": "models/hc-procurement-v1/erp-operations.json",
+          "operation": "changePbpLine"
+        },
+        "description": "调整需求到货日期(changePbpLine)。入参：PBP_LINE_ID、新 NEED_BY_DATE、调整原因、需求部门确认标识、操作人(计划员)；出参：回写结果状态、生效后的计划行。",
+        "execution_policy": {
+          "effect_scope": "external",
+          "operation": "read_write",
+          "sandbox_policy": "requires_attempt_grant"
+        },
+        "name": "metaerp.invoke",
+        "side_effect": "write"
+      }
+    ],
+    "trigger": [
+      "ADJUSTMENT_OPTION_APPROVED"
+    ],
+    "triggered_event": [
+      "REQUIRED_ARRIVAL_DATE_ADJUSTED"
+    ]
+  },
+  {
+    "actions": [
+      {
+        "condition": "input.planner_confirmed_by",
+        "description": "规则闸口（确定性判定）：未经计划员确认则不回写单据。判假即拦截后续人工/写入/发射步骤。",
+        "name": "rule-gate:BR-OPT-05",
+        "order": "1",
+        "result_key": "rule-gate-BR-OPT-05",
+        "type": "condition"
+      },
+      {
+        "awaiting_role": "计划员",
+        "depends_on": [
+          "rule-gate-BR-OPT-05"
+        ],
+        "description": "计划员确认调拨方案(BR-OPT-05)。",
+        "form_schema": {
+          "properties": {
+            "decision": {
+              "enum": [
+                "approved",
+                "rejected"
+              ],
+              "title": "确认结果",
+              "type": "string"
+            },
+            "planner_confirmed_by": {
+              "title": "确认人姓名",
+              "type": "string"
+            }
+          },
+          "required": [
+            "decision",
+            "planner_confirmed_by"
+          ],
+          "title": "方案③ · 确认调拨来源与数量",
+          "type": "object"
+        },
+        "name": "confirmByPlanner",
+        "order": "2",
+        "result_key": "manual-2",
+        "task_type": "execute.transfer.planner-confirm",
+        "type": "manual"
+      },
+      {
+        "allowed_tools": [
+          "metaerp.invoke"
+        ],
+        "depends_on": [
+          "rule-gate-BR-OPT-05",
+          "manual-2"
+        ],
+        "description": "写回 Meta ERP：createTransactionOrder。",
+        "name": "metaerp.invoke",
+        "order": "3",
+        "result_key": "createStockTransferRequest",
+        "tool_arguments": {
+          "payload": {
+            "from": "event.data"
+          }
+        },
+        "type": "tool"
+      },
+      {
+        "condition": "lastResult.applied == true",
+        "depends_on": [
+          "createStockTransferRequest"
+        ],
+        "description": "事件 STOCK_TRANSFER_REQUEST_CREATED 的发射条件。",
+        "name": "emit-when:STOCK_TRANSFER_REQUEST_CREATED",
+        "order": "4",
+        "result_key": "emit-when-STOCK_TRANSFER_REQUEST_CREATED",
+        "type": "condition"
+      },
+      {
+        "depends_on": [
+          "createStockTransferRequest",
+          "emit-when-STOCK_TRANSFER_REQUEST_CREATED"
+        ],
+        "description": "条件命中时发射事件 STOCK_TRANSFER_REQUEST_CREATED。",
+        "emit_event": "STOCK_TRANSFER_REQUEST_CREATED",
+        "emit_payload_from": "lastResult",
+        "name": "emit:STOCK_TRANSFER_REQUEST_CREATED",
+        "order": "5",
+        "result_key": "emit-STOCK_TRANSFER_REQUEST_CREATED",
+        "type": "emit"
+      },
+      {
+        "decision_table": {
+          "default": {
+            "outcome": "suppressed",
+            "payload": {
+              "_emits": []
+            }
+          },
+          "description": "无显式发射记录时写入空 _emits，阻断隐式首事件回退。",
+          "id": "suppress-implicit-emit",
+          "missing": {
+            "outcome": "suppressed",
+            "payload": {
+              "_emits": []
+            }
+          },
+          "rows": [
+            {
+              "all": [
+                {
+                  "op": "exists",
+                  "path": "lastResult._emits"
+                }
+              ],
+              "id": "explicit-emit-recorded",
+              "outcome": "explicit"
+            }
+          ]
+        },
+        "description": "规则拦截或条件未命中时抑制隐式 triggered_event[0] 发射（显式 emit 已记录则本步为空操作）。",
+        "name": "suppress-implicit-emit",
+        "order": "6",
+        "result_key": "suppress-implicit-emit",
+        "type": "decision"
+      }
+    ],
+    "actor": [
+      "Agent",
+      "Human"
+    ],
+    "description": "【行】方案③落地：生成库存调拨申请单，从其他库点先调物资顶上需求，取得 ERP 正式单号作为闭环可查凭据。",
+    "generated": true,
+    "id": "createStockTransferRequest",
+    "name": "createStockTransferRequest",
+    "ontology_instructions": "【目标对象】\n- 调拨申请：决策属性 transfer_request_id, transfer_no, option_id, chain_id, material_code, transfer_quantity, source_warehouse, target_warehouse, request_status, created_at, expected_arrival_date, actual_arrival_date, returned_at\n\n【绑定规则】\n- BR-OPT-05 未经计划员确认则不回写单据（precondition·mandatory）：option.planner_confirmed_by != \"\"",
+    "retries": 3,
+    "title": "createStockTransferRequest",
+    "tool_use": [
+      {
+        "config": {
+          "base_url_env": "METAERP_BASE_URL",
+          "catalog_path": "models/hc-procurement-v1/erp-operations.json",
+          "operation": "createTransactionOrder"
+        },
+        "description": "生成调拨单(createTransactionOrder，写 inv_txn_order_header_t)。入参：物料编码、调拨数量、调出库存组织/库点、调入库存组织/库点、需求日期、来源方案编号、经办人(采购员)；出参：调拨单号、单据状态。",
+        "execution_policy": {
+          "effect_scope": "external",
+          "operation": "read_write",
+          "sandbox_policy": "requires_attempt_grant"
+        },
+        "name": "metaerp.invoke",
+        "side_effect": "write"
+      }
+    ],
+    "trigger": [
+      "ADJUSTMENT_OPTION_APPROVED"
+    ],
+    "triggered_event": [
+      "STOCK_TRANSFER_REQUEST_CREATED"
+    ]
+  },
+  {
+    "actions": [
+      {
+        "allowed_tools": [
+          "metaerp.invoke"
+        ],
+        "description": "写回 Meta ERP：updateTransactionOrder。",
+        "name": "metaerp.invoke",
+        "order": "1",
+        "result_key": "trackTransferFulfillment",
+        "tool_arguments": {
+          "payload": {
+            "from": "event.data"
+          }
+        },
+        "type": "tool"
+      },
+      {
+        "condition": "lastResult.fulfilled == true",
+        "depends_on": [
+          "trackTransferFulfillment"
+        ],
+        "description": "事件 STOCK_TRANSFER_FULFILLED 的发射条件。",
+        "name": "emit-when:STOCK_TRANSFER_FULFILLED",
+        "order": "2",
+        "result_key": "emit-when-STOCK_TRANSFER_FULFILLED",
+        "type": "condition"
+      },
+      {
+        "depends_on": [
+          "trackTransferFulfillment",
+          "emit-when-STOCK_TRANSFER_FULFILLED"
+        ],
+        "description": "条件命中时发射事件 STOCK_TRANSFER_FULFILLED。",
+        "emit_event": "STOCK_TRANSFER_FULFILLED",
+        "emit_payload_from": "lastResult",
+        "name": "emit:STOCK_TRANSFER_FULFILLED",
+        "order": "3",
+        "result_key": "emit-STOCK_TRANSFER_FULFILLED",
+        "type": "emit"
+      },
+      {
+        "decision_table": {
+          "default": {
+            "outcome": "suppressed",
+            "payload": {
+              "_emits": []
+            }
+          },
+          "description": "无显式发射记录时写入空 _emits，阻断隐式首事件回退。",
+          "id": "suppress-implicit-emit",
+          "missing": {
+            "outcome": "suppressed",
+            "payload": {
+              "_emits": []
+            }
+          },
+          "rows": [
+            {
+              "all": [
+                {
+                  "op": "exists",
+                  "path": "lastResult._emits"
+                }
+              ],
+              "id": "explicit-emit-recorded",
+              "outcome": "explicit"
+            }
+          ]
+        },
+        "description": "规则拦截或条件未命中时抑制隐式 triggered_event[0] 发射（显式 emit 已记录则本步为空操作）。",
+        "name": "suppress-implicit-emit",
+        "order": "4",
+        "result_key": "suppress-implicit-emit",
+        "type": "decision"
+      }
+    ],
+    "actor": [
+      "Agent"
+    ],
+    "description": "【行】调拨单状态回传后跟踪到货与归还：物资到位即刷新链路预计到货日期，原采购到货后完成归还，调拨闭环。",
+    "generated": true,
+    "id": "trackTransferFulfillment",
+    "name": "trackTransferFulfillment",
+    "ontology_instructions": "【目标对象】\n- 调拨申请：决策属性 transfer_request_id, transfer_no, option_id, chain_id, material_code, transfer_quantity, source_warehouse, target_warehouse, request_status, created_at, expected_arrival_date, actual_arrival_date, returned_at\n- 采购执行链路：决策属性 chain_id, plan_id, plan_line_id, business_type, material_code, material_name, quantity, required_arrival_date, current_stage, chain_status, planner, buyer, demand_department, forecast_arrival_date, last_synced_at",
+    "retries": 3,
+    "title": "trackTransferFulfillment",
+    "tool_use": [
+      {
+        "config": {
+          "base_url_env": "METAERP_BASE_URL",
+          "catalog_path": "models/hc-procurement-v1/erp-operations.json",
+          "operation": "updateTransactionOrder"
+        },
+        "description": "调拨单状态回传(轮询/回调)。入参：调拨单号；出参：单据状态(审批中/已发出/已到货/已归还)、实际到货日期、到货数量。",
+        "execution_policy": {
+          "effect_scope": "external",
+          "operation": "read_write",
+          "sandbox_policy": "requires_attempt_grant"
+        },
+        "name": "metaerp.invoke",
+        "side_effect": "write"
+      }
+    ],
+    "trigger": [
+      "STOCK_TRANSFER_REQUEST_CREATED"
+    ],
+    "triggered_event": [
+      "STOCK_TRANSFER_FULFILLED"
+    ]
+  },
+  {
+    "actions": [
+      {
+        "awaiting_role": "计划员",
+        "description": "采集业务核实结果：属实或误报，供误报回收使用。",
+        "form_schema": {
+          "properties": {
+            "deviation_eliminated": {
+              "title": "重算后偏差是否已消除（BR-CLOSE-01）",
+              "type": "boolean"
+            },
+            "remark": {
+              "title": "核实说明",
+              "type": "string"
+            },
+            "verification_result": {
+              "enum": [
+                "属实",
+                "误报"
+              ],
+              "title": "核实结果",
+              "type": "string"
+            }
+          },
+          "required": [
+            "verification_result",
+            "deviation_eliminated"
+          ],
+          "title": "偏差处置闭环 · 业务核实",
+          "type": "object"
+        },
+        "name": "collectVerification",
+        "order": "1",
+        "result_key": "manual-4",
+        "task_type": "close.verify",
+        "type": "manual"
+      },
+      {
+        "allowed_tools": [
+          "metaerp.invoke"
+        ],
+        "depends_on": [
+          "manual-4"
+        ],
+        "description": "写回 Meta ERP：writeEventLog。",
+        "name": "metaerp.invoke",
+        "order": "2",
+        "result_key": "closeDeviationHandling",
+        "tool_arguments": {
+          "payload": {
+            "from": "results.manual-4"
+          }
+        },
+        "type": "tool"
+      },
+      {
+        "depends_on": [
+          "closeDeviationHandling"
+        ],
+        "description": "发射事件 DEVIATION_HANDLING_CLOSED（无条件）。",
+        "emit_event": "DEVIATION_HANDLING_CLOSED",
+        "emit_payload_from": "lastResult.closure_context",
+        "name": "emit:DEVIATION_HANDLING_CLOSED",
+        "order": "3",
+        "result_key": "emit-DEVIATION_HANDLING_CLOSED",
+        "type": "emit"
+      }
+    ],
+    "actor": [
+      "Agent"
+    ],
+    "description": "【行】方案执行后重算偏差做消除校验：确认偏差已回落到阈值以内则闭环并留痕，未消除则退回重新出方案。",
+    "generated": true,
+    "id": "closeDeviationHandling",
+    "name": "closeDeviationHandling",
+    "ontology_instructions": "【目标对象】\n- 执行偏差：决策属性 deviation_id, chain_id, stage_progress_id, stage_node, planned_finish_date, actual_finish_date, time_deviation_days, schedule_deviation_ratio, amount_deviation_ratio, has_deviation, deviation_level, cause_tag, cause_explanation, cause_clarification_status, dwell_days, disposal_state, evaluated_at\n- 偏差预警：决策属性 alert_id, alert_no, deviation_id, assessment_id, chain_id, alert_level, notified_role, notified_to, raised_at, handling_status, acknowledged_at, escalated_at, escalation_count, closed_at, overdue_hours（推导＝hours(now() - raised_at)）, verification_result, generated_option_count\n- 预警处置记录：决策属性 handling_record_id, alert_id, chain_id, handling_action, operator_role, operator, occurred_at, remark, deviation_eliminated, verification_result, false_alarm_cause\n\n【绑定规则】\n- BR-CLOSE-01 偏差未消除则不予闭环（validation·mandatory）：record.deviation_eliminated == true\n- BR-CLOSE-02 无闭环留痕则不予闭环（postcondition·mandatory）：record.handling_action == \"闭环归档\"",
+    "retries": 3,
+    "title": "closeDeviationHandling",
+    "tool_use": [
+      {
+        "config": {
+          "base_url_env": "METAERP_BASE_URL",
+          "catalog_path": "models/hc-procurement-v1/erp-operations.json",
+          "operation": "writeEventLog"
+        },
+        "description": "writeEventLog：closeDeviationHandling 写回 metaERP。",
+        "execution_policy": {
+          "effect_scope": "external",
+          "operation": "read_write",
+          "sandbox_policy": "requires_attempt_grant"
+        },
+        "name": "metaerp.invoke",
+        "side_effect": "write"
+      }
+    ],
+    "trigger": [
+      "CHAIN_PLAN_SCHEDULE_COMPRESSED",
+      "REQUIRED_ARRIVAL_DATE_ADJUSTED",
+      "STOCK_TRANSFER_FULFILLED"
+    ],
+    "triggered_event": [
+      "DEVIATION_HANDLING_CLOSED"
+    ]
+  },
+  {
+    "actions": [
+      {
+        "condition": "input.verification_result == '误报'",
+        "description": "规则闸口（确定性判定）：误报未归因则不予闭环。判假即拦截后续人工/写入/发射步骤。",
+        "name": "rule-gate:BR-FB-01",
+        "order": "1",
+        "result_key": "rule-gate-BR-FB-01",
+        "type": "condition"
+      },
+      {
+        "awaiting_role": "规则评审组",
+        "depends_on": [
+          "rule-gate-BR-FB-01"
+        ],
+        "description": "归因为阈值过严／数据质量／口径问题之一(BR-FB-01)。",
+        "form_schema": {
+          "properties": {
+            "false_alarm_cause": {
+              "enum": [
+                "阈值过严",
+                "数据质量",
+                "口径问题"
+              ],
+              "title": "误报归因",
+              "type": "string"
+            },
+            "remark": {
+              "title": "归因说明",
+              "type": "string"
+            },
+            "suggested_threshold_value": {
+              "title": "建议阈值取值",
+              "type": "number"
+            }
+          },
+          "required": [
+            "false_alarm_cause"
+          ],
+          "title": "误报归因（BR-FB-01）",
+          "type": "object"
+        },
+        "name": "classifyFalseAlarm",
+        "order": "2",
+        "result_key": "manual-1",
+        "task_type": "feedback.classify",
+        "type": "manual"
+      },
+      {
+        "allowed_tools": [
+          "metaerp.invoke"
+        ],
+        "depends_on": [
+          "rule-gate-BR-FB-01",
+          "manual-1"
+        ],
+        "description": "写回 Meta ERP：createReviewItem。",
+        "name": "metaerp.invoke",
+        "order": "3",
+        "result_key": "recycleFalseAlarm",
+        "tool_arguments": {
+          "payload": {
+            "from": "results.manual-1"
+          }
+        },
+        "type": "tool"
+      },
+      {
+        "depends_on": [
+          "recycleFalseAlarm"
+        ],
+        "description": "发射事件 FALSE_ALARM_RECYCLED（无条件）。",
+        "emit_event": "FALSE_ALARM_RECYCLED",
+        "emit_payload_from": "lastResult.recycle_context",
+        "name": "emit:FALSE_ALARM_RECYCLED",
+        "order": "4",
+        "result_key": "emit-FALSE_ALARM_RECYCLED",
+        "type": "emit"
+      },
+      {
+        "condition": "lastResult.review_item_created == true",
+        "depends_on": [
+          "recycleFalseAlarm"
+        ],
+        "description": "事件 THRESHOLD_REVIEW_ITEM_CREATED 的发射条件。",
+        "name": "emit-when:THRESHOLD_REVIEW_ITEM_CREATED",
+        "order": "5",
+        "result_key": "emit-when-THRESHOLD_REVIEW_ITEM_CREATED",
+        "type": "condition"
+      },
+      {
+        "depends_on": [
+          "recycleFalseAlarm",
+          "emit-when-THRESHOLD_REVIEW_ITEM_CREATED"
+        ],
+        "description": "条件命中时发射事件 THRESHOLD_REVIEW_ITEM_CREATED。",
+        "emit_event": "THRESHOLD_REVIEW_ITEM_CREATED",
+        "emit_payload_from": "lastResult.review_item",
+        "name": "emit:THRESHOLD_REVIEW_ITEM_CREATED",
+        "order": "6",
+        "result_key": "emit-THRESHOLD_REVIEW_ITEM_CREATED",
+        "type": "emit"
+      },
+      {
+        "decision_table": {
+          "default": {
+            "outcome": "suppressed",
+            "payload": {
+              "_emits": []
+            }
+          },
+          "description": "无显式发射记录时写入空 _emits，阻断隐式首事件回退。",
+          "id": "suppress-implicit-emit",
+          "missing": {
+            "outcome": "suppressed",
+            "payload": {
+              "_emits": []
+            }
+          },
+          "rows": [
+            {
+              "all": [
+                {
+                  "op": "exists",
+                  "path": "lastResult._emits"
+                }
+              ],
+              "id": "explicit-emit-recorded",
+              "outcome": "explicit"
+            }
+          ]
+        },
+        "description": "规则拦截或条件未命中时抑制隐式 triggered_event[0] 发射（显式 emit 已记录则本步为空操作）。",
+        "name": "suppress-implicit-emit",
+        "order": "7",
+        "result_key": "suppress-implicit-emit",
+        "type": "decision"
+      }
+    ],
+    "actor": [
+      "Agent",
+      "Human"
+    ],
+    "description": "【馈】阈值过严或数据质量问题会产生误报：对核实为误报的预警做归因，回流生成阈值评审条目，闭环误报率不高于 20%，让系统越用越准(R1-07)。",
+    "generated": true,
+    "id": "recycleFalseAlarm",
+    "name": "recycleFalseAlarm",
+    "ontology_instructions": "【目标对象】\n- 规则评审条目：决策属性 review_item_id, threshold_id, alert_id, false_alarm_cause, current_threshold_value, suggested_threshold_value, false_alarm_rate, review_status, submitted_at, reviewer, review_conclusion\n- 预警阈值配置：决策属性 threshold_id, threshold_code, threshold_name, threshold_value, unit, maintainer, effective_date, last_tuned_at, tuning_reason\n- 预警处置记录：决策属性 handling_record_id, alert_id, chain_id, handling_action, operator_role, operator, occurred_at, remark, deviation_eliminated, verification_result, false_alarm_cause\n\n【绑定规则】\n- BR-FB-01 误报未归因则不予闭环（precondition·mandatory）：record.verification_result == \"误报\" && record.false_alarm_cause != \"待归因\"\n- BR-FB-02 核实为误报则必须回流评审队列（postcondition·mandatory）：如果预警被业务核实为误报，则必须生成阈值评审条目回流规则评审队列，提议调整对应的预警阈值配置。\n- BR-FB-03 误报率高于20%则触发阈值评审（validation·mandatory）：item.false_alarm_rate > 0.2",
+    "retries": 3,
+    "title": "recycleFalseAlarm",
+    "tool_use": [
+      {
+        "config": {
+          "base_url_env": "METAERP_BASE_URL",
+          "catalog_path": "models/hc-procurement-v1/erp-operations.json",
+          "operation": "createReviewItem"
+        },
+        "description": "createReviewItem：recycleFalseAlarm 写回 metaERP。",
+        "execution_policy": {
+          "effect_scope": "external",
+          "operation": "read_write",
+          "sandbox_policy": "requires_attempt_grant"
+        },
+        "name": "metaerp.invoke",
+        "side_effect": "write"
+      }
+    ],
+    "trigger": [
+      "DEVIATION_HANDLING_CLOSED"
+    ],
+    "triggered_event": [
+      "FALSE_ALARM_RECYCLED",
+      "THRESHOLD_REVIEW_ITEM_CREATED"
+    ]
+  }
+]
