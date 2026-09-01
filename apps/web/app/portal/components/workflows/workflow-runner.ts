@@ -50,6 +50,36 @@ function sameContract(
 }
 
 /** Client-side equivalent of the API profile builder for unsaved manifests. */
+/**
+ * How many agents this event can set off, following the trigger/emit graph.
+ *
+ * Mirrors `agentsReachedFrom` in apps/api's workflow-test-runner: the draft
+ * profile is derived here in the browser while the live profile comes from the
+ * API, and the two must rank the same or the default entry changes when you
+ * flip between 当前草稿 and 已发布线上版.
+ */
+function agentsReachedFrom(
+  event: string,
+  listeners: Map<string, AgentDefinitionV2[]>,
+): number {
+  const seenEvents = new Set([event]);
+  const seenAgents = new Set<string>();
+  const queue = [event];
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    for (const agent of listeners.get(current) ?? []) {
+      if (seenAgents.has(agent.id)) continue;
+      seenAgents.add(agent.id);
+      for (const emitted of agent.triggered_event ?? []) {
+        if (seenEvents.has(emitted)) continue;
+        seenEvents.add(emitted);
+        queue.push(emitted);
+      }
+    }
+  }
+  return seenAgents.size;
+}
+
 export function deriveWorkflowEntrypoints(
   manifestInput: unknown,
   t?: Translate,
@@ -67,6 +97,17 @@ export function deriveWorkflowEntrypoints(
       const bucket = listeners.get(event) ?? [];
       bucket.push(agent);
       listeners.set(event, bucket);
+    }
+  }
+
+  const reachOf = new Map<string, number>();
+  for (const event of listeners.keys()) {
+    reachOf.set(event, agentsReachedFrom(event, listeners));
+  }
+  let bestExternalReach = 0;
+  for (const [event, reach] of reachOf) {
+    if (!emitted.has(event)) {
+      bestExternalReach = Math.max(bestExternalReach, reach);
     }
   }
 
@@ -116,7 +157,11 @@ export function deriveWorkflowEntrypoints(
       return {
         event,
         source,
-        recommended: source === "external",
+        // Externally fired AND able to drive the workflow, not merely poke a
+        // corner of it. Without the reach test every external trigger tied and
+        // the default fell to whichever sorted first alphabetically.
+        recommended:
+          source === "external" && reachOf.get(event) === bestExternalReach,
         listenerAgentIds: agents.map((agent) => agent.id),
         listenerTitles: agents.map(
           (agent) => agent.title ?? agent.name ?? agent.id,
@@ -136,6 +181,7 @@ export function deriveWorkflowEntrypoints(
     .sort(
       (left, right) =>
         Number(right.recommended) - Number(left.recommended) ||
+        (reachOf.get(right.event) ?? 0) - (reachOf.get(left.event) ?? 0) ||
         left.event.localeCompare(right.event),
     );
 
