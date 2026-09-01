@@ -18,12 +18,12 @@
       {
         "event": "DEVIATION_DETECTED",
         "payload_from": "results.calculateExecutionDeviation",
-        "when": "lastResult.execution_deviation.has_deviation == true"
+        "when": "lastResult.deviation_found == true"
       },
       {
         "event": "NO_DEVIATION_CONFIRMED",
         "payload_from": "results.calculateExecutionDeviation",
-        "when": "lastResult.execution_deviation.has_deviation == false"
+        "when": "lastResult.deviation_found == false"
       }
     ],
     "archiveDeviationMonitoring": [
@@ -557,7 +557,8 @@
         "execution_deviation": "执行偏差列表（范围内每条链路一条）：[{deviation_id, chain_id, stage_progress_id, stage_node（发生偏差的节点＝「已完成节点之后的第一个未完成节点」）, planned_finish_date（取 planned_dates 里该节点的值）, actual_finish_date, time_deviation_days:number, schedule_deviation_ratio:number, amount_deviation_ratio:number|null, has_deviation:boolean, deviation_level:'待定级', cause_tag, cause_explanation, cause_clarification_status, dwell_days:number, disposal_state:'待评分', evaluated_at}]。\n\n【actual_finish_date（硬性）】只有节点 stage_status 为「已完成」时才取对应单据的完成字段。「未开始」「进行中」**以及「部分完成」**一律视为未完成——到货节点的接收数量小于订单数量就是部分接收，链路仍在途，**不得**拿验收单时间戳当完成时间——此时**逐字填入上游透传的 scan_date 字符串**（不是你认为的今天，也不是任何单据上的时间戳）——不得凭空生成一个日期、不得使用系统当前时间、不得沿用上游任何别的时间戳。实跑曾出现定标节点从未完成却被填了一个过去的日期，导致时间偏差算成负数（「提前 32 天」），延期判定整体失效。\n\n【time_deviation_days（硬性）】= actual_finish_date − planned_finish_date，单位天，**正数表示延迟**。未完成节点因为代入了 scan_date，这个值就等于「今天比该节点的计划完成时间晚了几天」。若算出负数，意味着该节点尚未到期。\n\n【evaluated_at（硬性·必填）】直接填 scan_date 的那个字符串，与 actual_finish_date 未完成时代入的值完全相同。本体里它是 is_required 字段，留空即为不合规。\n【dwell_days（必填）】= scan_date − 该节点开始时间，单位天（整数或小数）。取不到节点开始时间时填 0，不要填 null。\n【deviation_level】本步一律填 '待定级'——等级由下游 scoreOnTimeProbability 按按期概率映射。\n【has_deviation】按 BR-DEV-01 判定：time_deviation_days > 时间阈值 或 schedule_deviation_ratio > 进度阈值（两个阈值都取自 queryAlertThresholdConfig，不得写死，BR-DEV-02）。",
         "blocking_note": "若因缺周期配置等原因无法完成推算，写明缺哪个「业务类型×节点」并置 has_deviation=false；否则填空字符串。",
         "_parallel_tool_calls": "【并发取数（硬性）】本步的这些查询彼此独立、没有先后依赖，请在**同一轮**里一次性发出全部 metaerp.invoke 工具调用，不要一个一个串行来回——运行时支持一轮多调用（step-engine 按数组逐个执行），串行会把这一步拖成十几分钟。只有当后一个查询确实要用前一个的返回值做入参时，才允许分轮。本步需要的查询：queryStageCycleConfig、queryAlertThresholdConfig。第一轮一次性发出。本字段只是取数纪律说明，输出 JSON 里填一句确认语即可。",
-        "scan_date": "触发事件负载里 scan_date 的值，**原样照抄**（YYYY-MM-DD 字符串，例如事件给 \"2026-09-01\" 就填 \"2026-09-01\"）。这是业务扫描日期，不是系统时间——与你认知里的今天不同也以它为准。**此字段必填，不得留空**。本步所有涉及「今天」的计算一律用它。"
+        "scan_date": "触发事件负载里 scan_date 的值，**原样照抄**（YYYY-MM-DD 字符串，例如事件给 \"2026-09-01\" 就填 \"2026-09-01\"）。这是业务扫描日期，不是系统时间——与你认知里的今天不同也以它为准。**此字段必填，不得留空**。本步所有涉及「今天」的计算一律用它。",
+        "deviation_found": "布尔值，必填。本批范围内只要 execution_deviation 里有任意一条 has_deviation=true 就填 true，全部为 false 才填 false。工作流据此二选一：true 走预警分支（DEVIATION_DETECTED→评分→预警），false 走归档分支（NO_DEVIATION_CONFIRMED→归档）。这是对 execution_deviation 的汇总，不得与其中任何一条自相矛盾。"
       }
     },
     "archiveDeviationMonitoring": {
