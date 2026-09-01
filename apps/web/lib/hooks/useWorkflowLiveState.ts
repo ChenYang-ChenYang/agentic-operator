@@ -61,6 +61,15 @@ export interface WorkflowLiveState {
   runOrder: string[];
   /** taskId → agentName so task.resolved can clear the badge. */
   taskAgent: Record<string, string>;
+  /**
+   * runId → taskIds seen before that run was attributed to an agent.
+   *
+   * The durable backfill sorts purely by timestamp, and `tasks.created_at` is
+   * stored at second precision while a run's `startedAt` keeps milliseconds —
+   * so a task created 900 ms AFTER its run replays 900 ms BEFORE it. Dropping
+   * those frames lost the waiting badge on every page load after the fact.
+   */
+  pendingTasks: Record<string, string[]>;
   /** Ring buffer of recent event emissions (edge animation source). */
   pulses: EdgePulse[];
 }
@@ -75,7 +84,14 @@ export type WorkflowLiveAction =
   | { kind: "tick"; now: number };
 
 export function initialWorkflowLiveState(): WorkflowLiveState {
-  return { agents: {}, runAgent: {}, runOrder: [], taskAgent: {}, pulses: [] };
+  return {
+    agents: {},
+    runAgent: {},
+    runOrder: [],
+    taskAgent: {},
+    pendingTasks: {},
+    pulses: [],
+  };
 }
 
 function emptyAgent(): AgentLiveState {
@@ -159,6 +175,27 @@ function resolveRun(
   });
 }
 
+/** Hang a human task on its agent and flip the agent to `waiting_human`. */
+function attachTask(
+  state: WorkflowLiveState,
+  agentName: string,
+  taskId: string,
+  at: number,
+): WorkflowLiveState {
+  const next: WorkflowLiveState = {
+    ...state,
+    taskAgent: { ...state.taskAgent, [taskId]: agentName },
+  };
+  return withAgent(next, agentName, (agent) => ({
+    ...agent,
+    waitingTaskIds: agent.waitingTaskIds.includes(taskId)
+      ? agent.waitingTaskIds
+      : [...agent.waitingTaskIds, taskId],
+    state: "waiting_human",
+    lastEventAt: Math.max(agent.lastEventAt ?? 0, at),
+  }));
+}
+
 export function workflowLiveReducer(
   state: WorkflowLiveState,
   action: WorkflowLiveAction,
@@ -172,8 +209,9 @@ export function workflowLiveReducer(
   const event = action.event;
   switch (event.type) {
     case "run.started": {
-      const next = registerRun(state, event.runId, event.agentName);
-      return withAgent(next, event.agentName, (agent) => ({
+      const registered = registerRun(state, event.runId, event.agentName);
+      const parked = registered.pendingTasks[event.runId] ?? [];
+      let next = withAgent(registered, event.agentName, (agent) => ({
         ...agent,
         runningCount: agent.runningCount + 1,
         activeRunId: event.runId,
@@ -182,6 +220,15 @@ export function workflowLiveReducer(
         state:
           agent.waitingTaskIds.length > 0 ? "waiting_human" : "running",
       }));
+      if (parked.length === 0) return next;
+      // Tasks that replayed ahead of this frame now have an agent to hang on.
+      const pendingTasks = { ...next.pendingTasks };
+      delete pendingTasks[event.runId];
+      next = { ...next, pendingTasks };
+      for (const taskId of parked) {
+        next = attachTask(next, event.agentName, taskId, event.at);
+      }
+      return next;
     }
     case "run.step.started": {
       const agentName = state.runAgent[event.runId];
@@ -215,20 +262,22 @@ export function workflowLiveReducer(
     case "run.cancelled":
       return resolveRun(state, event.runId, event.at, "idle", null);
     case "task.created": {
-      const agentName = event.runId ? state.runAgent[event.runId] : undefined;
-      if (!agentName) return state;
-      const next: WorkflowLiveState = {
-        ...state,
-        taskAgent: { ...state.taskAgent, [event.taskId]: agentName },
-      };
-      return withAgent(next, agentName, (agent) => ({
-        ...agent,
-        waitingTaskIds: agent.waitingTaskIds.includes(event.taskId)
-          ? agent.waitingTaskIds
-          : [...agent.waitingTaskIds, event.taskId],
-        state: "waiting_human",
-        lastEventAt: event.at,
-      }));
+      if (!event.runId) return state;
+      const agentName = state.runAgent[event.runId];
+      if (!agentName) {
+        // The run has not been attributed yet — park the task rather than lose
+        // it. See `pendingTasks`: the backfill can deliver these out of order.
+        const parked = state.pendingTasks[event.runId] ?? [];
+        if (parked.includes(event.taskId)) return state;
+        return {
+          ...state,
+          pendingTasks: {
+            ...state.pendingTasks,
+            [event.runId]: [...parked, event.taskId],
+          },
+        };
+      }
+      return attachTask(state, agentName, event.taskId, event.at);
     }
     case "task.resolved": {
       const agentName = state.taskAgent[event.taskId];

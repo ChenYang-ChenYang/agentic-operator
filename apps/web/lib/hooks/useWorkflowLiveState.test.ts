@@ -341,3 +341,94 @@ describe("workflowLiveReducer", () => {
     expect(state.agents["action-create-stock-transfer"]!.state).toBe("ok");
   });
 });
+
+describe("workflowLiveReducer · task frames arriving out of order", () => {
+  // The durable backfill sorts purely by `at`, and `tasks.created_at` is stored
+  // at second precision while a run's `startedAt` keeps milliseconds. A task
+  // created 939 ms AFTER its run therefore replays BEFORE it — measured live on
+  // run-4feec0d808c4 (started …133939) vs tsk-86d137e7c6b0 (created …133000).
+  // Dropping that frame lost the waiting badge on every page load after the
+  // fact, which is exactly when an operator goes looking for it.
+  it("still shows the waiting badge when task.created replays first", () => {
+    let state = initialWorkflowLiveState();
+    state = workflowLiveReducer(state, {
+      kind: "stream",
+      event: {
+        type: "task.created",
+        tenantId: "t",
+        at: 1_788_246_133_000,
+        taskId: "tsk-1",
+        runId: "run-1",
+        taskType: "adjustment.review",
+        title: "审批调整方案",
+      },
+    });
+    // Parked, not attributed: nothing to show yet, and nothing lost.
+    expect(state.agents.approve).toBeUndefined();
+
+    state = workflowLiveReducer(state, {
+      kind: "stream",
+      event: {
+        type: "run.started",
+        tenantId: "t",
+        at: 1_788_246_133_939,
+        runId: "run-1",
+        agentName: "approve",
+        triggerEvent: "ADJUSTMENT_OPTIONS_GENERATED",
+        subject: "SCAN-0873-ONLY",
+        correlationId: "cor-1",
+      },
+    });
+    expect(state.agents.approve?.state).toBe("waiting_human");
+    expect(state.agents.approve?.waitingTaskIds).toEqual(["tsk-1"]);
+    expect(state.pendingTasks["run-1"]).toBeUndefined();
+  });
+
+  it("does not double-park a task the backfill repeats", () => {
+    let state = initialWorkflowLiveState();
+    const task = {
+      type: "task.created" as const,
+      tenantId: "t",
+      at: 1,
+      taskId: "tsk-1",
+      runId: "run-1",
+      taskType: "adjustment.review",
+      title: "t",
+    };
+    state = workflowLiveReducer(state, { kind: "stream", event: task });
+    state = workflowLiveReducer(state, { kind: "stream", event: task });
+    expect(state.pendingTasks["run-1"]).toEqual(["tsk-1"]);
+
+    state = workflowLiveReducer(state, {
+      kind: "stream",
+      event: {
+        type: "run.started",
+        tenantId: "t",
+        at: 2,
+        runId: "run-1",
+        agentName: "approve",
+        triggerEvent: null,
+        subject: null,
+        correlationId: "cor-1",
+      },
+    });
+    expect(state.agents.approve?.waitingTaskIds).toEqual(["tsk-1"]);
+  });
+
+  it("ignores a task frame with no run to hang it on", () => {
+    const state = workflowLiveReducer(initialWorkflowLiveState(), {
+      kind: "stream",
+      event: {
+        type: "task.created",
+        tenantId: "t",
+        at: 1,
+        taskId: "tsk-1",
+        runId: null,
+        taskType: "x",
+        title: "t",
+      },
+    });
+    expect(state.pendingTasks).toEqual({});
+    expect(state.agents).toEqual({});
+  });
+});
