@@ -71,8 +71,10 @@ export default function RunsPage() {
   const [pageSize, setPageSize] = useState(50);
   const [binMode, setBinMode] = useState(false);
   // The list is the record of what ran; "live" is the same tenant watched as a
-  // moving graph. Workflows owns build time, this owns runtime.
-  const [view, setView] = useState<"list" | "live">("list");
+  // moving graph. Workflows owns build time, this owns runtime — and runtime is
+  // what someone opening this page wants first, so the graph is the default and
+  // the table is one click away.
+  const [view, setView] = useState<"list" | "live">("live");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [allMatching, setAllMatching] = useState(false);
   const [excludedIds, setExcludedIds] = useState<Set<string>>(new Set());
