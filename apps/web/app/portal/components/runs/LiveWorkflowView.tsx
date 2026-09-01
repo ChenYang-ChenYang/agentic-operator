@@ -40,15 +40,19 @@ import {
   nodePos,
 } from "@/app/portal/components/workflows/layout";
 import { Badge, Empty } from "@/app/portal/components";
+import { fmtAgo } from "@/app/portal/lib/format";
+import type { Language } from "@/lib/i18n/types";
 import { Icon } from "@/app/portal/components/Icon";
 import {
   appendFeed,
   countStates,
   linkRunAgent,
+  nodeFreshness,
   nodeVisual,
   toFeedEntry,
   visibleFeed,
   type FeedEntry,
+  type NodeFreshness,
 } from "./live-view";
 import { NodeTaskPanel } from "./NodeTaskPanel";
 
@@ -100,6 +104,22 @@ export function LiveWorkflowView() {
   const agents = useMemo(() => dag.data?.agents ?? [], [dag.data]);
   const edges = useMemo(() => dag.data?.edges ?? [], [dag.data]);
 
+  // Freshness is a function of elapsed time, so it needs a clock. It ticks only
+  // while a node can still decay, so an idle canvas costs nothing.
+  const [now, setNow] = useState(() => Date.now());
+  const hasDecayable = agents.some((agent) => {
+    const state = live.agents[agent.name];
+    return (
+      state != null &&
+      nodeFreshness(state.state, state.lastEventAt, now) === "recent"
+    );
+  });
+  useEffect(() => {
+    if (!hasDecayable) return;
+    const timer = setInterval(() => setNow(Date.now()), 15_000);
+    return () => clearInterval(timer);
+  }, [hasDecayable]);
+
   const positions = useMemo(() => {
     const fallback = autoPackLayout(
       agents.map((agent) => ({
@@ -117,8 +137,8 @@ export function LiveWorkflowView() {
   }, [agents]);
 
   const counts = useMemo(
-    () => countStates(agents, live.agents),
-    [agents, live.agents],
+    () => countStates(agents, live.agents, now),
+    [agents, live.agents, now],
   );
 
   const canvasSize = useMemo(() => {
@@ -178,9 +198,20 @@ export function LiveWorkflowView() {
           <span style={{ fontSize: 12.5, color: "var(--text-2)" }}>
             {dag.data?.workflowName ?? dag.data?.workflowSlug ?? tenant}
           </span>
-          <Badge tone="signal">
-            {copy("运行中", "Running")} {counts.running}
-          </Badge>
+          {counts.running === 0 &&
+          counts.waiting === 0 &&
+          counts.failed === 0 &&
+          counts.ok === 0 ? (
+            // Four zeros say nothing. Name the state instead, so a quiet graph
+            // reads as quiet rather than as a view that failed to load.
+            <Badge tone="muted">
+              {copy("当前没有活动", "Nothing running right now")}
+            </Badge>
+          ) : (
+            <Badge tone="signal">
+              {copy("运行中", "Running")} {counts.running}
+            </Badge>
+          )}
           {counts.waiting > 0 && (
             <Badge tone="amber">
               {copy("待人工", "Waiting")} {counts.waiting}
@@ -191,13 +222,15 @@ export function LiveWorkflowView() {
               {copy("失败", "Failed")} {counts.failed}
             </Badge>
           )}
-          <Badge tone="green">
-            {copy("已完成", "Done")} {counts.ok}
-          </Badge>
+          {counts.ok > 0 && (
+            <Badge tone="green">
+              {copy("已完成", "Done")} {counts.ok}
+            </Badge>
+          )}
           <span style={{ fontSize: 11.5, color: "var(--text-3)", marginLeft: "auto" }}>
             {copy(
-              "点击节点只看它的动作；琥珀色节点可点开处理人工任务",
-              "Click a node to filter its activity; amber ones open their human task",
+              "彩色节点为 5 分钟内有动静的；点击节点只看它的动作，琥珀色可点开人工任务",
+              "Coloured nodes moved in the last 5 min; click one to filter its activity, amber opens its task",
             )}
           </span>
         </div>
@@ -224,6 +257,12 @@ export function LiveWorkflowView() {
                 agent={agent}
                 position={positions.get(agent.name) ?? { x: PAD_X, y: PAD_Y }}
                 status={live.agents[agent.name]?.state}
+                freshness={nodeFreshness(
+                  live.agents[agent.name]?.state,
+                  live.agents[agent.name]?.lastEventAt,
+                  now,
+                )}
+                lastEventAt={live.agents[agent.name]?.lastEventAt ?? null}
                 waitingCount={
                   live.agents[agent.name]?.waitingTaskIds.length ?? 0
                 }
@@ -235,6 +274,7 @@ export function LiveWorkflowView() {
                   )
                 }
                 copy={copy}
+                language={language}
               />
             ))}
           </div>
@@ -472,31 +512,38 @@ export function LiveNode({
   agent,
   position,
   status,
+  freshness = "recent",
+  lastEventAt = null,
   waitingCount,
   runningCount,
   selected,
   onSelect,
   copy,
+  language = "zh",
 }: {
   agent: DagAgent;
   position: { x: number; y: number };
   status: AgentLiveStatus | undefined;
+  freshness?: NodeFreshness;
+  lastEventAt?: number | null;
   waitingCount: number;
   runningCount: number;
   selected: boolean;
   onSelect: () => void;
   copy: (zh: string, en: string) => string;
+  language?: Language;
 }) {
-  const visual = nodeVisual(status);
+  const visual = nodeVisual(status, freshness);
+  const ago = lastEventAt ? fmtAgo(lastEventAt, language) : null;
   const label =
     waitingCount > 0
       ? copy(`待人工 ${waitingCount}`, `${waitingCount} waiting`)
       : runningCount > 0
         ? copy(`运行中 ${runningCount}`, `${runningCount} running`)
         : status === "failed"
-          ? copy("上次失败", "Last run failed")
+          ? copy(`失败 ${ago ?? ""}`.trim(), `Failed ${ago ?? ""}`.trim())
           : status === "ok"
-            ? copy("已完成", "Done")
+            ? copy(`已完成 ${ago ?? ""}`.trim(), `Done ${ago ?? ""}`.trim())
             : agent.actor === "Human"
               ? copy("人工节点", "Human step")
               : copy("空闲", "Idle");

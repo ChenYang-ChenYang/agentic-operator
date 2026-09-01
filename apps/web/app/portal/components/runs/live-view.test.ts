@@ -3,10 +3,12 @@ import type { RunStreamEvent as StreamEvent } from "@agentic/contracts";
 import {
   MAX_FEED_ENTRIES,
   appendFeed,
+  FRESH_WINDOW_MS,
   countStates,
   fmtLogMessage,
   fmtTokens,
   linkRunAgent,
+  nodeFreshness,
   nodeVisual,
   toFeedEntry,
   visibleFeed,
@@ -207,6 +209,9 @@ describe("fmtTokens", () => {
     expect(fmtTokens(3200, 480)).toBe("↑3.2K ↓480");
     expect(fmtTokens(null, 480)).toBe("↑— ↓480");
     expect(fmtTokens(null, null)).toBeNull();
+    // A tool-only agent reports 0/0 on every run — a column of noise.
+    expect(fmtTokens(0, 0)).toBeNull();
+    expect(fmtTokens(0, 12)).toBe("↑0 ↓12");
   });
 });
 
@@ -318,39 +323,94 @@ describe("visibleFeed", () => {
   });
 });
 
+describe("nodeFreshness", () => {
+  const T0 = 1_800_000_000_000;
+
+  it("treats anything in flight as current, however old its last frame", () => {
+    expect(nodeFreshness("running", T0 - 86_400_000, T0)).toBe("live");
+    expect(nodeFreshness("waiting_human", T0 - 86_400_000, T0)).toBe("live");
+  });
+
+  it("keeps a finished run current only inside the window", () => {
+    expect(nodeFreshness("ok", T0 - 1_000, T0)).toBe("recent");
+    expect(nodeFreshness("ok", T0 - FRESH_WINDOW_MS, T0)).toBe("recent");
+    expect(nodeFreshness("ok", T0 - FRESH_WINDOW_MS - 1, T0)).toBe("stale");
+    expect(nodeFreshness("failed", T0 - FRESH_WINDOW_MS - 1, T0)).toBe("stale");
+  });
+
+  it("is stale when the agent never ran, or ran at an unknown time", () => {
+    expect(nodeFreshness("idle", T0, T0)).toBe("stale");
+    expect(nodeFreshness(undefined, T0, T0)).toBe("stale");
+    expect(nodeFreshness("ok", null, T0)).toBe("stale");
+  });
+});
+
 describe("nodeVisual", () => {
   it("makes waiting_human the only clickable state", () => {
-    expect(nodeVisual("waiting_human").actionable).toBe(true);
+    expect(nodeVisual("waiting_human", "live").actionable).toBe(true);
     for (const state of ["idle", "running", "ok", "failed"] as const) {
-      expect(nodeVisual(state).actionable).toBe(false);
+      expect(nodeVisual(state, "recent").actionable).toBe(false);
     }
   });
 
   it("animates only while a run is in flight", () => {
-    expect(nodeVisual("running").pulse).toBe(true);
-    expect(nodeVisual("waiting_human").pulse).toBe(false);
-    expect(nodeVisual("ok").pulse).toBe(false);
+    expect(nodeVisual("running", "live").pulse).toBe(true);
+    expect(nodeVisual("waiting_human", "live").pulse).toBe(false);
+    expect(nodeVisual("ok", "recent").pulse).toBe(false);
   });
 
   it("emphasises the states an operator must notice", () => {
-    expect(nodeVisual("running").emphasis).toBe("strong");
-    expect(nodeVisual("waiting_human").emphasis).toBe("strong");
-    expect(nodeVisual("failed").emphasis).toBe("strong");
-    expect(nodeVisual("ok").emphasis).toBe("quiet");
-    expect(nodeVisual(undefined).emphasis).toBe("quiet");
+    expect(nodeVisual("running", "live").emphasis).toBe("strong");
+    expect(nodeVisual("waiting_human", "live").emphasis).toBe("strong");
+    expect(nodeVisual("failed", "recent").emphasis).toBe("strong");
+    expect(nodeVisual("ok", "recent").emphasis).toBe("quiet");
+    expect(nodeVisual(undefined, "stale").emphasis).toBe("quiet");
+  });
+
+  // A run that took 175 ms starts and finishes between two frames: there is no
+  // pulse to catch, only the colour it leaves behind. That colour has to mean
+  // "just now", which is only true while it is fresh.
+  it("keeps a just-finished run coloured and lets an old one fade to idle", () => {
+    expect(nodeVisual("ok", "recent").accent).toBe("var(--green)");
+    expect(nodeVisual("failed", "recent").accent).toBe("var(--red)");
+
+    const idle = nodeVisual("idle", "stale").accent;
+    expect(nodeVisual("ok", "stale").accent).toBe(idle);
+    expect(nodeVisual("failed", "stale").accent).toBe(idle);
+    expect(nodeVisual("failed", "stale").emphasis).toBe("quiet");
   });
 });
 
 describe("countStates", () => {
+  const T0 = 1_800_000_000_000;
+
   it("counts an agent with no live state as idle rather than dropping it", () => {
     const counts = countStates(
       [{ name: "a" }, { name: "b" }, { name: "c" }, { name: "d" }],
       {
-        a: { state: "running" },
-        b: { state: "waiting_human" },
-        c: { state: "failed" },
+        a: { state: "running", lastEventAt: T0 },
+        b: { state: "waiting_human", lastEventAt: T0 },
+        c: { state: "failed", lastEventAt: T0 },
       },
+      T0,
     );
     expect(counts).toEqual({ running: 1, waiting: 1, failed: 1, ok: 0, idle: 1 });
+  });
+
+  // Otherwise the header reads "已完成 6" off runs that ended hours ago while
+  // the canvas has already faded them — the two must tell the same story.
+  it("stops counting finished runs once the canvas has faded them", () => {
+    const agents = [{ name: "a" }, { name: "b" }];
+    const states = {
+      a: { state: "ok" as const, lastEventAt: T0 - FRESH_WINDOW_MS - 1 },
+      b: { state: "running" as const, lastEventAt: T0 - 86_400_000 },
+    };
+    expect(countStates(agents, states, T0)).toEqual({
+      running: 1,
+      waiting: 0,
+      failed: 0,
+      ok: 0,
+      idle: 1,
+    });
   });
 });

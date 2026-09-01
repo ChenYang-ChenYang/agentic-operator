@@ -86,6 +86,9 @@ export function fmtTokens(
   tokensOut: number | null,
 ): string | null {
   if (tokensIn == null && tokensOut == null) return null;
+  // An agent that only calls tools reports 0/0 on every run; saying so adds a
+  // column of noise and no information.
+  if (!tokensIn && !tokensOut) return null;
   const up = tokensIn == null ? "—" : fmtNum(tokensIn);
   const down = tokensOut == null ? "—" : fmtNum(tokensOut);
   return `↑${up} ↓${down}`;
@@ -394,6 +397,36 @@ export function visibleFeed(
   );
 }
 
+/**
+ * How long a finished run still counts as something you just watched.
+ *
+ * Without this the canvas is misleading: `useWorkflowLiveState` accumulates
+ * every frame the stream replays, so nodes keep the green of a run that
+ * finished hours ago and the whole graph reads as "just completed". On a
+ * runtime view that is the wrong answer to the only question being asked —
+ * what is happening now.
+ */
+export const FRESH_WINDOW_MS = 5 * 60_000;
+
+export type NodeFreshness =
+  /** In flight or blocking on a person — current by definition. */
+  | "live"
+  /** Finished inside the window; still what you came to look at. */
+  | "recent"
+  /** Finished long ago, or never ran in this session. */
+  | "stale";
+
+export function nodeFreshness(
+  status: AgentLiveStatus | undefined,
+  lastEventAt: number | null | undefined,
+  now: number,
+): NodeFreshness {
+  if (status === "running" || status === "waiting_human") return "live";
+  if (status !== "ok" && status !== "failed") return "stale";
+  if (lastEventAt == null) return "stale";
+  return now - lastEventAt <= FRESH_WINDOW_MS ? "recent" : "stale";
+}
+
 export interface NodeVisual {
   /** CSS custom property name carrying the accent colour. */
   accent: string;
@@ -411,8 +444,17 @@ export interface NodeVisual {
  * `waiting_human` is the one state an operator has to act on, so it is the only
  * one that is both `strong` and `actionable` — the view makes it clickable and
  * the node carries a task badge.
+ *
+ * Freshness decides how loudly a FINISHED run speaks. A run that ended seconds
+ * ago keeps its colour, which is what makes a 175 ms run visible at all: it
+ * starts and finishes between two frames, so there is no pulse to catch, only
+ * the green it leaves behind. Once stale it fades to the idle border, so the
+ * graph stops claiming that hours-old history is current.
  */
-export function nodeVisual(status: AgentLiveStatus | undefined): NodeVisual {
+export function nodeVisual(
+  status: AgentLiveStatus | undefined,
+  freshness: NodeFreshness = "recent",
+): NodeVisual {
   switch (status) {
     case "running":
       return {
@@ -430,14 +472,14 @@ export function nodeVisual(status: AgentLiveStatus | undefined): NodeVisual {
       };
     case "failed":
       return {
-        accent: "var(--red)",
-        emphasis: "strong",
+        accent: freshness === "stale" ? "var(--border-2)" : "var(--red)",
+        emphasis: freshness === "stale" ? "quiet" : "strong",
         pulse: false,
         actionable: false,
       };
     case "ok":
       return {
-        accent: "var(--green)",
+        accent: freshness === "stale" ? "var(--border-2)" : "var(--green)",
         emphasis: "quiet",
         pulse: false,
         actionable: false,
@@ -463,7 +505,11 @@ export interface LiveCounts {
 
 export function countStates(
   agents: readonly { name: string }[],
-  states: Record<string, { state: AgentLiveStatus } | undefined>,
+  states: Record<
+    string,
+    { state: AgentLiveStatus; lastEventAt?: number | null } | undefined
+  >,
+  now: number,
 ): LiveCounts {
   const counts: LiveCounts = {
     running: 0,
@@ -473,8 +519,13 @@ export function countStates(
     idle: 0,
   };
   for (const agent of agents) {
-    const state = states[agent.name]?.state ?? "idle";
-    if (state === "running") counts.running += 1;
+    const live = states[agent.name];
+    const state = live?.state ?? "idle";
+    // Counted the same way the canvas paints it, so the header and the graph
+    // can never disagree about how much of this is actually happening now.
+    if (nodeFreshness(state, live?.lastEventAt, now) === "stale") {
+      counts.idle += 1;
+    } else if (state === "running") counts.running += 1;
     else if (state === "waiting_human") counts.waiting += 1;
     else if (state === "failed") counts.failed += 1;
     else if (state === "ok") counts.ok += 1;

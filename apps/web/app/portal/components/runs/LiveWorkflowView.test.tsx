@@ -53,10 +53,25 @@ describe("LiveNode", () => {
 
   it("never labels a finished or failed node as idle", () => {
     expect(render({ status: "ok" })).toContain("已完成");
-    expect(render({ status: "failed" })).toContain("上次失败");
+    expect(render({ status: "failed" })).toContain("失败");
     expect(render({ status: "running", runningCount: 1 })).toContain("运行中 1");
     // A human step with nothing queued is idle, but says so in its own terms.
     expect(render({ status: "idle" })).toContain("人工节点");
+  });
+
+  // A green node with no timestamp reads as "it just finished" even when the
+  // run ended hours ago — which is the confusion the whole freshness rule
+  // exists to remove, so the node has to say when.
+  it("says when a finished run actually happened", () => {
+    const html = render({
+      status: "ok",
+      freshness: "stale",
+      lastEventAt: Date.now() - 3 * 3_600_000,
+    });
+    expect(html).toContain("已完成 3 小时前");
+    // Faded to the idle border, so the graph stops claiming this is current.
+    expect(html).toContain("var(--border-2)");
+    expect(html).not.toContain("var(--green)");
   });
 
   it("animates only the status dot, so the card does not flicker out", () => {
