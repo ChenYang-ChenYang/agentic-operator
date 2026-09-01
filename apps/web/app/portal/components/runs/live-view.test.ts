@@ -9,6 +9,7 @@ import {
   fmtLogMessage,
   fmtTokens,
   linkRunAgent,
+  nextFollowState,
   nodeFreshness,
   nodeVisual,
   toFeedEntry,
@@ -432,5 +433,49 @@ describe("edgeVisual", () => {
 
   it("dims a hop the published graph declares but nothing has run", () => {
     expect(edge({ declared: false }).opacity).toBeLessThan(edge().opacity);
+  });
+});
+
+describe("nextFollowState", () => {
+  const at = (over: Partial<Parameters<typeof nextFollowState>[0]> = {}) =>
+    nextFollowState({
+      follow: true,
+      scrollTop: 900,
+      scrollHeight: 1000,
+      clientHeight: 100,
+      pinnedTop: null,
+      ...over,
+    });
+
+  // Pinning the tail causes a scroll event, and during a burst of log lines the
+  // next row lands before that event is delivered — so the handler measures a
+  // container that has grown since and concludes the operator scrolled up.
+  // That switched following off exactly when the run was busiest.
+  it("ignores the scroll its own pinning caused, even after the feed grew", () => {
+    expect(
+      at({ follow: true, scrollTop: 900, scrollHeight: 1400, pinnedTop: 900 }),
+    ).toBe(true);
+  });
+
+  it("stops following when the operator actually scrolls up", () => {
+    expect(
+      at({ follow: true, scrollTop: 200, scrollHeight: 1000, pinnedTop: 900 }),
+    ).toBe(false);
+  });
+
+  it("resumes following when they scroll back to the bottom", () => {
+    expect(
+      at({ follow: false, scrollTop: 900, scrollHeight: 1000, pinnedTop: 200 }),
+    ).toBe(true);
+  });
+
+  it("treats a near-bottom position as the bottom", () => {
+    expect(at({ follow: false, scrollTop: 880, pinnedTop: 0 })).toBe(true);
+    expect(at({ follow: false, scrollTop: 700, pinnedTop: 0 })).toBe(false);
+  });
+
+  it("measures normally before anything has been pinned", () => {
+    expect(at({ follow: false, scrollTop: 900, pinnedTop: null })).toBe(true);
+    expect(at({ follow: true, scrollTop: 100, pinnedTop: null })).toBe(false);
   });
 });

@@ -427,6 +427,37 @@ export function nodeFreshness(
   return now - lastEventAt <= FRESH_WINDOW_MS ? "recent" : "stale";
 }
 
+/** Treat the tail as "at the bottom" within this many pixels. */
+export const TAIL_SLACK_PX = 24;
+
+/**
+ * Should the feed keep following the tail after this scroll event?
+ *
+ * The subtlety is that pinning the tail *causes* a scroll event, and during a
+ * burst of log lines the next row lands before that event is delivered. The
+ * handler then measures a container that has grown since, sees a gap larger
+ * than the slack, concludes the operator scrolled up, and switches following
+ * off — precisely when the run is busiest and following matters most.
+ *
+ * So a scroll to a position we set ourselves is not evidence of anything.
+ * Only a scroll the operator actually performed can turn following off, and
+ * scrolling back to the bottom turns it on again.
+ */
+export function nextFollowState(args: {
+  follow: boolean;
+  scrollTop: number;
+  scrollHeight: number;
+  clientHeight: number;
+  /** The scrollTop the view last set itself, or null if it has not. */
+  pinnedTop: number | null;
+}): boolean {
+  if (args.pinnedTop !== null && Math.abs(args.scrollTop - args.pinnedTop) < 1) {
+    return args.follow;
+  }
+  const distance = args.scrollHeight - args.scrollTop - args.clientHeight;
+  return distance <= TAIL_SLACK_PX;
+}
+
 export interface NodeVisual {
   /** CSS custom property name carrying the accent colour. */
   accent: string;

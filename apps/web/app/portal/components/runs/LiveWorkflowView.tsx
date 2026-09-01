@@ -48,6 +48,7 @@ import {
   countStates,
   edgeVisual,
   linkRunAgent,
+  nextFollowState,
   nodeFreshness,
   nodeVisual,
   toFeedEntry,
@@ -95,11 +96,16 @@ export function LiveWorkflowView() {
   );
 
   // Tail behaviour: stick to the bottom, but stop fighting the operator the
-  // moment they scroll up to read something.
+  // moment they scroll up to read something. The pinned position is recorded so
+  // the scroll event this causes is not mistaken for the operator scrolling.
+  const pinnedTopRef = useRef<number | null>(null);
   useEffect(() => {
     if (!follow) return;
     const el = feedRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
+    if (!el) return;
+    const target = el.scrollHeight - el.clientHeight;
+    el.scrollTop = target;
+    pinnedTopRef.current = el.scrollTop;
   }, [shown, follow]);
 
   const agents = useMemo(() => dag.data?.agents ?? [], [dag.data]);
@@ -389,9 +395,14 @@ export function LiveWorkflowView() {
           ref={feedRef}
           onScroll={(event) => {
             const el = event.currentTarget;
-            const atBottom =
-              el.scrollHeight - el.scrollTop - el.clientHeight < 24;
-            if (atBottom !== follow) setFollow(atBottom);
+            const next = nextFollowState({
+              follow,
+              scrollTop: el.scrollTop,
+              scrollHeight: el.scrollHeight,
+              clientHeight: el.clientHeight,
+              pinnedTop: pinnedTopRef.current,
+            });
+            if (next !== follow) setFollow(next);
           }}
           style={{ flex: 1, minHeight: 0, overflow: "auto", padding: "6px 0" }}
         >
