@@ -5,6 +5,7 @@ import {
   appendFeed,
   FRESH_WINDOW_MS,
   countStates,
+  edgeVisual,
   fmtLogMessage,
   fmtTokens,
   linkRunAgent,
@@ -412,5 +413,24 @@ describe("countStates", () => {
       ok: 0,
       idle: 1,
     });
+  });
+});
+
+describe("edgeVisual", () => {
+  const edge = (over: Partial<Parameters<typeof edgeVisual>[0]> = {}) =>
+    edgeVisual({ hot: false, traversed: false, declared: true, ...over });
+
+  it("marks a hop this session watched the chain take", () => {
+    expect(edge({ traversed: true }).stroke).toBe("var(--green)");
+    expect(edge().stroke).toBe("var(--border-2)");
+  });
+
+  it("lets a just-fired event outshine an already-traversed hop", () => {
+    expect(edge({ hot: true, traversed: true }).stroke).toBe("var(--signal)");
+    expect(edge({ hot: true }).width).toBeGreaterThan(edge({ traversed: true }).width);
+  });
+
+  it("dims a hop the published graph declares but nothing has run", () => {
+    expect(edge({ declared: false }).opacity).toBeLessThan(edge().opacity);
   });
 });

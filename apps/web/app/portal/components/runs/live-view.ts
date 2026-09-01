@@ -494,6 +494,40 @@ export function nodeVisual(
   }
 }
 
+export interface EdgeVisual {
+  stroke: string;
+  width: number;
+  opacity: number;
+}
+
+/**
+ * How an edge is drawn.
+ *
+ * Three states, loudest first: an event that just fired, a hop this session has
+ * actually seen traversed, and a hop that exists in the design but has not run.
+ *
+ * `traversed` is deliberately tied to the SAME freshness rule the nodes use.
+ * Colouring an edge from a run whose nodes have already faded to grey would put
+ * the graph back where it started — claiming old history is current.
+ */
+export function edgeVisual(options: {
+  hot: boolean;
+  traversed: boolean;
+  declared: boolean;
+}): EdgeVisual {
+  if (options.hot) {
+    return { stroke: "var(--signal)", width: 2, opacity: 1 };
+  }
+  if (options.traversed) {
+    return { stroke: "var(--green)", width: 1.5, opacity: 0.85 };
+  }
+  return {
+    stroke: "var(--border-2)",
+    width: 1,
+    opacity: options.declared ? 0.7 : 0.35,
+  };
+}
+
 /** Summary counters for the view header. */
 export interface LiveCounts {
   running: number;

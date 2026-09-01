@@ -46,6 +46,7 @@ import { Icon } from "@/app/portal/components/Icon";
 import {
   appendFeed,
   countStates,
+  edgeVisual,
   linkRunAgent,
   nodeFreshness,
   nodeVisual,
@@ -141,6 +142,20 @@ export function LiveWorkflowView() {
     [agents, live.agents, now],
   );
 
+  const activeAgents = useMemo(() => {
+    const names = new Set<string>();
+    for (const agent of agents) {
+      const state = live.agents[agent.name];
+      if (
+        state &&
+        nodeFreshness(state.state, state.lastEventAt, now) !== "stale"
+      ) {
+        names.add(agent.name);
+      }
+    }
+    return names;
+  }, [agents, live.agents, now]);
+
   const canvasSize = useMemo(() => {
     let maxX = 0;
     let maxY = 0;
@@ -229,8 +244,8 @@ export function LiveWorkflowView() {
           )}
           <span style={{ fontSize: 11.5, color: "var(--text-3)", marginLeft: "auto" }}>
             {copy(
-              "彩色节点为 5 分钟内有动静的；点击节点只看它的动作，琥珀色可点开人工任务",
-              "Coloured nodes moved in the last 5 min; click one to filter its activity, amber opens its task",
+              "彩色节点与绿色连线＝5 分钟内走过的路径；点击节点只看它的动作，琥珀色可点开人工任务",
+              "Coloured nodes and green edges are the path taken in the last 5 min; click a node to filter it, amber opens its task",
             )}
           </span>
         </div>
@@ -249,6 +264,7 @@ export function LiveWorkflowView() {
               edges={edges}
               positions={positions}
               pulsed={live.activeEventNames}
+              traversed={activeAgents}
               size={canvasSize}
             />
             {agents.map((agent) => (
@@ -624,12 +640,15 @@ function EdgeLayer({
   edges,
   positions,
   pulsed,
+  traversed,
   size,
 }: {
   agents: DagAgent[];
   edges: Array<{ fromAgent: string; toAgent: string; event: string; active: boolean }>;
   positions: Map<string, { x: number; y: number }>;
   pulsed: Set<string>;
+  /** Agent names with recent activity — an edge between two of them ran. */
+  traversed: Set<string>;
   size: { w: number; h: number };
 }) {
   const byName = useMemo(
@@ -654,15 +673,21 @@ function EdgeLayer({
         const x2 = to.x;
         const y2 = to.y + NODE_H / 2;
         const mid = x1 + Math.max(24, (x2 - x1) / 2);
-        const hot = pulsed.has(edge.event);
+        const visual = edgeVisual({
+          hot: pulsed.has(edge.event),
+          // Both ends moved recently, so the chain came through here.
+          traversed:
+            traversed.has(edge.fromAgent) && traversed.has(edge.toAgent),
+          declared: edge.active,
+        });
         return (
           <path
             key={`${edge.fromAgent}->${edge.toAgent}:${edge.event}:${index}`}
             d={`M ${x1} ${y1} C ${mid} ${y1}, ${mid} ${y2}, ${x2} ${y2}`}
             fill="none"
-            stroke={hot ? "var(--signal)" : "var(--border-2)"}
-            strokeWidth={hot ? 2 : 1}
-            opacity={hot ? 1 : edge.active ? 0.7 : 0.35}
+            stroke={visual.stroke}
+            strokeWidth={visual.width}
+            opacity={visual.opacity}
           />
         );
       })}
