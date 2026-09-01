@@ -587,6 +587,30 @@ const catalogPath = (operation) => `${CATALOG_BASE}/${operation}`;
  * are both machine-executed, so both project to `Agent`. `Human` is preserved
  * verbatim: it is what opens a task for an operator.
  */
+/**
+ * Manual `action_steps` the ontology declares but should not — see
+ * docs/hc-procurement-ontology-corrections.md C-06 and C-07. Dropped here so
+ * the compiled workflow stops one place for a person instead of five; remove
+ * these entries once the ontology JSON itself is corrected.
+ *
+ * C-06 `closeDeviationHandling.collectVerification` contradicts its own action:
+ *   the actor is ["Agent","System"] with no Human, and the description says the
+ *   agent RECOMPUTES the deviation to check it cleared. Collecting that verdict
+ *   from a person is the opposite of what the action says it does — and because
+ *   the step carries no rule gate, it stopped every single run.
+ *
+ * C-07 the three `confirmByPlanner` steps all cite BR-OPT-05, which
+ *   `approveAdjustmentOption.plannerConfirm` already satisfies once, upstream
+ *   and by name. Re-asking the same planner for the same confirmation in each
+ *   execution branch is the same approval collected four times.
+ */
+const DROP_MANUAL_STEPS = {
+  closeDeviationHandling: ["collectVerification"],
+  compressDownstreamCycle: ["confirmByPlanner"],
+  adjustRequiredArrivalDate: ["confirmByPlanner"],
+  createStockTransferRequest: ["confirmByPlanner"],
+};
+
 function projectActors(actors) {
   const mapped = (actors ?? []).map((actor) => (actor === "Human" ? "Human" : "Agent"));
   const unique = [...new Set(mapped)];
@@ -594,6 +618,20 @@ function projectActors(actors) {
 }
 
 // ── action projection ────────────────────────────────────────────────────────
+
+function projectActionSteps(action) {
+  const dropped = new Set(DROP_MANUAL_STEPS[action.id] ?? []);
+  if (dropped.size === 0) return action.action_steps ?? [];
+  const kept = (action.action_steps ?? []).filter(
+    (step) => !(step.object_type === "manual" && dropped.has(step.name)),
+  );
+  for (const name of dropped) {
+    if (!(action.action_steps ?? []).some((step) => step.name === name)) {
+      fail(`${action.id}: DROP_MANUAL_STEPS names "${name}", which the ontology no longer declares — the correction has landed, remove the entry`);
+    }
+  }
+  return kept;
+}
 
 function projectActions(rawActions) {
   return rawActions.map((action) => {
@@ -655,6 +693,7 @@ function projectActions(rawActions) {
     return {
       ...action,
       actor: projectActors(action.actor),
+      action_steps: projectActionSteps(action),
       description: preamble
         ? `${action.description ?? action.name}\n${preamble}`
         : action.description,

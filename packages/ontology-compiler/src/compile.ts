@@ -24,6 +24,7 @@
  */
 
 import type {
+  AgentInputPort,
   CompiledAgent,
   CompiledStep,
   CompiledToolUseEntry,
@@ -65,6 +66,57 @@ const ONTOLOGY_QUERY_REVIEWED_POLICY = {
  * the fail-closed floor intact. */
 const JUDGE_ONTOLOGY_QUERY_LINE =
   "工具说明：你可调用只读图谱工具 ontology.query 从本体图谱检索核验证据（如 实控人/股权关联 关系）；当事件负载缺少判定所需证据时，必须先查询图谱再裁决；若查询后仍无法取得证据，维持 fail-closed，判 violation。";
+
+/**
+ * Input ports for an agent, taken from the payload its trigger events declare.
+ *
+ * Without these the manifest carries no `inputs`, so the run console falls back
+ * to a generic `payload`/`prompt` pair — and the operator gets a default event
+ * body with none of the fields the agent's own prompt calls 必填. On the
+ * procurement scan that meant no `scan_date`, which every downstream date
+ * calculation is anchored on. The Events publish dialog already renders these
+ * fields; this makes the two surfaces ask for the same thing.
+ *
+ * Union across triggers, first declaration wins: an agent listening to several
+ * events must accept whatever any of them carries.
+ */
+function inputPortsFor(ctx: CompileContext, trigger: string[]): AgentInputPort[] {
+  const ports = new Map<string, AgentInputPort>();
+  for (const eventName of trigger) {
+    const event = ctx.model.events.find((candidate) => candidate.name === eventName);
+    for (const field of event?.payload?.event_data ?? []) {
+      const id = field.name?.trim();
+      if (!id || ports.has(id)) continue;
+      ports.set(id, {
+        id,
+        label: id,
+        ...(field.description ? { description: field.description } : {}),
+        kind: "value",
+        required: field.required === true,
+        schema: { type: ontologyTypeToJsonType(field.type) },
+      });
+    }
+  }
+  return [...ports.values()];
+}
+
+/** Ontology scalar names → JSON Schema types. Anything richer stays a string;
+ *  the console renders a text field and the agent parses it, which is what the
+ *  ontology's own Date/Decimal fields already are on the wire. */
+function ontologyTypeToJsonType(type: string | undefined): string {
+  switch ((type ?? "").toLowerCase()) {
+    case "integer":
+      return "integer";
+    case "number":
+    case "decimal":
+    case "float":
+      return "number";
+    case "boolean":
+      return "boolean";
+    default:
+      return "string";
+  }
+}
 
 function fail(message: string): never {
   throw new Error(`[ontology-compiler] ${message}`);
@@ -882,6 +934,7 @@ export function compile(
       description: action.description ?? "",
       actor: action.actor,
       trigger,
+      inputs: inputPortsFor(ctx, trigger),
       triggered_event: successEvents(ctx, action),
       retries: 3,
       generated: true,

@@ -313,6 +313,19 @@ export interface CompiledStep {
   emit_event?: string;
   emit_payload_from?: string;
   decision_table?: Record<string, unknown>;
+  /** Typed task class for a manual step, surfaced to the operator. */
+  task_type?: string;
+}
+
+/** One value the run console should ask for, derived from the trigger event's
+ *  declared payload. Shape matches `AgentInputPortV2` in @agentic/contracts. */
+export interface AgentInputPort {
+  id: string;
+  label?: string;
+  description?: string;
+  kind: "value";
+  required: boolean;
+  schema: { type: string };
 }
 
 export interface CompiledAgent {
@@ -322,6 +335,7 @@ export interface CompiledAgent {
   description: string;
   actor: string[];
   trigger: string[];
+  inputs: AgentInputPort[];
   triggered_event: string[];
   retries: number;
   generated: true;

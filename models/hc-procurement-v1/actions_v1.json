@@ -1895,13 +1895,6 @@
         "order": "1"
       },
       {
-        "description": "计划员确认压缩后的时间表可执行(BR-OPT-05)。",
-        "id": "s2",
-        "name": "confirmByPlanner",
-        "object_type": "manual",
-        "order": "2"
-      },
-      {
         "description": "经 changePbp 回写采购计划的节点计划时间。",
         "id": "s3",
         "name": "writeBackPlanSchedule",
@@ -2060,13 +2053,6 @@
         "name": "preserveOriginalDate",
         "object_type": "logic",
         "order": "1"
-      },
-      {
-        "description": "计划员与需求部门确认新到货日期可接受(BR-OPT-05)。",
-        "id": "s2",
-        "name": "confirmByPlanner",
-        "object_type": "manual",
-        "order": "2"
       },
       {
         "description": "经 changePbp 回写计划行的需求到货日期。",
@@ -2229,13 +2215,6 @@
         "name": "resolveTransferSource",
         "object_type": "logic",
         "order": "1"
-      },
-      {
-        "description": "计划员确认调拨方案(BR-OPT-05)。",
-        "id": "s2",
-        "name": "confirmByPlanner",
-        "object_type": "manual",
-        "order": "2"
       },
       {
         "description": "经 createTransactionOrder 生成调拨单（inv_txn_order_header_t）并取回单号。",
@@ -2500,13 +2479,6 @@
         "name": "writeClosureTrace",
         "object_type": "logic",
         "order": "3"
-      },
-      {
-        "description": "采集业务核实结果：属实或误报，供误报回收使用。",
-        "id": "s4",
-        "name": "collectVerification",
-        "object_type": "manual",
-        "order": "4"
       }
     ],
     "actor": [

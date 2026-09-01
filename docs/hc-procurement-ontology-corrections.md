@@ -116,6 +116,15 @@ BR-DEV-02 要求阈值必须来自配置表，因此这是配置变更而非代�
 **影响面**：`Execution_Deviation.has_deviation` 的判定；`DEVIATION_DETECTED` /
 `NO_DEVIATION_CONFIRMED` 的分流。R1-07 的误报率指标应随之下降。
 
+**平台侧已先行实现（2026-09-01）**：本体 JSON 尚未更新，但
+`overlays/hc-procurement.json` 里 `calculateExecutionDeviation` 的
+`has_deviation` 判定口径已按上面的表达式改写，编译进
+`models/hc-procurement-v1/`。原因是不改这条，默认全量扫描会同时命中
+PBP-2026-0873（定标超期 5 天，红色）和 PBP-2026-0914（到货部分接收 18/30，
+但需求到货日 2027-01-20 尚有 141 天），两条链路一起进入预警分支后
+`pushAlert` 收到 `alert_level: ["红色","蓝色"]` 被 metaERP 以 HTTP 400 拒绝，
+整条流程走不完。**本体 JSON 更新后请回来核对两侧表达一致。**
+
 ---
 
 ## C-02（必改）「当前扫描日」缺少来源绑定
@@ -289,6 +298,46 @@ R1-02 说「以需求到货日期为终点按配置的标准周期逐级倒排�
 
 同时在 BR-COV-01 的描述里说明：显式指定 `plan_id` 时，全量覆盖义务在本次扫描内让位于
 指定范围——这是排障口径，不是抽查。
+
+---
+
+## C-06（必改）`closeDeviationHandling` 的人工步骤与它自己的 actor 矛盾
+
+该 action 的 `actor` 是 `["Agent","System"]`，描述写的是
+「方案执行后**重算偏差**做消除校验：确认偏差已回落到阈值以内则闭环并留痕」——
+这是一次**由智能体计算**的判定。但它的 `action_steps` 里却声明了一个
+`object_type: "manual"` 的 `collectVerification`「采集业务核实结果」，
+把这个判定改成向人索取。两者不能同时成立。
+
+而且这个人工步骤**没有任何 rule gate**，所以红色链路每跑一次就停一次，
+停在闭环前的最后一步。实跑中 run-e1ca6e1b1e55 就卡在这里。
+
+**建议**：删除 `collectVerification` 这个 action_step，`verification_result` /
+`deviation_eliminated` 由智能体重算得出（这正是 actor=Agent 的含义）。
+
+**平台侧已先行实现（2026-09-01）**：`scripts/stage-hc-procurement-ontology.mjs`
+的 `DROP_MANUAL_STEPS` 在投影时剔除该步骤。本体修正后请删掉对应条目。
+
+---
+
+## C-07（必改）BR-OPT-05 被重复采集了四次
+
+`approveAdjustmentOption.plannerConfirm` 已经按 BR-OPT-05 收过一次计划员确认，
+并且是具名的、在回写业务单据之前。但 `compressDownstreamCycle`、
+`adjustRequiredArrivalDate`、`createStockTransferRequest` 三个执行分支各自又声明了
+一个 `confirmByPlanner` 人工步骤，引用的还是同一条 BR-OPT-05。
+
+同一个人、同一条规则、同一次决策，被要求确认四次。执行分支是
+`ADJUSTMENT_OPTION_APPROVED` 的下游——那个事件本身就是「计划员已确认」的凭据。
+
+**建议**：删除三个执行分支里的 `confirmByPlanner`，BR-OPT-05 只在
+`plannerConfirm` 收一次。
+
+**平台侧已先行实现（2026-09-01）**：同 C-06，见 `DROP_MANUAL_STEPS`。
+
+**修正后的人工节点**：红色链路上只剩 `approveAdjustmentOption` 一处会停下来；
+`handleBlueAlertLocally`（门控 `alert_level == '蓝色'`）与 `recycleFalseAlarm`
+（门控 `verification_result == '误报'`）都不会在该链路上触发。
 
 ---
 
