@@ -24,6 +24,7 @@
  */
 
 import type {
+  AgentInputPort,
   CompiledAgent,
   CompiledStep,
   CompiledToolUseEntry,
@@ -36,6 +37,7 @@ import type {
   StudioAction,
   StudioDomainModel,
   StudioEvent,
+  StudioEventDataField,
   StudioRule,
 } from "./types.ts";
 
@@ -65,6 +67,92 @@ const ONTOLOGY_QUERY_REVIEWED_POLICY = {
  * the fail-closed floor intact. */
 const JUDGE_ONTOLOGY_QUERY_LINE =
   "工具说明：你可调用只读图谱工具 ontology.query 从本体图谱检索核验证据（如 实控人/股权关联 关系）；当事件负载缺少判定所需证据时，必须先查询图谱再裁决；若查询后仍无法取得证据，维持 fail-closed，判 violation。";
+
+/**
+ * Input ports for an agent, taken from the payload its trigger events declare.
+ *
+ * Without these the manifest carries no `inputs`, so the run console falls back
+ * to a generic `payload`/`prompt` pair — and the operator gets a default event
+ * body with none of the fields the agent's own prompt calls 必填. On the
+ * procurement scan that meant no `scan_date`, which every downstream date
+ * calculation is anchored on. The Events publish dialog already renders these
+ * fields; this makes the two surfaces ask for the same thing.
+ *
+ * Union across triggers, first declaration wins: an agent listening to several
+ * events must accept whatever any of them carries.
+ */
+function inputPortsFor(ctx: CompileContext, trigger: string[]): AgentInputPort[] {
+  const ports = new Map<string, AgentInputPort>();
+  for (const eventName of trigger) {
+    const event = ctx.model.events.find((candidate) => candidate.name === eventName);
+    for (const field of event?.payload?.event_data ?? []) {
+      const id = field.name?.trim();
+      if (!id || ports.has(id)) continue;
+      ports.set(id, {
+        id,
+        label: id,
+        ...(field.description ? { description: field.description } : {}),
+        kind: "value",
+        required: field.required === true,
+        schema: ontologyFieldSchema(field),
+      });
+    }
+  }
+  return [...ports.values()];
+}
+
+/**
+ * Ontology scalar names → a JSON Schema the run console can actually generate a
+ * value from.
+ *
+ * A bare `{type:"string"}` is why every field defaulted to the literal
+ * placeholder 示例值: the console already knows how to render a date from
+ * `format` and a choice from `enum`/`examples`, it was just never given either.
+ * Carrying the ontology's own type through is what makes the default payload
+ * runnable instead of decorative.
+ */
+function ontologyFieldSchema(field: StudioEventDataField): Record<string, unknown> {
+  const type = (field.type ?? "").toLowerCase();
+  if (type === "integer") return { type: "integer" };
+  if (type === "number" || type === "decimal" || type === "float") {
+    return { type: "number" };
+  }
+  if (type === "boolean") return { type: "boolean" };
+  if (type === "date") return { type: "string", format: "date" };
+  if (type === "datetime" || type === "timestamp") {
+    return { type: "string", format: "date-time" };
+  }
+  const choices = choicesFromDescription(field.description);
+  return choices ? { type: "string", examples: choices } : { type: "string" };
+}
+
+/** A description longer than this is prose, not a list of choices. */
+const CHOICE_TEXT_MAX = 14;
+
+/**
+ * Pull the options out of a description that enumerates them, e.g.
+ * 「变更单据类型：采购申请/采购包/询价单/…」or「扫描范围：全集团或指定单位」.
+ *
+ * Emitted as `examples`, deliberately NOT as `enum`: the console picks the
+ * first one as the default value either way, but `enum` would also CONSTRAIN
+ * the field, and a description is documentation — it is not authority to reject
+ * a value the ontology never actually restricted.
+ */
+function choicesFromDescription(description: string | undefined): string[] | null {
+  const body = (description ?? "").split(/[：:]/).slice(1).join(":");
+  if (!body) return null;
+  const cleaned = body.replace(/[。.\s]+$/, "").trim();
+  const parts = cleaned.includes("/")
+    ? cleaned.split("/")
+    : cleaned.includes("或")
+      ? cleaned.split("或")
+      : [];
+  const choices = parts.map((part) => part.trim()).filter(Boolean);
+  if (choices.length < 2) return null;
+  // One long member means the split cut through a sentence, not a list.
+  if (choices.some((choice) => choice.length > CHOICE_TEXT_MAX)) return null;
+  return choices;
+}
 
 function fail(message: string): never {
   throw new Error(`[ontology-compiler] ${message}`);
@@ -635,6 +723,23 @@ function compileExternalAgent(ctx: CompileContext, action: StudioAction): {
   const steps: CompiledStep[] = [];
   const gateKeys: string[] = [];
 
+  // (a0) submission gate: does this action apply to this event at all? Branches
+  // that fan out from one event need this — they share a trigger and a rule, so
+  // nothing else distinguishes them, and without it every branch runs.
+  const submission = ctx.overlay.submission_gates?.[action.id];
+  if (submission) {
+    const submissionKey = identifierKey(`submission-gate-${action.id}`);
+    steps.push({
+      order: nextOrder(),
+      name: `submission-gate:${action.id}`,
+      description: `提交判据（确定性判定）：${action.submission_criteria ?? action.id}。判假即整个动作不执行。`,
+      type: "condition",
+      condition: submission,
+      result_key: submissionKey,
+    });
+    gateKeys.push(submissionKey);
+  }
+
   // (a) rule gates: mandatory precondition bindings, in binding order.
   const gateBindings = (action.rule_bindings ?? []).filter(
     (binding) => binding.phase === "precondition" && binding.enforcement === "mandatory",
@@ -857,6 +962,20 @@ export function compile(
     }
   }
 
+  // A gate that is silently ignored is worse than one that is unsupported: the
+  // branch it was meant to stop would run, and the overlay would look correct.
+  for (const actionId of Object.keys(ctx.overlay.submission_gates ?? {})) {
+    const action = model.actions.find((candidate) => candidate.id === actionId);
+    if (!action) {
+      fail(`submission_gates names unknown action "${actionId}"`);
+    } else if (action!.implementation?.kind !== "external") {
+      fail(
+        `submission_gates["${actionId}"] targets a ${action!.implementation?.kind ?? "?"} action — ` +
+          `gates are only compiled for external actions, so this one would never run`,
+      );
+    }
+  }
+
   const workflow: CompiledAgent[] = model.actions.map((action) => {
     const kind = action.implementation.kind;
     const compiled =
@@ -882,6 +1001,7 @@ export function compile(
       description: action.description ?? "",
       actor: action.actor,
       trigger,
+      inputs: inputPortsFor(ctx, trigger),
       triggered_event: successEvents(ctx, action),
       retries: 3,
       generated: true,

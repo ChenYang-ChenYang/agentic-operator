@@ -1517,13 +1517,6 @@
   {
     "action_steps": [
       {
-        "description": "领导对比三个方案的构成、时效与到货影响。",
-        "id": "s1",
-        "name": "reviewOptions",
-        "object_type": "manual",
-        "order": "1"
-      },
-      {
         "description": "校验决策人角色与预警等级匹配(BR-OPT-04)。",
         "id": "s2",
         "name": "checkDecisionRole",
@@ -1536,13 +1529,6 @@
         "name": "selectOption",
         "object_type": "manual",
         "order": "3"
-      },
-      {
-        "description": "选定方案属高危动作（暂停申请、整单调剂）时，由部门领导强制人工确认(BR-OPT-06)。",
-        "id": "s4",
-        "name": "confirmHighRisk",
-        "object_type": "manual",
-        "order": "4"
       },
       {
         "description": "计划员确认执行，系统方可回写业务单据(BR-OPT-05)。",
@@ -1895,13 +1881,6 @@
         "order": "1"
       },
       {
-        "description": "计划员确认压缩后的时间表可执行(BR-OPT-05)。",
-        "id": "s2",
-        "name": "confirmByPlanner",
-        "object_type": "manual",
-        "order": "2"
-      },
-      {
         "description": "经 changePbp 回写采购计划的节点计划时间。",
         "id": "s3",
         "name": "writeBackPlanSchedule",
@@ -2060,13 +2039,6 @@
         "name": "preserveOriginalDate",
         "object_type": "logic",
         "order": "1"
-      },
-      {
-        "description": "计划员与需求部门确认新到货日期可接受(BR-OPT-05)。",
-        "id": "s2",
-        "name": "confirmByPlanner",
-        "object_type": "manual",
-        "order": "2"
       },
       {
         "description": "经 changePbp 回写计划行的需求到货日期。",
@@ -2229,13 +2201,6 @@
         "name": "resolveTransferSource",
         "object_type": "logic",
         "order": "1"
-      },
-      {
-        "description": "计划员确认调拨方案(BR-OPT-05)。",
-        "id": "s2",
-        "name": "confirmByPlanner",
-        "object_type": "manual",
-        "order": "2"
       },
       {
         "description": "经 createTransactionOrder 生成调拨单（inv_txn_order_header_t）并取回单号。",
@@ -2500,13 +2465,6 @@
         "name": "writeClosureTrace",
         "object_type": "logic",
         "order": "3"
-      },
-      {
-        "description": "采集业务核实结果：属实或误报，供误报回收使用。",
-        "id": "s4",
-        "name": "collectVerification",
-        "object_type": "manual",
-        "order": "4"
       }
     ],
     "actor": [

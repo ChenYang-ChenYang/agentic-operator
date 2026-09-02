@@ -1,0 +1,82 @@
+import React from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { describe, expect, it } from "vitest";
+import { LiveNode } from "./LiveWorkflowView";
+import type { DagAgent } from "@/lib/hooks/useAgents";
+
+const copy = (zh: string, _en: string) => zh;
+
+const agent = {
+  id: "agt-1",
+  kebabId: "approve-adjustment-option",
+  name: "approveAdjustmentOption",
+  title: "审批调整方案",
+  actor: "Human",
+  triggers: [],
+  emits: [],
+  stage: 3,
+  recentRunCount: 0,
+  isLive: true,
+} as DagAgent;
+
+const render = (props: Partial<React.ComponentProps<typeof LiveNode>>) =>
+  renderToStaticMarkup(
+    <LiveNode
+      agent={agent}
+      position={{ x: 0, y: 0 }}
+      status={undefined}
+      waitingCount={0}
+      runningCount={0}
+      selected={false}
+      onSelect={() => undefined}
+      copy={copy}
+      {...props}
+    />,
+  );
+
+describe("LiveNode", () => {
+  it("stays clickable in every state, because selecting one filters its activity", () => {
+    for (const status of ["idle", "running", "ok", "failed", "waiting_human"] as const) {
+      expect(render({ status })).not.toContain("disabled");
+    }
+  });
+
+  it("offers the human task only on the node that blocks on a person", () => {
+    const waiting = render({ status: "waiting_human", waitingCount: 2 });
+    expect(waiting).toContain("待人工 2");
+    expect(waiting).toContain("点开处理人工任务");
+
+    for (const status of ["idle", "running", "ok", "failed"] as const) {
+      expect(render({ status })).toContain("只看这个智能体的动作");
+    }
+  });
+
+  it("never labels a finished or failed node as idle", () => {
+    expect(render({ status: "ok" })).toContain("已完成");
+    expect(render({ status: "failed" })).toContain("失败");
+    expect(render({ status: "running", runningCount: 1 })).toContain("运行中 1");
+    // A human step with nothing queued is idle, but says so in its own terms.
+    expect(render({ status: "idle" })).toContain("人工节点");
+  });
+
+  // A green node with no timestamp reads as "it just finished" even when the
+  // run ended hours ago — which is the confusion the whole freshness rule
+  // exists to remove, so the node has to say when.
+  it("says when a finished run actually happened", () => {
+    const html = render({
+      status: "ok",
+      freshness: "stale",
+      lastEventAt: Date.now() - 3 * 3_600_000,
+    });
+    expect(html).toContain("已完成 3 小时前");
+    // Faded to the idle border, so the graph stops claiming this is current.
+    expect(html).toContain("var(--border-2)");
+    expect(html).not.toContain("var(--green)");
+  });
+
+  it("animates only the status dot, so the card does not flicker out", () => {
+    const running = render({ status: "running", runningCount: 1 });
+    expect(running.match(/animation:pulse/g) ?? []).toHaveLength(1);
+    expect(render({ status: "ok" })).not.toContain("animation:pulse");
+  });
+});

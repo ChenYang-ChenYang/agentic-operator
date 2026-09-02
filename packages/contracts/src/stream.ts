@@ -217,6 +217,15 @@ export const ToolCallCompletedEvent = z.object({
   durationMs: z.number().nullable(),
   ok: z.boolean(),
   error: z.string().nullable(),
+  /**
+   * The endpoint this call actually reached, and the body it sent, when the
+   * tool reports them. An operator being asked to trust that a system of
+   * record was written to should be able to see the request rather than a
+   * claim that one happened. Both are optional: only tools that talk to a
+   * remote system have them.
+   */
+  url: z.string().nullable().optional(),
+  request: z.string().nullable().optional(),
 });
 
 export const RunStreamEvent = z.discriminatedUnion("type", [

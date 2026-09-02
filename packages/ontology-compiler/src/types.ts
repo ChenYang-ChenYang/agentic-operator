@@ -65,6 +65,8 @@ export interface StudioAction {
   triggered_event: string[];
   implementation: StudioActionImplementation;
   [key: string]: unknown;
+  /** Prose statement of when this action applies; see `submission_gates`. */
+  submission_criteria?: string;
 }
 
 export interface StudioEventDataField {
@@ -233,6 +235,17 @@ export interface CompilerOverlay {
   emissions?: Record<string, OverlayEmission[]>;
   /** ruleId → gate strategy for mandatory precondition bindings. */
   rule_gates?: Record<string, OverlayRuleGate>;
+  /**
+   * actionId → a condition deciding whether this action should run at all.
+   *
+   * The ontology states this per action as `submission_criteria`, but as prose
+   * ("领导选定「执行调拨」方案且计划员已确认执行时提交")，which nothing enforces.
+   * Fan-out branches that share a trigger event therefore all fired: three
+   * mutually exclusive plans, all three executed. This is that sentence made
+   * checkable. Rule gates cannot express it — they key on a rule id, and the
+   * branches all cite the same rule.
+   */
+  submission_gates?: Record<string, string>;
   /** actionId → ontology manual-step name → form schema / awaiting role. */
   manual_steps?: Record<string, Record<string, OverlayManualStep>>;
   /** actionId → tool_arguments template for the ERP write step. */
@@ -313,6 +326,21 @@ export interface CompiledStep {
   emit_event?: string;
   emit_payload_from?: string;
   decision_table?: Record<string, unknown>;
+  /** Typed task class for a manual step, surfaced to the operator. */
+  task_type?: string;
+}
+
+/** One value the run console should ask for, derived from the trigger event's
+ *  declared payload. Shape matches `AgentInputPortV2` in @agentic/contracts. */
+export interface AgentInputPort {
+  id: string;
+  label?: string;
+  description?: string;
+  kind: "value";
+  required: boolean;
+  /** JSON Schema fragment — carries `format`/`examples` so the run console
+   *  can generate a usable default rather than a placeholder. */
+  schema: Record<string, unknown>;
 }
 
 export interface CompiledAgent {
@@ -322,6 +350,7 @@ export interface CompiledAgent {
   description: string;
   actor: string[];
   trigger: string[];
+  inputs: AgentInputPort[];
   triggered_event: string[];
   retries: number;
   generated: true;

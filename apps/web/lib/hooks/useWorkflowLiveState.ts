@@ -19,7 +19,7 @@
  */
 "use client";
 
-import { useCallback, useEffect, useMemo, useReducer } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
 import type { RunStreamEvent } from "@agentic/contracts";
 import { useStream } from "./useStream";
 
@@ -43,6 +43,8 @@ export interface AgentLiveState {
   tokensOut: number;
   lastError: string | null;
   lastEventAt: number | null;
+  /** Subject of the run that last touched this agent. */
+  lastSubject: string | null;
   /** Open HITL tasks blocking this agent's runs. */
   waitingTaskIds: string[];
 }
@@ -57,10 +59,31 @@ export interface WorkflowLiveState {
   agents: Record<string, AgentLiveState>;
   /** runId → agentName registry (bounded to MAX_TRACKED_RUNS). */
   runAgent: Record<string, string>;
+  /**
+   * Subject of the newest run seen — the chain currently being watched.
+   *
+   * Every agent in a chain carries the same subject, so this is what separates
+   * "the run I just started" from one that finished a minute ago. Without it
+   * the canvas aggregates every run per agent, and a completed chain still
+   * inside the freshness window is indistinguishable from the new one having
+   * raced through — including straight past a human gate it never reached.
+   */
+  latestSubject: string | null;
   /** Insertion order of runAgent keys, for bounded pruning. */
   runOrder: string[];
   /** taskId → agentName so task.resolved can clear the badge. */
   taskAgent: Record<string, string>;
+  /** runId → its human tasks, so a terminal run can take its badges down. */
+  runTasks: Record<string, string[]>;
+  /**
+   * runId → taskIds seen before that run was attributed to an agent.
+   *
+   * The durable backfill sorts purely by timestamp, and `tasks.created_at` is
+   * stored at second precision while a run's `startedAt` keeps milliseconds —
+   * so a task created 900 ms AFTER its run replays 900 ms BEFORE it. Dropping
+   * those frames lost the waiting badge on every page load after the fact.
+   */
+  pendingTasks: Record<string, string[]>;
   /** Ring buffer of recent event emissions (edge animation source). */
   pulses: EdgePulse[];
 }
@@ -75,7 +98,16 @@ export type WorkflowLiveAction =
   | { kind: "tick"; now: number };
 
 export function initialWorkflowLiveState(): WorkflowLiveState {
-  return { agents: {}, runAgent: {}, runOrder: [], taskAgent: {}, pulses: [] };
+  return {
+    agents: {},
+    runAgent: {},
+    runOrder: [],
+    latestSubject: null,
+    taskAgent: {},
+    runTasks: {},
+    pendingTasks: {},
+    pulses: [],
+  };
 }
 
 function emptyAgent(): AgentLiveState {
@@ -88,6 +120,7 @@ function emptyAgent(): AgentLiveState {
     tokensOut: 0,
     lastError: null,
     lastEventAt: null,
+    lastSubject: null,
     waitingTaskIds: [],
   };
 }
@@ -143,20 +176,72 @@ function resolveRun(
 ): WorkflowLiveState {
   const agentName = state.runAgent[runId];
   if (!agentName) return state;
-  return withAgent(state, agentName, (agent) => {
+
+  // A run that has completed, failed or been cancelled is not waiting on a
+  // person any more — take its badges down with it. Nothing else does: a task
+  // only gets a `task.resolved` frame when it was actually resolved, so a task
+  // that FAILED with its run left the node amber forever and invited a click
+  // that the API can only answer with `task_not_recoverable`.
+  const owned = state.runTasks[runId] ?? [];
+  let base = state;
+  if (owned.length > 0) {
+    const taskAgent = { ...state.taskAgent };
+    for (const taskId of owned) delete taskAgent[taskId];
+    const runTasks = { ...state.runTasks };
+    delete runTasks[runId];
+    base = { ...state, taskAgent, runTasks };
+  }
+  const dropped = new Set(owned);
+
+  return withAgent(base, agentName, (agent) => {
     const next: AgentLiveState = {
       ...agent,
       runningCount: Math.max(0, agent.runningCount - 1),
       lastRunId: runId,
       activeRunId: agent.activeRunId === runId ? null : agent.activeRunId,
+      waitingTaskIds:
+        dropped.size > 0
+          ? agent.waitingTaskIds.filter((id) => !dropped.has(id))
+          : agent.waitingTaskIds,
       lastEventAt: at,
     };
     if (error) next.lastError = error;
     // failed is sticky (red until the next run starts); ok/idle defer to
-    // still-running siblings and open HITL tasks.
-    next.state = settled === "failed" ? "failed" : settledState(next, settled);
+    // still-running siblings and open HITL tasks. A task still open on a
+    // SIBLING run outranks even that, because it is the one state an operator
+    // can act on — a red node labelled 待人工 helps nobody.
+    next.state =
+      settled === "failed" && next.waitingTaskIds.length === 0
+        ? "failed"
+        : settledState(next, settled);
     return next;
   });
+}
+
+/** Hang a human task on its agent and flip the agent to `waiting_human`. */
+function attachTask(
+  state: WorkflowLiveState,
+  agentName: string,
+  taskId: string,
+  runId: string,
+  at: number,
+): WorkflowLiveState {
+  const owned = state.runTasks[runId] ?? [];
+  const next: WorkflowLiveState = {
+    ...state,
+    taskAgent: { ...state.taskAgent, [taskId]: agentName },
+    runTasks: owned.includes(taskId)
+      ? state.runTasks
+      : { ...state.runTasks, [runId]: [...owned, taskId] },
+  };
+  return withAgent(next, agentName, (agent) => ({
+    ...agent,
+    waitingTaskIds: agent.waitingTaskIds.includes(taskId)
+      ? agent.waitingTaskIds
+      : [...agent.waitingTaskIds, taskId],
+    state: "waiting_human",
+    lastEventAt: Math.max(agent.lastEventAt ?? 0, at),
+  }));
 }
 
 export function workflowLiveReducer(
@@ -172,16 +257,32 @@ export function workflowLiveReducer(
   const event = action.event;
   switch (event.type) {
     case "run.started": {
-      const next = registerRun(state, event.runId, event.agentName);
-      return withAgent(next, event.agentName, (agent) => ({
+      const registered = registerRun(state, event.runId, event.agentName);
+      const parked = registered.pendingTasks[event.runId] ?? [];
+      // The newest run names the chain being watched. Frames replay oldest
+      // first, so the last one to arrive is the current one.
+      const withSubject = event.subject
+        ? { ...registered, latestSubject: event.subject }
+        : registered;
+      let next = withAgent(withSubject, event.agentName, (agent) => ({
         ...agent,
         runningCount: agent.runningCount + 1,
         activeRunId: event.runId,
         lastError: null,
         lastEventAt: event.at,
+        lastSubject: event.subject ?? agent.lastSubject,
         state:
           agent.waitingTaskIds.length > 0 ? "waiting_human" : "running",
       }));
+      if (parked.length === 0) return next;
+      // Tasks that replayed ahead of this frame now have an agent to hang on.
+      const pendingTasks = { ...next.pendingTasks };
+      delete pendingTasks[event.runId];
+      next = { ...next, pendingTasks };
+      for (const taskId of parked) {
+        next = attachTask(next, event.agentName, taskId, event.runId, event.at);
+      }
+      return next;
     }
     case "run.step.started": {
       const agentName = state.runAgent[event.runId];
@@ -215,27 +316,34 @@ export function workflowLiveReducer(
     case "run.cancelled":
       return resolveRun(state, event.runId, event.at, "idle", null);
     case "task.created": {
-      const agentName = event.runId ? state.runAgent[event.runId] : undefined;
-      if (!agentName) return state;
-      const next: WorkflowLiveState = {
-        ...state,
-        taskAgent: { ...state.taskAgent, [event.taskId]: agentName },
-      };
-      return withAgent(next, agentName, (agent) => ({
-        ...agent,
-        waitingTaskIds: agent.waitingTaskIds.includes(event.taskId)
-          ? agent.waitingTaskIds
-          : [...agent.waitingTaskIds, event.taskId],
-        state: "waiting_human",
-        lastEventAt: event.at,
-      }));
+      if (!event.runId) return state;
+      const agentName = state.runAgent[event.runId];
+      if (!agentName) {
+        // The run has not been attributed yet — park the task rather than lose
+        // it. See `pendingTasks`: the backfill can deliver these out of order.
+        const parked = state.pendingTasks[event.runId] ?? [];
+        if (parked.includes(event.taskId)) return state;
+        return {
+          ...state,
+          pendingTasks: {
+            ...state.pendingTasks,
+            [event.runId]: [...parked, event.taskId],
+          },
+        };
+      }
+      return attachTask(state, agentName, event.taskId, event.runId, event.at);
     }
     case "task.resolved": {
       const agentName = state.taskAgent[event.taskId];
       if (!agentName) return state;
       const taskAgent = { ...state.taskAgent };
       delete taskAgent[event.taskId];
-      const next = { ...state, taskAgent };
+      const runTasks: Record<string, string[]> = {};
+      for (const [runId, ids] of Object.entries(state.runTasks)) {
+        const kept = ids.filter((id) => id !== event.taskId);
+        if (kept.length > 0) runTasks[runId] = kept;
+      }
+      const next = { ...state, taskAgent, runTasks };
       return withAgent(next, agentName, (agent) => {
         const waitingTaskIds = agent.waitingTaskIds.filter(
           (id) => id !== event.taskId,
@@ -267,18 +375,35 @@ export interface UseWorkflowLiveStateResult {
   pulses: EdgePulse[];
   /** Event names with a pulse inside EDGE_PULSE_WINDOW_MS — animate those edges. */
   activeEventNames: Set<string>;
+  /** Subject of the newest run — the chain the canvas defaults to showing. */
+  latestSubject: string | null;
 }
 
 export function useWorkflowLiveState(
   tenant?: string,
+  /**
+   * Optional tap on the same frames the reducer folds. The Runs page's live
+   * view builds an activity feed from them; giving it a passthrough here keeps
+   * the page on ONE EventSource. Its own `useStream` would have to repeat the
+   * `/livefeed` path below — and pointing it at the default `/v1/stream`
+   * silently yields nothing, because that route is buffered.
+   */
+  onFrame?: (event: RunStreamEvent) => void,
 ): UseWorkflowLiveStateResult {
   const [state, dispatch] = useReducer(
     workflowLiveReducer,
     undefined,
     initialWorkflowLiveState,
   );
+  // Held in a ref so a caller passing an inline closure cannot tear down and
+  // reopen the EventSource on every render.
+  const onFrameRef = useRef(onFrame);
+  useEffect(() => {
+    onFrameRef.current = onFrame;
+  }, [onFrame]);
   const onEvent = useCallback((event: RunStreamEvent) => {
     dispatch({ kind: "stream", event });
+    onFrameRef.current?.(event);
   }, []);
   // Connect through the unbuffered `/livefeed` route handler, NOT the default
   // `/v1/stream`: the `/v1/:path*` rewrite in next.config.mjs buffers SSE
@@ -312,5 +437,10 @@ export function useWorkflowLiveState(
     [state.pulses],
   );
 
-  return { agents: state.agents, pulses: state.pulses, activeEventNames };
+  return {
+    agents: state.agents,
+    pulses: state.pulses,
+    activeEventNames,
+    latestSubject: state.latestSubject,
+  };
 }

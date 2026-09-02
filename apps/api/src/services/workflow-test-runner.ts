@@ -122,6 +122,41 @@ function sameInputContract(
 }
 
 /**
+ * How many agents this event can set off, following the trigger/emit graph.
+ *
+ * Every externally-fired trigger used to be recommended equally, so the console
+ * defaulted to whichever sorted first alphabetically. On a procurement workflow
+ * that is `ALERT_TIMEOUT_SCAN_SCHEDULED` — a one-agent timeout sweep — while the
+ * event that actually drives the chain, `DAILY_DEVIATION_SCAN_SCHEDULED`, sat
+ * further down the list. Someone picking the default got one node and no
+ * explanation for why nothing followed.
+ *
+ * Reach separates the two without knowing anything about the business: the head
+ * of a workflow is the trigger that reaches most of it.
+ */
+function agentsReachedFrom(
+  event: string,
+  listeners: Map<string, AgentDefinitionV2[]>,
+): number {
+  const seenEvents = new Set([event]);
+  const seenAgents = new Set<string>();
+  const queue = [event];
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    for (const agent of listeners.get(current) ?? []) {
+      if (seenAgents.has(agent.id)) continue;
+      seenAgents.add(agent.id);
+      for (const emitted of agent.triggered_event ?? []) {
+        if (seenEvents.has(emitted)) continue;
+        seenEvents.add(emitted);
+        queue.push(emitted);
+      }
+    }
+  }
+  return seenAgents.size;
+}
+
+/**
  * Describe every trigger event and the union of named inputs required by its
  * listeners. Externally reachable triggers are recommended, but internal
  * events remain available for targeted branch tests.
@@ -141,6 +176,17 @@ export function describeWorkflowEntrypoints(manifestInput: unknown): {
       bucket.push(agent);
       listeners.set(event, bucket);
     }
+  }
+
+  const reachOf = new Map<string, number>();
+  for (const event of listeners.keys()) {
+    reachOf.set(event, agentsReachedFrom(event, listeners));
+  }
+  // The best an externally-fired trigger can do. Ties are fine: both are
+  // equally good places to start.
+  let bestExternalReach = 0;
+  for (const [event, reach] of reachOf) {
+    if (!emitted.has(event)) bestExternalReach = Math.max(bestExternalReach, reach);
   }
 
   const entrypoints = [...listeners.entries()]
@@ -200,7 +246,10 @@ export function describeWorkflowEntrypoints(manifestInput: unknown): {
       return {
         event,
         source,
-        recommended: source === "external",
+        // Externally fired AND able to drive the workflow, not merely poke a
+        // corner of it.
+        recommended:
+          source === "external" && reachOf.get(event) === bestExternalReach,
         listenerAgentIds: agents.map((agent) => agent.id),
         listenerTitles: agents.map(
           (agent) => agent.title ?? agent.name ?? agent.id,
@@ -212,6 +261,7 @@ export function describeWorkflowEntrypoints(manifestInput: unknown): {
     .sort(
       (left, right) =>
         Number(right.recommended) - Number(left.recommended) ||
+        (reachOf.get(right.event) ?? 0) - (reachOf.get(left.event) ?? 0) ||
         left.event.localeCompare(right.event),
     );
 

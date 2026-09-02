@@ -334,6 +334,11 @@ export const metaerpInvoke = defineTool({
         operation: entry.operation,
         kind: entry.kind,
         path: entry.path,
+        // The absolute URL actually called, and the body actually sent. An
+        // operator asked to trust that the ERP was written to needs to see the
+        // request, not a claim that one happened.
+        url,
+        request: payload,
         status: response.status,
         correlationId: ctx.correlationId,
       },

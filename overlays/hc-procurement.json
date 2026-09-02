@@ -18,12 +18,12 @@
       {
         "event": "DEVIATION_DETECTED",
         "payload_from": "results.calculateExecutionDeviation",
-        "when": "lastResult.execution_deviation.has_deviation == true"
+        "when": "lastResult.deviation_found == true"
       },
       {
         "event": "NO_DEVIATION_CONFIRMED",
         "payload_from": "results.calculateExecutionDeviation",
-        "when": "lastResult.execution_deviation.has_deviation == false"
+        "when": "lastResult.deviation_found == false"
       }
     ],
     "archiveDeviationMonitoring": [
@@ -137,6 +137,11 @@
       "condition": "input.verification_result == '误报'"
     }
   },
+  "submission_gates": {
+    "compressDownstreamCycle": "input.option_type == '压缩后续周期'",
+    "adjustRequiredArrivalDate": "input.option_type == '调整需求日期'",
+    "createStockTransferRequest": "input.option_type == '执行调拨'"
+  },
   "manual_steps": {
     "handleBlueAlertLocally": {
       "reviewBlueAlert": {
@@ -178,36 +183,21 @@
             "remark": {
               "type": "string",
               "title": "处置说明"
+            },
+            "alert_id": {
+              "type": "string",
+              "title": "预警编号"
             }
           },
           "required": [
+            "alert_id",
             "handling_action"
-          ]
+          ],
+          "description": "预警编号由系统从本次预警上下文带出，不需要手工填写。"
         }
       }
     },
     "approveAdjustmentOption": {
-      "reviewOptions": {
-        "task_type": "adjustment.review",
-        "awaiting_role": "部门领导",
-        "form_schema": {
-          "type": "object",
-          "title": "调整方案 · 对比三个方案与到货影响推演",
-          "properties": {
-            "reviewed": {
-              "type": "boolean",
-              "title": "已对比三个方案的构成、时效与到货影响天数"
-            },
-            "focus": {
-              "type": "string",
-              "title": "关注点（可选）"
-            }
-          },
-          "required": [
-            "reviewed"
-          ]
-        }
-      },
       "selectOption": {
         "task_type": "adjustment.select",
         "awaiting_role": "部门领导",
@@ -243,6 +233,14 @@
             "comment": {
               "type": "string",
               "title": "决策意见"
+            },
+            "is_high_risk": {
+              "type": "boolean",
+              "title": "所选方案是否属于高危动作（随方案带入）"
+            },
+            "high_risk_confirmed_by": {
+              "type": "string",
+              "title": "高危确认人（BR-OPT-06，取当前登录人）"
             }
           },
           "required": [
@@ -250,28 +248,8 @@
             "option_type",
             "decision_role",
             "decided_by"
-          ]
-        }
-      },
-      "confirmHighRisk": {
-        "task_type": "adjustment.confirm-high-risk",
-        "awaiting_role": "部门领导",
-        "form_schema": {
-          "type": "object",
-          "title": "高危动作强制确认（BR-OPT-06）",
-          "properties": {
-            "is_high_risk": {
-              "type": "boolean",
-              "title": "选定方案是否属于高危动作（暂停申请、整单调剂）"
-            },
-            "high_risk_confirmed_by": {
-              "type": "string",
-              "title": "高危确认人（部门领导；非高危可留空）"
-            }
-          },
-          "required": [
-            "is_high_risk"
-          ]
+          ],
+          "description": "选定一个方案即可；方案编号、类型、是否高危均随所选方案带入，决策人取当前登录人，都不需要手工填写（BR-OPT-04 决策角色须与预警等级匹配，BR-OPT-06 高危动作的确认人随本次选择一并留痕）。"
         }
       },
       "plannerConfirm": {
@@ -419,38 +397,6 @@
         }
       }
     },
-    "closeDeviationHandling": {
-      "collectVerification": {
-        "task_type": "close.verify",
-        "awaiting_role": "计划员",
-        "form_schema": {
-          "type": "object",
-          "title": "偏差处置闭环 · 业务核实",
-          "properties": {
-            "verification_result": {
-              "type": "string",
-              "title": "核实结果",
-              "enum": [
-                "属实",
-                "误报"
-              ]
-            },
-            "deviation_eliminated": {
-              "type": "boolean",
-              "title": "重算后偏差是否已消除（BR-CLOSE-01）"
-            },
-            "remark": {
-              "type": "string",
-              "title": "核实说明"
-            }
-          },
-          "required": [
-            "verification_result",
-            "deviation_eliminated"
-          ]
-        }
-      }
-    },
     "recycleFalseAlarm": {
       "classifyFalseAlarm": {
         "task_type": "feedback.classify",
@@ -527,7 +473,7 @@
     },
     "closeDeviationHandling": {
       "payload": {
-        "from": "results.manual-4"
+        "from": "event.data"
       }
     },
     "recycleFalseAlarm": {
@@ -554,10 +500,11 @@
         "procurement_chain": "原样透传上游链路对象，字段值不得改写或重新生成。",
         "planned_dates": "各节点计划完成时间：[{stage_node, stage_sequence:1-7, standard_cycle_days, planned_finish_date:'YYYY-MM-DD', planned_date_derived:boolean}]。\n【倒排公式（逐字照算，不得凭感觉）】节点按 立项1/组包2/询价3/定标4/合同5/订单6/到货7 排序，标准周期取自 queryStageCycleConfig 中该 business_type 的行。\n  planned_finish(k) = required_arrival_date − Σ standard_cycle_days(j)，j 从 k+1 到 7\n即：到货(k=7) 的计划完成时间**就是** required_arrival_date 本身（不减任何东西）；其余节点 = 需求到货日期 减去**它之后**所有节点的标准周期之和，**不含本节点周期**。\n举例（物资类：立项10/组包15/询价20/定标15/合同15/订单10/到货70，需求到货 2026-11-30）：\n  到货 = 2026-11-30\n  订单 = 2026-11-30 − 70 = 2026-09-21\n  合同 = 2026-11-30 − (70+10) = 2026-09-11\n  定标 = 2026-11-30 − (70+10+15) = 2026-08-27\n  询价 = 2026-11-30 − (70+10+15+15) = 2026-08-12\n  组包 = 2026-11-30 − (70+10+15+15+20) = 2026-07-23\n  立项 = 2026-11-30 − (70+10+15+15+20+15) = 2026-07-08\n正排交叉校验：planned_finish(k) 应等于 planned_finish(k−1) + standard_cycle_days(k)；两向一致才置 planned_date_derived=true。缺任一节点周期配置则该节点不予推算并在 blocking_note 说明（BR-PLAN-01）。",
         "thresholds_used": "本次判定实际采用的阈值，必须取自 getAlertThresholdConfig 返回值，不得写死：{time_deviation_days, schedule_deviation_ratio, threshold_ids:[string]}（BR-DEV-02）。",
-        "execution_deviation": "执行偏差列表（范围内每条链路一条）：[{deviation_id, chain_id, stage_progress_id, stage_node（发生偏差的节点＝「已完成节点之后的第一个未完成节点」）, planned_finish_date（取 planned_dates 里该节点的值）, actual_finish_date, time_deviation_days:number, schedule_deviation_ratio:number, amount_deviation_ratio:number|null, has_deviation:boolean, deviation_level:'待定级', cause_tag, cause_explanation, cause_clarification_status, dwell_days:number, disposal_state:'待评分', evaluated_at}]。\n\n【actual_finish_date（硬性）】只有节点 stage_status 为「已完成」时才取对应单据的完成字段。「未开始」「进行中」**以及「部分完成」**一律视为未完成——到货节点的接收数量小于订单数量就是部分接收，链路仍在途，**不得**拿验收单时间戳当完成时间——此时**逐字填入上游透传的 scan_date 字符串**（不是你认为的今天，也不是任何单据上的时间戳）——不得凭空生成一个日期、不得使用系统当前时间、不得沿用上游任何别的时间戳。实跑曾出现定标节点从未完成却被填了一个过去的日期，导致时间偏差算成负数（「提前 32 天」），延期判定整体失效。\n\n【time_deviation_days（硬性）】= actual_finish_date − planned_finish_date，单位天，**正数表示延迟**。未完成节点因为代入了 scan_date，这个值就等于「今天比该节点的计划完成时间晚了几天」。若算出负数，意味着该节点尚未到期。\n\n【evaluated_at（硬性·必填）】直接填 scan_date 的那个字符串，与 actual_finish_date 未完成时代入的值完全相同。本体里它是 is_required 字段，留空即为不合规。\n【dwell_days（必填）】= scan_date − 该节点开始时间，单位天（整数或小数）。取不到节点开始时间时填 0，不要填 null。\n【deviation_level】本步一律填 '待定级'——等级由下游 scoreOnTimeProbability 按按期概率映射。\n【has_deviation】按 BR-DEV-01 判定：time_deviation_days > 时间阈值 或 schedule_deviation_ratio > 进度阈值（两个阈值都取自 queryAlertThresholdConfig，不得写死，BR-DEV-02）。",
+        "execution_deviation": "执行偏差列表（范围内每条链路一条）：[{deviation_id, chain_id, stage_progress_id, stage_node（发生偏差的节点＝「已完成节点之后的第一个未完成节点」）, planned_finish_date（取 planned_dates 里该节点的值）, actual_finish_date, time_deviation_days:number, schedule_deviation_ratio:number, amount_deviation_ratio:number|null, has_deviation:boolean, deviation_level:'待定级', cause_tag, cause_explanation, cause_clarification_status, dwell_days:number, disposal_state:'待评分', evaluated_at}]。\n\n【actual_finish_date（硬性）】只有节点 stage_status 为「已完成」时才取对应单据的完成字段。「未开始」「进行中」**以及「部分完成」**一律视为未完成——到货节点的接收数量小于订单数量就是部分接收，链路仍在途，**不得**拿验收单时间戳当完成时间——此时**逐字填入上游透传的 scan_date 字符串**（不是你认为的今天，也不是任何单据上的时间戳）——不得凭空生成一个日期、不得使用系统当前时间、不得沿用上游任何别的时间戳。实跑曾出现定标节点从未完成却被填了一个过去的日期，导致时间偏差算成负数（「提前 32 天」），延期判定整体失效。\n\n【time_deviation_days（硬性）】= actual_finish_date − planned_finish_date，单位天，**正数表示延迟**。未完成节点因为代入了 scan_date，这个值就等于「今天比该节点的计划完成时间晚了几天」。若算出负数，意味着该节点尚未到期。\n\n【evaluated_at（硬性·必填）】直接填 scan_date 的那个字符串，与 actual_finish_date 未完成时代入的值完全相同。本体里它是 is_required 字段，留空即为不合规。\n【dwell_days（必填）】= scan_date − 该节点开始时间，单位天（整数或小数）。取不到节点开始时间时填 0，不要填 null。\n【deviation_level】本步一律填 '待定级'——等级由下游 scoreOnTimeProbability 按按期概率映射。\n【has_deviation】按 BR-DEV-01（含修正 C-01b）判定：\n  has_deviation = time_deviation_days > 时间阈值\n                  或（time_deviation_days > 0 且 schedule_deviation_ratio > 进度阈值）\n两个阈值都取自 queryAlertThresholdConfig，不得写死（BR-DEV-02）。\n**关键：节点尚未到期时，进度偏差不单独构成偏差——未完成但未延期的采购不预警。**\n例：到货节点部分接收（收 18 / 订 30，进度偏差 0.4），但需求到货日还有 141 天（time_deviation_days = -141），此时 has_deviation 必须为 false；\n反例：定标节点超期 5 天（time_deviation_days = 5），has_deviation 为 true。",
         "blocking_note": "若因缺周期配置等原因无法完成推算，写明缺哪个「业务类型×节点」并置 has_deviation=false；否则填空字符串。",
         "_parallel_tool_calls": "【并发取数（硬性）】本步的这些查询彼此独立、没有先后依赖，请在**同一轮**里一次性发出全部 metaerp.invoke 工具调用，不要一个一个串行来回——运行时支持一轮多调用（step-engine 按数组逐个执行），串行会把这一步拖成十几分钟。只有当后一个查询确实要用前一个的返回值做入参时，才允许分轮。本步需要的查询：queryStageCycleConfig、queryAlertThresholdConfig。第一轮一次性发出。本字段只是取数纪律说明，输出 JSON 里填一句确认语即可。",
-        "scan_date": "触发事件负载里 scan_date 的值，**原样照抄**（YYYY-MM-DD 字符串，例如事件给 \"2026-09-01\" 就填 \"2026-09-01\"）。这是业务扫描日期，不是系统时间——与你认知里的今天不同也以它为准。**此字段必填，不得留空**。本步所有涉及「今天」的计算一律用它。"
+        "scan_date": "触发事件负载里 scan_date 的值，**原样照抄**（YYYY-MM-DD 字符串，例如事件给 \"2026-09-01\" 就填 \"2026-09-01\"）。这是业务扫描日期，不是系统时间——与你认知里的今天不同也以它为准。**此字段必填，不得留空**。本步所有涉及「今天」的计算一律用它。",
+        "deviation_found": "布尔值，必填。本批范围内只要 execution_deviation 里有任意一条 has_deviation=true 就填 true，全部为 false 才填 false。工作流据此二选一：true 走预警分支（DEVIATION_DETECTED→评分→预警），false 走归档分支（NO_DEVIATION_CONFIRMED→归档）。这是对 execution_deviation 的汇总，不得与其中任何一条自相矛盾。"
       }
     },
     "archiveDeviationMonitoring": {
@@ -568,10 +515,10 @@
     },
     "scoreOnTimeProbability": {
       "fields": {
-        "execution_deviation": "原样透传上游执行偏差对象。",
-        "procurement_chain": "原样透传上游链路对象。",
-        "probability_assessment": "按期达成概率评估：{assessment_id, deviation_id, chain_id, current_stage, remaining_standard_cycle_days:number（当前节点之后各节点标准周期之和，取自 getStageCycleConfig）, days_to_required_arrival:number, dwell_days:number, historical_on_time_rate:number（取自 queryHistoricalOnTimeRate）, historical_sample_size:integer, on_time_probability:number（0~1）, probability_grade:'红色'|'黄色'|'蓝色', explanation:string（不得为空，BR-PROB-04）, assessed_at}。【定级硬性】必须用 getAlertThresholdConfig 返回的分界值：概率<红色概率上限判红、介于红色上限与黄色下限之间判黄、>黄色概率下限判蓝（BR-PROB-01~03）。【explanation 硬性】必须同时说明剩余周期、滞留天数、历史达成率与样本量这四项如何影响了概率——只报超期天数不足以支撑决策。",
-        "alert_level": "与 probability_grade 同值，供下游预警推送直接取用。",
+        "execution_deviation": "只透传 has_deviation=true 的那些偏差对象，逐字原样，不得改写。上游 execution_deviation 里 has_deviation=false 的链路（未完成但未延期）**必须整条丢弃**——它没有偏差，不评分、不定级、不预警。",
+        "procurement_chain": "只透传上述保留下来的偏差所对应的链路对象，逐字原样。被丢弃的链路一并丢弃。",
+        "probability_assessment": "**只对 has_deviation=true 的链路评估**，每条一个对象；被丢弃的链路不得出现。\n按期达成概率评估：{assessment_id, deviation_id, chain_id, current_stage, remaining_standard_cycle_days:number（当前节点之后各节点标准周期之和，取自 getStageCycleConfig）, days_to_required_arrival:number, dwell_days:number, historical_on_time_rate:number（取自 queryHistoricalOnTimeRate）, historical_sample_size:integer, on_time_probability:number（0~1）, probability_grade:'红色'|'黄色'|'蓝色', explanation:string（不得为空，BR-PROB-04）, assessed_at}。【定级硬性】必须用 getAlertThresholdConfig 返回的分界值：概率<红色概率上限判红、介于红色上限与黄色下限之间判黄、>黄色概率下限判蓝（BR-PROB-01~03）。【explanation 硬性】必须同时说明剩余周期、滞留天数、历史达成率与样本量这四项如何影响了概率——只报超期天数不足以支撑决策。",
+        "alert_level": "与 probability_grade 同值，供下游预警推送直接取用。**与 probability_assessment 一一对应、条数一致**——被丢弃的链路不得在这里留下等级。",
         "_parallel_tool_calls": "【并发取数（硬性）】本步的这些查询彼此独立、没有先后依赖，请在**同一轮**里一次性发出全部 metaerp.invoke 工具调用，不要一个一个串行来回——运行时支持一轮多调用（step-engine 按数组逐个执行），串行会把这一步拖成十几分钟。只有当后一个查询确实要用前一个的返回值做入参时，才允许分轮。本步需要的查询：queryStageCycleConfig、queryHistoricalOnTimeRate、queryAlertThresholdConfig。第一轮一次性发出。本字段只是取数纪律说明，输出 JSON 里填一句确认语即可。",
         "scan_date": "触发事件负载里 scan_date 的值，**原样照抄**（YYYY-MM-DD 字符串，例如事件给 \"2026-09-01\" 就填 \"2026-09-01\"）。这是业务扫描日期，不是系统时间——与你认知里的今天不同也以它为准。**此字段必填，不得留空**。剩余天数、滞留天数以它为「今天」。"
       }

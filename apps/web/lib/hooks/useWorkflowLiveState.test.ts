@@ -341,3 +341,235 @@ describe("workflowLiveReducer", () => {
     expect(state.agents["action-create-stock-transfer"]!.state).toBe("ok");
   });
 });
+
+describe("workflowLiveReducer · task frames arriving out of order", () => {
+  // The durable backfill sorts purely by `at`, and `tasks.created_at` is stored
+  // at second precision while a run's `startedAt` keeps milliseconds. A task
+  // created 939 ms AFTER its run therefore replays BEFORE it — measured live on
+  // run-4feec0d808c4 (started …133939) vs tsk-86d137e7c6b0 (created …133000).
+  // Dropping that frame lost the waiting badge on every page load after the
+  // fact, which is exactly when an operator goes looking for it.
+  it("still shows the waiting badge when task.created replays first", () => {
+    let state = initialWorkflowLiveState();
+    state = workflowLiveReducer(state, {
+      kind: "stream",
+      event: {
+        type: "task.created",
+        tenantId: "t",
+        at: 1_788_246_133_000,
+        taskId: "tsk-1",
+        runId: "run-1",
+        taskType: "adjustment.review",
+        title: "审批调整方案",
+      },
+    });
+    // Parked, not attributed: nothing to show yet, and nothing lost.
+    expect(state.agents.approve).toBeUndefined();
+
+    state = workflowLiveReducer(state, {
+      kind: "stream",
+      event: {
+        type: "run.started",
+        tenantId: "t",
+        at: 1_788_246_133_939,
+        runId: "run-1",
+        agentName: "approve",
+        triggerEvent: "ADJUSTMENT_OPTIONS_GENERATED",
+        subject: "SCAN-0873-ONLY",
+        correlationId: "cor-1",
+      },
+    });
+    expect(state.agents.approve?.state).toBe("waiting_human");
+    expect(state.agents.approve?.waitingTaskIds).toEqual(["tsk-1"]);
+    expect(state.pendingTasks["run-1"]).toBeUndefined();
+  });
+
+  it("does not double-park a task the backfill repeats", () => {
+    let state = initialWorkflowLiveState();
+    const task = {
+      type: "task.created" as const,
+      tenantId: "t",
+      at: 1,
+      taskId: "tsk-1",
+      runId: "run-1",
+      taskType: "adjustment.review",
+      title: "t",
+    };
+    state = workflowLiveReducer(state, { kind: "stream", event: task });
+    state = workflowLiveReducer(state, { kind: "stream", event: task });
+    expect(state.pendingTasks["run-1"]).toEqual(["tsk-1"]);
+
+    state = workflowLiveReducer(state, {
+      kind: "stream",
+      event: {
+        type: "run.started",
+        tenantId: "t",
+        at: 2,
+        runId: "run-1",
+        agentName: "approve",
+        triggerEvent: null,
+        subject: null,
+        correlationId: "cor-1",
+      },
+    });
+    expect(state.agents.approve?.waitingTaskIds).toEqual(["tsk-1"]);
+  });
+
+  it("ignores a task frame with no run to hang it on", () => {
+    const state = workflowLiveReducer(initialWorkflowLiveState(), {
+      kind: "stream",
+      event: {
+        type: "task.created",
+        tenantId: "t",
+        at: 1,
+        taskId: "tsk-1",
+        runId: null,
+        taskType: "x",
+        title: "t",
+      },
+    });
+    expect(state.pendingTasks).toEqual({});
+    expect(state.agents).toEqual({});
+  });
+});
+
+describe("workflowLiveReducer · a task that dies with its run", () => {
+  const started = (runId: string, agentName: string, at: number) =>
+    ({
+      type: "run.started" as const,
+      tenantId: "t",
+      at,
+      runId,
+      agentName,
+      triggerEvent: null,
+      subject: null,
+      correlationId: "cor-1",
+    });
+  const created = (taskId: string, runId: string, at: number) =>
+    ({
+      type: "task.created" as const,
+      tenantId: "t",
+      at,
+      taskId,
+      runId,
+      taskType: "blue-alert.review",
+      title: "t",
+    });
+
+  // A task only ever gets `task.resolved` when it was actually resolved. One
+  // that FAILED with its run had nothing to clear it, so the node stayed amber
+  // and clicking it could only ever return `task_not_recoverable` — observed on
+  // handleBlueAlertLocally / tsk-c9a0834d349b.
+  it("takes the waiting badge down when the run fails", () => {
+    let state = initialWorkflowLiveState();
+    state = workflowLiveReducer(state, { kind: "stream", event: started("run-1", "blue", 1) });
+    state = workflowLiveReducer(state, { kind: "stream", event: created("tsk-1", "run-1", 2) });
+    expect(state.agents.blue?.state).toBe("waiting_human");
+
+    state = workflowLiveReducer(state, {
+      kind: "stream",
+      event: {
+        type: "run.failed",
+        tenantId: "t",
+        at: 3,
+        runId: "run-1",
+        errorMessage: "resume failed",
+      },
+    });
+    expect(state.agents.blue?.waitingTaskIds).toEqual([]);
+    expect(state.agents.blue?.state).toBe("failed");
+    expect(state.runTasks["run-1"]).toBeUndefined();
+    expect(state.taskAgent["tsk-1"]).toBeUndefined();
+  });
+
+  it("does the same for a completed or cancelled run", () => {
+    for (const event of [
+      { type: "run.completed" as const, tenantId: "t", at: 3, runId: "run-1", durationMs: 1, tokensIn: null, tokensOut: null, emittedEventId: null },
+      { type: "run.cancelled" as const, tenantId: "t", at: 3, runId: "run-1", reason: "operator" },
+    ]) {
+      let state = initialWorkflowLiveState();
+      state = workflowLiveReducer(state, { kind: "stream", event: started("run-1", "blue", 1) });
+      state = workflowLiveReducer(state, { kind: "stream", event: created("tsk-1", "run-1", 2) });
+      state = workflowLiveReducer(state, { kind: "stream", event });
+      expect(state.agents.blue?.waitingTaskIds).toEqual([]);
+      expect(state.agents.blue?.state).not.toBe("waiting_human");
+    }
+  });
+
+  // One dead run must not silently clear a sibling run's live task.
+  it("only takes down the tasks belonging to the run that ended", () => {
+    let state = initialWorkflowLiveState();
+    state = workflowLiveReducer(state, { kind: "stream", event: started("run-1", "blue", 1) });
+    state = workflowLiveReducer(state, { kind: "stream", event: started("run-2", "blue", 2) });
+    state = workflowLiveReducer(state, { kind: "stream", event: created("tsk-1", "run-1", 3) });
+    state = workflowLiveReducer(state, { kind: "stream", event: created("tsk-2", "run-2", 4) });
+
+    state = workflowLiveReducer(state, {
+      kind: "stream",
+      event: { type: "run.failed", tenantId: "t", at: 5, runId: "run-1", errorMessage: "x" },
+    });
+    expect(state.agents.blue?.waitingTaskIds).toEqual(["tsk-2"]);
+    expect(state.agents.blue?.state).toBe("waiting_human");
+  });
+});
+
+describe("workflowLiveReducer · one chain at a time", () => {
+  const started = (runId: string, agentName: string, subject: string, at: number) =>
+    ({
+      type: "run.started" as const,
+      tenantId: "t",
+      at,
+      runId,
+      agentName,
+      triggerEvent: null,
+      subject,
+      correlationId: "cor-1",
+    });
+
+  // A chain that finished a minute ago is still inside the freshness window, so
+  // the canvas showed it in full colour while a NEW run was only just starting.
+  // Indistinguishable from the new run racing through — human gate and all.
+  it("names the chain being watched from the newest run", () => {
+    let state = initialWorkflowLiveState();
+    state = workflowLiveReducer(state, {
+      kind: "stream",
+      event: started("run-1", "collect", "SCAN-OLD", 1),
+    });
+    expect(state.latestSubject).toBe("SCAN-OLD");
+    state = workflowLiveReducer(state, {
+      kind: "stream",
+      event: started("run-2", "collect", "SCAN-NEW", 2),
+    });
+    expect(state.latestSubject).toBe("SCAN-NEW");
+  });
+
+  it("remembers which chain each agent last belonged to", () => {
+    let state = initialWorkflowLiveState();
+    state = workflowLiveReducer(state, {
+      kind: "stream",
+      event: started("run-1", "approve", "SCAN-OLD", 1),
+    });
+    state = workflowLiveReducer(state, {
+      kind: "stream",
+      event: started("run-2", "collect", "SCAN-NEW", 2),
+    });
+    // The approval node still carries the old chain — which is exactly what
+    // lets the view stop colouring it as part of the new one.
+    expect(state.agents.approve?.lastSubject).toBe("SCAN-OLD");
+    expect(state.agents.collect?.lastSubject).toBe("SCAN-NEW");
+  });
+
+  it("leaves the subject alone when a run carries none", () => {
+    let state = initialWorkflowLiveState();
+    state = workflowLiveReducer(state, {
+      kind: "stream",
+      event: started("run-1", "collect", "SCAN-OLD", 1),
+    });
+    state = workflowLiveReducer(state, {
+      kind: "stream",
+      event: { ...started("run-2", "score", "", 2), subject: null },
+    });
+    expect(state.latestSubject).toBe("SCAN-OLD");
+    expect(state.agents.score?.lastSubject).toBeNull();
+  });
+});

@@ -1040,6 +1040,7 @@ async function callLLM(
       let outputBody: string;
       let isError = false;
       let outputData: unknown = null;
+      let toolReceipt: Record<string, unknown> | undefined;
       let sandboxDispatch: FactorySandboxDispatchReceipt | undefined;
       let ruleGateRecord: ToolCallRuleGateRecord | undefined;
       let probeRecord: ProbeVerificationResult | undefined;
@@ -1253,6 +1254,9 @@ async function callLLM(
           } else {
             outputData = r.data;
           }
+          if (r.meta && typeof r.meta === "object") {
+            toolReceipt = r.meta as Record<string, unknown>;
+          }
           outputBody = stringifyToolPayload(outputData);
           totalIn += r.tokensIn ?? 0;
           totalOut += r.tokensOut ?? 0;
@@ -1390,6 +1394,7 @@ async function callLLM(
         name: call.name,
         input: call.input,
         output: outputData,
+        ...(toolReceipt ? { receipt: toolReceipt } : {}),
         isError,
         durationMs: toolDurationMs,
         ...(sandboxDispatch ? { sandboxDispatch } : {}),
@@ -1519,6 +1524,12 @@ export interface ToolCallTrace {
   name: string;
   input: Record<string, unknown>;
   output: unknown;
+  /**
+   * The tool's own receipt — for a remote call, the endpoint it reached and the
+   * body it sent. `output` is the unwrapped result, so without this the fact
+   * that a system of record was actually contacted is nowhere in the trace.
+   */
+  receipt?: Record<string, unknown>;
   isError: boolean;
   durationMs: number;
   sandboxDispatch?: FactorySandboxDispatchReceipt;

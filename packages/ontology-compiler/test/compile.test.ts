@@ -12,7 +12,12 @@ import { WorkflowManifestSchema } from "@agentic/runtime/manifest";
 import { canonicalJson } from "../src/canonical-json.ts";
 import { compile, serializeCompileResult } from "../src/compile.ts";
 import { loadStudioDomain } from "../src/load.ts";
-import type { CompiledAgent, CompiledStep, CompilerOverlay } from "../src/types.ts";
+import type {
+  CompiledAgent,
+  CompiledStep,
+  CompilerOverlay,
+  StudioEventDataField,
+} from "../src/types.ts";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURE_SOURCE = path.join(here, "fixtures", "power-scm");
@@ -463,5 +468,174 @@ describe("dependency gating consistency", () => {
       if (!hasSkippableEmit) continue;
       expect(stepNames(agent), agent.id).toContain("suppress-implicit-emit");
     }
+  });
+});
+
+describe("compiled input ports", () => {
+  const model = loadStudioDomain(FIXTURE_SOURCE);
+  const agents = compilePowerScm().workflow;
+
+  const eventFields = (agent: CompiledAgent) =>
+    agent.trigger.flatMap(
+      (event) =>
+        model.events.find((candidate) => candidate.name === event)?.payload
+          ?.event_data ?? [],
+    );
+
+  // Without `inputs` the run console falls back to a generic payload/prompt
+  // pair, and the default event body carries none of the fields the agent's own
+  // prompt requires. The ports come from the trigger event's own schema.
+  it("gives every triggered agent the fields its trigger declares", () => {
+    for (const agent of agents) {
+      const declared = new Set(eventFields(agent).map((field) => field.name));
+      const actual = new Set(agent.inputs.map((port) => port.id));
+      for (const name of declared) expect(actual.has(name)).toBe(true);
+    }
+  });
+
+  it("carries `required` through, so the console can mark it", () => {
+    for (const agent of agents) {
+      for (const port of agent.inputs) {
+        const field = eventFields(agent).find(
+          (candidate) => candidate.name === port.id,
+        );
+        expect(port.required).toBe(field?.required === true);
+      }
+    }
+  });
+
+  /** Compile one probe field and hand back the port it produced. */
+  function probePort(field: StudioEventDataField) {
+    const probed = {
+      ...model,
+      events: [
+        { name: "__PROBE__", payload: { event_data: [field] } },
+        ...model.events,
+      ],
+      actions: model.actions.map((action, index) =>
+        index === 0 ? { ...action, trigger: ["__PROBE__"] } : action,
+      ),
+    };
+    const [port] = compile(probed, loadOverlayFixture(), {
+      tenant: "power-scm",
+    }).workflow[0]!.inputs;
+    return (port?.schema ?? {}) as Record<string, unknown>;
+  }
+
+  // A bare {type:"string"} is what made every field render the placeholder
+  // 示例值 — the console can generate a real value, given something to go on.
+  it("translates the ontology's own type into something generatable", () => {
+    const of = (type: string) =>
+      probePort({ name: "probe_field", type, required: true });
+    expect(of("Date").format).toBe("date");
+    expect(of("DateTime").format).toBe("date-time");
+    expect(of("Integer").type).toBe("integer");
+    expect(of("Decimal").type).toBe("number");
+    expect(of("Boolean").type).toBe("boolean");
+    expect(of("String")).toEqual({ type: "string" });
+  });
+
+  it("lifts an enumerated description into examples, not into an enum", () => {
+    const schema = probePort({
+      name: "document_type",
+      type: "String",
+      description: "变更单据类型：采购申请/采购包/询价单。",
+      required: true,
+    });
+    expect(schema.examples).toEqual(["采购申请", "采购包", "询价单"]);
+    // A description documents; it is not authority to reject a value the
+    // ontology never actually restricted.
+    expect(schema.enum).toBeUndefined();
+  });
+
+  it("leaves prose alone rather than splitting a sentence into choices", () => {
+    const schema = probePort({
+      name: "note",
+      type: "String",
+      description: "说明：请描述本次变更的业务背景与预期结果。",
+      required: false,
+    });
+    expect(schema.examples).toBeUndefined();
+  });
+});
+
+describe("submission gates", () => {
+  const model = loadStudioDomain(FIXTURE_SOURCE);
+  // An external action: gates exist for the write branches that fan out from a
+  // shared event, which is where the ambiguity is.
+  const target = model.actions.find(
+    (action) => action.implementation?.kind === "external",
+  )!;
+
+  function compileWithGate(condition?: string) {
+    const overlay = loadOverlayFixture();
+    if (condition) overlay.submission_gates = { [target.id]: condition };
+    return compile(model, overlay, { tenant: "power-scm" }).workflow.find(
+      (agent) => agent.id === target.id,
+    )!;
+  }
+
+  // Branches that fan out from one event share a trigger AND a rule, so a rule
+  // gate cannot tell them apart. Without a per-action gate all three
+  // mutually-exclusive plans executed off a single approval.
+  it("gates the whole action, ahead of everything else", () => {
+    const agent = compileWithGate("input.option_type == '执行调拨'");
+    const first = agent.actions[0]!;
+    expect(first.name).toBe(`submission-gate:${target.id}`);
+    expect(first.type).toBe("condition");
+    expect(first.condition).toBe("input.option_type == '执行调拨'");
+  });
+
+  // The runtime skips a step whose dependency was skipped, and that propagates,
+  // so what matters is that every later step REACHES the gate — not that each
+  // one names it directly.
+  it("makes every later step wait on it, so a false gate runs nothing", () => {
+    const agent = compileWithGate("input.option_type == '执行调拨'");
+    const gateKey = agent.actions[0]!.result_key!;
+    const producer = new Map(
+      agent.actions.map((step) => [step.result_key ?? step.name, step]),
+    );
+    const reachesGate = (step: CompiledStep, seen = new Set<string>()): boolean =>
+      (step.depends_on ?? []).some((dep) => {
+        if (dep === gateKey) return true;
+        if (seen.has(dep)) return false;
+        seen.add(dep);
+        const upstream = producer.get(dep);
+        return upstream ? reachesGate(upstream, seen) : false;
+      });
+
+    // Every step that WRITES or EMITS must reach the gate. `suppress-implicit-emit`
+    // deliberately does not: it is a no-op decision that suppresses an emit, so
+    // running it behind a closed gate changes nothing.
+    const acting = agent.actions.filter((step) =>
+      ["tool", "emit", "manual"].includes(step.type),
+    );
+    expect(acting.length).toBeGreaterThan(0);
+    for (const step of acting) {
+      expect(reachesGate(step)).toBe(true);
+    }
+  });
+
+  it("adds nothing when the overlay declares no gate", () => {
+    const agent = compileWithGate();
+    expect(agent.actions[0]!.name).not.toContain("submission-gate");
+  });
+
+  // Silently ignoring a gate is worse than not supporting one: the branch it
+  // was meant to stop runs, and the overlay still looks right.
+  it("refuses a gate that would never be compiled", () => {
+    const prompt = model.actions.find(
+      (action) => action.implementation?.kind === "prompt",
+    )!;
+    const overlay = loadOverlayFixture();
+    overlay.submission_gates = { [prompt.id]: "input.x == 'y'" };
+    expect(() => compile(model, overlay, { tenant: "power-scm" })).toThrow(
+      /only compiled for external actions/,
+    );
+    const unknown = loadOverlayFixture();
+    unknown.submission_gates = { "no-such-action": "input.x == 'y'" };
+    expect(() => compile(model, unknown, { tenant: "power-scm" })).toThrow(
+      /unknown action/,
+    );
   });
 });

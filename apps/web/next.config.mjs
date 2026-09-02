@@ -32,6 +32,17 @@ if (parsedApiUrl.protocol !== "http:" && parsedApiUrl.protocol !== "https:") {
  *                                     react-query); `/` redirects there via
  *                                     `apps/web/app/page.tsx`.
  */
+const rawProxyTimeout = process.env.AGENTIC_WEB_PROXY_TIMEOUT_MS?.trim();
+const parsedProxyTimeout = rawProxyTimeout ? Number(rawProxyTimeout) : Number.NaN;
+/** See `experimental.proxyTimeout` below for why development needs a far higher
+ * ceiling than the 120 s that covers workflow generation. */
+const proxyTimeoutMs =
+  Number.isFinite(parsedProxyTimeout) && parsedProxyTimeout > 0
+    ? Math.floor(parsedProxyTimeout)
+    : process.env.NODE_ENV === "production"
+      ? 120_000
+      : 1_800_000;
+
 /** @type {import("next").NextConfig} */
 const nextConfig = {
   // Emit a self-contained server bundle at .next/standalone — the web Dockerfile
@@ -55,8 +66,16 @@ const nextConfig = {
      * Sits above the api's own 90 s ceiling so the api is always the component
      * that decides a call has taken too long, and the operator gets a real
      * error instead of a proxy-generated one.
+     *
+     * 120 s covers generation but NOT the other blocking authoring call:
+     * `POST /v1/workflows/:slug/test-runs` walks the draft with real agents, and
+     * one agent is a full LLM tool loop — a measured single-agent draft test took
+     * 153 s and a two-agent one 256 s, so the browser saw the same proxy-generated
+     * 500 at every agent-run budget. Development therefore gets a much higher
+     * ceiling; production keeps 120 s so a hung API cannot pin web sockets.
+     * Override with AGENTIC_WEB_PROXY_TIMEOUT_MS.
      */
-    proxyTimeout: 120_000,
+    proxyTimeout: proxyTimeoutMs,
   },
   async redirects() {
     return [

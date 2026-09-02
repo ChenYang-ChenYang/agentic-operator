@@ -414,3 +414,96 @@ describe("seedWorkflowPromptValue", () => {
     ).toBe("Real purpose");
   });
 });
+
+describe("deriveWorkflowEntrypoints · which entry the console defaults to", () => {
+  // Shaped after hc-procurement: three externally-fired triggers, only one of
+  // which actually drives the chain.
+  const manifest = {
+    agents: [
+      { id: "collect", name: "collect", title: "collect", actor: "Agent",
+        trigger: ["DAILY_SCAN", "DOC_CHANGED"], triggered_event: ["SYNCED"], actions: [] },
+      { id: "calc", name: "calc", title: "calc", actor: "Agent",
+        trigger: ["SYNCED"], triggered_event: ["DETECTED"], actions: [] },
+      { id: "score", name: "score", title: "score", actor: "Agent",
+        trigger: ["DETECTED"], triggered_event: ["SCORED"], actions: [] },
+      { id: "raise", name: "raise", title: "raise", actor: "Agent",
+        trigger: ["SCORED", "ESCALATED"], triggered_event: [], actions: [] },
+      { id: "escalate", name: "escalate", title: "escalate", actor: "Agent",
+        trigger: ["ALERT_TIMEOUT"], triggered_event: ["ESCALATED"], actions: [] },
+    ],
+  };
+
+  // Every external trigger used to be recommended equally, so the console
+  // defaulted to whichever sorted first — ALERT_TIMEOUT, which reaches two
+  // agents. Choosing the default then gave you one node and no chain.
+  it("defaults to the trigger that drives the workflow, not the alphabet", () => {
+    const { entrypoints } = deriveWorkflowEntrypoints(manifest);
+    expect(entrypoints[0]!.event).toBe("DAILY_SCAN");
+    expect(
+      entrypoints.find((entry) => entry.event === "ALERT_TIMEOUT")?.recommended,
+    ).toBe(false);
+  });
+
+  it("still lists the narrow external trigger for targeted runs", () => {
+    const { entrypoints } = deriveWorkflowEntrypoints(manifest);
+    const escalate = entrypoints.find((entry) => entry.event === "ALERT_TIMEOUT");
+    expect(escalate?.source).toBe("external");
+  });
+
+  // The draft profile is derived here and the live one comes from the API; if
+  // they rank differently the default changes when you flip the target.
+  it("recommends every external trigger that reaches just as far", () => {
+    const { entrypoints } = deriveWorkflowEntrypoints(manifest);
+    expect(
+      entrypoints.find((entry) => entry.event === "DOC_CHANGED")?.recommended,
+    ).toBe(true);
+  });
+});
+
+describe("workflowInputExampleValue · usable defaults", () => {
+  const port = (schema: Record<string, unknown>, id = "field") => ({
+    id,
+    label: id,
+    description: null,
+    kind: "value" as const,
+    required: true,
+    schema,
+    sensitivity: "none" as const,
+    consumers: ["agent"],
+    bindings: [{ agentId: "agent", mode: "direct" as const }],
+    conflict: false,
+  });
+
+  // Every field rendered the literal placeholder 示例值 because the compiled
+  // ports carried a bare {type:"string"}. The console could always do better
+  // than that — it just had nothing to go on.
+  it("uses the first declared choice rather than a placeholder", () => {
+    expect(
+      workflowInputExampleValue(
+        port({ type: "string", examples: ["全集团", "指定单位"] }, "chain_scope"),
+      ),
+    ).toBe("全集团");
+  });
+
+  // A frozen example is stale the day after it is written, and a scan date is
+  // what the entire run is anchored on.
+  it("dates default to today, not to whenever this code was written", () => {
+    const today = new Date().toISOString().slice(0, 10);
+    expect(
+      workflowInputExampleValue(port({ type: "string", format: "date" }, "scan_date")),
+    ).toBe(today);
+    expect(
+      String(
+        workflowInputExampleValue(
+          port({ type: "string", format: "date-time" }, "changed_at"),
+        ),
+      ).startsWith(today),
+    ).toBe(true);
+  });
+
+  it("still shapes an identifier from its name", () => {
+    expect(
+      workflowInputExampleValue(port({ type: "string" }, "scan_batch_id")),
+    ).toBe("SB-2026-001");
+  });
+});

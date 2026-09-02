@@ -246,6 +246,8 @@ export async function writeRunLog(
           durationMs: Number.isFinite(durationMs) ? durationMs : null,
           ok: fields.ok !== false && level !== "ERROR",
           error: typeof fields.error === "string" ? fields.error : null,
+          url: typeof fields.url === "string" ? fields.url : null,
+          request: typeof fields.request === "string" ? fields.request : null,
         });
       }
     } catch (error) {
