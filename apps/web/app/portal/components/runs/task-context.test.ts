@@ -276,6 +276,41 @@ describe("the three things an approver needs", () => {
     expect(options[0]!.facts.map((f) => f.key)).not.toContain("option_type");
   });
 
+  // Every option carried `decision_role: 分管领导` and `option_status: 待决策`,
+  // and the label was whichever short readable fact came first — so all three
+  // radios were labelled 分管领导. What tells the options apart is what names
+  // them, and the data says which key that is.
+  it("names an option by what distinguishes it, not by what they share", () => {
+    const shared = {
+      options: [
+        { decision_role: "分管领导", option_status: "待决策", option_type: "压缩后续周期", option_id: "OPT-A" },
+        { decision_role: "分管领导", option_status: "待决策", option_type: "执行调拨", option_id: "OPT-C" },
+      ],
+    };
+    const options = decisionOptions(shared, ["option_id"]);
+    expect(options.map((option) => option.title)).toEqual([
+      "压缩后续周期",
+      "执行调拨",
+    ]);
+    // A fact identical on every option cannot help anyone choose; it belongs
+    // in the summary, not repeated on each card.
+    const keys = options[0]!.facts.map((fact) => fact.key);
+    expect(keys).not.toContain("decision_role");
+    expect(keys).not.toContain("option_status");
+    expect(keys).toContain("option_id");
+  });
+
+  it("keeps the facts when the options differ in nothing", () => {
+    const identical = {
+      options: [
+        { note: "同样的说明", stage: "定标" },
+        { note: "同样的说明", stage: "定标" },
+      ],
+    };
+    // Showing something the reader can compare beats showing an empty card.
+    expect(decisionOptions(identical)[0]!.facts.length).toBeGreaterThan(0);
+  });
+
   it("offers nothing to pick when the payload holds no alternatives", () => {
     expect(decisionOptions({ alert_context: { alert_id: "A" } }, ["alert_id"])).toEqual([]);
     expect(decisionOptions(null)).toEqual([]);

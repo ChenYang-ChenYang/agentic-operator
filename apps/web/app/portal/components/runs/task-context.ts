@@ -278,6 +278,8 @@ const INSIGHT_LONG_LENGTH = 24;
 const IDENTIFIER_LIKE = /^[A-Za-z0-9_.:/-]+$/;
 /** Sentence punctuation, Chinese and Latin alike. */
 const SENTENCE_MARK = /[，。；：！？,;:!?]|\s/;
+/** Longer than this and a value is a description, not a name. */
+const MAX_LABEL_LENGTH = 20;
 /** Facts in the summary strip, beyond which it stops being a summary. */
 const MAX_SUMMARY_FACTS = 8;
 /** Paragraphs an approver will actually read before deciding. */
@@ -363,26 +365,48 @@ export function decisionOptions(
   fieldNames: readonly string[] = [],
 ): DecisionOption[] {
   const wanted = new Set(fieldNames);
-  const options: DecisionOption[] = [];
-  for (const group of contextGroups(payload)) {
-    if (!group.alternatives) continue;
+  const groups = contextGroups(payload).filter((group) => group.alternatives);
+  if (groups.length === 0) return [];
+
+  // What tells the options APART is what names them. Every option here carries
+  // `decision_role: 分管领导` and `option_status: 待决策` — true of all three,
+  // so useless as a label and useless on the card. `option_type` differs, which
+  // is exactly why it is the thing to read. No business field names needed:
+  // the data says which key discriminates.
+  const distinct = new Map<string, Set<string>>();
+  for (const group of groups) {
+    for (const fact of group.facts) {
+      const seen = distinct.get(fact.key) ?? new Set<string>();
+      seen.add(fact.value);
+      distinct.set(fact.key, seen);
+    }
+  }
+  const varies = (fact: ContextFact) => (distinct.get(fact.key)?.size ?? 0) > 1;
+  const nameable = (fact: ContextFact) =>
+    !IDENTIFIER_LIKE.test(fact.value) && fact.value.length <= MAX_LABEL_LENGTH;
+
+  return groups.map((group) => {
     const values: Record<string, string> = {};
     for (const fact of group.facts) {
       if (wanted.has(fact.key)) values[fact.key] = fact.value;
     }
-    // The most label-like fact names the option: a short, non-identifier value
-    // the reader can tell apart at a glance.
-    const label = group.facts.find(
-      (fact) => !IDENTIFIER_LIKE.test(fact.value) && fact.value.length <= 20,
+    const label =
+      group.facts.find((fact) => nameable(fact) && varies(fact)) ??
+      group.facts.find(nameable);
+    // Facts shared by every option belong in the summary, not repeated on each
+    // card — they cannot help anyone choose. Unless nothing varies at all, in
+    // which case showing them beats showing nothing.
+    const distinguishing = group.facts.filter(varies);
+    const body = (distinguishing.length > 0 ? distinguishing : group.facts).filter(
+      (fact) => fact.key !== label?.key,
     );
-    options.push({
+    return {
       key: group.key,
       title: label?.value ?? group.title,
-      facts: group.facts.filter((fact) => fact.key !== label?.key),
+      facts: body,
       values,
-    });
-  }
-  return options;
+    };
+  });
 }
 
 /** Field names that record WHO acted, rather than what was decided. */
