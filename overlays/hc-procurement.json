@@ -137,6 +137,11 @@
       "condition": "input.verification_result == '误报'"
     }
   },
+  "submission_gates": {
+    "compressDownstreamCycle": "input.option_type == '压缩后续周期'",
+    "adjustRequiredArrivalDate": "input.option_type == '调整需求日期'",
+    "createStockTransferRequest": "input.option_type == '执行调拨'"
+  },
   "manual_steps": {
     "handleBlueAlertLocally": {
       "reviewBlueAlert": {

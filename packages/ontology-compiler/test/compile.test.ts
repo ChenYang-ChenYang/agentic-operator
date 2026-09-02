@@ -12,7 +12,12 @@ import { WorkflowManifestSchema } from "@agentic/runtime/manifest";
 import { canonicalJson } from "../src/canonical-json.ts";
 import { compile, serializeCompileResult } from "../src/compile.ts";
 import { loadStudioDomain } from "../src/load.ts";
-import type { CompiledAgent, CompiledStep, CompilerOverlay } from "../src/types.ts";
+import type {
+  CompiledAgent,
+  CompiledStep,
+  CompilerOverlay,
+  StudioEventDataField,
+} from "../src/types.ts";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURE_SOURCE = path.join(here, "fixtures", "power-scm");
@@ -500,7 +505,7 @@ describe("compiled input ports", () => {
   });
 
   /** Compile one probe field and hand back the port it produced. */
-  function probePort(field: Record<string, unknown>) {
+  function probePort(field: StudioEventDataField) {
     const probed = {
       ...model,
       events: [
@@ -551,5 +556,86 @@ describe("compiled input ports", () => {
       required: false,
     });
     expect(schema.examples).toBeUndefined();
+  });
+});
+
+describe("submission gates", () => {
+  const model = loadStudioDomain(FIXTURE_SOURCE);
+  // An external action: gates exist for the write branches that fan out from a
+  // shared event, which is where the ambiguity is.
+  const target = model.actions.find(
+    (action) => action.implementation?.kind === "external",
+  )!;
+
+  function compileWithGate(condition?: string) {
+    const overlay = loadOverlayFixture();
+    if (condition) overlay.submission_gates = { [target.id]: condition };
+    return compile(model, overlay, { tenant: "power-scm" }).workflow.find(
+      (agent) => agent.id === target.id,
+    )!;
+  }
+
+  // Branches that fan out from one event share a trigger AND a rule, so a rule
+  // gate cannot tell them apart. Without a per-action gate all three
+  // mutually-exclusive plans executed off a single approval.
+  it("gates the whole action, ahead of everything else", () => {
+    const agent = compileWithGate("input.option_type == '执行调拨'");
+    const first = agent.actions[0]!;
+    expect(first.name).toBe(`submission-gate:${target.id}`);
+    expect(first.type).toBe("condition");
+    expect(first.condition).toBe("input.option_type == '执行调拨'");
+  });
+
+  // The runtime skips a step whose dependency was skipped, and that propagates,
+  // so what matters is that every later step REACHES the gate — not that each
+  // one names it directly.
+  it("makes every later step wait on it, so a false gate runs nothing", () => {
+    const agent = compileWithGate("input.option_type == '执行调拨'");
+    const gateKey = agent.actions[0]!.result_key!;
+    const producer = new Map(
+      agent.actions.map((step) => [step.result_key ?? step.name, step]),
+    );
+    const reachesGate = (step: CompiledStep, seen = new Set<string>()): boolean =>
+      (step.depends_on ?? []).some((dep) => {
+        if (dep === gateKey) return true;
+        if (seen.has(dep)) return false;
+        seen.add(dep);
+        const upstream = producer.get(dep);
+        return upstream ? reachesGate(upstream, seen) : false;
+      });
+
+    // Every step that WRITES or EMITS must reach the gate. `suppress-implicit-emit`
+    // deliberately does not: it is a no-op decision that suppresses an emit, so
+    // running it behind a closed gate changes nothing.
+    const acting = agent.actions.filter((step) =>
+      ["tool", "emit", "manual"].includes(step.type),
+    );
+    expect(acting.length).toBeGreaterThan(0);
+    for (const step of acting) {
+      expect(reachesGate(step)).toBe(true);
+    }
+  });
+
+  it("adds nothing when the overlay declares no gate", () => {
+    const agent = compileWithGate();
+    expect(agent.actions[0]!.name).not.toContain("submission-gate");
+  });
+
+  // Silently ignoring a gate is worse than not supporting one: the branch it
+  // was meant to stop runs, and the overlay still looks right.
+  it("refuses a gate that would never be compiled", () => {
+    const prompt = model.actions.find(
+      (action) => action.implementation?.kind === "prompt",
+    )!;
+    const overlay = loadOverlayFixture();
+    overlay.submission_gates = { [prompt.id]: "input.x == 'y'" };
+    expect(() => compile(model, overlay, { tenant: "power-scm" })).toThrow(
+      /only compiled for external actions/,
+    );
+    const unknown = loadOverlayFixture();
+    unknown.submission_gates = { "no-such-action": "input.x == 'y'" };
+    expect(() => compile(model, unknown, { tenant: "power-scm" })).toThrow(
+      /unknown action/,
+    );
   });
 });

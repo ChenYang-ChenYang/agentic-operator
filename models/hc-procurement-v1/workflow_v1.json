@@ -1635,10 +1635,21 @@
   {
     "actions": [
       {
+        "condition": "input.option_type == '压缩后续周期'",
+        "description": "提交判据（确定性判定）：领导选定「压缩后续周期」方案且计划员已确认执行时提交。。判假即整个动作不执行。",
+        "name": "submission-gate:compressDownstreamCycle",
+        "order": "1",
+        "result_key": "submission-gate-compressDownstreamCycle",
+        "type": "condition"
+      },
+      {
         "condition": "input.planner_confirmed_by",
+        "depends_on": [
+          "submission-gate-compressDownstreamCycle"
+        ],
         "description": "规则闸口（确定性判定）：未经计划员确认则不回写单据。判假即拦截后续人工/写入/发射步骤。",
         "name": "rule-gate:BR-OPT-05",
-        "order": "1",
+        "order": "2",
         "result_key": "rule-gate-BR-OPT-05",
         "type": "condition"
       },
@@ -1647,11 +1658,12 @@
           "metaerp.invoke"
         ],
         "depends_on": [
+          "submission-gate-compressDownstreamCycle",
           "rule-gate-BR-OPT-05"
         ],
         "description": "写回 Meta ERP：changePbp。",
         "name": "metaerp.invoke",
-        "order": "2",
+        "order": "3",
         "result_key": "compressDownstreamCycle",
         "tool_arguments": {
           "payload": {
@@ -1667,7 +1679,7 @@
         ],
         "description": "事件 CHAIN_PLAN_SCHEDULE_COMPRESSED 的发射条件。",
         "name": "emit-when:CHAIN_PLAN_SCHEDULE_COMPRESSED",
-        "order": "3",
+        "order": "4",
         "result_key": "emit-when-CHAIN_PLAN_SCHEDULE_COMPRESSED",
         "type": "condition"
       },
@@ -1680,7 +1692,7 @@
         "emit_event": "CHAIN_PLAN_SCHEDULE_COMPRESSED",
         "emit_payload_from": "lastResult",
         "name": "emit:CHAIN_PLAN_SCHEDULE_COMPRESSED",
-        "order": "4",
+        "order": "5",
         "result_key": "emit-CHAIN_PLAN_SCHEDULE_COMPRESSED",
         "type": "emit"
       },
@@ -1715,7 +1727,7 @@
         },
         "description": "规则拦截或条件未命中时抑制隐式 triggered_event[0] 发射（显式 emit 已记录则本步为空操作）。",
         "name": "suppress-implicit-emit",
-        "order": "5",
+        "order": "6",
         "result_key": "suppress-implicit-emit",
         "type": "decision"
       }
@@ -1821,10 +1833,21 @@
   {
     "actions": [
       {
+        "condition": "input.option_type == '调整需求日期'",
+        "description": "提交判据（确定性判定）：领导选定「调整需求日期」方案且计划员已确认执行时提交。。判假即整个动作不执行。",
+        "name": "submission-gate:adjustRequiredArrivalDate",
+        "order": "1",
+        "result_key": "submission-gate-adjustRequiredArrivalDate",
+        "type": "condition"
+      },
+      {
         "condition": "input.planner_confirmed_by",
+        "depends_on": [
+          "submission-gate-adjustRequiredArrivalDate"
+        ],
         "description": "规则闸口（确定性判定）：未经计划员确认则不回写单据。判假即拦截后续人工/写入/发射步骤。",
         "name": "rule-gate:BR-OPT-05",
-        "order": "1",
+        "order": "2",
         "result_key": "rule-gate-BR-OPT-05",
         "type": "condition"
       },
@@ -1833,11 +1856,12 @@
           "metaerp.invoke"
         ],
         "depends_on": [
+          "submission-gate-adjustRequiredArrivalDate",
           "rule-gate-BR-OPT-05"
         ],
         "description": "写回 Meta ERP：changePbpLine。",
         "name": "metaerp.invoke",
-        "order": "2",
+        "order": "3",
         "result_key": "adjustRequiredArrivalDate",
         "tool_arguments": {
           "payload": {
@@ -1853,7 +1877,7 @@
         ],
         "description": "事件 REQUIRED_ARRIVAL_DATE_ADJUSTED 的发射条件。",
         "name": "emit-when:REQUIRED_ARRIVAL_DATE_ADJUSTED",
-        "order": "3",
+        "order": "4",
         "result_key": "emit-when-REQUIRED_ARRIVAL_DATE_ADJUSTED",
         "type": "condition"
       },
@@ -1866,7 +1890,7 @@
         "emit_event": "REQUIRED_ARRIVAL_DATE_ADJUSTED",
         "emit_payload_from": "lastResult",
         "name": "emit:REQUIRED_ARRIVAL_DATE_ADJUSTED",
-        "order": "4",
+        "order": "5",
         "result_key": "emit-REQUIRED_ARRIVAL_DATE_ADJUSTED",
         "type": "emit"
       },
@@ -1901,7 +1925,7 @@
         },
         "description": "规则拦截或条件未命中时抑制隐式 triggered_event[0] 发射（显式 emit 已记录则本步为空操作）。",
         "name": "suppress-implicit-emit",
-        "order": "5",
+        "order": "6",
         "result_key": "suppress-implicit-emit",
         "type": "decision"
       }
@@ -2007,10 +2031,21 @@
   {
     "actions": [
       {
+        "condition": "input.option_type == '执行调拨'",
+        "description": "提交判据（确定性判定）：领导选定「执行调拨」方案且计划员已确认执行时提交。。判假即整个动作不执行。",
+        "name": "submission-gate:createStockTransferRequest",
+        "order": "1",
+        "result_key": "submission-gate-createStockTransferRequest",
+        "type": "condition"
+      },
+      {
         "condition": "input.planner_confirmed_by",
+        "depends_on": [
+          "submission-gate-createStockTransferRequest"
+        ],
         "description": "规则闸口（确定性判定）：未经计划员确认则不回写单据。判假即拦截后续人工/写入/发射步骤。",
         "name": "rule-gate:BR-OPT-05",
-        "order": "1",
+        "order": "2",
         "result_key": "rule-gate-BR-OPT-05",
         "type": "condition"
       },
@@ -2019,11 +2054,12 @@
           "metaerp.invoke"
         ],
         "depends_on": [
+          "submission-gate-createStockTransferRequest",
           "rule-gate-BR-OPT-05"
         ],
         "description": "写回 Meta ERP：createTransactionOrder。",
         "name": "metaerp.invoke",
-        "order": "2",
+        "order": "3",
         "result_key": "createStockTransferRequest",
         "tool_arguments": {
           "payload": {
@@ -2039,7 +2075,7 @@
         ],
         "description": "事件 STOCK_TRANSFER_REQUEST_CREATED 的发射条件。",
         "name": "emit-when:STOCK_TRANSFER_REQUEST_CREATED",
-        "order": "3",
+        "order": "4",
         "result_key": "emit-when-STOCK_TRANSFER_REQUEST_CREATED",
         "type": "condition"
       },
@@ -2052,7 +2088,7 @@
         "emit_event": "STOCK_TRANSFER_REQUEST_CREATED",
         "emit_payload_from": "lastResult",
         "name": "emit:STOCK_TRANSFER_REQUEST_CREATED",
-        "order": "4",
+        "order": "5",
         "result_key": "emit-STOCK_TRANSFER_REQUEST_CREATED",
         "type": "emit"
       },
@@ -2087,7 +2123,7 @@
         },
         "description": "规则拦截或条件未命中时抑制隐式 triggered_event[0] 发射（显式 emit 已记录则本步为空操作）。",
         "name": "suppress-implicit-emit",
-        "order": "5",
+        "order": "6",
         "result_key": "suppress-implicit-emit",
         "type": "decision"
       }

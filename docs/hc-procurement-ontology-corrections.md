@@ -372,3 +372,31 @@ R1-02 说「以需求到货日期为终点按配置的标准周期逐级倒排�
 
 **平台侧现状**：已在 `scripts/stage-hc-procurement-ontology.mjs` 的 `DROP_MANUAL_STEPS`
 中按上述方案投影。本体 JSON 修正后请删掉该条目——适配器会在条目失效时报错提醒。
+
+## C-09 三个互斥方案的落地动作会同时执行
+
+**现状**：`compressDownstreamCycle`（方案①）、`adjustRequiredArrivalDate`（方案②）、
+`createStockTransferRequest`（方案③）都 `trigger: [ADJUSTMENT_OPTION_APPROVED]`，
+`rule_bindings` 也都只绑 `BR-OPT-05`（计划员已确认）。领导只选一个方案，事件却一次
+触发三个 agent，三条互斥的落地动作全部写进了 ERP。
+
+**本体其实已经说清楚了**，只是写成了散文——每个动作的 `submission_criteria`：
+- compressDownstreamCycle：「领导选定**「压缩后续周期」**方案且计划员已确认执行时提交。」
+- adjustRequiredArrivalDate：「领导选定**「调整需求日期」**方案且计划员已确认执行时提交。」
+- createStockTransferRequest：「领导选定**「执行调拨」**方案且计划员已确认执行时提交。」
+
+`rule_bindings` 表达不了这件事：三个分支引用的是同一条规则，规则闸口按 rule_id 生成，
+无法区分它们。
+
+**建议修正**：给 `submission_criteria` 一个机器可判定的对应字段（或把判据下沉为每个
+动作独立的 rule）。
+
+**平台侧现状**：编译器新增 `submission_gates`（`overlays/hc-procurement.json`），把上面
+三句话编译成动作最前面的一个 condition 步骤，判假则整个动作不执行：
+
+    compressDownstreamCycle     input.option_type == '压缩后续周期'
+    adjustRequiredArrivalDate   input.option_type == '调整需求日期'
+    createStockTransferRequest  input.option_type == '执行调拨'
+
+编译器会拒绝指向不存在的动作、或指向非 external 动作的 `submission_gates` 条目——
+一个被静默忽略的闸口比不支持更糟：它该拦的分支照跑，而覆盖层看上去是对的。

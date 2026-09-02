@@ -723,6 +723,23 @@ function compileExternalAgent(ctx: CompileContext, action: StudioAction): {
   const steps: CompiledStep[] = [];
   const gateKeys: string[] = [];
 
+  // (a0) submission gate: does this action apply to this event at all? Branches
+  // that fan out from one event need this — they share a trigger and a rule, so
+  // nothing else distinguishes them, and without it every branch runs.
+  const submission = ctx.overlay.submission_gates?.[action.id];
+  if (submission) {
+    const submissionKey = identifierKey(`submission-gate-${action.id}`);
+    steps.push({
+      order: nextOrder(),
+      name: `submission-gate:${action.id}`,
+      description: `提交判据（确定性判定）：${action.submission_criteria ?? action.id}。判假即整个动作不执行。`,
+      type: "condition",
+      condition: submission,
+      result_key: submissionKey,
+    });
+    gateKeys.push(submissionKey);
+  }
+
   // (a) rule gates: mandatory precondition bindings, in binding order.
   const gateBindings = (action.rule_bindings ?? []).filter(
     (binding) => binding.phase === "precondition" && binding.enforcement === "mandatory",
@@ -942,6 +959,20 @@ export function compile(
   for (const actionId of Object.keys(overlay.compensation_events ?? {})) {
     if (!model.actions.some((action) => action.id === actionId)) {
       fail(`overlay compensation_events references unknown action ${actionId}`);
+    }
+  }
+
+  // A gate that is silently ignored is worse than one that is unsupported: the
+  // branch it was meant to stop would run, and the overlay would look correct.
+  for (const actionId of Object.keys(ctx.overlay.submission_gates ?? {})) {
+    const action = model.actions.find((candidate) => candidate.id === actionId);
+    if (!action) {
+      fail(`submission_gates names unknown action "${actionId}"`);
+    } else if (action!.implementation?.kind !== "external") {
+      fail(
+        `submission_gates["${actionId}"] targets a ${action!.implementation?.kind ?? "?"} action — ` +
+          `gates are only compiled for external actions, so this one would never run`,
+      );
     }
   }
 
