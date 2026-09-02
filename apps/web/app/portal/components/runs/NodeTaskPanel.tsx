@@ -14,11 +14,13 @@
  */
 "use client";
 
+import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useI18n } from "@/app/portal/lib/preferences-context";
 import { useTenant } from "@/app/portal/lib/use-tenant";
 import { useResolveTask, useTask } from "@/lib/hooks/useTasks";
 import { useRun } from "@/lib/hooks/useRuns";
+import { useMe } from "@/lib/hooks/useMe";
 import type { DagAgent } from "@/lib/hooks/useAgents";
 import { Badge, Button } from "@/app/portal/components";
 import { TaskFormFields } from "@/app/portal/components/tasks/TaskFormFields";
@@ -30,9 +32,13 @@ import {
   type TaskFormRawValue,
 } from "@/app/portal/components/tasks/task-form";
 import {
-  contextGroups,
+  actorDefaults,
+  contextInsights,
+  contextSummary,
+  decisionOptions,
   prefillFromContext,
-  type ContextGroup,
+  type ContextFact,
+  type DecisionOption,
 } from "./task-context";
 
 export function NodeTaskPanel({
@@ -76,14 +82,54 @@ export function NodeTaskPanel({
   // the deviation, the options. Both halves of this panel come from it: the
   // identifiers nobody could type, and the context nobody could decide without.
   const run = useRun(task.data?.runId ?? null);
+  const me = useMe();
   const sources = useMemo(
     () => [payload.preparedContext, run.data?.run?.inputPayload],
     [payload.preparedContext, run.data],
   );
-  const groups = useMemo(
-    () => contextGroups(run.data?.run?.inputPayload),
-    [run.data],
+  const fieldNames = useMemo(
+    () => definition.fields.map((field) => field.name),
+    [definition],
   );
+  const runPayload = run.data?.run?.inputPayload;
+  const summary = useMemo(() => contextSummary(runPayload), [runPayload]);
+  const insights = useMemo(() => contextInsights(runPayload), [runPayload]);
+  const options = useMemo(
+    () => decisionOptions(runPayload, fieldNames),
+    [runPayload, fieldNames],
+  );
+  // Nothing is preselected: an approval that arrives pre-answered is not one.
+  const [chosen, setChosen] = useState<string | null>(null);
+  useEffect(() => setChosen(null), [activeId]);
+
+  // Fields the chosen option already answers are not asked again.
+  const suppliedByOptions = useMemo(() => {
+    const names = new Set<string>();
+    for (const option of options) {
+      for (const name of Object.keys(option.values)) names.add(name);
+    }
+    return names;
+  }, [options]);
+  const remainingFields = useMemo(
+    () => ({
+      ...definition,
+      fields: definition.fields.filter(
+        (field) => !suppliedByOptions.has(field.name),
+      ),
+    }),
+    [definition, suppliedByOptions],
+  );
+
+  // One affirmative decision. Reject is gone from this surface on purpose: the
+  // ask was a single confirm, and declining is what Cancel does — it leaves the
+  // node waiting rather than recording a rejection nobody asked for.
+  const confirmDecision =
+    definition.decisions.find((option) => option.decision === "approve") ??
+    definition.decisions[0] ??
+    null;
+  // With options on the table, one has to be picked. With none, confirming is
+  // itself the whole decision.
+  const canConfirm = Boolean(confirmDecision) && (options.length === 0 || chosen !== null);
 
   const bodyRef = useRef<HTMLDivElement | null>(null);
   // The panel's own header is sticky, so a scrolled body still looks like the
@@ -97,22 +143,27 @@ export function NodeTaskPanel({
   // the schema defaults, never blanking a field the context has nothing for.
   useEffect(() => {
     const seeded = initialTaskFormValues(definition);
-    const filled = prefillFromContext(
-      definition.fields.map((field) => field.name),
-      sources,
-    );
+    const names = definition.fields.map((field) => field.name);
+    const filled = {
+      ...actorDefaults(names, me.data?.user?.name),
+      ...prefillFromContext(names, sources),
+    };
     for (const [name, value] of Object.entries(filled)) {
       if (name in seeded) seeded[name] = value;
     }
     setValues(seeded);
     setErrors({});
     setFailure(null);
-  }, [definition, activeId, sources]);
+  }, [definition, activeId, sources, me.data]);
 
   const submit = useCallback(
     (option: TaskDecisionOption) => {
       if (!activeId) return;
-      const built = buildTaskResolutionPayload(definition, values, option, t);
+      // The chosen option supplies the identifiers the downstream write needs,
+      // so the approver picks a plan rather than transcribing codes.
+      const picked = options.find((candidate) => candidate.key === chosen);
+      const merged = { ...values, ...(picked?.values ?? {}) };
+      const built = buildTaskResolutionPayload(definition, merged, option, t);
       if (!built.ok) {
         setErrors(built.errors);
         return;
@@ -127,7 +178,7 @@ export function NodeTaskPanel({
         },
       );
     },
-    [activeId, definition, resolveTask, t, values],
+    [activeId, chosen, definition, options, resolveTask, t, values],
   );
 
   if (taskIds.length === 0) return null;
@@ -221,10 +272,53 @@ export function NodeTaskPanel({
               {task.data.title}
             </div>
 
-            {groups.length > 0 && <ContextCards groups={groups} copy={copy} />}
+            {summary.length > 0 && (
+              <FactStrip title={copy("采购概况", "Context")} facts={summary} />
+            )}
 
+            {insights.length > 0 && (
+              <section>
+                <SectionTitle>{copy("判断依据", "What the agents found")}</SectionTitle>
+                <div style={{ display: "grid", gap: 6 }}>
+                  {insights.map((fact) => (
+                    <p
+                      key={fact.key}
+                      style={{
+                        margin: 0,
+                        fontSize: 12,
+                        lineHeight: 1.75,
+                        color: "var(--text-2)",
+                      }}
+                    >
+                      {fact.value}
+                    </p>
+                  ))}
+                </div>
+              </section>
+            )}
+
+            {options.length > 0 && (
+              <section>
+                <SectionTitle>
+                  {copy("请选择一个方案", "Choose one")}
+                </SectionTitle>
+                <div style={{ display: "grid", gap: 8 }}>
+                  {options.map((option) => (
+                    <OptionChoice
+                      key={option.key}
+                      option={option}
+                      checked={chosen === option.key}
+                      disabled={resolveTask.isPending}
+                      onChoose={() => setChosen(option.key)}
+                    />
+                  ))}
+                </div>
+              </section>
+            )}
+
+            {/* Whatever the schema still wants that the options do not supply. */}
             <TaskFormFields
-              definition={definition}
+              definition={remainingFields}
               values={values}
               errors={errors}
               disabled={resolveTask.isPending}
@@ -253,17 +347,25 @@ export function NodeTaskPanel({
                 zIndex: "var(--z-overlay)",
               }}
             >
-              {definition.decisions.map((option) => (
-                <Button
-                  key={option.decision}
-                  small
-                  tone={option.decision === "approve" ? "primary" : "ghost"}
-                  disabled={resolveTask.isPending}
-                  onClick={() => submit(option)}
-                >
-                  {option.label}
-                </Button>
-              ))}
+              <Button
+                small
+                tone="primary"
+                disabled={resolveTask.isPending || !canConfirm}
+                title={
+                  canConfirm
+                    ? undefined
+                    : copy("请先选择一个方案", "Choose an option first")
+                }
+                onClick={() => confirmDecision && submit(confirmDecision)}
+              >
+                {copy("确认", "Confirm")}
+              </Button>
+              <Button small tone="ghost" onClick={onClose}>
+                {copy("取消", "Cancel")}
+              </Button>
+              <span style={{ fontSize: 11, color: "var(--text-3)", alignSelf: "center" }}>
+                {copy("取消＝暂不决策，节点仍等待人工", "Cancel leaves the node waiting")}
+              </span>
               <a
                 href={`/portal/${encodeURIComponent(tenant)}/tasks`}
                 style={{
@@ -283,129 +385,122 @@ export function NodeTaskPanel({
   );
 }
 
-/**
- * The business context behind the decision, laid out as cards.
- *
- * Records carrying a field the form is asking for come first and open by
- * default — on a procurement deviation that is the alert, the deviation record
- * and the options, which is precisely what "approve or reject?" turns on. The
- * remainder stays collapsed rather than being hidden: it is evidence, and an
- * approver should be able to reach it without leaving the panel.
- */
-function ContextCards({
-  groups,
-  copy,
-}: {
-  groups: ContextGroup[];
-  copy: (zh: string, en: string) => string;
-}) {
-  const relevant = groups.filter((group) => group.relevant);
-  const rest = groups.filter((group) => !group.relevant);
+function SectionTitle({ children }: { children: ReactNode }) {
   return (
-    <div style={{ display: "grid", gap: 10 }}>
-      <div
-        style={{
-          display: "grid",
-          gap: 10,
-          gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))",
-        }}
-      >
-        {relevant.map((group) => (
-          <ContextCard key={group.key} group={group} />
-        ))}
-      </div>
-      {rest.length > 0 && (
-        <details>
-          <summary
-            style={{
-              fontSize: 11.5,
-              color: "var(--text-3)",
-              cursor: "pointer",
-            }}
-          >
-            {copy(
-              `其余上下文 · ${rest.length} 项`,
-              `More context · ${rest.length}`,
-            )}
-          </summary>
-          <div
-            style={{
-              display: "grid",
-              gap: 10,
-              gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))",
-              marginTop: 8,
-            }}
-          >
-            {rest.map((group) => (
-              <ContextCard key={group.key} group={group} />
-            ))}
-          </div>
-        </details>
-      )}
+    <div
+      style={{
+        fontSize: 11,
+        fontWeight: 600,
+        color: "var(--text-3)",
+        letterSpacing: "0.04em",
+        marginBottom: 6,
+      }}
+    >
+      {children}
     </div>
   );
 }
 
-function ContextCard({ group }: { group: ContextGroup }) {
-  // An alternative is something to pick, not background to read past.
-  const accent = group.alternatives ? "var(--border-3)" : "var(--border)";
+/** The few facts that place the decision, as one scannable strip. */
+function FactStrip({ title, facts }: { title: string; facts: ContextFact[] }) {
   return (
-    <div
-      style={{
-        border: `1px solid ${accent}`,
-        borderRadius: "var(--r-sm)",
-        background: group.alternatives ? "var(--panel-2)" : "var(--panel-3)",
-        padding: "8px 10px",
-        minWidth: 0,
-        // One long explanation was growing a card past the whole panel; let it
-        // scroll inside its own box instead of pushing the decision off-screen.
-        maxHeight: 190,
-        overflow: "auto",
-      }}
-    >
-      {group.title && (
-        <div
-          className="mono"
-          style={{
-            fontSize: 10.5,
-            color: "var(--text-3)",
-            marginBottom: 6,
-            overflowWrap: "anywhere",
-          }}
-        >
-          {group.title}
-        </div>
-      )}
-      <dl style={{ margin: 0, display: "grid", gap: 4 }}>
-        {group.facts.map((fact) => (
-          <div
-            key={fact.key}
-            style={{
-              display: "grid",
-              gridTemplateColumns: "minmax(0, 8em) minmax(0, 1fr)",
-              gap: 8,
-              fontSize: 11.5,
-              lineHeight: 1.5,
-            }}
-          >
-            <dt
+    <section>
+      <SectionTitle>{title}</SectionTitle>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))",
+          gap: "6px 14px",
+        }}
+      >
+        {facts.map((fact) => (
+          <div key={fact.key} style={{ minWidth: 0 }}>
+            <div
               className="mono"
-              style={{ color: "var(--text-3)", overflowWrap: "anywhere" }}
+              style={{ fontSize: 10, color: "var(--text-4)" }}
             >
               {fact.key}
-            </dt>
-            <dd
+            </div>
+            <div
               style={{
-                margin: 0,
+                fontSize: 12.5,
                 color: "var(--text)",
                 overflowWrap: "anywhere",
               }}
             >
               {fact.value}
-            </dd>
+            </div>
           </div>
         ))}
-      </dl>
-    </div>
+      </div>
+    </section>
+  );
+}
+
+/** One option, as a radio the whole card selects. */
+function OptionChoice({
+  option,
+  checked,
+  disabled,
+  onChoose,
+}: {
+  option: DecisionOption;
+  checked: boolean;
+  disabled: boolean;
+  onChoose: () => void;
+}) {
+  return (
+    <label
+      style={{
+        display: "flex",
+        gap: 10,
+        alignItems: "flex-start",
+        padding: "10px 12px",
+        borderRadius: "var(--r-sm)",
+        cursor: disabled ? "default" : "pointer",
+        background: checked ? "var(--panel-3)" : "transparent",
+        border: `1px solid ${checked ? "var(--signal)" : "var(--border)"}`,
+      }}
+    >
+      <input
+        type="radio"
+        name="decision-option"
+        checked={checked}
+        disabled={disabled}
+        onChange={onChoose}
+        style={{ marginTop: 3 }}
+      />
+      <span style={{ minWidth: 0 }}>
+        <span
+          style={{
+            display: "block",
+            fontSize: 13,
+            fontWeight: 600,
+            color: "var(--text)",
+          }}
+        >
+          {option.title}
+        </span>
+        <span
+          style={{
+            display: "flex",
+            flexWrap: "wrap",
+            gap: "2px 12px",
+            marginTop: 3,
+            fontSize: 11.5,
+            color: "var(--text-3)",
+          }}
+        >
+          {option.facts.map((fact) => (
+            <span key={fact.key} style={{ overflowWrap: "anywhere" }}>
+              <span className="mono" style={{ color: "var(--text-4)" }}>
+                {fact.key}
+              </span>{" "}
+              {fact.value}
+            </span>
+          ))}
+        </span>
+      </span>
+    </label>
   );
 }

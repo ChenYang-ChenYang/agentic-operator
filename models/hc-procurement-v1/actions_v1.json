@@ -1517,13 +1517,6 @@
   {
     "action_steps": [
       {
-        "description": "领导对比三个方案的构成、时效与到货影响。",
-        "id": "s1",
-        "name": "reviewOptions",
-        "object_type": "manual",
-        "order": "1"
-      },
-      {
         "description": "校验决策人角色与预警等级匹配(BR-OPT-04)。",
         "id": "s2",
         "name": "checkDecisionRole",
@@ -1536,13 +1529,6 @@
         "name": "selectOption",
         "object_type": "manual",
         "order": "3"
-      },
-      {
-        "description": "选定方案属高危动作（暂停申请、整单调剂）时，由部门领导强制人工确认(BR-OPT-06)。",
-        "id": "s4",
-        "name": "confirmHighRisk",
-        "object_type": "manual",
-        "order": "4"
       },
       {
         "description": "计划员确认执行，系统方可回写业务单据(BR-OPT-05)。",

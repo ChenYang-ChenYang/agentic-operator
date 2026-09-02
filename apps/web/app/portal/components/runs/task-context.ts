@@ -261,3 +261,150 @@ export function contextGroups(payload: unknown): ContextGroup[] {
       .map((group) => (group.relevant ? { ...group, relevant: false } : group)),
   ];
 }
+
+// ─── The three things an approver actually needs ─────────────────────────────
+//
+// The panel used to show every record in the payload as its own card. That is
+// the whole scan — fourteen stage rows, seven planned dates, the thresholds —
+// and none of it answers the only question being asked: which option, and why.
+// So split the payload three ways instead: a short summary, the reasoning the
+// agents already wrote down, and the options themselves.
+
+/** Below this, a value is a label however it is punctuated. */
+const INSIGHT_MIN_LENGTH = 12;
+/** Long enough to be prose on length alone, whatever the script. */
+const INSIGHT_LONG_LENGTH = 24;
+/** Identifier-shaped text is never prose, however long it runs. */
+const IDENTIFIER_LIKE = /^[A-Za-z0-9_.:/-]+$/;
+/** Sentence punctuation, Chinese and Latin alike. */
+const SENTENCE_MARK = /[，。；：！？,;:!?]|\s/;
+/** Facts in the summary strip, beyond which it stops being a summary. */
+const MAX_SUMMARY_FACTS = 8;
+/** Paragraphs an approver will actually read before deciding. */
+const MAX_INSIGHTS = 4;
+
+/**
+ * Prose reads; a label scans.
+ *
+ * Length alone gets this wrong across scripts: 「定标节点未启动，链路在定标环节
+ * 停滞。」is a complete explanation in eighteen characters, while "in progress"
+ * is eleven and is a status. So ask for sentence punctuation as well, and let
+ * sheer length carry anything that has neither.
+ */
+function isProse(value: string): boolean {
+  if (IDENTIFIER_LIKE.test(value)) return false;
+  if (value.length >= INSIGHT_LONG_LENGTH) return true;
+  return value.length >= INSIGHT_MIN_LENGTH && SENTENCE_MARK.test(value);
+}
+
+/**
+ * The handful of facts that place the decision: which chain, which stage, how
+ * late, how severe. Short values only, deduped by key, first occurrence wins —
+ * the same id repeats across most records and is worth showing once.
+ */
+export function contextSummary(payload: unknown): ContextFact[] {
+  const seen = new Set<string>();
+  const facts: ContextFact[] = [];
+  for (const group of contextGroups(payload)) {
+    // Options carry their own facts on their own cards.
+    if (group.alternatives) continue;
+    for (const fact of group.facts) {
+      if (seen.has(fact.key) || isProse(fact.value)) continue;
+      seen.add(fact.key);
+      facts.push(fact);
+      if (facts.length === MAX_SUMMARY_FACTS) return facts;
+    }
+  }
+  return facts;
+}
+
+/**
+ * The reasoning already in the payload — why the deviation happened, what the
+ * probability model concluded, what is blocking. These are the agents' own
+ * explanations; the panel surfaces them rather than inventing an analysis of
+ * its own, because a second opinion generated from the same data would add
+ * confidence without adding information.
+ */
+export function contextInsights(payload: unknown): ContextFact[] {
+  const seen = new Set<string>();
+  const insights: ContextFact[] = [];
+  for (const group of contextGroups(payload)) {
+    if (group.alternatives) continue;
+    for (const fact of group.facts) {
+      if (seen.has(fact.key) || !isProse(fact.value)) continue;
+      seen.add(fact.key);
+      insights.push(fact);
+      if (insights.length === MAX_INSIGHTS) return insights;
+    }
+  }
+  return insights;
+}
+
+export interface DecisionOption {
+  /** Stable React key. */
+  key: string;
+  /** What this option is, in the payload's own words. */
+  title: string;
+  /** The rest of the option, as scannable facts. */
+  facts: ContextFact[];
+  /** Form values to apply when this option is chosen. */
+  values: Record<string, string>;
+}
+
+/**
+ * The alternatives, as something to pick from.
+ *
+ * `values` is the intersection of the option's own scalars with the fields the
+ * form asks for — so choosing an option fills in `option_id`, `option_type` and
+ * anything else it carries, and the approver never types an identifier.
+ */
+export function decisionOptions(
+  payload: unknown,
+  fieldNames: readonly string[] = [],
+): DecisionOption[] {
+  const wanted = new Set(fieldNames);
+  const options: DecisionOption[] = [];
+  for (const group of contextGroups(payload)) {
+    if (!group.alternatives) continue;
+    const values: Record<string, string> = {};
+    for (const fact of group.facts) {
+      if (wanted.has(fact.key)) values[fact.key] = fact.value;
+    }
+    // The most label-like fact names the option: a short, non-identifier value
+    // the reader can tell apart at a glance.
+    const label = group.facts.find(
+      (fact) => !IDENTIFIER_LIKE.test(fact.value) && fact.value.length <= 20,
+    );
+    options.push({
+      key: group.key,
+      title: label?.value ?? group.title,
+      facts: group.facts.filter((fact) => fact.key !== label?.key),
+      values,
+    });
+  }
+  return options;
+}
+
+/** Field names that record WHO acted, rather than what was decided. */
+const ACTOR_FIELD = /(^|_)(by|confirmed_by|approved_by|decided_by|operator|owner)$/;
+
+/**
+ * Fill the "who did this" fields with the person actually doing it.
+ *
+ * `decided_by`, `planner_confirmed_by`, `high_risk_confirmed_by` — the payload
+ * cannot supply these, and asking an approver to type their own name invites
+ * a typo at best and someone else's name at worst. The signed-in user is both
+ * easier and more truthful.
+ */
+export function actorDefaults(
+  fieldNames: readonly string[],
+  actor: string | null | undefined,
+): Record<string, string> {
+  const name = (actor ?? "").trim();
+  if (!name) return {};
+  const filled: Record<string, string> = {};
+  for (const field of fieldNames) {
+    if (ACTOR_FIELD.test(field)) filled[field] = name;
+  }
+  return filled;
+}

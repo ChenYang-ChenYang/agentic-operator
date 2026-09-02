@@ -193,27 +193,6 @@
       }
     },
     "approveAdjustmentOption": {
-      "reviewOptions": {
-        "task_type": "adjustment.review",
-        "awaiting_role": "部门领导",
-        "form_schema": {
-          "type": "object",
-          "title": "调整方案 · 对比三个方案与到货影响推演",
-          "properties": {
-            "reviewed": {
-              "type": "boolean",
-              "title": "已对比三个方案的构成、时效与到货影响天数"
-            },
-            "focus": {
-              "type": "string",
-              "title": "关注点（可选）"
-            }
-          },
-          "required": [
-            "reviewed"
-          ]
-        }
-      },
       "selectOption": {
         "task_type": "adjustment.select",
         "awaiting_role": "部门领导",
@@ -249,6 +228,14 @@
             "comment": {
               "type": "string",
               "title": "决策意见"
+            },
+            "is_high_risk": {
+              "type": "boolean",
+              "title": "所选方案是否属于高危动作（随方案带入）"
+            },
+            "high_risk_confirmed_by": {
+              "type": "string",
+              "title": "高危确认人（BR-OPT-06，取当前登录人）"
             }
           },
           "required": [
@@ -256,28 +243,8 @@
             "option_type",
             "decision_role",
             "decided_by"
-          ]
-        }
-      },
-      "confirmHighRisk": {
-        "task_type": "adjustment.confirm-high-risk",
-        "awaiting_role": "部门领导",
-        "form_schema": {
-          "type": "object",
-          "title": "高危动作强制确认（BR-OPT-06）",
-          "properties": {
-            "is_high_risk": {
-              "type": "boolean",
-              "title": "选定方案是否属于高危动作（暂停申请、整单调剂）"
-            },
-            "high_risk_confirmed_by": {
-              "type": "string",
-              "title": "高危确认人（部门领导；非高危可留空）"
-            }
-          },
-          "required": [
-            "is_high_risk"
-          ]
+          ],
+          "description": "选定一个方案即可；方案编号、类型、是否高危均随所选方案带入，决策人取当前登录人，都不需要手工填写（BR-OPT-04 决策角色须与预警等级匹配，BR-OPT-06 高危动作的确认人随本次选择一并留痕）。"
         }
       },
       "plannerConfirm": {

@@ -1211,37 +1211,9 @@
     "actions": [
       {
         "awaiting_role": "部门领导",
-        "description": "领导对比三个方案的构成、时效与到货影响。",
-        "form_schema": {
-          "properties": {
-            "focus": {
-              "title": "关注点（可选）",
-              "type": "string"
-            },
-            "reviewed": {
-              "title": "已对比三个方案的构成、时效与到货影响天数",
-              "type": "boolean"
-            }
-          },
-          "required": [
-            "reviewed"
-          ],
-          "title": "调整方案 · 对比三个方案与到货影响推演",
-          "type": "object"
-        },
-        "name": "reviewOptions",
-        "order": "1",
-        "result_key": "manual-1",
-        "task_type": "adjustment.review",
-        "type": "manual"
-      },
-      {
-        "awaiting_role": "部门领导",
-        "depends_on": [
-          "manual-1"
-        ],
         "description": "领导拍板选定一个方案，其余置为未采纳。",
         "form_schema": {
+          "description": "选定一个方案即可；方案编号、类型、是否高危均随所选方案带入，决策人取当前登录人，都不需要手工填写（BR-OPT-04 决策角色须与预警等级匹配，BR-OPT-06 高危动作的确认人随本次选择一并留痕）。",
           "properties": {
             "comment": {
               "title": "决策意见",
@@ -1258,6 +1230,14 @@
               ],
               "title": "决策角色（须与预警等级匹配，BR-OPT-04）",
               "type": "string"
+            },
+            "high_risk_confirmed_by": {
+              "title": "高危确认人（BR-OPT-06，取当前登录人）",
+              "type": "string"
+            },
+            "is_high_risk": {
+              "title": "所选方案是否属于高危动作（随方案带入）",
+              "type": "boolean"
             },
             "option_id": {
               "title": "选定方案编号",
@@ -1283,47 +1263,15 @@
           "type": "object"
         },
         "name": "selectOption",
-        "order": "2",
+        "order": "1",
         "result_key": "manual-3",
         "task_type": "adjustment.select",
         "type": "manual"
       },
       {
-        "awaiting_role": "部门领导",
-        "depends_on": [
-          "manual-1",
-          "manual-3"
-        ],
-        "description": "选定方案属高危动作（暂停申请、整单调剂）时，由部门领导强制人工确认(BR-OPT-06)。",
-        "form_schema": {
-          "properties": {
-            "high_risk_confirmed_by": {
-              "title": "高危确认人（部门领导；非高危可留空）",
-              "type": "string"
-            },
-            "is_high_risk": {
-              "title": "选定方案是否属于高危动作（暂停申请、整单调剂）",
-              "type": "boolean"
-            }
-          },
-          "required": [
-            "is_high_risk"
-          ],
-          "title": "高危动作强制确认（BR-OPT-06）",
-          "type": "object"
-        },
-        "name": "confirmHighRisk",
-        "order": "3",
-        "result_key": "manual-4",
-        "task_type": "adjustment.confirm-high-risk",
-        "type": "manual"
-      },
-      {
         "awaiting_role": "计划员",
         "depends_on": [
-          "manual-1",
-          "manual-3",
-          "manual-4"
+          "manual-3"
         ],
         "description": "计划员确认执行，系统方可回写业务单据(BR-OPT-05)。",
         "form_schema": {
@@ -1379,7 +1327,7 @@
           "type": "object"
         },
         "name": "plannerConfirm",
-        "order": "4",
+        "order": "2",
         "result_key": "manual-5",
         "task_type": "adjustment.planner-confirm",
         "type": "manual"
@@ -1389,14 +1337,12 @@
           "metaerp.invoke"
         ],
         "depends_on": [
-          "manual-1",
           "manual-3",
-          "manual-4",
           "manual-5"
         ],
         "description": "写回 Meta ERP：approveAdjustmentOption。",
         "name": "metaerp.invoke",
-        "order": "5",
+        "order": "3",
         "result_key": "approveAdjustmentOption",
         "tool_arguments": {
           "payload": {
@@ -1412,7 +1358,7 @@
         ],
         "description": "事件 ADJUSTMENT_OPTION_APPROVED 的发射条件。",
         "name": "emit-when:ADJUSTMENT_OPTION_APPROVED",
-        "order": "6",
+        "order": "4",
         "result_key": "emit-when-ADJUSTMENT_OPTION_APPROVED",
         "type": "condition"
       },
@@ -1425,7 +1371,7 @@
         "emit_event": "ADJUSTMENT_OPTION_APPROVED",
         "emit_payload_from": "lastResult.decision_context",
         "name": "emit:ADJUSTMENT_OPTION_APPROVED",
-        "order": "7",
+        "order": "5",
         "result_key": "emit-ADJUSTMENT_OPTION_APPROVED",
         "type": "emit"
       },
@@ -1460,7 +1406,7 @@
         },
         "description": "规则拦截或条件未命中时抑制隐式 triggered_event[0] 发射（显式 emit 已记录则本步为空操作）。",
         "name": "suppress-implicit-emit",
-        "order": "8",
+        "order": "6",
         "result_key": "suppress-implicit-emit",
         "type": "decision"
       }

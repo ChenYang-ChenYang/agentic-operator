@@ -350,3 +350,25 @@ R1-02 说「以需求到货日期为终点按配置的标准周期逐级倒排�
      `actual_finish_date=<scan_date>`、`time_deviation_days≈+5`、`has_deviation=true`
    - 链路 `PBP-2026-0914`：`time_deviation_days<0`、`schedule_deviation_ratio=0.4`、
      **`has_deviation=false`**（C-01 生效后不再误报）
+
+## C-08 `approveAdjustmentOption` 让同一个人连点三次才做完一个决策
+
+**现状**：`action_steps` 里 `reviewOptions`（order 1）、`selectOption`（order 3）、
+`confirmHighRisk`（order 4）三个 manual 步骤的 actor 都是同一个 **部门领导**，中间只隔着
+一个 logic 步。运行时把它们编译成三个先后排队的人工任务，领导要点三次「批准」，
+才轮到 `plannerConfirm`（order 5，**计划员**，另一个角色）。
+
+**问题**：三步里只有 `selectOption` 承载信息。
+- `reviewOptions` 只记录「我看过三个方案了」——选中其中一个本身就证明了这件事；
+- `confirmHighRisk` 追问「你刚选的方案是不是高危动作」，而方案对象自己就带
+  `is_high_risk` 字段，答案在数据里，不在人脑里。
+
+**建议修正**：把 order 1 与 order 4 并入 `selectOption`——领导在一屏里看完摘要、判断
+依据和三个方案，选一个，确认。BR-OPT-06 要的「高危动作有人确认」依然留痕：
+`is_high_risk` 随所选方案带入，`high_risk_confirmed_by` 记为做出这次选择的登录人。
+
+**未合并的部分**：`plannerConfirm` 是 **计划员** 的确认（BR-OPT-05），和部门领导是两个
+角色。一次点击同时代两个角色签字，是伪造审批，不是简化——这一步保持独立。
+
+**平台侧现状**：已在 `scripts/stage-hc-procurement-ontology.mjs` 的 `DROP_MANUAL_STEPS`
+中按上述方案投影。本体 JSON 修正后请删掉该条目——适配器会在条目失效时报错提醒。

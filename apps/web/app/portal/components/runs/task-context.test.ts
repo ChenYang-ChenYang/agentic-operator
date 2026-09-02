@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  actorDefaults,
   contextGroups,
+  contextInsights,
+  contextSummary,
+  decisionOptions,
   formatContextValue,
   prefillFromContext,
 } from "./task-context";
@@ -212,5 +216,90 @@ describe("formatContextValue", () => {
     const rendered = formatContextValue("x".repeat(900)) ?? "";
     expect(rendered.length).toBeLessThan(420);
     expect(rendered.endsWith("…")).toBe(true);
+  });
+});
+
+describe("the three things an approver needs", () => {
+  const rich = {
+    ...payload,
+    probability_assessment: [
+      {
+        chain_id: "CHAIN-PBPL-2026-0873-01",
+        on_time_probability: 0.18,
+        probability_grade: "红色",
+        explanation:
+          "定标停滞已 5 天，剩余标准周期不足以覆盖到货前的合同与订单环节，按期概率显著偏低。",
+      },
+    ],
+  };
+
+  // The panel used to show every record as its own card — the whole scan. None
+  // of it answered the only question being asked: which option, and why.
+  it("summarises in facts a person can scan, not in paragraphs", () => {
+    const summary = contextSummary(rich);
+    expect(summary.length).toBeLessThanOrEqual(8);
+    const keys = summary.map((fact) => fact.key);
+    expect(keys).toContain("stage_node");
+    expect(keys).toContain("time_deviation_days");
+    // The explanations belong in the insight section, not the fact strip.
+    expect(keys).not.toContain("explanation");
+    expect(keys).not.toContain("cause_explanation");
+  });
+
+  it("shows each fact once, however many records repeat it", () => {
+    const keys = contextSummary(rich).map((fact) => fact.key);
+    expect(new Set(keys).size).toBe(keys.length);
+  });
+
+  it("surfaces the reasoning the agents already wrote", () => {
+    const insights = contextInsights(rich);
+    const keys = insights.map((fact) => fact.key);
+    expect(keys).toContain("cause_explanation");
+    expect(keys).toContain("explanation");
+    expect(insights.length).toBeLessThanOrEqual(4);
+    // An id is never prose, however long it runs.
+    expect(keys).not.toContain("chain_id");
+  });
+
+  it("offers the alternatives as something to pick, with values attached", () => {
+    const options = decisionOptions(rich, ["option_id", "option_type"]);
+    expect(options).toHaveLength(2);
+    // Named by the readable fact, not by the identifier.
+    expect(options[0]!.title).toBe("压缩后续周期");
+    expect(options[1]!.title).toBe("执行调拨");
+    // Choosing fills the form, so nobody types an identifier.
+    expect(options[0]!.values).toEqual({
+      option_id: "OPT-A",
+      option_type: "压缩后续周期",
+    });
+    // The naming fact is not repeated in the body.
+    expect(options[0]!.facts.map((f) => f.key)).not.toContain("option_type");
+  });
+
+  it("offers nothing to pick when the payload holds no alternatives", () => {
+    expect(decisionOptions({ alert_context: { alert_id: "A" } }, ["alert_id"])).toEqual([]);
+    expect(decisionOptions(null)).toEqual([]);
+  });
+});
+
+describe("actorDefaults", () => {
+  // Asking an approver to type their own name invites a typo at best and
+  // someone else's name at worst.
+  it("signs the who-did-this fields with the person doing it", () => {
+    expect(
+      actorDefaults(
+        ["decided_by", "planner_confirmed_by", "high_risk_confirmed_by", "option_id", "remark"],
+        "张三",
+      ),
+    ).toEqual({
+      decided_by: "张三",
+      planner_confirmed_by: "张三",
+      high_risk_confirmed_by: "张三",
+    });
+  });
+
+  it("signs nothing when there is nobody to sign as", () => {
+    expect(actorDefaults(["decided_by"], null)).toEqual({});
+    expect(actorDefaults(["decided_by"], "   ")).toEqual({});
   });
 });

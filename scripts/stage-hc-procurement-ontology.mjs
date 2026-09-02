@@ -603,8 +603,20 @@ const catalogPath = (operation) => `${CATALOG_BASE}/${operation}`;
  *   `approveAdjustmentOption.plannerConfirm` already satisfies once, upstream
  *   and by name. Re-asking the same planner for the same confirmation in each
  *   execution branch is the same approval collected four times.
+ *
+ * C-08 `approveAdjustmentOption.reviewOptions` and `.confirmHighRisk` ask the
+ *   SAME 部门领导, in the same sitting, either side of the one question that
+ *   carries information — which option. `reviewOptions` records only that the
+ *   options were looked at, which choosing one already demonstrates.
+ *   `confirmHighRisk` re-asks whether the option just chosen is high-risk, and
+ *   the option itself carries `is_high_risk`; the confirmation BR-OPT-06 wants
+ *   is recorded from the selection and the person who made it, rather than
+ *   asked again one screen later. Three clicks for one decision is what this
+ *   removes — the 计划员's separate BR-OPT-05 confirmation is a different role
+ *   and deliberately stays.
  */
 const DROP_MANUAL_STEPS = {
+  approveAdjustmentOption: ["reviewOptions", "confirmHighRisk"],
   closeDeviationHandling: ["collectVerification"],
   compressDownstreamCycle: ["confirmByPlanner"],
   adjustRequiredArrivalDate: ["confirmByPlanner"],
