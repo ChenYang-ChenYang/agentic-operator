@@ -512,3 +512,64 @@ describe("workflowLiveReducer · a task that dies with its run", () => {
     expect(state.agents.blue?.state).toBe("waiting_human");
   });
 });
+
+describe("workflowLiveReducer · one chain at a time", () => {
+  const started = (runId: string, agentName: string, subject: string, at: number) =>
+    ({
+      type: "run.started" as const,
+      tenantId: "t",
+      at,
+      runId,
+      agentName,
+      triggerEvent: null,
+      subject,
+      correlationId: "cor-1",
+    });
+
+  // A chain that finished a minute ago is still inside the freshness window, so
+  // the canvas showed it in full colour while a NEW run was only just starting.
+  // Indistinguishable from the new run racing through — human gate and all.
+  it("names the chain being watched from the newest run", () => {
+    let state = initialWorkflowLiveState();
+    state = workflowLiveReducer(state, {
+      kind: "stream",
+      event: started("run-1", "collect", "SCAN-OLD", 1),
+    });
+    expect(state.latestSubject).toBe("SCAN-OLD");
+    state = workflowLiveReducer(state, {
+      kind: "stream",
+      event: started("run-2", "collect", "SCAN-NEW", 2),
+    });
+    expect(state.latestSubject).toBe("SCAN-NEW");
+  });
+
+  it("remembers which chain each agent last belonged to", () => {
+    let state = initialWorkflowLiveState();
+    state = workflowLiveReducer(state, {
+      kind: "stream",
+      event: started("run-1", "approve", "SCAN-OLD", 1),
+    });
+    state = workflowLiveReducer(state, {
+      kind: "stream",
+      event: started("run-2", "collect", "SCAN-NEW", 2),
+    });
+    // The approval node still carries the old chain — which is exactly what
+    // lets the view stop colouring it as part of the new one.
+    expect(state.agents.approve?.lastSubject).toBe("SCAN-OLD");
+    expect(state.agents.collect?.lastSubject).toBe("SCAN-NEW");
+  });
+
+  it("leaves the subject alone when a run carries none", () => {
+    let state = initialWorkflowLiveState();
+    state = workflowLiveReducer(state, {
+      kind: "stream",
+      event: started("run-1", "collect", "SCAN-OLD", 1),
+    });
+    state = workflowLiveReducer(state, {
+      kind: "stream",
+      event: { ...started("run-2", "score", "", 2), subject: null },
+    });
+    expect(state.latestSubject).toBe("SCAN-OLD");
+    expect(state.agents.score?.lastSubject).toBeNull();
+  });
+});

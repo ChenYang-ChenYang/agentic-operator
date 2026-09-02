@@ -112,6 +112,28 @@ export function LiveWorkflowView() {
   const agents = useMemo(() => dag.data?.agents ?? [], [dag.data]);
   const edges = useMemo(() => dag.data?.edges ?? [], [dag.data]);
 
+  // Which chain the canvas is showing. Every agent in a chain shares a subject,
+  // and without this the graph aggregates every run per agent: a chain that
+  // finished a minute ago is still coloured, so a freshly-started run looks
+  // like it raced through — human gate and all — when in truth those greens
+  // belong to the previous subject.
+  const [scoped, setScoped] = useState(true);
+  const subject = scoped ? live.latestSubject : null;
+  const inScope = useCallback(
+    (name: string) => {
+      if (!subject) return true;
+      const state = live.agents[name];
+      return state?.lastSubject == null || state.lastSubject === subject;
+    },
+    [subject, live.agents],
+  );
+
+  /** The agent's state, or nothing when it belongs to another chain. */
+  const stateOf = useCallback(
+    (name: string) => (inScope(name) ? live.agents[name] : undefined),
+    [inScope, live.agents],
+  );
+
   // Freshness is a function of elapsed time, so it needs a clock. It ticks only
   // while a node can still decay, so an idle canvas costs nothing.
   const [now, setNow] = useState(() => Date.now());
@@ -145,8 +167,15 @@ export function LiveWorkflowView() {
   }, [agents]);
 
   const counts = useMemo(
-    () => countStates(agents, live.agents, now),
-    [agents, live.agents, now],
+    () =>
+      countStates(
+        agents,
+        Object.fromEntries(
+          agents.map((agent) => [agent.name, stateOf(agent.name)]),
+        ),
+        now,
+      ),
+    [agents, stateOf, now],
   );
 
   const activeAgents = useMemo(() => {
@@ -155,13 +184,15 @@ export function LiveWorkflowView() {
       const state = live.agents[agent.name];
       if (
         state &&
+        inScope(agent.name) &&
         nodeFreshness(state.state, state.lastEventAt, now) !== "stale"
       ) {
         names.add(agent.name);
       }
     }
     return names;
-  }, [agents, live.agents, now]);
+  }, [agents, live.agents, inScope, now]);
+
 
   const canvasSize = useMemo(() => {
     let maxX = 0;
@@ -177,7 +208,7 @@ export function LiveWorkflowView() {
     ? (agents.find((agent) => agent.name === selectedAgent) ?? null)
     : null;
   const selectedTasks = selectedAgent
-    ? (live.agents[selectedAgent]?.waitingTaskIds ?? [])
+    ? (stateOf(selectedAgent)?.waitingTaskIds ?? [])
     : [];
 
   if (dag.isLoading) {
@@ -249,6 +280,32 @@ export function LiveWorkflowView() {
               {copy("已完成", "Done")} {counts.ok}
             </Badge>
           )}
+          {live.latestSubject && (
+            <button
+              type="button"
+              onClick={() => setScoped((prev) => !prev)}
+              title={copy(
+                "只显示本次运行的链路，还是这个业务领域的全部运行",
+                "Show only this run's chain, or every run in the domain",
+              )}
+              className="mono"
+              style={{
+                fontSize: 11,
+                background: "transparent",
+                border: `1px solid ${scoped ? "var(--signal)" : "var(--border)"}`,
+                color: scoped ? "var(--signal)" : "var(--text-3)",
+                borderRadius: "var(--r-sm)",
+                padding: "2px 8px",
+                cursor: "pointer",
+                maxWidth: 220,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {scoped ? live.latestSubject : copy("全部运行", "All runs")}
+            </button>
+          )}
           <span style={{ fontSize: 11.5, color: "var(--text-3)", marginLeft: "auto" }}>
             {copy(
               "彩色节点与绿色连线＝5 分钟内走过的路径；点击节点只看它的动作，琥珀色可点开人工任务",
@@ -279,17 +336,17 @@ export function LiveWorkflowView() {
                 key={agent.id}
                 agent={agent}
                 position={positions.get(agent.name) ?? { x: PAD_X, y: PAD_Y }}
-                status={live.agents[agent.name]?.state}
+                status={stateOf(agent.name)?.state}
                 freshness={nodeFreshness(
-                  live.agents[agent.name]?.state,
-                  live.agents[agent.name]?.lastEventAt,
+                  stateOf(agent.name)?.state,
+                  stateOf(agent.name)?.lastEventAt,
                   now,
                 )}
-                lastEventAt={live.agents[agent.name]?.lastEventAt ?? null}
+                lastEventAt={stateOf(agent.name)?.lastEventAt ?? null}
                 waitingCount={
-                  live.agents[agent.name]?.waitingTaskIds.length ?? 0
+                  stateOf(agent.name)?.waitingTaskIds.length ?? 0
                 }
-                runningCount={live.agents[agent.name]?.runningCount ?? 0}
+                runningCount={stateOf(agent.name)?.runningCount ?? 0}
                 selected={selectedAgent === agent.name}
                 onSelect={() =>
                   setSelectedAgent((prev) =>

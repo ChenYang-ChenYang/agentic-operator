@@ -43,6 +43,8 @@ export interface AgentLiveState {
   tokensOut: number;
   lastError: string | null;
   lastEventAt: number | null;
+  /** Subject of the run that last touched this agent. */
+  lastSubject: string | null;
   /** Open HITL tasks blocking this agent's runs. */
   waitingTaskIds: string[];
 }
@@ -57,6 +59,16 @@ export interface WorkflowLiveState {
   agents: Record<string, AgentLiveState>;
   /** runId → agentName registry (bounded to MAX_TRACKED_RUNS). */
   runAgent: Record<string, string>;
+  /**
+   * Subject of the newest run seen — the chain currently being watched.
+   *
+   * Every agent in a chain carries the same subject, so this is what separates
+   * "the run I just started" from one that finished a minute ago. Without it
+   * the canvas aggregates every run per agent, and a completed chain still
+   * inside the freshness window is indistinguishable from the new one having
+   * raced through — including straight past a human gate it never reached.
+   */
+  latestSubject: string | null;
   /** Insertion order of runAgent keys, for bounded pruning. */
   runOrder: string[];
   /** taskId → agentName so task.resolved can clear the badge. */
@@ -90,6 +102,7 @@ export function initialWorkflowLiveState(): WorkflowLiveState {
     agents: {},
     runAgent: {},
     runOrder: [],
+    latestSubject: null,
     taskAgent: {},
     runTasks: {},
     pendingTasks: {},
@@ -107,6 +120,7 @@ function emptyAgent(): AgentLiveState {
     tokensOut: 0,
     lastError: null,
     lastEventAt: null,
+    lastSubject: null,
     waitingTaskIds: [],
   };
 }
@@ -245,12 +259,18 @@ export function workflowLiveReducer(
     case "run.started": {
       const registered = registerRun(state, event.runId, event.agentName);
       const parked = registered.pendingTasks[event.runId] ?? [];
-      let next = withAgent(registered, event.agentName, (agent) => ({
+      // The newest run names the chain being watched. Frames replay oldest
+      // first, so the last one to arrive is the current one.
+      const withSubject = event.subject
+        ? { ...registered, latestSubject: event.subject }
+        : registered;
+      let next = withAgent(withSubject, event.agentName, (agent) => ({
         ...agent,
         runningCount: agent.runningCount + 1,
         activeRunId: event.runId,
         lastError: null,
         lastEventAt: event.at,
+        lastSubject: event.subject ?? agent.lastSubject,
         state:
           agent.waitingTaskIds.length > 0 ? "waiting_human" : "running",
       }));
@@ -355,6 +375,8 @@ export interface UseWorkflowLiveStateResult {
   pulses: EdgePulse[];
   /** Event names with a pulse inside EDGE_PULSE_WINDOW_MS — animate those edges. */
   activeEventNames: Set<string>;
+  /** Subject of the newest run — the chain the canvas defaults to showing. */
+  latestSubject: string | null;
 }
 
 export function useWorkflowLiveState(
@@ -415,5 +437,10 @@ export function useWorkflowLiveState(
     [state.pulses],
   );
 
-  return { agents: state.agents, pulses: state.pulses, activeEventNames };
+  return {
+    agents: state.agents,
+    pulses: state.pulses,
+    activeEventNames,
+    latestSubject: state.latestSubject,
+  };
 }
