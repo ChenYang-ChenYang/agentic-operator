@@ -241,3 +241,22 @@ describe("metaerp.invoke", () => {
     expect(requests[0]?.body).toEqual({});
   });
 });
+
+describe("metaerp.invoke · call receipt", () => {
+  it("reports the URL it called and the body it sent", async () => {
+    // An operator asked to trust that the ERP was written to needs to see the
+    // request, not a claim that one happened.
+    process.env.METAERP_BASE_URL = base;
+    const result = await metaerpInvoke.handler(
+      ctx(
+        { operation: "createTransferOrder", payload: { LOT_ID: "LOT-1", QTY: 12 } },
+        { catalog_path: catalogPath },
+      ),
+    );
+    expect(result.meta).toMatchObject({
+      url: `${base}/metaerp/openapi/v1/createTransferOrder`,
+      request: { LOT_ID: "LOT-1", QTY: 12 },
+      status: 200,
+    });
+  });
+});

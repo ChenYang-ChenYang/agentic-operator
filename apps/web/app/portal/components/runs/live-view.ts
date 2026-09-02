@@ -229,17 +229,25 @@ export function toFeedEntry(
       const toolName = str(frame.toolName);
       if (!toolName) return null;
       const ok = frame.ok !== false;
+      const url = str(frame.url);
       return {
         ...base,
         kind: "tool",
         tone: ok ? "ok" : "failed",
         label: toolName,
-        detail: ok
-          ? copy("完成", "done")
-          : (str(frame.error) ?? copy("工具调用失败", "tool call failed")),
+        // The endpoint reached, on the row itself. "工具调用完成" asks an
+        // operator to take the write on faith; a URL and a body do not.
+        detail: url
+          ? ok
+            ? url
+            : `${url} — ${str(frame.error) ?? copy("失败", "failed")}`
+          : ok
+            ? copy("完成", "done")
+            : (str(frame.error) ?? copy("工具调用失败", "tool call failed")),
         meta: meta(
           str(frame.stepName),
           num(frame.durationMs) == null ? null : fmtDur(num(frame.durationMs)),
+          str(frame.request),
         ),
       };
     }

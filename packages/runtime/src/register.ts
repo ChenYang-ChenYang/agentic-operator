@@ -637,6 +637,38 @@ export function declaredWriteCapableTools(
 /** Raw per-call capture the step engine leaves on `meta.toolCalls` — one shape
  * whether the calls came from the LLM tool-use loop or a direct `type:"tool"`
  * dispatch. This is the single read site for the evidence writer. */
+/** Longest request body rendered on a log line before it is clipped. */
+const MAX_RECEIPT_REQUEST_CHARS = 400;
+
+/**
+ * Endpoint and request body from a tool's receipt, as log fields.
+ *
+ * Only tools that talk to a remote system report these, so both are omitted
+ * rather than emitted empty — a `url=` with nothing after it reads like a bug.
+ */
+function toolCallReceiptFields(
+  receipt: Record<string, unknown> | undefined,
+): Record<string, string> {
+  const fields: Record<string, string> = {};
+  const url = receipt?.url;
+  if (typeof url === "string" && url.trim()) fields.url = url;
+  const request = receipt?.request;
+  if (request !== undefined && request !== null) {
+    try {
+      const text = JSON.stringify(request);
+      if (text && text !== "{}") {
+        fields.request =
+          text.length > MAX_RECEIPT_REQUEST_CHARS
+            ? `${text.slice(0, MAX_RECEIPT_REQUEST_CHARS)}…`
+            : text;
+      }
+    } catch {
+      // A body that will not serialize is not worth failing a log line over.
+    }
+  }
+  return fields;
+}
+
 interface CapturedToolCall {
   id?: string;
   name: string;
@@ -644,6 +676,8 @@ interface CapturedToolCall {
   output?: unknown;
   isError?: boolean;
   durationMs?: number;
+  /** The tool's own receipt — endpoint reached and body sent, when remote. */
+  receipt?: Record<string, unknown>;
   ruleGate?: unknown;
   probe?: ProbeVerificationResult;
   sandboxDispatch?: { mode?: string };
@@ -888,6 +922,8 @@ async function persistToolCallEvidence(params: {
           tool: tc.name,
           ok: tc.isError ? false : true,
           duration: `${tc.durationMs ?? 0}ms`,
+          // Proof the remote system was reached, on the line an operator reads.
+          ...toolCallReceiptFields(tc.receipt),
         },
       ),
     );

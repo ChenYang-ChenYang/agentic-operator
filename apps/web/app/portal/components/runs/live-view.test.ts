@@ -92,6 +92,40 @@ describe("toFeedEntry", () => {
     expect(failed?.detail).toBe("gate BR-DEV-01 rejected");
   });
 
+  // "工具调用完成" asks an operator to take the write on faith. A URL and a
+  // body do not.
+  it("shows the endpoint reached and the body sent", () => {
+    const entry = project({
+      type: "tool.call.completed",
+      runId: "run-1",
+      toolName: "metaerp.invoke",
+      stepName: "metaerp.invoke",
+      url: "http://localhost:3620/metaerp/openapi/v1/createTransactionOrder",
+      request: '{"CHAIN_ID":"CHAIN-1","TRANSFER_QUANTITY":12}',
+      durationMs: 23,
+      ok: true,
+      at: 1,
+    });
+    expect(entry?.detail).toBe(
+      "http://localhost:3620/metaerp/openapi/v1/createTransactionOrder",
+    );
+    expect(entry?.meta).toContain('{"CHAIN_ID":"CHAIN-1","TRANSFER_QUANTITY":12}');
+  });
+
+  it("keeps the endpoint visible when the call failed", () => {
+    const entry = project({
+      type: "tool.call.completed",
+      toolName: "metaerp.invoke",
+      url: "http://localhost:3620/metaerp/openapi/v1/writeEventLog",
+      ok: false,
+      error: "HTTP 400 missing ALERT_ID",
+      at: 1,
+    });
+    expect(entry?.detail).toContain("writeEventLog");
+    expect(entry?.detail).toContain("missing ALERT_ID");
+    expect(entry?.tone).toBe("failed");
+  });
+
   it("names the tool an agent dispatched and surfaces its failure", () => {
     const ok = project({
       type: "tool.call.completed",
