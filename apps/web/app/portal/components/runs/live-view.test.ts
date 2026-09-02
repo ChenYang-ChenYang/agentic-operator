@@ -4,6 +4,7 @@ import {
   MAX_FEED_ENTRIES,
   appendFeed,
   FRESH_WINDOW_MS,
+  agentSubtitle,
   countStates,
   edgeVisual,
   fmtLogMessage,
@@ -477,5 +478,44 @@ describe("nextFollowState", () => {
   it("measures normally before anything has been pinned", () => {
     expect(at({ follow: false, scrollTop: 900, pinnedTop: null })).toBe(true);
     expect(at({ follow: true, scrollTop: 100, pinnedTop: null })).toBe(false);
+  });
+});
+
+describe("agentSubtitle", () => {
+  // The canvas shows manifest names, which say what an agent is CALLED. The
+  // description says what it does — but it is a paragraph, so take its opening
+  // clause and drop the compiler's 【查】/【算】 category prefix.
+  it("takes the opening clause and drops the category prefix", () => {
+    expect(agentSubtitle("【行】无偏差链路不打扰任何人：直接归档为监控留痕，等待下一次每日扫描。")).toBe(
+      "无偏差链路不打扰任何人",
+    );
+    expect(agentSubtitle("【查】按日定时触发，拉取全集团在途采购计划")).toBe("按日定时触发");
+  });
+
+  it("splits on a dash as readily as on a comma", () => {
+    expect(agentSubtitle("【评】超期天数支撑不了决策——超3天但剩余周期充足不要紧")).toBe(
+      "超期天数支撑不了决策",
+    );
+  });
+
+  it("clips an opening clause that is really prose", () => {
+    const long =
+      agentSubtitle("【行】把预警按等级分发给分管领导并同步抄送计划员与采购员以便各方同时知悉进展") ?? "";
+    expect(long.length).toBeLessThanOrEqual(23);
+    expect(long.endsWith("…")).toBe(true);
+  });
+
+  it("handles Latin punctuation and plain descriptions", () => {
+    expect(agentSubtitle("Collects the chain, then writes it back")).toBe(
+      "Collects the chain",
+    );
+  });
+
+  // A node with no subtitle beats a node with a misleading one.
+  it("returns null when there is nothing to say", () => {
+    expect(agentSubtitle(undefined)).toBeNull();
+    expect(agentSubtitle("")).toBeNull();
+    expect(agentSubtitle("   ")).toBeNull();
+    expect(agentSubtitle("【查】")).toBeNull();
   });
 });

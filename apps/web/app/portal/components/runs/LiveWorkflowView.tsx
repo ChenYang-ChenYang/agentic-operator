@@ -44,6 +44,7 @@ import { fmtAgo } from "@/app/portal/lib/format";
 import type { Language } from "@/lib/i18n/types";
 import { Icon } from "@/app/portal/components/Icon";
 import {
+  agentSubtitle,
   appendFeed,
   countStates,
   edgeVisual,
@@ -561,6 +562,7 @@ export function LiveNode({
   language?: Language;
 }) {
   const visual = nodeVisual(status, freshness);
+  const subtitle = agentSubtitle(agent.definition?.description);
   const ago = lastEventAt ? fmtAgo(lastEventAt, language) : null;
   const label =
     waitingCount > 0
@@ -590,7 +592,7 @@ export function LiveNode({
         width: NODE_W,
         height: NODE_H,
         textAlign: "left",
-        padding: "8px 10px",
+        padding: "6px 10px",
         borderRadius: "var(--r-md)",
         background: "var(--panel-2)",
         border: `${visual.emphasis === "strong" ? 2 : 1}px solid ${
@@ -600,7 +602,7 @@ export function LiveNode({
         cursor: "pointer",
         display: "flex",
         flexDirection: "column",
-        gap: 3,
+        gap: 2,
         overflow: "hidden",
       }}
     >
@@ -616,6 +618,20 @@ export function LiveNode({
       >
         {agent.title || agent.name}
       </span>
+      {subtitle && (
+        // The name says what the agent is called; this says what it does.
+        <span
+          style={{
+            fontSize: 10.5,
+            color: "var(--text-3)",
+            whiteSpace: "nowrap",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+          }}
+        >
+          {subtitle}
+        </span>
+      )}
       <span style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 10.5 }}>
         <span
           style={{

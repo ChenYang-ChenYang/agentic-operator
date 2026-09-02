@@ -458,6 +458,36 @@ export function nextFollowState(args: {
   return distance <= TAIL_SLACK_PX;
 }
 
+/** Longest subtitle a node can carry before it crowds the card. */
+const SUBTITLE_MAX = 22;
+/** The compiler's category prefix — 【查】【算】【评】【行】 and the like. */
+const CATEGORY_PREFIX = /^【[^】]{1,4}】\s*/;
+
+/**
+ * A one-line Chinese gloss for a node, from the agent's own description.
+ *
+ * The canvas shows manifest names — `collectChainExecutionData`,
+ * `scoreOnTimeProbability` — which say what an agent is called, not what it
+ * does. The description is right there in the definition, but it is a
+ * paragraph: the useful part is its opening clause, up to the first break.
+ *
+ * Returns null rather than a truncated fragment when nothing short enough can
+ * be salvaged; a node with no subtitle beats a node with a misleading one.
+ */
+export function agentSubtitle(description: string | undefined | null): string | null {
+  const body = (description ?? "").trim().replace(CATEGORY_PREFIX, "");
+  if (!body) return null;
+  // First clause: Chinese and Latin sentence breaks alike.
+  const clause = body.split(/[，。；：,.;:—\n]/)[0]?.trim() ?? "";
+  if (!clause) return null;
+  if (clause.length <= SUBTITLE_MAX) return clause;
+  // A long opening clause is prose, not a label. Cut on a natural boundary if
+  // there is one inside the budget, rather than mid-word.
+  const clipped = clause.slice(0, SUBTITLE_MAX);
+  const boundary = Math.max(clipped.lastIndexOf("、"), clipped.lastIndexOf("／"));
+  return `${boundary > SUBTITLE_MAX / 2 ? clipped.slice(0, boundary) : clipped}…`;
+}
+
 export interface NodeVisual {
   /** CSS custom property name carrying the accent colour. */
   accent: string;
