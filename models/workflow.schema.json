@@ -15,6 +15,15 @@
       "title": {
         "type": "string"
       },
+      "title_i18n": {
+        "type": "object",
+        "propertyNames": {
+          "type": "string"
+        },
+        "additionalProperties": {
+          "type": "string"
+        }
+      },
       "description": {
         "default": "",
         "type": "string"
