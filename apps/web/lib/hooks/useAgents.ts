@@ -121,6 +121,8 @@ export interface DagAgent {
   kebabId: string;
   name: string;
   title: string;
+  /** Localized titles from the manifest (title_i18n), when declared. */
+  titleI18n?: Record<string, string>;
   actor: "Agent" | "Human";
   triggers: string[];
   emits: string[];

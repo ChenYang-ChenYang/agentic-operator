@@ -26,6 +26,7 @@
 import type {
   AgentInputPort,
   CompiledAgent,
+  CompiledErrorPolicyRule,
   CompiledStep,
   CompiledToolUseEntry,
   CompileResult,
@@ -51,6 +52,37 @@ const METAERP_REVIEWED_POLICY = {
   sandbox_policy: "requires_attempt_grant",
 } as const;
 const BASE_URL_ENV = "METAERP_BASE_URL";
+
+/**
+ * Declarative failure ladder on every ERP write step. Facts come from the
+ * runtime's `actionErrorFacts` (metaerp.invoke prefixes transport failures
+ * with `integration_unreachable:` and puts `HTTP <status>` in the message):
+ *   - unreachable ERP (VPN/proxy/base URL) → retry within the Inngest budget,
+ *     then the run fails with the unreachable message;
+ *   - HTTP 4xx → terminal at once: the payload is wrong, retrying the same
+ *     bytes cannot succeed (2026-09-07: a createPbp 400 was retried 4× over
+ *     six minutes while the canvas showed "running");
+ *   - everything else (5xx, catalog gaps, timeouts) → retry.
+ */
+const METAERP_WRITE_ERROR_POLICY: readonly CompiledErrorPolicyRule[] = [
+  { when: "kind == integration_unreachable || code == integration_unreachable", do: "retry" },
+  { when: "status >= 400 && status < 500", do: "terminal" },
+  { default: "retry" },
+];
+
+const CONTROL_FAIL_TOOL = "control.fail";
+/** The reviewed policy from packages/tools registry REGISTRATIONS for
+ * control.fail (pure, no I/O). Byte-equality with the registry is enforced
+ * by the runtime like the two policies above. */
+const CONTROL_FAIL_REVIEWED_POLICY = {
+  operation: "compute",
+  effect_scope: "none",
+  sandbox_policy: "pure",
+} as const;
+const BLOCKING_CODE_PATTERN = /^[a-z][a-z0-9_]{0,63}$/;
+/** Paths a blocking outcome may read its reason from — the analysis result
+ * only, never the inbound event (the reason must be the model's own report). */
+const BLOCKING_MESSAGE_PATH = /^(lastResult|results\.[A-Za-z_][A-Za-z0-9_]*)(\.[A-Za-z_][A-Za-z0-9_]*)+$/;
 
 const ONTOLOGY_QUERY_TOOL = "ontology.query";
 /** The reviewed policy from packages/tools registry REGISTRATIONS for
@@ -652,10 +684,68 @@ function compilePromptAgent(ctx: CompileContext, action: StudioAction): {
     },
   ];
 
+  // Blocking outcomes sit between the analysis and its emissions: when the
+  // model reports one, control.fail ends the run before any success event
+  // can leave, and the run's error carries the reported reason.
+  if (appendBlockingOutcomeSteps(steps, ctx, action, nextOrder)) {
+    toolUse.push(controlFailToolUseEntry());
+  }
+
   const emissions = overlayEmissionsFor(ctx, action);
   const conditional = appendEmissionSteps(steps, emissions, action.id, nextOrder);
   if (conditional) steps.push(suppressImplicitEmitStep(nextOrder()));
   return { steps, toolUse };
+}
+
+function controlFailToolUseEntry(): CompiledToolUseEntry {
+  return {
+    name: CONTROL_FAIL_TOOL,
+    description:
+      "以声明的原因终止本次运行（分析结果报告了阻断性结论时由工作流自动调用，不由模型调用）。",
+    side_effect: "read",
+    execution_policy: CONTROL_FAIL_REVIEWED_POLICY,
+    config: {},
+  };
+}
+
+/** Compile the overlay's `blocking_outcomes` for one analysis action:
+ * `condition` (over the analysis JSON) → `control.fail` tool step with
+ * `on_error: "terminal"`. Returns true when any were emitted. */
+function appendBlockingOutcomeSteps(
+  steps: CompiledStep[],
+  ctx: CompileContext,
+  action: StudioAction,
+  nextOrder: () => string,
+): boolean {
+  const outcomes = ctx.overlay.blocking_outcomes?.[action.id] ?? [];
+  for (const outcome of outcomes) {
+    const conditionKey = identifierKey(`blocked-when-${outcome.code}`);
+    steps.push({
+      order: nextOrder(),
+      name: `blocked-when:${outcome.code}`,
+      description: `分析结果是否报告了阻断性结论「${outcome.code}」。`,
+      type: "condition",
+      condition: outcome.when,
+      result_key: conditionKey,
+    });
+    steps.push({
+      order: nextOrder(),
+      name: CONTROL_FAIL_TOOL,
+      description: `阻断性结论「${outcome.code}」成立：以分析给出的原因终止运行，不发射任何事件。`,
+      type: "tool",
+      tool_arguments: {
+        code: { const: outcome.code },
+        message: outcome.message_from
+          ? { from: outcome.message_from, required: false }
+          : { const: outcome.message },
+      },
+      allowed_tools: [CONTROL_FAIL_TOOL],
+      result_key: identifierKey(`blocked-${outcome.code}`),
+      depends_on: [conditionKey],
+      on_error: "terminal",
+    });
+  }
+  return outcomes.length > 0;
 }
 
 function firstHumanRoleForAction(model: StudioDomainModel, actionId: string): string | undefined {
@@ -831,6 +921,7 @@ function compileExternalAgent(ctx: CompileContext, action: StudioAction): {
     allowed_tools: [TOOL_NAME],
     result_key: action.id,
     ...(guards.length ? { depends_on: guards } : {}),
+    on_error: METAERP_WRITE_ERROR_POLICY.map((rule) => ({ ...rule })),
   });
 
   // An overlay emission block wins: it is the only way to express a real
@@ -873,6 +964,26 @@ function compileExternalAgent(ctx: CompileContext, action: StudioAction): {
   )?.description;
   const toolUse = [toolUseEntry(operationId, "write", ctx.catalogPath, writeDescription)];
   return { steps, toolUse };
+}
+
+// ── localized titles ──────────────────────────────────────────────────────────
+
+/** The overlay-declared display titles of an action, with the `title_locale`
+ * (default `zh`) entry — else the first declared locale — promoted to `title`.
+ * Locale keys are emitted in sorted order so output stays byte-stable. */
+function localizedTitles(
+  overlay: CompilerOverlay,
+  action: StudioAction,
+): { title: string; title_i18n: Record<string, string> } | null {
+  const declared = overlay.titles?.[action.id];
+  if (!declared) return null;
+  const title_i18n: Record<string, string> = {};
+  for (const locale of Object.keys(declared).sort()) {
+    title_i18n[locale] = declared[locale]!.trim();
+  }
+  const preferred = overlay.title_locale?.trim() || "zh";
+  const title = title_i18n[preferred] ?? title_i18n[Object.keys(title_i18n)[0]!]!;
+  return { title, title_i18n };
 }
 
 // ── erp-operations catalog ────────────────────────────────────────────────────
@@ -961,6 +1072,64 @@ export function compile(
       fail(`overlay compensation_events references unknown action ${actionId}`);
     }
   }
+  for (const [actionId, localized] of Object.entries(overlay.titles ?? {})) {
+    if (!model.actions.some((action) => action.id === actionId)) {
+      fail(`overlay titles references unknown action ${actionId}`);
+    }
+    if (!localized || typeof localized !== "object" || !Object.keys(localized).length) {
+      fail(`overlay titles for ${actionId} must map at least one locale to a title`);
+    }
+    for (const [locale, title] of Object.entries(localized)) {
+      if (!/^[a-z]{2,3}(-[A-Za-z0-9]+)*$/.test(locale) || typeof title !== "string" || !title.trim()) {
+        fail(`overlay titles for ${actionId} has an invalid locale/title pair "${locale}"`);
+      }
+    }
+  }
+
+  // A blocking outcome that is silently dropped would let the success event
+  // fire on a blocked analysis — the exact defect it exists to prevent.
+  for (const [actionId, outcomes] of Object.entries(overlay.blocking_outcomes ?? {})) {
+    const action = model.actions.find((candidate) => candidate.id === actionId);
+    if (!action) fail(`overlay blocking_outcomes references unknown action ${actionId}`);
+    if (action!.implementation?.kind === "external") {
+      fail(
+        `overlay blocking_outcomes["${actionId}"] targets an external action — blocking outcomes ` +
+          `are reported by an analysis step and compile only for prompt actions`,
+      );
+    }
+    if (!Array.isArray(outcomes) || outcomes.length === 0) {
+      fail(`overlay blocking_outcomes for ${actionId} must be a non-empty array`);
+    }
+    const codes = new Set<string>();
+    for (const outcome of outcomes) {
+      if (!outcome || typeof outcome !== "object") {
+        fail(`overlay blocking_outcomes for ${actionId} has a non-object entry`);
+      }
+      if (typeof outcome.when !== "string" || !outcome.when.trim()) {
+        fail(`overlay blocking_outcomes for ${actionId} requires a "when" condition`);
+      }
+      if (typeof outcome.code !== "string" || !BLOCKING_CODE_PATTERN.test(outcome.code)) {
+        fail(`overlay blocking_outcomes for ${actionId} has an invalid code "${String(outcome.code)}"`);
+      }
+      if (codes.has(outcome.code)) {
+        fail(`overlay blocking_outcomes for ${actionId} repeats code "${outcome.code}"`);
+      }
+      codes.add(outcome.code);
+      const hasFrom = typeof outcome.message_from === "string" && outcome.message_from.trim() !== "";
+      const hasStatic = typeof outcome.message === "string" && outcome.message.trim() !== "";
+      if (hasFrom === hasStatic) {
+        fail(
+          `overlay blocking_outcomes for ${actionId}/${outcome.code} must give exactly one of message_from / message`,
+        );
+      }
+      if (hasFrom && !BLOCKING_MESSAGE_PATH.test(outcome.message_from!.trim())) {
+        fail(
+          `overlay blocking_outcomes for ${actionId}/${outcome.code}: message_from must read the analysis ` +
+            `result (lastResult.<field> or results.<key>.<field>), got "${outcome.message_from}"`,
+        );
+      }
+    }
+  }
 
   // A gate that is silently ignored is worse than one that is unsupported: the
   // branch it was meant to stop would run, and the overlay would look correct.
@@ -994,10 +1163,12 @@ export function compile(
     // list only what a SUCCESSFUL run emits; the failure event moves to
     // `compensation_event`, which the runtime emits once on a hard failure.
     const compensationEvent = compensationEventFor(ctx, action);
+    const titles = localizedTitles(ctx.overlay, action);
     return {
       id: action.id,
       name: action.id,
-      title: action.name,
+      title: titles?.title ?? action.name,
+      ...(titles ? { title_i18n: titles.title_i18n } : {}),
       description: action.description ?? "",
       actor: action.actor,
       trigger,

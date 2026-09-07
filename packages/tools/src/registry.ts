@@ -63,6 +63,7 @@ import {
 } from "./fs";
 import { httpFetchTool } from "./http";
 import { ping } from "./meta";
+import { fail as controlFail } from "./control";
 import {
   fetchActionRules,
   ontologyQuery,
@@ -1418,6 +1419,44 @@ const REGISTRATIONS: ToolRegistration[] = [
       // 取数器宣称覆盖任意 external_api 需求——绑定门就此失效。需要真实外部集成时，
       // 走 fetch_doc → extract_api_schema → create_tool 造具名适配器。
       sourcePath: "packages/tools/src/http/fetch.ts",
+    },
+  },
+
+  // ── control.* ───────────────────────────────────────────────────────────
+  {
+    descriptor: controlFail,
+    catalog: {
+      name: "control.fail",
+      category: "control",
+      sourcePath: "packages/tools/src/control/fail.ts",
+      sideEffect: "read",
+      operation: "compute",
+      effectScope: "none",
+      sandboxPolicy: "pure",
+      summary:
+        "Ends the run with a declared reason. The ontology compiler wires it behind a condition step so an analysis that honestly reports a blocking outcome fails the run instead of emitting a success event.",
+      description:
+        "Always throws. Put it in a `type: \"tool\"` step with `on_error: \"terminal\"` and a `depends_on` condition over the analysis result; when the condition holds the run ends FAILED with `message` in runs.error_message (code = `code`), and nothing downstream fires. It performs no I/O and makes no decision of its own.",
+      argsSchema: {
+        code: {
+          type: "string",
+          description:
+            "Stable snake_case failure code recorded on the run (default `blocked_outcome`).",
+        },
+        message: {
+          type: "string",
+          description:
+            "Human-readable reason, normally mapped from the analysis output (e.g. `lastResult.blocking_note`).",
+        },
+        detail: { type: "unknown", description: "Optional structured context kept on the thrown error." },
+      },
+      argsExample: {
+        code: "schedule_blocked",
+        message: "无法获取业务类型【物资】的阶段周期配置，根据 BR-PLAN-01 不予推算。",
+      },
+      configSchema: {},
+      returnsSchema: {},
+      returnsExample: {},
     },
   },
 

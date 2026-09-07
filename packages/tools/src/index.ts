@@ -64,6 +64,7 @@ export * as gohire from "./gohire";
 export * as fs from "./fs";
 export * as http from "./http";
 export * as meta from "./meta";
+export * as control from "./control";
 export * as metaerp from "./metaerp";
 export * as search from "./search";
 export * as ontology from "./ontology";

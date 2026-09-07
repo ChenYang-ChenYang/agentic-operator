@@ -16,6 +16,7 @@
 
 import type { FastifyInstance, FastifyReply } from "fastify";
 import {
+  ErpIntegrationStatus,
   ListIntegrationsResponse,
   UpsertIntegrationBody,
   INTEGRATION_PROVIDERS,
@@ -24,6 +25,8 @@ import {
 } from "@agentic/contracts";
 import { gohire, listGlobalTools } from "@agentic/tools";
 import { requireAuth } from "../../plugins/auth";
+import { erpIntegrationStatus } from "../../services/erp-reachability";
+import { loadLiveManifest } from "../../services/manifest-import";
 import {
   deleteIntegration,
   getDecryptedCreds,
@@ -201,6 +204,20 @@ export async function integrationsRoutes(app: FastifyInstance): Promise<void> {
       });
     },
   );
+
+  // GET /v1/integrations/erp/status — can THIS api process reach the Meta ERP
+  // the tenant's LIVE workflow binds (metaerp.invoke base_url_env)? The portal
+  // shows a banner while it cannot, so an operator learns the VPN/proxy/base
+  // URL is wrong before a run fails on it. Probes are cached ~20s per URL.
+  app.get("/integrations/erp/status", async (req, reply) => {
+    const auth = requireAuth(req);
+    const agents = loadLiveManifest({
+      tenantId: auth.tenantId,
+      tenantSlug: auth.tenantSlug,
+    });
+    const status = await erpIntegrationStatus(agents, process.env);
+    return reply.ok(ErpIntegrationStatus.parse(status));
+  });
 
   // PUT /v1/integrations — upsert (keyed on tenant + provider). Dynamic
   // `fields{}` are routed by the derived specs: declared non-secret → plain

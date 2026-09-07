@@ -6439,6 +6439,16 @@ export const en = {
     unpublishedChanges: "UNPUBLISHED CHANGES",
     run: "Run",
     runWorkflow: "Run workflow",
+    erpBannerTitle: "Meta ERP integration is not reachable",
+    erpUnreachable:
+      "{env} → {url} cannot be reached ({error}). Agents that read or write the ERP ({agents}) will retry, then end as failed and turn red on the canvas.",
+    erpNotConfigured:
+      "{env} is not set, so the ERP calls made by {agents} fail immediately.",
+    erpBannerHint:
+      "Check the VPN, the proxy bypass rules and the base URL, then re-check. A run that already failed can be replayed from its panel.",
+    erpRecheck: "Re-check now",
+    erpChecking: "Checking…",
+    erpAgentsMore: " and {count} more",
     help: "Help",
     closeEditor: "Close editor",
     validating: "Validating…",

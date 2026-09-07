@@ -66,6 +66,8 @@ export const AgentSpec = z
     id: z.string(),
     name: z.string(),
     title: z.string().optional(),
+    /** Display title per language tag (`zh`, `en`, …); `title` is one of them. */
+    title_i18n: z.record(z.string(), z.string()).optional(),
     description: z.string().optional().default(""),
     actor: z.array(ActorEnum).min(1),
     trigger: z.array(z.string()),

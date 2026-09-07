@@ -1,0 +1,14 @@
+{
+  "kind": "ontology-package-archive",
+  "format_version": "1.0.0",
+  "schema_bundle_version": "3.2.0",
+  "package_id": "procurement-hc-formal",
+  "release": "0.1.8",
+  "package_digest": "sha256:9448c2143a31df36f05ff16430b9e223f9bf615a696689bbfa8d0c769362df07",
+  "file": {
+    "path": "package.json",
+    "byte_size": 2207531,
+    "sha256": "sha256:7c1d6b8eea896b5d08584e704f1754a71c1633ca291b449615366004264fb01f"
+  },
+  "bundle_digest": "sha256:2971d51640cea78dc4f52f0ef874b5c9fa2158d67846de7949da2fe89fd4090b"
+}

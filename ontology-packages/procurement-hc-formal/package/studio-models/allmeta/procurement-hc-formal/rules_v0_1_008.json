@@ -1,0 +1,4675 @@
+{
+  "metadata": {
+    "artifact_count": 58,
+    "content_hash": "sha256:6f064f15773b3888fdd1602c6dc19aa57f18fc2f48eaa54501f825e7737c6a83",
+    "family": "rules",
+    "package_hash": "sha256:9448c2143a31df36f05ff16430b9e223f9bf615a696689bbfa8d0c769362df07",
+    "package_id": "procurement-hc-formal",
+    "release": "0.1.8",
+    "schema_bundle_version": "3.2.0",
+    "source_filename": "rules_0.1.8.json",
+    "staged_by": "scripts/stage-procurement-hc-formal-ontology.mjs"
+  },
+  "payload": [
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "盯防范围(查)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果采购计划状态为「已批准」且链路尚未完结，则必须纳入全链路偏差盯防，不得凭经验抽查遗漏（在途单覆盖率 100%）。当扫描事件显式指定 plan_id 时，本次扫描的全量覆盖义务让位于该指定范围——这是排障口径，不是抽查。",
+      "executor": "System",
+      "id": "BR-COV-01",
+      "kind": "validation",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "plan",
+            "object_id": "Procurement_Plan",
+            "property": "plan_status",
+            "required": true
+          },
+          {
+            "name": "chain",
+            "object_id": "Procurement_Chain",
+            "property": "chain_status",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "plan.plan_status == \"已批准\" && chain.chain_status == \"在途\"",
+        "test_cases": [
+          {
+            "context": {
+              "chain": {
+                "chain_status": "在途"
+              },
+              "plan": {
+                "plan_status": "已批准"
+              }
+            },
+            "expected": true,
+            "id": "tc-cov01-hit"
+          },
+          {
+            "context": {
+              "chain": {
+                "chain_status": "在途"
+              },
+              "plan": {
+                "plan_status": "草稿"
+              }
+            },
+            "expected": false,
+            "id": "tc-cov01-draft"
+          },
+          {
+            "context": {
+              "chain": {
+                "chain_status": "已完成"
+              },
+              "plan": {
+                "plan_status": "已批准"
+              }
+            },
+            "expected": false,
+            "id": "tc-cov01-done"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "已批准在途计划必须全量纳入盯防",
+      "outcome": {
+        "message": "已批准在途计划纳入盯防，其余不参与偏差计算",
+        "on_fail": "no_op",
+        "on_pass": "continue"
+      },
+      "phase": "collect",
+      "priority": 1,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R1-01",
+      "ruleGroupTitle": "节点进度自动同步",
+      "scope": {
+        "objectTypeIds": [
+          "Procurement_Plan",
+          "Procurement_Chain"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-1-procurement-deviation",
+          "documentName": "场景1_采购全链路执行偏差三级预警.docx",
+          "quoteVerified": true,
+          "section": "二、场景目标 2)",
+          "snippet": "针对人工抽查覆盖不全、漏管多，做到在途单100%覆盖：不再凭经验只盯重点单，凡在途单一律纳入监控，每日定时巡检加单据状态变更实时触发，漏管归零"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "计划基准(算)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果某「业务类型×阶段节点」缺少标准周期配置，则该节点计划完成时间不予推算，转系统管理员补配后重算。计划完成时间公式（节点 k=1..7，按 立项/组包/询价/定标/合同/订单/到货）：planned_finish(k) = required_arrival_date − Σ standard_cycle_days(j)，j=k+1..7——到货节点(k=7)的计划完成时间即需求到货日期本身，其余节点等于需求到货日期减去其后所有节点标准周期之和（不含本节点周期）；正排校验 planned_finish(k) = planned_finish(k−1) + standard_cycle_days(k)，两向结果一致才置 planned_date_derived=true。 场景二沿用同一条约束：倒排各阶段节点计划时间前必须先取到「业务类型×阶段节点」的有效周期配置（生效日期≤当前日期<失效日期），缺配置的节点不予推算，转集采管理岗补配后重算。",
+      "executor": "System",
+      "id": "BR-PLAN-01",
+      "kind": "constraint",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "standard",
+            "object_id": "Stage_Cycle_Standard",
+            "property": "standard_cycle_days",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "standard.standard_cycle_days > 0",
+        "test_cases": [
+          {
+            "context": {
+              "standard": {
+                "standard_cycle_days": 12
+              }
+            },
+            "expected": true,
+            "id": "tc-plan01-hit"
+          },
+          {
+            "context": {
+              "standard": {
+                "standard_cycle_days": 0
+              }
+            },
+            "expected": false,
+            "id": "tc-plan01-miss"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "缺周期配置则不予推算计划时间",
+      "outcome": {
+        "message": "缺少该业务类型×节点的标准周期配置，转系统管理员补配",
+        "on_fail": "require_human_review",
+        "on_pass": "calculate"
+      },
+      "phase": "plan",
+      "priority": 1,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R1-02",
+      "ruleGroupTitle": "计划时间推算",
+      "scope": {
+        "objectTypeIds": [
+          "Stage_Cycle_Standard",
+          "Chain_Stage_Progress",
+          "Backward_Schedule_Stage"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-1-procurement-deviation",
+          "documentName": "场景1_采购全链路执行偏差三级预警.docx",
+          "quoteVerified": true,
+          "section": "四、场景规则 R1-02",
+          "snippet": "需以需求到货日期为终点按配置的标准周期逐级倒排，补齐各节点计划完成时间，使偏差可算、可对比。如下需增加采购阶段时间配置"
+        },
+        {
+          "documentId": "hc-procurement-ontology-corrections",
+          "documentName": "hc-procurement-ontology-corrections.md",
+          "quoteVerified": true,
+          "section": "C-03（2026-09-01 实跑修正）",
+          "snippet": "planned_finish(k) = required_arrival_date − Σ standard_cycle_days(j)，j = k+1 .. 7；正排校验 planned_finish(k) = planned_finish(k−1) + standard_cycle_days(k)。"
+        },
+        {
+          "documentId": "scenario-2-digital-employee",
+          "documentName": "场景2_数字化员工的智能作业实践.docx",
+          "quoteVerified": true,
+          "section": "四、场景规则 R2-03 / 6.1 采购阶段节点周期配置表",
+          "snippet": "为规则 R2-03（采购周期自动倒排）提供立项、组包、分配、询价、应答、评标、定标、合同签订各节点的标准周期天数基准；生效口径：按\"业务类型+阶段节点\"维度生效，EFFECTIVE_DATE（生效日期）<=当前日期<DISABLE_DATE（失效日期）的记录为有效记录"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "偏差判定(析)",
+      "complexity": "medium",
+      "confidence": 0.92,
+      "description": "如果当前节点的实际时间点（未完成节点代入扫描日）超过其计划完成时间点，则判定该链路节点存在执行偏差。判定的是两个时间点的先后，不是各环节耗时的累加；前序节点的超期若已被后续节点追回，当前节点未到期即不预警。时间阈值可调，默认 0 天（超期即预警）。节点尚未到期时，进度偏差不单独构成偏差——未完成且未延期的采购不预警。",
+      "executor": "Agent",
+      "id": "BR-DEV-01",
+      "kind": "validation",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "deviation",
+            "object_id": "Execution_Deviation",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "deviation.time_deviation_days > deviation.time_threshold_days || (deviation.time_deviation_days > 0 && deviation.schedule_deviation_ratio > deviation.schedule_threshold_ratio)",
+        "test_cases": [
+          {
+            "comment": "已超期 9 天、进度正常 → 预警",
+            "context": {
+              "deviation": {
+                "schedule_deviation_ratio": 0.05,
+                "schedule_threshold_ratio": 0.2,
+                "time_deviation_days": 9,
+                "time_threshold_days": 0
+              }
+            },
+            "expected": true,
+            "id": "tc-dev01-time"
+          },
+          {
+            "comment": "已超期且进度偏差超阈值 → 预警",
+            "context": {
+              "deviation": {
+                "schedule_deviation_ratio": 0.35,
+                "schedule_threshold_ratio": 0.2,
+                "time_deviation_days": 2,
+                "time_threshold_days": 0
+              }
+            },
+            "expected": true,
+            "id": "tc-dev01-schedule"
+          },
+          {
+            "comment": "未到期且进度正常 → 不预警",
+            "context": {
+              "deviation": {
+                "schedule_deviation_ratio": 0.1,
+                "schedule_threshold_ratio": 0.2,
+                "time_deviation_days": -3,
+                "time_threshold_days": 0
+              }
+            },
+            "expected": false,
+            "id": "tc-dev01-clean"
+          },
+          {
+            "comment": "超期 7 天 → 预警（新口径：超过计划完成时间点即延期，取代原 >7 天窗口）",
+            "context": {
+              "deviation": {
+                "schedule_deviation_ratio": 0.2,
+                "schedule_threshold_ratio": 0.2,
+                "time_deviation_days": 7,
+                "time_threshold_days": 0
+              }
+            },
+            "expected": true,
+            "id": "tc-dev01-boundary"
+          },
+          {
+            "comment": "未到期 + 进度偏差超阈值 → 不预警（业务口径：未完成且未延期不预警；实跑案例 PBP-2026-0914）",
+            "context": {
+              "deviation": {
+                "schedule_deviation_ratio": 0.4,
+                "schedule_threshold_ratio": 0.2,
+                "time_deviation_days": -141,
+                "time_threshold_days": 0
+              }
+            },
+            "expected": false,
+            "id": "tc-dev01-early-partial"
+          },
+          {
+            "comment": "已超期 + 进度偏差超阈值 → 预警",
+            "context": {
+              "deviation": {
+                "schedule_deviation_ratio": 0.4,
+                "schedule_threshold_ratio": 0.2,
+                "time_deviation_days": 3,
+                "time_threshold_days": 0
+              }
+            },
+            "expected": true,
+            "id": "tc-dev01-late-partial"
+          },
+          {
+            "comment": "只超期 1 天、进度正常 → 预警（阈值 0：超期即预警）",
+            "context": {
+              "deviation": {
+                "schedule_deviation_ratio": 0,
+                "schedule_threshold_ratio": 0.2,
+                "time_deviation_days": 1,
+                "time_threshold_days": 0
+              }
+            },
+            "expected": true,
+            "id": "tc-dev01-late-1day"
+          },
+          {
+            "comment": "当天恰好是计划完成时间点、尚未超过 → 不预警",
+            "context": {
+              "deviation": {
+                "schedule_deviation_ratio": 0,
+                "schedule_threshold_ratio": 0.2,
+                "time_deviation_days": 0,
+                "time_threshold_days": 0
+              }
+            },
+            "expected": false,
+            "id": "tc-dev01-ontime"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "超过计划完成时间点则判定有偏差",
+      "outcome": {
+        "emit_event": "DEVIATION_DETECTED",
+        "message": "存在执行偏差，进入按期概率评分",
+        "on_fail": "no_op",
+        "on_pass": "route",
+        "route_to": "scoreOnTimeProbability"
+      },
+      "phase": "analyze",
+      "priority": 1,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R1-03",
+      "ruleGroupTitle": "执行偏差三级识别",
+      "scope": {
+        "objectTypeIds": [
+          "Execution_Deviation"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-1-procurement-deviation",
+          "documentName": "场景1_采购全链路执行偏差三级预警.docx",
+          "quoteVerified": true,
+          "section": "四、场景规则 R1-03",
+          "snippet": "阈值从预警阈值配置表.THRESHOLD_VALUE 读取（时间>7天/进度>20%），以达到三级预警自动分级的要求"
+        },
+        {
+          "documentId": "hc-procurement-ontology-corrections",
+          "documentName": "hc-procurement-ontology-corrections.md",
+          "quoteVerified": true,
+          "section": "C-01（2026-09-01 实跑修正）",
+          "snippet": "预警不看纯天数，而是比较当前所处环节的计划完成时间点与扫描当天——超过了就预警，不设 7 天容忍窗口。节点尚未到期时，进度偏差不单独构成偏差。"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "偏差判定(析)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果偏差判定需要阈值，则必须从预警阈值配置读取，不得在规则或代码中写死取值。",
+      "executor": "System",
+      "id": "BR-DEV-02",
+      "kind": "constraint",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "threshold",
+            "object_id": "Alert_Threshold_Setting",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "threshold.threshold_id != \"\" && threshold.threshold_value >= 0",
+        "test_cases": [
+          {
+            "context": {
+              "threshold": {
+                "threshold_id": "TH-TIME-0D",
+                "threshold_value": 0
+              }
+            },
+            "expected": true,
+            "id": "tc-dev02-hit"
+          },
+          {
+            "context": {
+              "threshold": {
+                "threshold_id": "",
+                "threshold_value": 0
+              }
+            },
+            "expected": false,
+            "id": "tc-dev02-miss"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "判定阈值必须取自阈值配置",
+      "outcome": {
+        "message": "阈值必须来自配置表",
+        "on_fail": "block",
+        "on_pass": "continue"
+      },
+      "phase": "analyze",
+      "priority": 2,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R1-03",
+      "ruleGroupTitle": "执行偏差三级识别",
+      "scope": {
+        "objectTypeIds": [
+          "Alert_Threshold_Setting",
+          "Execution_Deviation"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-1-procurement-deviation",
+          "documentName": "场景1_采购全链路执行偏差三级预警.docx",
+          "quoteVerified": true,
+          "section": "四、场景规则 R1-03",
+          "snippet": "阈值从预警阈值配置表.THRESHOLD_VALUE 读取（时间>7天/进度>20%）"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "偏差判定(析)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果偏差成因标签归为「其他」且成因说明为空，则该条偏差不予定稿，须先补充成因说明。",
+      "executor": "Agent",
+      "id": "BR-DEV-03",
+      "kind": "validation",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "deviation",
+            "object_id": "Execution_Deviation",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "deviation.cause_tag != \"其他\" || deviation.cause_explanation != \"\"",
+        "test_cases": [
+          {
+            "context": {
+              "deviation": {
+                "cause_explanation": "",
+                "cause_tag": "供应商延迟"
+              }
+            },
+            "expected": true,
+            "id": "tc-dev03-tagged"
+          },
+          {
+            "context": {
+              "deviation": {
+                "cause_explanation": "供应商产能临时抽调",
+                "cause_tag": "其他"
+              }
+            },
+            "expected": true,
+            "id": "tc-dev03-other-explained"
+          },
+          {
+            "context": {
+              "deviation": {
+                "cause_explanation": "",
+                "cause_tag": "其他"
+              }
+            },
+            "expected": false,
+            "id": "tc-dev03-other-blank"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "成因归为其他则必须附说明",
+      "outcome": {
+        "message": "成因归为「其他」时必须写明成因说明",
+        "on_fail": "require_human_review",
+        "on_pass": "continue",
+        "requires_explanation": true
+      },
+      "phase": "analyze",
+      "priority": 2,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R1-03",
+      "ruleGroupTitle": "执行偏差三级识别",
+      "scope": {
+        "objectTypeIds": [
+          "Execution_Deviation"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-1-procurement-deviation",
+          "documentName": "场景1_采购全链路执行偏差三级预警.docx",
+          "quoteVerified": true,
+          "section": "七、系统计算对象明细 7.1",
+          "snippet": "并打偏差等级与成因标签，支撑根因下钻与方案推荐"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "偏差判定(析)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果偏差停滞在采购执行环节且成因无法自动判明，则必须向采购员发起停滞原因确认，未澄清前成因不得定稿。",
+      "executor": "Agent",
+      "id": "BR-DEV-04",
+      "kind": "validation",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "deviation",
+            "object_id": "Execution_Deviation",
+            "property": "cause_clarification_status",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "deviation.cause_clarification_status == \"无需澄清\" || deviation.cause_clarification_status == \"已澄清\"",
+        "test_cases": [
+          {
+            "context": {
+              "deviation": {
+                "cause_clarification_status": "无需澄清"
+              }
+            },
+            "expected": true,
+            "id": "tc-dev04-none"
+          },
+          {
+            "context": {
+              "deviation": {
+                "cause_clarification_status": "已澄清"
+              }
+            },
+            "expected": true,
+            "id": "tc-dev04-done"
+          },
+          {
+            "context": {
+              "deviation": {
+                "cause_clarification_status": "待采购员澄清"
+              }
+            },
+            "expected": false,
+            "id": "tc-dev04-pending"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "停滞在采购环节则须采购员确认成因",
+      "outcome": {
+        "message": "停滞原因待采购员澄清，已触发确认消息",
+        "on_fail": "notify",
+        "on_pass": "continue",
+        "route_to": "采购员"
+      },
+      "phase": "analyze",
+      "priority": 2,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R1-03",
+      "ruleGroupTitle": "执行偏差三级识别",
+      "scope": {
+        "objectTypeIds": [
+          "Execution_Deviation"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-1-procurement-deviation",
+          "documentName": "场景1_采购全链路执行偏差三级预警.docx",
+          "quoteVerified": true,
+          "section": "五、业务流程 计算类节点推理过程 b-4",
+          "snippet": "如停在采购过程中，则需要触发消息至采购员进行确认，明确停滞不前具体原因"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "概率评分(评)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果按期达成概率低于 60%，则判定为红色。",
+      "executor": "Agent",
+      "id": "BR-PROB-01",
+      "kind": "validation",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "assessment",
+            "object_id": "Delivery_Probability_Assessment",
+            "property": "on_time_probability",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "assessment.on_time_probability < 0.6",
+        "test_cases": [
+          {
+            "context": {
+              "assessment": {
+                "on_time_probability": 0.42
+              }
+            },
+            "expected": true,
+            "id": "tc-prob01-hit"
+          },
+          {
+            "context": {
+              "assessment": {
+                "on_time_probability": 0.6
+              }
+            },
+            "expected": false,
+            "id": "tc-prob01-edge"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "按期概率低于60%则判红色",
+      "outcome": {
+        "message": "红色：按期概率低于 60%",
+        "on_fail": "no_op",
+        "on_pass": "route",
+        "route_to": "raiseDeviationAlert"
+      },
+      "phase": "score",
+      "priority": 1,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R1-04",
+      "ruleGroupTitle": "按期达成概率评分",
+      "scope": {
+        "objectTypeIds": [
+          "Delivery_Probability_Assessment"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-1-procurement-deviation",
+          "documentName": "场景1_采购全链路执行偏差三级预警.docx",
+          "quoteVerified": true,
+          "section": "四、场景规则 R1-04",
+          "snippet": "结合滞留天数计算按期概率：概率<60%判红、60-85%判黄、>85%判蓝，以达到严重度自主评估的要求"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "概率评分(评)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果按期达成概率在 60% 至 85% 之间，则判定为黄色。",
+      "executor": "Agent",
+      "id": "BR-PROB-02",
+      "kind": "validation",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "assessment",
+            "object_id": "Delivery_Probability_Assessment",
+            "property": "on_time_probability",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "assessment.on_time_probability >= 0.6 && assessment.on_time_probability <= 0.85",
+        "test_cases": [
+          {
+            "context": {
+              "assessment": {
+                "on_time_probability": 0.72
+              }
+            },
+            "expected": true,
+            "id": "tc-prob02-hit"
+          },
+          {
+            "context": {
+              "assessment": {
+                "on_time_probability": 0.55
+              }
+            },
+            "expected": false,
+            "id": "tc-prob02-low"
+          },
+          {
+            "context": {
+              "assessment": {
+                "on_time_probability": 0.9
+              }
+            },
+            "expected": false,
+            "id": "tc-prob02-high"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "按期概率60%~85%则判黄色",
+      "outcome": {
+        "message": "黄色：按期概率 60%~85%",
+        "on_fail": "no_op",
+        "on_pass": "route",
+        "route_to": "raiseDeviationAlert"
+      },
+      "phase": "score",
+      "priority": 1,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R1-04",
+      "ruleGroupTitle": "按期达成概率评分",
+      "scope": {
+        "objectTypeIds": [
+          "Delivery_Probability_Assessment"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-1-procurement-deviation",
+          "documentName": "场景1_采购全链路执行偏差三级预警.docx",
+          "quoteVerified": true,
+          "section": "四、场景规则 R1-04",
+          "snippet": "结合滞留天数计算按期概率：概率<60%判红、60-85%判黄、>85%判蓝，以达到严重度自主评估的要求"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "概率评分(评)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果按期达成概率高于 85%，则判定为蓝色。",
+      "executor": "Agent",
+      "id": "BR-PROB-03",
+      "kind": "validation",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "assessment",
+            "object_id": "Delivery_Probability_Assessment",
+            "property": "on_time_probability",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "assessment.on_time_probability > 0.85",
+        "test_cases": [
+          {
+            "context": {
+              "assessment": {
+                "on_time_probability": 0.93
+              }
+            },
+            "expected": true,
+            "id": "tc-prob03-hit"
+          },
+          {
+            "context": {
+              "assessment": {
+                "on_time_probability": 0.85
+              }
+            },
+            "expected": false,
+            "id": "tc-prob03-edge"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "按期概率高于85%则判蓝色",
+      "outcome": {
+        "message": "蓝色：按期概率高于 85%",
+        "on_fail": "no_op",
+        "on_pass": "route",
+        "route_to": "raiseDeviationAlert"
+      },
+      "phase": "score",
+      "priority": 1,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R1-04",
+      "ruleGroupTitle": "按期达成概率评分",
+      "scope": {
+        "objectTypeIds": [
+          "Delivery_Probability_Assessment"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-1-procurement-deviation",
+          "documentName": "场景1_采购全链路执行偏差三级预警.docx",
+          "quoteVerified": true,
+          "section": "四、场景规则 R1-04",
+          "snippet": "结合滞留天数计算按期概率：概率<60%判红、60-85%判黄、>85%判蓝，以达到严重度自主评估的要求"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "概率评分(评)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果按期概率评分没有附可解释理由，则该评分不予采用——只报超期天数不足以支撑决策。",
+      "executor": "Agent",
+      "id": "BR-PROB-04",
+      "kind": "validation",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "assessment",
+            "object_id": "Delivery_Probability_Assessment",
+            "property": "explanation",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "assessment.explanation != \"\"",
+        "test_cases": [
+          {
+            "context": {
+              "assessment": {
+                "explanation": "剩余标准周期 12 天，历史同类达成率 78%"
+              }
+            },
+            "expected": true,
+            "id": "tc-prob04-hit"
+          },
+          {
+            "context": {
+              "assessment": {
+                "explanation": ""
+              }
+            },
+            "expected": false,
+            "id": "tc-prob04-miss"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "概率评分必须附可解释理由",
+      "outcome": {
+        "message": "概率评分缺少可解释理由",
+        "on_fail": "block",
+        "on_pass": "continue",
+        "requires_explanation": true
+      },
+      "phase": "score",
+      "priority": 2,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R1-04",
+      "ruleGroupTitle": "按期达成概率评分",
+      "scope": {
+        "objectTypeIds": [
+          "Delivery_Probability_Assessment"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-1-procurement-deviation",
+          "documentName": "场景1_采购全链路执行偏差三级预警.docx",
+          "quoteVerified": true,
+          "section": "四、场景规则 R1-04",
+          "snippet": "评分类:告诉业务这单大概率能否按期,而非只报超期天数"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "分级预警(警)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果预警等级为红色，则推送分管领导决策并抄送计划员。",
+      "executor": "Agent",
+      "id": "BR-ALERT-01",
+      "kind": "authorization",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "alert",
+            "object_id": "Deviation_Alert",
+            "property": "alert_level",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "alert.alert_level == \"红色\"",
+        "test_cases": [
+          {
+            "context": {
+              "alert": {
+                "alert_level": "红色"
+              }
+            },
+            "expected": true,
+            "id": "tc-alert01-hit"
+          },
+          {
+            "context": {
+              "alert": {
+                "alert_level": "黄色"
+              }
+            },
+            "expected": false,
+            "id": "tc-alert01-miss"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "红色预警报分管领导",
+      "outcome": {
+        "emit_event": "DEVIATION_ALERT_RAISED",
+        "message": "红色预警报分管领导",
+        "on_fail": "no_op",
+        "on_pass": "notify",
+        "route_to": "分管领导"
+      },
+      "phase": "alert",
+      "priority": 1,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R1-03",
+      "ruleGroupTitle": "执行偏差三级识别",
+      "scope": {
+        "objectTypeIds": [
+          "Deviation_Alert"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-1-procurement-deviation",
+          "documentName": "场景1_采购全链路执行偏差三级预警.docx",
+          "quoteVerified": true,
+          "section": "五、业务流程 步骤e",
+          "snippet": "按概率分级推送: 红<60%报分管领导 / 黄60-85%报部门领导 / 蓝>85%提示计划员"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "分级预警(警)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果预警等级为黄色，则推送部门领导决策并抄送计划员。",
+      "executor": "Agent",
+      "id": "BR-ALERT-02",
+      "kind": "authorization",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "alert",
+            "object_id": "Deviation_Alert",
+            "property": "alert_level",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "alert.alert_level == \"黄色\"",
+        "test_cases": [
+          {
+            "context": {
+              "alert": {
+                "alert_level": "黄色"
+              }
+            },
+            "expected": true,
+            "id": "tc-alert02-hit"
+          },
+          {
+            "context": {
+              "alert": {
+                "alert_level": "红色"
+              }
+            },
+            "expected": false,
+            "id": "tc-alert02-miss"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "黄色预警报部门领导",
+      "outcome": {
+        "emit_event": "DEVIATION_ALERT_RAISED",
+        "message": "黄色预警报部门领导",
+        "on_fail": "no_op",
+        "on_pass": "notify",
+        "route_to": "部门领导"
+      },
+      "phase": "alert",
+      "priority": 1,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R1-03",
+      "ruleGroupTitle": "执行偏差三级识别",
+      "scope": {
+        "objectTypeIds": [
+          "Deviation_Alert"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-1-procurement-deviation",
+          "documentName": "场景1_采购全链路执行偏差三级预警.docx",
+          "quoteVerified": true,
+          "section": "五、业务流程 步骤e",
+          "snippet": "按概率分级推送: 红<60%报分管领导 / 黄60-85%报部门领导 / 蓝>85%提示计划员"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "分级预警(警)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果预警等级为蓝色，则只提示计划员自行处置，不上报领导、不生成调整方案。",
+      "executor": "Agent",
+      "id": "BR-ALERT-03",
+      "kind": "authorization",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "alert",
+            "object_id": "Deviation_Alert",
+            "property": "alert_level",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "alert.alert_level == \"蓝色\"",
+        "test_cases": [
+          {
+            "context": {
+              "alert": {
+                "alert_level": "蓝色"
+              }
+            },
+            "expected": true,
+            "id": "tc-alert03-hit"
+          },
+          {
+            "context": {
+              "alert": {
+                "alert_level": "黄色"
+              }
+            },
+            "expected": false,
+            "id": "tc-alert03-miss"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "蓝色预警仅提示计划员",
+      "outcome": {
+        "message": "蓝色预警提示计划员自行处置",
+        "on_fail": "no_op",
+        "on_pass": "notify",
+        "route_to": "计划员"
+      },
+      "phase": "alert",
+      "priority": 1,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R1-03",
+      "ruleGroupTitle": "执行偏差三级识别",
+      "scope": {
+        "objectTypeIds": [
+          "Deviation_Alert"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-1-procurement-deviation",
+          "documentName": "场景1_采购全链路执行偏差三级预警.docx",
+          "quoteVerified": true,
+          "section": "五、业务流程 步骤e1",
+          "snippet": "蓝→e1计划员自行处置(可选调整或仅监控)→结束"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "方案与决策(断)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果预警等级为红色或黄色，则生成调整方案；如果为蓝色，则不生成调整方案。",
+      "executor": "Agent",
+      "id": "BR-OPT-01",
+      "kind": "validation",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "alert",
+            "object_id": "Deviation_Alert",
+            "property": "alert_level",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "alert.alert_level == \"红色\" || alert.alert_level == \"黄色\"",
+        "test_cases": [
+          {
+            "context": {
+              "alert": {
+                "alert_level": "红色"
+              }
+            },
+            "expected": true,
+            "id": "tc-opt01-red"
+          },
+          {
+            "context": {
+              "alert": {
+                "alert_level": "黄色"
+              }
+            },
+            "expected": true,
+            "id": "tc-opt01-yellow"
+          },
+          {
+            "context": {
+              "alert": {
+                "alert_level": "蓝色"
+              }
+            },
+            "expected": false,
+            "id": "tc-opt01-blue"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "仅红黄预警生成调整方案",
+      "outcome": {
+        "message": "红/黄预警生成调整方案",
+        "on_fail": "no_op",
+        "on_pass": "route",
+        "route_to": "generateAdjustmentOptions"
+      },
+      "phase": "decide",
+      "priority": 1,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R1-05",
+      "ruleGroupTitle": "偏差调整方案生成",
+      "scope": {
+        "objectTypeIds": [
+          "Deviation_Alert",
+          "Adjustment_Option"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-1-procurement-deviation",
+          "documentName": "场景1_采购全链路执行偏差三级预警.docx",
+          "quoteVerified": true,
+          "section": "四、场景规则 R1-05",
+          "snippet": "R1-03红色/黄色预警; R1-04概率; → 可执行调整方案(供选择)"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "方案与决策(断)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果本次预警生成的方案不足「压缩后续周期、调整需求日期、执行调拨」三个，则不允许提交领导决策。",
+      "executor": "Agent",
+      "id": "BR-OPT-02",
+      "kind": "validation",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "alert",
+            "object_id": "Deviation_Alert",
+            "property": "generated_option_count",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "alert.generated_option_count == 3",
+        "test_cases": [
+          {
+            "context": {
+              "alert": {
+                "generated_option_count": 3
+              }
+            },
+            "expected": true,
+            "id": "tc-opt02-hit"
+          },
+          {
+            "context": {
+              "alert": {
+                "generated_option_count": 2
+              }
+            },
+            "expected": false,
+            "id": "tc-opt02-miss"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "方案不足三个则不予决策",
+      "outcome": {
+        "message": "调整方案必须三个齐备",
+        "on_fail": "block",
+        "on_pass": "continue"
+      },
+      "phase": "decide",
+      "priority": 1,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R1-05",
+      "ruleGroupTitle": "偏差调整方案生成",
+      "scope": {
+        "objectTypeIds": [
+          "Adjustment_Option",
+          "Deviation_Alert"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-1-procurement-deviation",
+          "documentName": "场景1_采购全链路执行偏差三级预警.docx",
+          "quoteVerified": true,
+          "section": "四、场景规则 R1-05",
+          "snippet": "生成3个方案：①压缩后续周期→changePbp；②调整需求日期→changePbpLine；③执行调拨→createTransactionOrder"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "方案与决策(断)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果某个调整方案未完成到货影响推演，则该方案不允许提交领导决策。",
+      "executor": "Agent",
+      "id": "BR-OPT-03",
+      "kind": "validation",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "option",
+            "object_id": "Adjustment_Option",
+            "property": "arrival_impact_simulated",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "option.arrival_impact_simulated == true",
+        "test_cases": [
+          {
+            "context": {
+              "option": {
+                "arrival_impact_simulated": true
+              }
+            },
+            "expected": true,
+            "id": "tc-opt03-hit"
+          },
+          {
+            "context": {
+              "option": {
+                "arrival_impact_simulated": false
+              }
+            },
+            "expected": false,
+            "id": "tc-opt03-miss"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "未附到货影响推演则不予上会",
+      "outcome": {
+        "message": "方案缺少到货影响推演",
+        "on_fail": "block",
+        "on_pass": "continue",
+        "requires_explanation": true
+      },
+      "phase": "decide",
+      "priority": 1,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R1-05",
+      "ruleGroupTitle": "偏差调整方案生成",
+      "scope": {
+        "objectTypeIds": [
+          "Adjustment_Option"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-1-procurement-deviation",
+          "documentName": "场景1_采购全链路执行偏差三级预警.docx",
+          "quoteVerified": true,
+          "section": "四、场景规则 R1-05",
+          "snippet": "自动生成压缩后续周期/调整需求日期/执行调拨3个可执行方案并附到货影响推演"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "方案与决策(断)",
+      "complexity": "medium",
+      "confidence": 0.92,
+      "description": "如果预警等级为红色，则方案由分管领导拍板；如果为黄色，则方案由部门领导拍板。",
+      "executor": "Human",
+      "id": "BR-OPT-04",
+      "kind": "authorization",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "alert",
+            "object_id": "Deviation_Alert",
+            "property": "alert_level",
+            "required": true
+          },
+          {
+            "name": "option",
+            "object_id": "Adjustment_Option",
+            "property": "decision_role",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "(alert.alert_level == \"红色\" && option.decision_role == \"分管领导\") || (alert.alert_level == \"黄色\" && option.decision_role == \"部门领导\")",
+        "test_cases": [
+          {
+            "context": {
+              "alert": {
+                "alert_level": "红色"
+              },
+              "option": {
+                "decision_role": "分管领导"
+              }
+            },
+            "expected": true,
+            "id": "tc-opt04-red"
+          },
+          {
+            "context": {
+              "alert": {
+                "alert_level": "黄色"
+              },
+              "option": {
+                "decision_role": "部门领导"
+              }
+            },
+            "expected": true,
+            "id": "tc-opt04-yellow"
+          },
+          {
+            "context": {
+              "alert": {
+                "alert_level": "红色"
+              },
+              "option": {
+                "decision_role": "部门领导"
+              }
+            },
+            "expected": false,
+            "id": "tc-opt04-mismatch"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "决策角色须与预警等级匹配",
+      "outcome": {
+        "message": "决策角色必须与预警等级匹配",
+        "on_fail": "block",
+        "on_pass": "route"
+      },
+      "phase": "decide",
+      "priority": 1,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R1-05",
+      "ruleGroupTitle": "偏差调整方案生成",
+      "scope": {
+        "objectTypeIds": [
+          "Deviation_Alert",
+          "Adjustment_Option"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-1-procurement-deviation",
+          "documentName": "场景1_采购全链路执行偏差三级预警.docx",
+          "quoteVerified": true,
+          "section": "四、场景规则 R1-05",
+          "snippet": "决策角色：分管领导(红)/部门领导(黄)"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "方案与决策(断)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果选定方案未经计划员确认，则不允许回写任何业务单据。",
+      "executor": "Human",
+      "id": "BR-OPT-05",
+      "kind": "authorization",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "option",
+            "object_id": "Adjustment_Option",
+            "property": "planner_confirmed_by",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "option.planner_confirmed_by != \"\"",
+        "test_cases": [
+          {
+            "context": {
+              "option": {
+                "planner_confirmed_by": "张计划"
+              }
+            },
+            "expected": true,
+            "id": "tc-opt05-hit"
+          },
+          {
+            "context": {
+              "option": {
+                "planner_confirmed_by": ""
+              }
+            },
+            "expected": false,
+            "id": "tc-opt05-miss"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "未经计划员确认则不回写单据",
+      "outcome": {
+        "message": "方案执行前必须由计划员确认",
+        "on_fail": "block",
+        "on_pass": "allow"
+      },
+      "phase": "execute",
+      "priority": 1,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R1-05",
+      "ruleGroupTitle": "偏差调整方案生成",
+      "scope": {
+        "objectTypeIds": [
+          "Adjustment_Option"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-1-procurement-deviation",
+          "documentName": "场景1_采购全链路执行偏差三级预警.docx",
+          "quoteVerified": true,
+          "section": "四、场景规则 R1-05",
+          "snippet": "执行角色：计划员(确认后系统执行)"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "方案与决策(断)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果处置动作属于高危动作（暂停申请、整单调剂），则必须经部门领导强制人工确认后方可执行。",
+      "executor": "Human",
+      "id": "BR-OPT-06",
+      "kind": "authorization",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "option",
+            "object_id": "Adjustment_Option",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "option.is_high_risk == false || option.high_risk_confirmed_by != \"\"",
+        "test_cases": [
+          {
+            "context": {
+              "option": {
+                "high_risk_confirmed_by": "",
+                "is_high_risk": false
+              }
+            },
+            "expected": true,
+            "id": "tc-opt06-normal"
+          },
+          {
+            "context": {
+              "option": {
+                "high_risk_confirmed_by": "李部长",
+                "is_high_risk": true
+              }
+            },
+            "expected": true,
+            "id": "tc-opt06-confirmed"
+          },
+          {
+            "context": {
+              "option": {
+                "high_risk_confirmed_by": "",
+                "is_high_risk": true
+              }
+            },
+            "expected": false,
+            "id": "tc-opt06-blocked"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "高危动作须部门领导强制确认",
+      "outcome": {
+        "message": "高危动作必须经部门领导强制人工确认",
+        "on_fail": "block",
+        "on_pass": "allow"
+      },
+      "phase": "execute",
+      "priority": 1,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R1-05",
+      "ruleGroupTitle": "偏差调整方案生成",
+      "scope": {
+        "objectTypeIds": [
+          "Adjustment_Option"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-1-procurement-deviation",
+          "documentName": "场景1_采购全链路执行偏差三级预警.docx",
+          "quoteVerified": true,
+          "section": "三、场景期望 角色及职责",
+          "snippet": "部门领导：接收黄色预警，审阅调整方案并拍板，对高危动作（暂停申请、整单调剂）做强制人工确认"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "超时升级(升)",
+      "complexity": "medium",
+      "confidence": 0.92,
+      "description": "如果黄色预警生成后 48 小时仍未被处理，则自动升级为红色并改推送部门领导的上级。",
+      "executor": "System",
+      "id": "BR-ESC-01",
+      "kind": "temporal",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "alert",
+            "object_id": "Deviation_Alert",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "alert.alert_level == \"黄色\" && alert.handling_status == \"待处理\" && alert.overdue_hours > 48",
+        "test_cases": [
+          {
+            "context": {
+              "alert": {
+                "alert_level": "黄色",
+                "handling_status": "待处理",
+                "overdue_hours": 50
+              }
+            },
+            "expected": true,
+            "id": "tc-esc01-hit"
+          },
+          {
+            "context": {
+              "alert": {
+                "alert_level": "黄色",
+                "handling_status": "待处理",
+                "overdue_hours": 12
+              }
+            },
+            "expected": false,
+            "id": "tc-esc01-intime"
+          },
+          {
+            "context": {
+              "alert": {
+                "alert_level": "黄色",
+                "handling_status": "处理中",
+                "overdue_hours": 60
+              }
+            },
+            "expected": false,
+            "id": "tc-esc01-handled"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "黄色超48小时未处理则升为红色",
+      "outcome": {
+        "emit_event": "DEVIATION_ALERT_ESCALATED",
+        "message": "黄色预警超 48 小时未处理，升级为红色",
+        "on_fail": "no_op",
+        "on_pass": "route",
+        "route_to": "escalateOverdueAlert"
+      },
+      "phase": "escalate",
+      "priority": 1,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R1-06",
+      "ruleGroupTitle": "预警超时自动升级",
+      "scope": {
+        "objectTypeIds": [
+          "Deviation_Alert",
+          "Alert_Handling_Record"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-1-procurement-deviation",
+          "documentName": "场景1_采购全链路执行偏差三级预警.docx",
+          "quoteVerified": true,
+          "section": "四、场景规则 R1-06",
+          "snippet": "黄色预警48h未处理自动升级为红色"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "超时升级(升)",
+      "complexity": "medium",
+      "confidence": 0.92,
+      "description": "如果红色预警生成后 24 小时仍未闭环，则自动上报分管领导。",
+      "executor": "System",
+      "id": "BR-ESC-02",
+      "kind": "temporal",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "alert",
+            "object_id": "Deviation_Alert",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "alert.alert_level == \"红色\" && alert.handling_status != \"已闭环\" && alert.overdue_hours > 24",
+        "test_cases": [
+          {
+            "context": {
+              "alert": {
+                "alert_level": "红色",
+                "handling_status": "处理中",
+                "overdue_hours": 30
+              }
+            },
+            "expected": true,
+            "id": "tc-esc02-hit"
+          },
+          {
+            "context": {
+              "alert": {
+                "alert_level": "红色",
+                "handling_status": "已闭环",
+                "overdue_hours": 40
+              }
+            },
+            "expected": false,
+            "id": "tc-esc02-closed"
+          },
+          {
+            "context": {
+              "alert": {
+                "alert_level": "红色",
+                "handling_status": "待处理",
+                "overdue_hours": 6
+              }
+            },
+            "expected": false,
+            "id": "tc-esc02-intime"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "红色超24小时未闭环则上报分管领导",
+      "outcome": {
+        "emit_event": "DEVIATION_ALERT_ESCALATED",
+        "message": "红色预警超 24 小时未闭环，上报分管领导",
+        "on_fail": "no_op",
+        "on_pass": "route",
+        "route_to": "escalateOverdueAlert"
+      },
+      "phase": "escalate",
+      "priority": 1,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R1-06",
+      "ruleGroupTitle": "预警超时自动升级",
+      "scope": {
+        "objectTypeIds": [
+          "Deviation_Alert",
+          "Alert_Handling_Record"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-1-procurement-deviation",
+          "documentName": "场景1_采购全链路执行偏差三级预警.docx",
+          "quoteVerified": true,
+          "section": "四、场景规则 R1-06",
+          "snippet": "红色预警24h未闭环自动报分管领导"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "超时升级(升)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "当预警发生自动升级时，则必须写入一条「超时升级」处置记录，记录升级时间与新的推送对象。",
+      "executor": "System",
+      "id": "BR-ESC-03",
+      "kind": "constraint",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "record",
+            "object_id": "Alert_Handling_Record",
+            "property": "handling_action",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "record.handling_action == \"超时升级\"",
+        "test_cases": [
+          {
+            "context": {
+              "record": {
+                "handling_action": "超时升级"
+              }
+            },
+            "expected": true,
+            "id": "tc-esc03-hit"
+          },
+          {
+            "context": {
+              "record": {
+                "handling_action": "预警推送"
+              }
+            },
+            "expected": false,
+            "id": "tc-esc03-miss"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "发生升级则必须写升级留痕",
+      "outcome": {
+        "message": "升级必须留痕",
+        "on_fail": "block",
+        "on_pass": "continue"
+      },
+      "phase": "escalate",
+      "priority": 2,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R1-06",
+      "ruleGroupTitle": "预警超时自动升级",
+      "scope": {
+        "objectTypeIds": [
+          "Alert_Handling_Record",
+          "Deviation_Alert"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-1-procurement-deviation",
+          "documentName": "场景1_采购全链路执行偏差三级预警.docx",
+          "quoteVerified": true,
+          "section": "四、场景规则 R1-06",
+          "snippet": "并写升级留痕，以达到预警超时自动升级的要求"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "规则评审组",
+      "category": "误报回收(馈)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果预警核实结果为误报而归因仍是「待归因」，则不允许闭环，须先给出阈值过严、数据质量、口径问题之一的原因。",
+      "executor": "Human",
+      "id": "BR-FB-01",
+      "kind": "validation",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "record",
+            "object_id": "Alert_Handling_Record",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "record.verification_result == \"误报\" && record.false_alarm_cause != \"待归因\"",
+        "test_cases": [
+          {
+            "context": {
+              "record": {
+                "false_alarm_cause": "阈值过严",
+                "verification_result": "误报"
+              }
+            },
+            "expected": true,
+            "id": "tc-fb01-hit"
+          },
+          {
+            "context": {
+              "record": {
+                "false_alarm_cause": "待归因",
+                "verification_result": "误报"
+              }
+            },
+            "expected": false,
+            "id": "tc-fb01-nocause"
+          },
+          {
+            "context": {
+              "record": {
+                "false_alarm_cause": "待归因",
+                "verification_result": "属实"
+              }
+            },
+            "expected": false,
+            "id": "tc-fb01-valid"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "误报未归因则不予闭环",
+      "outcome": {
+        "message": "误报必须给出归因",
+        "on_fail": "require_human_review",
+        "on_pass": "continue",
+        "requires_explanation": true
+      },
+      "phase": "feedback",
+      "priority": 2,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R1-07",
+      "ruleGroupTitle": "预警误报回收",
+      "scope": {
+        "objectTypeIds": [
+          "Deviation_Alert",
+          "Alert_Handling_Record"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-1-procurement-deviation",
+          "documentName": "场景1_采购全链路执行偏差三级预警.docx",
+          "quoteVerified": true,
+          "section": "四、场景规则 R1-07",
+          "snippet": "根据 本体事件日志表.核实结果=误报的记录，归因（阈值过严/数据质量/口径问题）"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "规则评审组",
+      "category": "误报回收(馈)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果预警被业务核实为误报，则必须生成阈值评审条目回流规则评审队列，提议调整对应的预警阈值配置。",
+      "executor": "System",
+      "id": "BR-FB-02",
+      "kind": "constraint",
+      "knowledgeOrigin": "source",
+      "name": "核实为误报则必须回流评审队列",
+      "outcome": {
+        "emit_event": "THRESHOLD_REVIEW_ITEM_CREATED",
+        "message": "误报归因已回流阈值评审队列",
+        "on_fail": "warn",
+        "on_pass": "continue"
+      },
+      "phase": "feedback",
+      "priority": 2,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R1-07",
+      "ruleGroupTitle": "预警误报回收",
+      "scope": {
+        "objectTypeIds": [
+          "Rule_Review_Item",
+          "Alert_Threshold_Setting"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-1-procurement-deviation",
+          "documentName": "场景1_采购全链路执行偏差三级预警.docx",
+          "quoteVerified": true,
+          "section": "四、场景规则 R1-07",
+          "snippet": "归因（阈值过严/数据质量/口径问题）并回流更新预警阈值配置表.THRESHOLD_VALUE 评审队列"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "规则评审组",
+      "category": "误报回收(馈)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果统计误报率高于 20%，则触发预警阈值评审——闭环目标是误报率不高于 20%、逐月下降。",
+      "executor": "System",
+      "id": "BR-FB-03",
+      "kind": "validation",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "item",
+            "object_id": "Rule_Review_Item",
+            "property": "false_alarm_rate",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "item.false_alarm_rate > 0.2",
+        "test_cases": [
+          {
+            "context": {
+              "item": {
+                "false_alarm_rate": 0.28
+              }
+            },
+            "expected": true,
+            "id": "tc-fb03-hit"
+          },
+          {
+            "context": {
+              "item": {
+                "false_alarm_rate": 0.2
+              }
+            },
+            "expected": false,
+            "id": "tc-fb03-edge"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "误报率高于20%则触发阈值评审",
+      "outcome": {
+        "message": "误报率超过 20%，触发阈值评审",
+        "on_fail": "no_op",
+        "on_pass": "route",
+        "route_to": "规则评审组"
+      },
+      "phase": "feedback",
+      "priority": 2,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R1-07",
+      "ruleGroupTitle": "预警误报回收",
+      "scope": {
+        "objectTypeIds": [
+          "Rule_Review_Item",
+          "Alert_Threshold_Setting"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-1-procurement-deviation",
+          "documentName": "场景1_采购全链路执行偏差三级预警.docx",
+          "quoteVerified": true,
+          "section": "四、场景规则 R1-07",
+          "snippet": "反馈类:让系统越用越准,闭环误报率≤20%"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "闭环把关(行)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果方案执行后重算的偏差仍超过阈值，则不允许闭环，退回重新生成调整方案。",
+      "executor": "Agent",
+      "id": "BR-CLOSE-01",
+      "kind": "validation",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "record",
+            "object_id": "Alert_Handling_Record",
+            "property": "deviation_eliminated",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "record.deviation_eliminated == true",
+        "test_cases": [
+          {
+            "context": {
+              "record": {
+                "deviation_eliminated": true
+              }
+            },
+            "expected": true,
+            "id": "tc-close01-hit"
+          },
+          {
+            "context": {
+              "record": {
+                "deviation_eliminated": false
+              }
+            },
+            "expected": false,
+            "id": "tc-close01-miss"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "偏差未消除则不予闭环",
+      "outcome": {
+        "message": "偏差未消除，退回重新出方案",
+        "on_fail": "route",
+        "on_pass": "allow",
+        "route_to": "generateAdjustmentOptions"
+      },
+      "phase": "close",
+      "priority": 1,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "WF-G",
+      "ruleGroupTitle": "偏差处置闭环",
+      "scope": {
+        "objectTypeIds": [
+          "Execution_Deviation",
+          "Alert_Handling_Record"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-1-procurement-deviation",
+          "documentName": "场景1_采购全链路执行偏差三级预警.docx",
+          "quoteVerified": true,
+          "section": "五、业务流程 步骤g",
+          "snippet": "偏差消除校验，处置结果留痕，误报回收优化阈值"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "闭环把关(行)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果预警没有「闭环归档」处置留痕，则不允许闭环——每条预警必须有处置记录、全程可追溯。",
+      "executor": "System",
+      "id": "BR-CLOSE-02",
+      "kind": "constraint",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "record",
+            "object_id": "Alert_Handling_Record",
+            "property": "handling_action",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "record.handling_action == \"闭环归档\"",
+        "test_cases": [
+          {
+            "context": {
+              "record": {
+                "handling_action": "闭环归档"
+              }
+            },
+            "expected": true,
+            "id": "tc-close02-hit"
+          },
+          {
+            "context": {
+              "record": {
+                "handling_action": "预警推送"
+              }
+            },
+            "expected": false,
+            "id": "tc-close02-miss"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "无闭环留痕则不予闭环",
+      "outcome": {
+        "message": "处置结果必须留痕",
+        "on_fail": "block",
+        "on_pass": "continue"
+      },
+      "phase": "close",
+      "priority": 1,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "WF-G",
+      "ruleGroupTitle": "偏差处置闭环",
+      "scope": {
+        "objectTypeIds": [
+          "Alert_Handling_Record",
+          "Deviation_Alert"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-1-procurement-deviation",
+          "documentName": "场景1_采购全链路执行偏差三级预警.docx",
+          "quoteVerified": true,
+          "section": "三、场景期望 5)",
+          "snippet": "处置结果全部留痕可追溯，误报自动回收优化阈值；衡量口径：每条预警有处置记录"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "扫描范围(查)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果需求计划头状态不是「已批准」，或计划行已取消、已删除，则不纳入当日需求合并扫描范围，避免把草稿与作废单据算进合并组。",
+      "executor": "System",
+      "id": "BR2-SCAN-01",
+      "kind": "validation",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "plan",
+            "object_id": "Procurement_Plan",
+            "property": "plan_status",
+            "required": true
+          },
+          {
+            "name": "line",
+            "object_id": "Procurement_Plan_Line",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "plan.plan_status == \"已批准\" && line.is_cancelled == false && line.is_deleted == false",
+        "test_cases": [
+          {
+            "context": {
+              "line": {
+                "is_cancelled": false,
+                "is_deleted": false
+              },
+              "plan": {
+                "plan_status": "已批准"
+              }
+            },
+            "expected": true,
+            "id": "tc-s2-scan01-hit"
+          },
+          {
+            "context": {
+              "line": {
+                "is_cancelled": false,
+                "is_deleted": false
+              },
+              "plan": {
+                "plan_status": "草稿"
+              }
+            },
+            "expected": false,
+            "id": "tc-s2-scan01-draft"
+          },
+          {
+            "context": {
+              "line": {
+                "is_cancelled": true,
+                "is_deleted": false
+              },
+              "plan": {
+                "plan_status": "已批准"
+              }
+            },
+            "expected": false,
+            "id": "tc-s2-scan01-cancelled"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "未审批或已取消的需求计划不纳入扫描",
+      "outcome": {
+        "message": "仅已批准且未取消未删除的计划行进入需求合并扫描",
+        "on_fail": "no_op",
+        "on_pass": "continue"
+      },
+      "phase": "collect",
+      "priority": 1,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R2-01",
+      "ruleGroupTitle": "需求智能合并与拆分",
+      "scope": {
+        "objectTypeIds": [
+          "Procurement_Plan",
+          "Procurement_Plan_Line"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-2-digital-employee",
+          "documentName": "场景2_数字化员工的智能作业实践.docx",
+          "quoteVerified": true,
+          "section": "五、业务流程 步骤a / 7.1 计算逻辑 1）过滤",
+          "snippet": "仅取 ss_pbp_header_t.STATUS（状态）=\"已审批\" 且 ss_pbp_line_t.DELETE_FLAG（删除标识）=\"N\"、CANCELLED_FLAG（取消标识）!=\"Y\" 的计划行"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "需求合并(析)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果两条需求计划行的物料编码与计划行类型编码相同、且需求日期相差不超过 30 天，则应合并为一条执行计划，减少小单散单、保住规模效应。",
+      "executor": "Agent",
+      "id": "BR2-MERGE-01",
+      "kind": "validation",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "suggestion",
+            "object_id": "Demand_Merge_Suggestion",
+            "property": "max_date_gap_days",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "suggestion.max_date_gap_days <= 30",
+        "test_cases": [
+          {
+            "context": {
+              "suggestion": {
+                "max_date_gap_days": 12
+              }
+            },
+            "expected": true,
+            "id": "tc-s2-merge01-hit"
+          },
+          {
+            "context": {
+              "suggestion": {
+                "max_date_gap_days": 30
+              }
+            },
+            "expected": true,
+            "id": "tc-s2-merge01-edge"
+          },
+          {
+            "context": {
+              "suggestion": {
+                "max_date_gap_days": 45
+              }
+            },
+            "expected": false,
+            "id": "tc-s2-merge01-miss"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "同物料同类型且需求日期差不超过30天则合并为一条执行计划",
+      "outcome": {
+        "message": "日期差不超过30天并入同一合并组，超出则不并入本组",
+        "on_fail": "no_op",
+        "on_pass": "continue"
+      },
+      "phase": "analyze",
+      "priority": 1,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R2-01",
+      "ruleGroupTitle": "需求智能合并与拆分",
+      "scope": {
+        "objectTypeIds": [
+          "Procurement_Plan_Line",
+          "Demand_Merge_Suggestion"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-2-digital-employee",
+          "documentName": "场景2_数字化员工的智能作业实践.docx",
+          "quoteVerified": true,
+          "section": "四、场景规则 R2-01 系统实现口径",
+          "snippet": "ITEM_CODE（物料编码）相同 AND PBP_LINE_TYPE_CODE（计划行类型编码）相同 AND NEED_BY_DATE（需求日期）差<=30天，生成合并建议"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "需求合并(析)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果同组内需求日期相差超过 60 天，则不得强行合并，必须拆分为独立计划——差异过大的需求合在一起，倒排与到货节奏都会失真。",
+      "executor": "Agent",
+      "id": "BR2-MERGE-02",
+      "kind": "constraint",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "suggestion",
+            "object_id": "Demand_Merge_Suggestion",
+            "property": "max_date_gap_days",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "suggestion.max_date_gap_days > 60",
+        "test_cases": [
+          {
+            "context": {
+              "suggestion": {
+                "max_date_gap_days": 88
+              }
+            },
+            "expected": true,
+            "id": "tc-s2-merge02-hit"
+          },
+          {
+            "context": {
+              "suggestion": {
+                "max_date_gap_days": 60
+              }
+            },
+            "expected": false,
+            "id": "tc-s2-merge02-edge"
+          },
+          {
+            "context": {
+              "suggestion": {
+                "max_date_gap_days": 20
+              }
+            },
+            "expected": false,
+            "id": "tc-s2-merge02-miss"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "需求日期差超过60天则不得合并必须拆分",
+      "outcome": {
+        "message": "日期差超过60天走拆分分支，不得合并",
+        "on_fail": "no_op",
+        "on_pass": "route",
+        "route_to": "step-split-demand"
+      },
+      "phase": "analyze",
+      "priority": 1,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R2-01",
+      "ruleGroupTitle": "需求智能合并与拆分",
+      "scope": {
+        "objectTypeIds": [
+          "Demand_Merge_Suggestion",
+          "Procurement_Plan_Line"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-2-digital-employee",
+          "documentName": "场景2_数字化员工的智能作业实践.docx",
+          "quoteVerified": true,
+          "section": "四、场景规则 R2-01 系统实现口径",
+          "snippet": "当需求日期差>60天时自动拆分"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "需求合并(析)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果需求日期相差在 30 天以上、60 天以内，则不得自动合并，须标记「待计划员确认」并生成待办，由计划员判断是否并单——这一段是机器算不准、必须留给人的灰区。",
+      "executor": "Agent",
+      "id": "BR2-MERGE-03",
+      "kind": "authorization",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "suggestion",
+            "object_id": "Demand_Merge_Suggestion",
+            "property": "max_date_gap_days",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "suggestion.max_date_gap_days > 30 && suggestion.max_date_gap_days <= 60",
+        "test_cases": [
+          {
+            "context": {
+              "suggestion": {
+                "max_date_gap_days": 45
+              }
+            },
+            "expected": true,
+            "id": "tc-s2-merge03-hit"
+          },
+          {
+            "context": {
+              "suggestion": {
+                "max_date_gap_days": 20
+              }
+            },
+            "expected": false,
+            "id": "tc-s2-merge03-low"
+          },
+          {
+            "context": {
+              "suggestion": {
+                "max_date_gap_days": 75
+              }
+            },
+            "expected": false,
+            "id": "tc-s2-merge03-high"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "需求日期差在30到60天之间则须计划员确认后才可合并",
+      "outcome": {
+        "message": "30~60天的灰区推送计划员确认待办，不自动合并",
+        "on_fail": "no_op",
+        "on_pass": "notify"
+      },
+      "phase": "analyze",
+      "priority": 2,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R2-01",
+      "ruleGroupTitle": "需求智能合并与拆分",
+      "scope": {
+        "objectTypeIds": [
+          "Demand_Merge_Suggestion",
+          "Digital_Employee_Task"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-2-digital-employee",
+          "documentName": "场景2_数字化员工的智能作业实践.docx",
+          "quoteVerified": true,
+          "section": "五、业务流程 b 需求合并分析（R2-01）2）",
+          "snippet": "差<=30天标记为可合并簇，>60天自动拆分（走 b2 分支），30~60天标记\"待计划员确认\""
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "需求合并(析)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果合并组的来源需求行映射尚未写入采购业务计划关系表，则不得生成合并后的执行计划——一单一档、来源可溯是合并的前提，没有映射就查不回原始需求。",
+      "executor": "System",
+      "id": "BR2-MERGE-04",
+      "kind": "constraint",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "suggestion",
+            "object_id": "Demand_Merge_Suggestion",
+            "property": "source_mapping_written",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "suggestion.source_mapping_written == true",
+        "test_cases": [
+          {
+            "context": {
+              "suggestion": {
+                "source_mapping_written": true
+              }
+            },
+            "expected": true,
+            "id": "tc-s2-merge04-ok"
+          },
+          {
+            "context": {
+              "suggestion": {
+                "source_mapping_written": false
+              }
+            },
+            "expected": false,
+            "id": "tc-s2-merge04-missing"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "未写入来源需求行映射则不得生成合并执行计划",
+      "outcome": {
+        "message": "来源行映射未落库，不生成合并执行计划",
+        "on_fail": "block",
+        "on_pass": "continue"
+      },
+      "phase": "execute",
+      "priority": 1,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R2-01",
+      "ruleGroupTitle": "需求智能合并与拆分",
+      "scope": {
+        "objectTypeIds": [
+          "Demand_Merge_Suggestion",
+          "Procurement_Plan_Line"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-2-digital-employee",
+          "documentName": "场景2_数字化员工的智能作业实践.docx",
+          "quoteVerified": true,
+          "section": "7.1 计算逻辑 5）来源映射",
+          "snippet": "合并组内各行 PBP_LINE_ID（采购计划ID）与合并后新行的对应关系写入 ss_pbp_rel_t（采购业务计划关系信息），保证一单一档、来源可溯"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "库存校验(析)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果某物料在该库存组织下的现有量已达到或超过最大库存、且本次需求非紧急，则不得创建采购执行计划，必须标记「可调度」转库存调拨流程（硬拦截）——库存已经积压还继续买，是最典型的重复采购。",
+      "executor": "System",
+      "id": "BR2-STOCK-01",
+      "kind": "constraint",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "check",
+            "object_id": "Stock_Check_Result",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "check.onhand_total_quantity >= check.max_stock_quantity && check.is_urgent_demand == false",
+        "test_cases": [
+          {
+            "context": {
+              "check": {
+                "is_urgent_demand": false,
+                "max_stock_quantity": 300,
+                "onhand_total_quantity": 320
+              }
+            },
+            "expected": true,
+            "id": "tc-s2-stock01-hit"
+          },
+          {
+            "context": {
+              "check": {
+                "is_urgent_demand": true,
+                "max_stock_quantity": 300,
+                "onhand_total_quantity": 320
+              }
+            },
+            "expected": false,
+            "id": "tc-s2-stock01-urgent"
+          },
+          {
+            "context": {
+              "check": {
+                "is_urgent_demand": false,
+                "max_stock_quantity": 300,
+                "onhand_total_quantity": 120
+              }
+            },
+            "expected": false,
+            "id": "tc-s2-stock01-low"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "现有量达到最大库存且非紧急则不得新建采购计划须转调拨",
+      "outcome": {
+        "message": "库存达上限且非紧急：硬拦截不创建采购计划，转调拨",
+        "on_fail": "no_op",
+        "on_pass": "route",
+        "route_to": "step-create-transfer-order"
+      },
+      "phase": "analyze",
+      "priority": 1,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R2-02",
+      "ruleGroupTitle": "库存校验与采购必要性判断",
+      "scope": {
+        "objectTypeIds": [
+          "Stock_Check_Result",
+          "Inventory_MinMax_Level",
+          "Stock_Transfer_Request"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-2-digital-employee",
+          "documentName": "场景2_数字化员工的智能作业实践.docx",
+          "quoteVerified": true,
+          "section": "四、场景规则 R2-02 系统实现口径 / 则数字员工执行 1）",
+          "snippet": "现有量>=最大库存（inv_plan_item_min_max_level_t. max_plan_quantity）→不创建；库存满足时标记\"可调度\"并转库存调拨流程，不创建采购执行计划（硬拦截）"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "库存校验(析)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果可用量（现有量扣减已预留量）小于需求数量，则标记「需采购」，自动创建执行计划草稿并推送计划员待办。",
+      "executor": "System",
+      "id": "BR2-STOCK-02",
+      "kind": "validation",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "check",
+            "object_id": "Stock_Check_Result",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "check.available_quantity < check.demand_quantity",
+        "test_cases": [
+          {
+            "context": {
+              "check": {
+                "available_quantity": 40,
+                "demand_quantity": 120
+              }
+            },
+            "expected": true,
+            "id": "tc-s2-stock02-hit"
+          },
+          {
+            "context": {
+              "check": {
+                "available_quantity": 200,
+                "demand_quantity": 120
+              }
+            },
+            "expected": false,
+            "id": "tc-s2-stock02-miss"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "可用量小于需求数量则标记需采购并生成执行计划草稿",
+      "outcome": {
+        "message": "可用量不足：标记需采购并生成执行计划草稿",
+        "on_fail": "no_op",
+        "on_pass": "continue"
+      },
+      "phase": "analyze",
+      "priority": 1,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R2-02",
+      "ruleGroupTitle": "库存校验与采购必要性判断",
+      "scope": {
+        "objectTypeIds": [
+          "Stock_Check_Result",
+          "Procurement_Plan_Line"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-2-digital-employee",
+          "documentName": "场景2_数字化员工的智能作业实践.docx",
+          "quoteVerified": true,
+          "section": "7.2 计算逻辑 5）需采购判断",
+          "snippet": "AVAILABLE_QTY < QUANTITY（需求数量）时置 STOCK_CHECK_FLAG=\"需采购\"，SHORTAGE_QTY（缺口量）= QUANTITY - AVAILABLE_QTY，自动创建执行计划草稿并推送计划员待办"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "库存校验(析)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果可用量表面够用、但现有量扣除安全库存后已不足以覆盖需求，则标记「触及安全库存」，提示采购并给出建议采购批量（缺口量加安全库存回补量）。",
+      "executor": "System",
+      "id": "BR2-STOCK-03",
+      "kind": "validation",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "check",
+            "object_id": "Stock_Check_Result",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "check.available_quantity >= check.demand_quantity && check.safety_stock_breached == true",
+        "test_cases": [
+          {
+            "context": {
+              "check": {
+                "available_quantity": 150,
+                "demand_quantity": 120,
+                "safety_stock_breached": true
+              }
+            },
+            "expected": true,
+            "id": "tc-s2-stock03-hit"
+          },
+          {
+            "context": {
+              "check": {
+                "available_quantity": 500,
+                "demand_quantity": 120,
+                "safety_stock_breached": false
+              }
+            },
+            "expected": false,
+            "id": "tc-s2-stock03-safe"
+          },
+          {
+            "context": {
+              "check": {
+                "available_quantity": 40,
+                "demand_quantity": 120,
+                "safety_stock_breached": true
+              }
+            },
+            "expected": false,
+            "id": "tc-s2-stock03-short"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "总量满足但扣除安全库存后不足则标记触及安全库存并给出建议批量",
+      "outcome": {
+        "message": "总量够但触及安全库存：提示采购并建议回补批量",
+        "on_fail": "no_op",
+        "on_pass": "notify"
+      },
+      "phase": "analyze",
+      "priority": 2,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R2-02",
+      "ruleGroupTitle": "库存校验与采购必要性判断",
+      "scope": {
+        "objectTypeIds": [
+          "Stock_Check_Result",
+          "Inventory_MinMax_Level"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-2-digital-employee",
+          "documentName": "场景2_数字化员工的智能作业实践.docx",
+          "quoteVerified": true,
+          "section": "四、场景规则 R2-02 系统实现口径 / 7.2 计算逻辑 6）",
+          "snippet": "现有库存-安全库存（inv_plan_item_min_max_level_t. min_plan_quantity）<需求数量→标记\"触及安全库存\"；触及安全库存时给出提示并建议采购批量"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "倒排工期(算)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果当前日期加采购总周期已经超过需求到货日期，则判定时间冲突，生成预警并推荐「缩短周期／调整需求日期／拆分批次」三种调整方案——冲突要在计划编制当天暴露，而不是拖到执行阶段被动赶工。",
+      "executor": "System",
+      "id": "BR2-SCHED-01",
+      "kind": "validation",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "schedule",
+            "object_id": "Backward_Schedule_Plan",
+            "property": "conflict_gap_days",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "schedule.conflict_gap_days > 0",
+        "test_cases": [
+          {
+            "context": {
+              "schedule": {
+                "conflict_gap_days": 12
+              }
+            },
+            "expected": true,
+            "id": "tc-s2-sched01-hit"
+          },
+          {
+            "context": {
+              "schedule": {
+                "conflict_gap_days": -20
+              }
+            },
+            "expected": false,
+            "id": "tc-s2-sched01-ok"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "倒排后总周期赶不上需求到货日期则判定时间冲突并预警",
+      "outcome": {
+        "message": "总周期超出需求到货日期：生成时间冲突预警并给三方案",
+        "on_fail": "no_op",
+        "on_pass": "notify"
+      },
+      "phase": "plan",
+      "priority": 1,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R2-03",
+      "ruleGroupTitle": "采购周期自动倒排",
+      "scope": {
+        "objectTypeIds": [
+          "Backward_Schedule_Plan",
+          "Procurement_Plan_Line"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-2-digital-employee",
+          "documentName": "场景2_数字化员工的智能作业实践.docx",
+          "quoteVerified": true,
+          "section": "四、场景规则 R2-03 系统实现口径 / 则数字员工执行 2）",
+          "snippet": "当 当前日期+采购周期>需求到货日期 时判定时间冲突；检测到时间冲突时生成预警，推荐\"缩短周期/调整需求日期/拆分批次\"三种方案"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "倒排工期(算)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果该需求标记为紧急采购，则各节点周期可压缩至配置的最短周期天数、走绿色通道，并在排期上留下「紧急通道」标记——压缩过的排期必须能被看出来。",
+      "executor": "System",
+      "id": "BR2-SCHED-02",
+      "kind": "authorization",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "line",
+            "object_id": "Procurement_Plan_Line",
+            "property": "is_urgent",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "line.is_urgent == true",
+        "test_cases": [
+          {
+            "context": {
+              "line": {
+                "is_urgent": true
+              }
+            },
+            "expected": true,
+            "id": "tc-s2-sched02-hit"
+          },
+          {
+            "context": {
+              "line": {
+                "is_urgent": false
+              }
+            },
+            "expected": false,
+            "id": "tc-s2-sched02-miss"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "紧急采购则按最短周期天数走绿色通道并标记",
+      "outcome": {
+        "message": "紧急采购按最短周期重排并标记紧急通道",
+        "on_fail": "no_op",
+        "on_pass": "allow"
+      },
+      "phase": "plan",
+      "priority": 2,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R2-03",
+      "ruleGroupTitle": "采购周期自动倒排",
+      "scope": {
+        "objectTypeIds": [
+          "Procurement_Plan_Line",
+          "Backward_Schedule_Plan",
+          "Stage_Cycle_Standard"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-2-digital-employee",
+          "documentName": "场景2_数字化员工的智能作业实践.docx",
+          "quoteVerified": true,
+          "section": "四、场景规则 R2-03 则数字员工执行 3）",
+          "snippet": "紧急采购走绿色通道，周期可压缩至最低并标记"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "倒排工期(算)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果已按最短周期走绿色通道、总周期仍然赶不上需求到货日期，则升级采购部门领导决策，不得由数字员工自行压缩到不可执行的排期。",
+      "executor": "System",
+      "id": "BR2-SCHED-03",
+      "kind": "temporal",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "schedule",
+            "object_id": "Backward_Schedule_Plan",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "schedule.green_channel == true && schedule.conflict_gap_days > 0",
+        "test_cases": [
+          {
+            "context": {
+              "schedule": {
+                "conflict_gap_days": 6,
+                "green_channel": true
+              }
+            },
+            "expected": true,
+            "id": "tc-s2-sched03-hit"
+          },
+          {
+            "context": {
+              "schedule": {
+                "conflict_gap_days": -3,
+                "green_channel": true
+              }
+            },
+            "expected": false,
+            "id": "tc-s2-sched03-resolved"
+          },
+          {
+            "context": {
+              "schedule": {
+                "conflict_gap_days": 6,
+                "green_channel": false
+              }
+            },
+            "expected": false,
+            "id": "tc-s2-sched03-normal"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "绿色通道重算后仍时间冲突则升级采购部门领导",
+      "outcome": {
+        "message": "绿色通道仍冲突：升级采购部门领导",
+        "on_fail": "no_op",
+        "on_pass": "route",
+        "route_to": "role-procurement-leader"
+      },
+      "phase": "plan",
+      "priority": 1,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R2-03",
+      "ruleGroupTitle": "采购周期自动倒排",
+      "scope": {
+        "objectTypeIds": [
+          "Backward_Schedule_Plan",
+          "Digital_Employee_Task"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-2-digital-employee",
+          "documentName": "场景2_数字化员工的智能作业实践.docx",
+          "quoteVerified": true,
+          "section": "7.3 计算逻辑 5）绿色通道",
+          "snippet": "紧急采购按 MIN_DAYS（最短周期天数）重算各节点计划时间并标记\"紧急通道\"，仍冲突时升级采购部门领导"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "集采检查(审)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果采购计划行的物料命中有效集采目录、而该行集采层级仍为「未标识」，则判定「应集采未集采」，拦截或强制转集采流程，并标注建议集采级别。",
+      "executor": "Agent",
+      "id": "BR2-CENTRAL-01",
+      "kind": "constraint",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "line",
+            "object_id": "Procurement_Plan_Line",
+            "property": "central_purchase_level",
+            "required": true
+          },
+          {
+            "name": "catalog",
+            "object_id": "Central_Purchase_Catalog",
+            "property": "is_enabled",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "line.central_purchase_level != \"未标识\" || catalog.is_enabled == false",
+        "test_cases": [
+          {
+            "context": {
+              "catalog": {
+                "is_enabled": true
+              },
+              "line": {
+                "central_purchase_level": "一级集采"
+              }
+            },
+            "expected": true,
+            "id": "tc-s2-central01-marked"
+          },
+          {
+            "context": {
+              "catalog": {
+                "is_enabled": false
+              },
+              "line": {
+                "central_purchase_level": "未标识"
+              }
+            },
+            "expected": true,
+            "id": "tc-s2-central01-disabled"
+          },
+          {
+            "context": {
+              "catalog": {
+                "is_enabled": true
+              },
+              "line": {
+                "central_purchase_level": "未标识"
+              }
+            },
+            "expected": false,
+            "id": "tc-s2-central01-hit"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "计划行物料命中集采目录而未标识集采层级则判应集采未集采并拦截",
+      "outcome": {
+        "message": "命中集采目录却未标识集采层级：应集采未集采，拦截",
+        "on_fail": "block",
+        "on_pass": "continue"
+      },
+      "phase": "audit",
+      "priority": 1,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R2-04",
+      "ruleGroupTitle": "集采目录检查",
+      "scope": {
+        "objectTypeIds": [
+          "Procurement_Plan_Line",
+          "Central_Purchase_Catalog",
+          "Plan_Audit_Finding"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-2-digital-employee",
+          "documentName": "场景2_数字化员工的智能作业实践.docx",
+          "quoteVerified": true,
+          "section": "四、场景规则 R2-04 系统实现口径 1 / 则数字员工执行 2）",
+          "snippet": "ss_pbp_line_t（采购业务计划行表）.ITEM_CODE（物料编码）关联 集采目录.ITEM_CODE 命中且 ss_pbp_line_t.CENTRAL_PURCHASE_LEVEL 未标识集采层级，即命中规则；目录内物料未走集采时拦截或强制转集采流程"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "集采检查(审)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果采购包行的物料命中有效集采目录、而采购包头集采层级仍为「未标识」，则同样判定「应集采未集采」并拦截——计划侧和采购包侧两道口子都要堵。",
+      "executor": "Agent",
+      "id": "BR2-CENTRAL-02",
+      "kind": "constraint",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "package",
+            "object_id": "Sourcing_Package",
+            "property": "central_purchase_level",
+            "required": true
+          },
+          {
+            "name": "catalog",
+            "object_id": "Central_Purchase_Catalog",
+            "property": "is_enabled",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "package.central_purchase_level != \"未标识\" || catalog.is_enabled == false",
+        "test_cases": [
+          {
+            "context": {
+              "catalog": {
+                "is_enabled": true
+              },
+              "package": {
+                "central_purchase_level": "二级集采"
+              }
+            },
+            "expected": true,
+            "id": "tc-s2-central02-marked"
+          },
+          {
+            "context": {
+              "catalog": {
+                "is_enabled": true
+              },
+              "package": {
+                "central_purchase_level": "未标识"
+              }
+            },
+            "expected": false,
+            "id": "tc-s2-central02-hit"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "采购包行物料命中集采目录而包头未标识集采层级则同样判应集采未集采",
+      "outcome": {
+        "message": "采购包命中集采目录却未标识集采层级：拦截",
+        "on_fail": "block",
+        "on_pass": "continue"
+      },
+      "phase": "package",
+      "priority": 1,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R2-04",
+      "ruleGroupTitle": "集采目录检查",
+      "scope": {
+        "objectTypeIds": [
+          "Sourcing_Package",
+          "Sourcing_Package_Line",
+          "Central_Purchase_Catalog"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-2-digital-employee",
+          "documentName": "场景2_数字化员工的智能作业实践.docx",
+          "quoteVerified": true,
+          "section": "四、场景规则 R2-04 系统实现口径 2",
+          "snippet": "ss_proc_package_line_t（采购包行）. ITEM_CODE（物料）关联 集采目录.ITEM_CODE 命中且 ss_proc_package_header_t（采购包头）. CENTRAL_PURCHASE_LEVEL（集采层级） 未标识集采层级，即命中规则"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "集采检查(审)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果申请人已在「不按集采采购原因」入口录入说明，则允许该单继续后续流程，但录入内容与放行动作必须留痕可审计——豁免可以有，无据可查不行。",
+      "executor": "Human",
+      "id": "BR2-CENTRAL-03",
+      "kind": "authorization",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "finding",
+            "object_id": "Plan_Audit_Finding",
+            "property": "non_central_reason_provided",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "finding.non_central_reason_provided == true",
+        "test_cases": [
+          {
+            "context": {
+              "finding": {
+                "non_central_reason_provided": true
+              }
+            },
+            "expected": true,
+            "id": "tc-s2-central03-ok"
+          },
+          {
+            "context": {
+              "finding": {
+                "non_central_reason_provided": false
+              }
+            },
+            "expected": false,
+            "id": "tc-s2-central03-missing"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "已录入不按集采采购原因则可继续后续流程并留痕",
+      "outcome": {
+        "message": "已录入不按集采原因并留痕，放行后续流程",
+        "on_fail": "block",
+        "on_pass": "allow"
+      },
+      "phase": "audit",
+      "priority": 2,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R2-04",
+      "ruleGroupTitle": "集采目录检查",
+      "scope": {
+        "objectTypeIds": [
+          "Plan_Audit_Finding",
+          "Digital_Employee_Task",
+          "Digital_Employee_Operation_Log"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-2-digital-employee",
+          "documentName": "场景2_数字化员工的智能作业实践.docx",
+          "quoteVerified": true,
+          "section": "四、场景规则 R2-04 则数字员工执行 3）",
+          "snippet": "提供\"不按集采采购原因\"录入入口，申请人说明后可继续后续流程并留痕"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "集采检查(审)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果组包方案标注为一级集采，则必须匹配到对应的集团级审批流程模板；没有流程模板的一级集采标注等于没标。",
+      "executor": "System",
+      "id": "BR2-CENTRAL-04",
+      "kind": "constraint",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "scheme",
+            "object_id": "Package_Scheme",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "scheme.central_level != \"一级集采\" || scheme.approve_flow_code != \"\"",
+        "test_cases": [
+          {
+            "context": {
+              "scheme": {
+                "approve_flow_code": "GROUP-CENTRAL-01",
+                "central_level": "一级集采"
+              }
+            },
+            "expected": true,
+            "id": "tc-s2-central04-ok"
+          },
+          {
+            "context": {
+              "scheme": {
+                "approve_flow_code": "",
+                "central_level": "一级集采"
+              }
+            },
+            "expected": false,
+            "id": "tc-s2-central04-missing"
+          },
+          {
+            "context": {
+              "scheme": {
+                "approve_flow_code": "",
+                "central_level": "二级集采"
+              }
+            },
+            "expected": true,
+            "id": "tc-s2-central04-na"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "标注为一级集采则必须匹配集团级审批流程模板",
+      "outcome": {
+        "message": "一级集采必须绑定集团级审批流程模板",
+        "on_fail": "block",
+        "on_pass": "continue"
+      },
+      "phase": "package",
+      "priority": 2,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R2-04",
+      "ruleGroupTitle": "集采目录检查",
+      "scope": {
+        "objectTypeIds": [
+          "Package_Scheme",
+          "Central_Purchase_Catalog"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-2-digital-employee",
+          "documentName": "场景2_数字化员工的智能作业实践.docx",
+          "quoteVerified": true,
+          "section": "四、场景规则 R2-07 则数字员工执行 2） / 6.2 APPROVE_FLOW_CODE",
+          "snippet": "自动标注集采级别并匹配对应审批流程模板，一级集采匹配集团级流程"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "价格校验(审)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果本次预估单价相对历史均价的偏差率超过 20%，则给出软预警，要求需求申请人补充说明，并附上按管理单元划分的历史价格曲线。",
+      "executor": "Agent",
+      "id": "BR2-PRICE-01",
+      "kind": "validation",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "finding",
+            "object_id": "Plan_Audit_Finding",
+            "property": "price_deviation_ratio",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "finding.price_deviation_ratio <= 0.2",
+        "test_cases": [
+          {
+            "context": {
+              "finding": {
+                "price_deviation_ratio": 0.05
+              }
+            },
+            "expected": true,
+            "id": "tc-s2-price01-ok"
+          },
+          {
+            "context": {
+              "finding": {
+                "price_deviation_ratio": 0.2
+              }
+            },
+            "expected": true,
+            "id": "tc-s2-price01-edge"
+          },
+          {
+            "context": {
+              "finding": {
+                "price_deviation_ratio": 0.34
+              }
+            },
+            "expected": false,
+            "id": "tc-s2-price01-hit"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "价格偏差率超过20%则软预警并要求补充说明",
+      "outcome": {
+        "message": "价格偏差超过软预警阈值：软预警并要求补充说明",
+        "on_fail": "warn",
+        "on_pass": "continue"
+      },
+      "phase": "audit",
+      "priority": 1,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R2-05",
+      "ruleGroupTitle": "价格异常、重复申报校验",
+      "scope": {
+        "objectTypeIds": [
+          "Plan_Audit_Finding",
+          "Procurement_Plan_Line",
+          "Purchase_Order"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-2-digital-employee",
+          "documentName": "场景2_数字化员工的智能作业实践.docx",
+          "quoteVerified": true,
+          "section": "四、场景规则 R2-05 则数字员工执行 1）",
+          "snippet": "价格偏差>20%软预警并要求补充说明，>50%升级需求部门领导"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "价格校验(审)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果价格偏差率超过 50%，则不止软预警，必须升级需求部门领导——偏离历史价一半以上的单子，资金风险已不该由申请人一个人承担。",
+      "executor": "Agent",
+      "id": "BR2-PRICE-02",
+      "kind": "validation",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "finding",
+            "object_id": "Plan_Audit_Finding",
+            "property": "price_deviation_ratio",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "finding.price_deviation_ratio <= 0.5",
+        "test_cases": [
+          {
+            "context": {
+              "finding": {
+                "price_deviation_ratio": 0.34
+              }
+            },
+            "expected": true,
+            "id": "tc-s2-price02-soft"
+          },
+          {
+            "context": {
+              "finding": {
+                "price_deviation_ratio": 0.82
+              }
+            },
+            "expected": false,
+            "id": "tc-s2-price02-hit"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "价格偏差率超过50%则升级需求部门领导",
+      "outcome": {
+        "message": "价格偏差超过升级阈值：升级需求部门领导",
+        "on_fail": "route",
+        "on_pass": "continue",
+        "route_to": "role-demand-leader"
+      },
+      "phase": "audit",
+      "priority": 1,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R2-05",
+      "ruleGroupTitle": "价格异常、重复申报校验",
+      "scope": {
+        "objectTypeIds": [
+          "Plan_Audit_Finding",
+          "Digital_Employee_Task"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-2-digital-employee",
+          "documentName": "场景2_数字化员工的智能作业实践.docx",
+          "quoteVerified": true,
+          "section": "四、场景规则 R2-05 则数字员工执行 1）",
+          "snippet": "价格偏差>20%软预警并要求补充说明，>50%升级需求部门领导"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "价格校验(审)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果审核意见中含价格预警，则必须同时附上按管理单元划分的历史价格曲线，否则不予推送——只给一个「偏高」的结论，审核人还是得自己翻数据。",
+      "executor": "System",
+      "id": "BR2-PRICE-03",
+      "kind": "constraint",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "opinion",
+            "object_id": "Plan_Audit_Opinion",
+            "property": "price_curve_attached",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "opinion.price_curve_attached == true",
+        "test_cases": [
+          {
+            "context": {
+              "opinion": {
+                "price_curve_attached": true
+              }
+            },
+            "expected": true,
+            "id": "tc-s2-price03-ok"
+          },
+          {
+            "context": {
+              "opinion": {
+                "price_curve_attached": false
+              }
+            },
+            "expected": false,
+            "id": "tc-s2-price03-missing"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "给出价格预警则必须附按管理单元划分的历史价格曲线",
+      "outcome": {
+        "message": "价格预警未附历史价格曲线，不予推送",
+        "on_fail": "block",
+        "on_pass": "continue"
+      },
+      "phase": "audit",
+      "priority": 2,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R2-05",
+      "ruleGroupTitle": "价格异常、重复申报校验",
+      "scope": {
+        "objectTypeIds": [
+          "Plan_Audit_Opinion",
+          "Purchase_Order"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-2-digital-employee",
+          "documentName": "场景2_数字化员工的智能作业实践.docx",
+          "quoteVerified": true,
+          "section": "四、场景规则 R2-05 系统实现口径",
+          "snippet": "即给出软预警并附按照单位划分的历史价格曲线，以达到价格合理性校验的要求"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "查重校验(审)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果在查重时间窗口（配置默认 30 天）内，已存在物料编码、管理单元、库存组织三者相同且未取消的需求，则标记重复申报并推送原单号供核对（软预警）。",
+      "executor": "Agent",
+      "id": "BR2-DUP-01",
+      "kind": "validation",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "finding",
+            "object_id": "Plan_Audit_Finding",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "finding.duplicate_gap_days > 30 || finding.duplicate_plan_no == \"\"",
+        "test_cases": [
+          {
+            "context": {
+              "finding": {
+                "duplicate_gap_days": 61,
+                "duplicate_plan_no": "PBP-2026-0455"
+              }
+            },
+            "expected": true,
+            "id": "tc-s2-dup01-outside"
+          },
+          {
+            "context": {
+              "finding": {
+                "duplicate_gap_days": 8,
+                "duplicate_plan_no": ""
+              }
+            },
+            "expected": true,
+            "id": "tc-s2-dup01-none"
+          },
+          {
+            "context": {
+              "finding": {
+                "duplicate_gap_days": 8,
+                "duplicate_plan_no": "PBP-2026-0731"
+              }
+            },
+            "expected": false,
+            "id": "tc-s2-dup01-hit"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "查重窗口内存在同物料同单元同组织的未取消需求则标记重复申报",
+      "outcome": {
+        "message": "查重窗口内命中同物料未取消需求：标记重复并推原单号",
+        "on_fail": "warn",
+        "on_pass": "continue"
+      },
+      "phase": "audit",
+      "priority": 1,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R2-05",
+      "ruleGroupTitle": "价格异常、重复申报校验",
+      "scope": {
+        "objectTypeIds": [
+          "Plan_Audit_Finding",
+          "Procurement_Plan_Line",
+          "Purchase_Requisition"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-2-digital-employee",
+          "documentName": "场景2_数字化员工的智能作业实践.docx",
+          "quoteVerified": true,
+          "section": "四、场景规则 R2-05 系统实现口径 / 则数字员工执行 2）",
+          "snippet": "根据 ITEM_CODE（物料）+UNIT_CODE（管理单元）+ ORGANIZATION_CODE（库存组织）+ ss_pbp_line_t（采购业务计划行表）.NEED_BY_DATE（需求日期） 检测30天内相同物料未取消需求；检测到30天内同物料重复申报时标记并推送原单号供核对（软预警）"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "阈值来源(审)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果审核或组包需要用到阈值，则必须从校验阈值配置读取有效记录，不得在规则或代码中写死取值——阈值一硬编码，「口径统一」和「越用越准」就都谈不上。",
+      "executor": "System",
+      "id": "BR2-THRESH-01",
+      "kind": "constraint",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "threshold",
+            "object_id": "Audit_Threshold_Setting",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "threshold.audit_threshold_id != \"\" && threshold.is_enabled == true",
+        "test_cases": [
+          {
+            "context": {
+              "threshold": {
+                "audit_threshold_id": "TH-PRICE-SOFT",
+                "is_enabled": true
+              }
+            },
+            "expected": true,
+            "id": "tc-s2-thresh01-ok"
+          },
+          {
+            "context": {
+              "threshold": {
+                "audit_threshold_id": "",
+                "is_enabled": true
+              }
+            },
+            "expected": false,
+            "id": "tc-s2-thresh01-missing"
+          },
+          {
+            "context": {
+              "threshold": {
+                "audit_threshold_id": "TH-PRICE-SOFT",
+                "is_enabled": false
+              }
+            },
+            "expected": false,
+            "id": "tc-s2-thresh01-disabled"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "审核与组包的判定阈值必须取自校验阈值配置",
+      "outcome": {
+        "message": "阈值必须来自有效的校验阈值配置记录",
+        "on_fail": "block",
+        "on_pass": "continue"
+      },
+      "phase": "audit",
+      "priority": 1,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R2-05",
+      "ruleGroupTitle": "价格异常、重复申报校验",
+      "scope": {
+        "objectTypeIds": [
+          "Audit_Threshold_Setting",
+          "Plan_Audit_Finding",
+          "Packaging_Compliance_Finding"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-2-digital-employee",
+          "documentName": "场景2_数字化员工的智能作业实践.docx",
+          "quoteVerified": true,
+          "section": "6.3 校验阈值配置表（cfg_audit_threshold_t）用途",
+          "snippet": "为规则 R2-05（价格异常/重复申报校验）与 R2-06（组包跨度校验）提供统一阈值基准，避免阈值硬编码、口径不一"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "附件完整性(审)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果需求计划行的技术附件不齐全，则拦截并要求需求申请人补齐——定制设备缺技术附件，后续寻源和验收都执行不下去。",
+      "executor": "Agent",
+      "id": "BR2-ATTACH-01",
+      "kind": "constraint",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "finding",
+            "object_id": "Plan_Audit_Finding",
+            "property": "attachment_complete",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "finding.attachment_complete == true",
+        "test_cases": [
+          {
+            "context": {
+              "finding": {
+                "attachment_complete": true
+              }
+            },
+            "expected": true,
+            "id": "tc-s2-attach01-ok"
+          },
+          {
+            "context": {
+              "finding": {
+                "attachment_complete": false
+              }
+            },
+            "expected": false,
+            "id": "tc-s2-attach01-missing"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "定制设备缺技术附件则拦截并要求补齐",
+      "outcome": {
+        "message": "技术附件不齐：拦截并要求补齐",
+        "on_fail": "block",
+        "on_pass": "continue"
+      },
+      "phase": "audit",
+      "priority": 2,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R2-05",
+      "ruleGroupTitle": "价格异常、重复申报校验",
+      "scope": {
+        "objectTypeIds": [
+          "Plan_Audit_Finding",
+          "Digital_Employee_Task"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-2-digital-employee",
+          "documentName": "场景2_数字化员工的智能作业实践.docx",
+          "quoteVerified": true,
+          "section": "二、场景目标 2） / 四、场景规则 R2-05 业务说明",
+          "snippet": "自动完成集采目录检查、价格异常检测、重复申报查重、技术附件完整性校验，生成结构化审核意见；定制设备缺技术附件导致寻源验收无法执行"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "组包合规(断)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果同一采购包内同时存在工程、物资、服务中的两种以上类型，则硬拦截、不得成包——类型混包会让寻源方式与验收标准都无从统一。",
+      "executor": "System",
+      "id": "BR2-PKG-01",
+      "kind": "constraint",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "scheme",
+            "object_id": "Package_Scheme",
+            "property": "mixed_type_detected",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "scheme.mixed_type_detected == false",
+        "test_cases": [
+          {
+            "context": {
+              "scheme": {
+                "mixed_type_detected": false
+              }
+            },
+            "expected": true,
+            "id": "tc-s2-pkg01-ok"
+          },
+          {
+            "context": {
+              "scheme": {
+                "mixed_type_detected": true
+              }
+            },
+            "expected": false,
+            "id": "tc-s2-pkg01-mixed"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "采购包内混有工程物资服务不同类型则硬拦截不得成包",
+      "outcome": {
+        "message": "检出类型混包：硬拦截，退回调整",
+        "on_fail": "block",
+        "on_pass": "continue"
+      },
+      "phase": "package",
+      "priority": 1,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R2-06",
+      "ruleGroupTitle": "品类识别与组包方案推荐",
+      "scope": {
+        "objectTypeIds": [
+          "Package_Scheme",
+          "Purchase_Category",
+          "Packaging_Compliance_Finding"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-2-digital-employee",
+          "documentName": "场景2_数字化员工的智能作业实践.docx",
+          "quoteVerified": true,
+          "section": "四、场景规则 R2-06 则数字员工执行 2）",
+          "snippet": "采购包内同时存在工程/物资/服务类型时自动拦截（硬拦截）"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "组包合规(断)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果两批需求收货地域相同、交付周期重叠度不低于 70%，则优先合并进同一个采购包，把规模效应做出来。",
+      "executor": "Agent",
+      "id": "BR2-PKG-02",
+      "kind": "validation",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "scheme",
+            "object_id": "Package_Scheme",
+            "property": "delivery_overlap_rate",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "scheme.delivery_overlap_rate >= 0.7",
+        "test_cases": [
+          {
+            "context": {
+              "scheme": {
+                "delivery_overlap_rate": 0.85
+              }
+            },
+            "expected": true,
+            "id": "tc-s2-pkg02-hit"
+          },
+          {
+            "context": {
+              "scheme": {
+                "delivery_overlap_rate": 0.7
+              }
+            },
+            "expected": true,
+            "id": "tc-s2-pkg02-edge"
+          },
+          {
+            "context": {
+              "scheme": {
+                "delivery_overlap_rate": 0.4
+              }
+            },
+            "expected": false,
+            "id": "tc-s2-pkg02-miss"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "同地域且交付周期重叠度不低于70%则优先合并为同一采购包",
+      "outcome": {
+        "message": "地域相同且交付周期重叠度达标：优先合并组包",
+        "on_fail": "no_op",
+        "on_pass": "continue"
+      },
+      "phase": "package",
+      "priority": 2,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R2-06",
+      "ruleGroupTitle": "品类识别与组包方案推荐",
+      "scope": {
+        "objectTypeIds": [
+          "Package_Scheme",
+          "Procurement_Plan_Line"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-2-digital-employee",
+          "documentName": "场景2_数字化员工的智能作业实践.docx",
+          "quoteVerified": true,
+          "section": "四、场景规则 R2-06 系统实现口径 / 则数字员工执行 3）",
+          "snippet": "并按收货地域相似度与交付周期重叠度(>=70%)优先合并；同地域、交付周期重叠度高的优先合并"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "组包合规(断)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果采购包内的交货时间跨度超过 90 天，则生成拆包建议——跨度过大的包，前半程等后半程，交付节奏全被拖住。",
+      "executor": "Agent",
+      "id": "BR2-PKG-03",
+      "kind": "validation",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "scheme",
+            "object_id": "Package_Scheme",
+            "property": "delivery_span_days",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "scheme.delivery_span_days <= 90",
+        "test_cases": [
+          {
+            "context": {
+              "scheme": {
+                "delivery_span_days": 30
+              }
+            },
+            "expected": true,
+            "id": "tc-s2-pkg03-ok"
+          },
+          {
+            "context": {
+              "scheme": {
+                "delivery_span_days": 90
+              }
+            },
+            "expected": true,
+            "id": "tc-s2-pkg03-edge"
+          },
+          {
+            "context": {
+              "scheme": {
+                "delivery_span_days": 128
+              }
+            },
+            "expected": false,
+            "id": "tc-s2-pkg03-hit"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "包内交货时间跨度超过90天则生成拆包建议",
+      "outcome": {
+        "message": "交货跨度超限：生成拆包建议",
+        "on_fail": "warn",
+        "on_pass": "continue"
+      },
+      "phase": "package",
+      "priority": 2,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R2-06",
+      "ruleGroupTitle": "品类识别与组包方案推荐",
+      "scope": {
+        "objectTypeIds": [
+          "Package_Scheme",
+          "Packaging_Compliance_Finding"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-2-digital-employee",
+          "documentName": "场景2_数字化员工的智能作业实践.docx",
+          "quoteVerified": true,
+          "section": "四、场景规则 R2-06 系统实现口径 / 则数字员工执行 4）",
+          "snippet": "交货时间跨度>90天时建议拆包；交货跨度>90天时生成拆包建议"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "组包合规(断)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果本批次生成的候选组包方案少于两套，则不予推送计划员选择——只给一套就不叫比选，「组包有依据、可复用」也就落不了地。",
+      "executor": "System",
+      "id": "BR2-PKG-04",
+      "kind": "constraint",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "scheme",
+            "object_id": "Package_Scheme",
+            "property": "sibling_scheme_count",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "scheme.sibling_scheme_count >= 2",
+        "test_cases": [
+          {
+            "context": {
+              "scheme": {
+                "sibling_scheme_count": 3
+              }
+            },
+            "expected": true,
+            "id": "tc-s2-pkg04-ok"
+          },
+          {
+            "context": {
+              "scheme": {
+                "sibling_scheme_count": 1
+              }
+            },
+            "expected": false,
+            "id": "tc-s2-pkg04-single"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "组包方案不足两套则不予推送计划员选择",
+      "outcome": {
+        "message": "候选方案不足两套，不推送计划员选择",
+        "on_fail": "block",
+        "on_pass": "continue"
+      },
+      "phase": "package",
+      "priority": 1,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R2-06",
+      "ruleGroupTitle": "品类识别与组包方案推荐",
+      "scope": {
+        "objectTypeIds": [
+          "Package_Scheme",
+          "Digital_Employee_Task"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-2-digital-employee",
+          "documentName": "场景2_数字化员工的智能作业实践.docx",
+          "quoteVerified": true,
+          "section": "四、场景规则 R2-06 则数字员工执行 1） / 三、场景期望 4）",
+          "snippet": "自动生成2-3套组包方案供计划员选择；输出 2-3 套组包方案及匹配置信度"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "框架识别(断)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果采购包行的物料与管理单元命中框架协议、且该协议失效日期晚于当前日期又未关闭，则标注「可纳入框架：协议编号」并推荐合并组包——框架协议利用率上不去，多半就是组包时没人知道协议还在有效期。",
+      "executor": "Agent",
+      "id": "BR2-FRAME-01",
+      "kind": "validation",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "agreement",
+            "object_id": "Frame_Agreement",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "agreement.is_valid == true && agreement.closed_status == \"未关闭\"",
+        "test_cases": [
+          {
+            "context": {
+              "agreement": {
+                "closed_status": "未关闭",
+                "is_valid": true
+              }
+            },
+            "expected": true,
+            "id": "tc-s2-frame01-hit"
+          },
+          {
+            "context": {
+              "agreement": {
+                "closed_status": "已关闭",
+                "is_valid": true
+              }
+            },
+            "expected": false,
+            "id": "tc-s2-frame01-closed"
+          },
+          {
+            "context": {
+              "agreement": {
+                "closed_status": "未关闭",
+                "is_valid": false
+              }
+            },
+            "expected": false,
+            "id": "tc-s2-frame01-expired"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "命中未失效未关闭的框架协议则标注可纳入框架并推荐合并组包",
+      "outcome": {
+        "message": "命中有效框架协议：标注可纳入框架并推荐合并",
+        "on_fail": "no_op",
+        "on_pass": "continue"
+      },
+      "phase": "package",
+      "priority": 1,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R2-07",
+      "ruleGroupTitle": "框架协议识别、集采标注",
+      "scope": {
+        "objectTypeIds": [
+          "Frame_Agreement",
+          "Frame_Agreement_Item",
+          "Sourcing_Package_Line"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-2-digital-employee",
+          "documentName": "场景2_数字化员工的智能作业实践.docx",
+          "quoteVerified": true,
+          "section": "四、场景规则 R2-07 系统实现口径 / 则数字员工执行 1）",
+          "snippet": "ss_proc_package_line_t.ITEM_CODE（物料）AND ss_proc_package_line_t.UNIT_CODE 关联 ss_spa_header_t（框架协议头）/ss_spa_line_t（框架协议行） 框架协议判断有效性（根据失效日期-DISABLE_DATE与当前日期判断）并标注；自动标注\"可纳入框架：XXX协议\"并推荐合并组包"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "框架识别(断)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果命中了框架协议、但协议可用额度不足以覆盖本次需求，则只提示额度不足，不得自动把需求纳入该框架执行。",
+      "executor": "System",
+      "id": "BR2-FRAME-02",
+      "kind": "constraint",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "scheme",
+            "object_id": "Package_Scheme",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "scheme.frame_hit == false || scheme.frame_quota_sufficient == true",
+        "test_cases": [
+          {
+            "context": {
+              "scheme": {
+                "frame_hit": true,
+                "frame_quota_sufficient": true
+              }
+            },
+            "expected": true,
+            "id": "tc-s2-frame02-ok"
+          },
+          {
+            "context": {
+              "scheme": {
+                "frame_hit": false,
+                "frame_quota_sufficient": false
+              }
+            },
+            "expected": true,
+            "id": "tc-s2-frame02-nohit"
+          },
+          {
+            "context": {
+              "scheme": {
+                "frame_hit": true,
+                "frame_quota_sufficient": false
+              }
+            },
+            "expected": false,
+            "id": "tc-s2-frame02-hit"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "命中框架协议但可用额度不足则只提示不自动纳入",
+      "outcome": {
+        "message": "框架额度不足：仅提示，不自动纳入框架",
+        "on_fail": "warn",
+        "on_pass": "continue"
+      },
+      "phase": "package",
+      "priority": 2,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R2-07",
+      "ruleGroupTitle": "框架协议识别、集采标注",
+      "scope": {
+        "objectTypeIds": [
+          "Package_Scheme",
+          "Frame_Agreement"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-2-digital-employee",
+          "documentName": "场景2_数字化员工的智能作业实践.docx",
+          "quoteVerified": true,
+          "section": "四、场景规则 R2-07 则数字员工执行 1）",
+          "snippet": "自动标注\"可纳入框架：XXX协议\"并推荐合并组包，额度不足时提示"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "框架识别(断)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果按场景编码识别出单一来源、邀请招标等特殊采购方式，则触发补充说明待办，由集采管理岗说明理由后方可继续——特殊方式必须有人签字背书。",
+      "executor": "Agent",
+      "id": "BR2-FRAME-03",
+      "kind": "validation",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "scheme",
+            "object_id": "Package_Scheme",
+            "property": "special_sourcing_method",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "scheme.special_sourcing_method != \"无\"",
+        "test_cases": [
+          {
+            "context": {
+              "scheme": {
+                "special_sourcing_method": "单一来源"
+              }
+            },
+            "expected": true,
+            "id": "tc-s2-frame03-hit"
+          },
+          {
+            "context": {
+              "scheme": {
+                "special_sourcing_method": "无"
+              }
+            },
+            "expected": false,
+            "id": "tc-s2-frame03-none"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "识别为单一来源或邀请招标等特殊采购方式则触发补充说明待办",
+      "outcome": {
+        "message": "识别到特殊采购方式：生成补充说明待办",
+        "on_fail": "no_op",
+        "on_pass": "notify"
+      },
+      "phase": "package",
+      "priority": 2,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "R2-07",
+      "ruleGroupTitle": "框架协议识别、集采标注",
+      "scope": {
+        "objectTypeIds": [
+          "Package_Scheme",
+          "Sourcing_Package",
+          "Digital_Employee_Task"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-2-digital-employee",
+          "documentName": "场景2_数字化员工的智能作业实践.docx",
+          "quoteVerified": true,
+          "section": "四、场景规则 R2-07 则数字员工执行 3）",
+          "snippet": "识别特殊采购方式（单一来源/邀请招标等）触发补充说明待办"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "人机协同(断)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果执行计划草稿尚未被计划员确认、或组包方案尚未被选定，则不得提交审批——数字员工替代的是重复劳动，不是决策权。",
+      "executor": "Human",
+      "id": "BR2-HITL-01",
+      "kind": "authorization",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "line",
+            "object_id": "Procurement_Plan_Line",
+            "property": "draft_confirmed_by",
+            "required": true
+          },
+          {
+            "name": "scheme",
+            "object_id": "Package_Scheme",
+            "property": "scheme_status",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "line.draft_confirmed_by != \"\" && scheme.scheme_status == \"已选定\"",
+        "test_cases": [
+          {
+            "context": {
+              "line": {
+                "draft_confirmed_by": "计划员张"
+              },
+              "scheme": {
+                "scheme_status": "已选定"
+              }
+            },
+            "expected": true,
+            "id": "tc-s2-hitl01-ok"
+          },
+          {
+            "context": {
+              "line": {
+                "draft_confirmed_by": ""
+              },
+              "scheme": {
+                "scheme_status": "已选定"
+              }
+            },
+            "expected": false,
+            "id": "tc-s2-hitl01-nodraft"
+          },
+          {
+            "context": {
+              "line": {
+                "draft_confirmed_by": "计划员张"
+              },
+              "scheme": {
+                "scheme_status": "待选择"
+              }
+            },
+            "expected": false,
+            "id": "tc-s2-hitl01-noscheme"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "执行计划草稿或组包方案未经计划员确认则不得提交审批",
+      "outcome": {
+        "message": "未经计划员确认与选定，不得提交审批",
+        "on_fail": "block",
+        "on_pass": "allow"
+      },
+      "phase": "confirm",
+      "priority": 1,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "WF-J",
+      "ruleGroupTitle": "人机协同与留痕",
+      "scope": {
+        "objectTypeIds": [
+          "Procurement_Plan_Line",
+          "Package_Scheme",
+          "Digital_Employee_Task"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-2-digital-employee",
+          "documentName": "场景2_数字化员工的智能作业实践.docx",
+          "quoteVerified": true,
+          "section": "五、业务流程 步骤j / 三、场景期望 5）",
+          "snippet": "计划员确认执行计划与组包方案（人机协同不替代决策）；人机协同不替代决策、关键单据强制人工确认"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "作业留痕(行)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果数字员工的某个作业动作没有留下角色、时间、判定依据与结论四要素齐备的痕迹，则该动作不予放行——「全部操作留痕可审计」的判定标准就是这四要素。",
+      "executor": "System",
+      "id": "BR2-AUDIT-01",
+      "kind": "constraint",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "log",
+            "object_id": "Digital_Employee_Operation_Log",
+            "property": "auditable",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "log.auditable == true",
+        "test_cases": [
+          {
+            "context": {
+              "log": {
+                "auditable": true
+              }
+            },
+            "expected": true,
+            "id": "tc-s2-audit01-ok"
+          },
+          {
+            "context": {
+              "log": {
+                "auditable": false
+              }
+            },
+            "expected": false,
+            "id": "tc-s2-audit01-missing"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "数字员工的作业动作未留痕则不予放行",
+      "outcome": {
+        "message": "作业留痕四要素不全，不予放行",
+        "on_fail": "block",
+        "on_pass": "continue"
+      },
+      "phase": "close",
+      "priority": 1,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "WF-K",
+      "ruleGroupTitle": "人机协同与留痕",
+      "scope": {
+        "objectTypeIds": [
+          "Digital_Employee_Operation_Log",
+          "Digital_Employee_Task"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-2-digital-employee",
+          "documentName": "场景2_数字化员工的智能作业实践.docx",
+          "quoteVerified": true,
+          "section": "三、场景期望 5） / 五、业务流程 步骤k",
+          "snippet": "数字员工全部操作留痕可审计；提交审批，全程留痕可审计；预警与拦截处置可追溯率 100%"
+        }
+      ]
+    },
+    {
+      "belongsToClient": "通用",
+      "belongsToDepartment": "采购计划管理部",
+      "category": "作业留痕(行)",
+      "complexity": "simple",
+      "confidence": 0.92,
+      "description": "如果计划员驳回了数字员工给出的合并建议或组包方案，则必须记录驳回原因并回流优化规则；没有原因的驳回，数字员工就学不会，「越用越准」的闭环也就断了。",
+      "executor": "Human",
+      "id": "BR2-FEEDBACK-01",
+      "kind": "constraint",
+      "knowledgeOrigin": "source",
+      "machine_expression": {
+        "bindings": [
+          {
+            "name": "scheme",
+            "object_id": "Package_Scheme",
+            "required": true
+          }
+        ],
+        "language": "cel",
+        "source": "scheme.scheme_status != \"未采纳\" || scheme.rejection_reason != \"\"",
+        "test_cases": [
+          {
+            "context": {
+              "scheme": {
+                "rejection_reason": "收货地域不一致",
+                "scheme_status": "未采纳"
+              }
+            },
+            "expected": true,
+            "id": "tc-s2-fb01-reason"
+          },
+          {
+            "context": {
+              "scheme": {
+                "rejection_reason": "",
+                "scheme_status": "未采纳"
+              }
+            },
+            "expected": false,
+            "id": "tc-s2-fb01-noreason"
+          },
+          {
+            "context": {
+              "scheme": {
+                "rejection_reason": "",
+                "scheme_status": "已选定"
+              }
+            },
+            "expected": true,
+            "id": "tc-s2-fb01-na"
+          }
+        ],
+        "version": "allmeta-cel-safe-v1"
+      },
+      "name": "计划员驳回数字员工的建议则必须记录驳回原因",
+      "outcome": {
+        "message": "驳回必须带原因，否则规则无法回流优化",
+        "on_fail": "block",
+        "on_pass": "continue"
+      },
+      "phase": "feedback",
+      "priority": 2,
+      "provenance": "extracted",
+      "reviewState": "accepted",
+      "ruleGroupId": "WF-J",
+      "ruleGroupTitle": "人机协同与留痕",
+      "scope": {
+        "objectTypeIds": [
+          "Package_Scheme",
+          "Digital_Employee_Task",
+          "Digital_Employee_Operation_Log"
+        ]
+      },
+      "sources": [
+        {
+          "documentId": "scenario-2-digital-employee",
+          "documentName": "场景2_数字化员工的智能作业实践.docx",
+          "quoteVerified": true,
+          "section": "三、场景期望 5）",
+          "snippet": "驳回与调整自动回流数字员工优化规则，形成\"越用越准\"的闭环"
+        }
+      ]
+    }
+  ]
+}

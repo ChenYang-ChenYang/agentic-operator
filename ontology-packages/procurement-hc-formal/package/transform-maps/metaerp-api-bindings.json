@@ -1,0 +1,318 @@
+{
+  "bindings": {
+    "approveAdjustmentOption": {
+      "form": "platform",
+      "note": "决策对象 / 配置表：MetaERP 无对应 API，由 Agentic Operator 的数据面（当前为 apps/mock-erp）承载",
+      "path": null
+    },
+    "changePbp": {
+      "form": "openapi",
+      "path": "/beta/hsrm/srm/openapi/v1/changePbp"
+    },
+    "changePbpLine": {
+      "form": "openapi",
+      "note": "行变更走 pbpChangeLineReqDTOList",
+      "path": "/beta/hsrm/srm/openapi/v1/changePbp"
+    },
+    "closeBlueAlert": {
+      "form": "platform",
+      "note": "决策对象 / 配置表：MetaERP 无对应 API，由 Agentic Operator 的数据面（当前为 apps/mock-erp）承载",
+      "path": null
+    },
+    "createPbp": {
+      "form": "openapi",
+      "path": "/beta/hsrm/srm/openapi/v1/createPbp"
+    },
+    "createProcPackageLines": {
+      "form": "openapi",
+      "path": "/beta/hsrm/srm/openapi/v1/createProcPackageLines"
+    },
+    "createReviewItem": {
+      "form": "platform",
+      "note": "决策对象 / 配置表：MetaERP 无对应 API，由 Agentic Operator 的数据面（当前为 apps/mock-erp）承载",
+      "path": null
+    },
+    "createTransactionOrder": {
+      "form": "openapi",
+      "path": "/beta/hinv/minv/openapi/v1/createTransactionOrder"
+    },
+    "escalateAlert": {
+      "form": "platform",
+      "note": "决策对象 / 配置表：MetaERP 无对应 API，由 Agentic Operator 的数据面（当前为 apps/mock-erp）承载",
+      "path": null
+    },
+    "pushAlert": {
+      "form": "platform",
+      "note": "决策对象 / 配置表：MetaERP 无对应 API，由 Agentic Operator 的数据面（当前为 apps/mock-erp）承载",
+      "path": null
+    },
+    "pushTask": {
+      "form": "platform",
+      "note": "决策对象 / 配置表：MetaERP 无对应 API，由 Agentic Operator 的数据面（当前为 apps/mock-erp）承载",
+      "path": null
+    },
+    "queryAcceptHeader": {
+      "form": "openapi",
+      "path": "/beta/hpo/mpo/openapi/v1/queryAcceptanceHeader"
+    },
+    "queryAcceptTransaction": {
+      "form": "openapi",
+      "path": "/beta/hpo/mpo/openapi/v1/queryAcTransaction"
+    },
+    "queryAdjustmentOptions": {
+      "form": "platform",
+      "note": "决策对象 / 配置表：MetaERP 无对应 API，由 Agentic Operator 的数据面（当前为 apps/mock-erp）承载",
+      "path": null
+    },
+    "queryAlertHandlingRecords": {
+      "form": "platform",
+      "note": "决策对象 / 配置表：MetaERP 无对应 API，由 Agentic Operator 的数据面（当前为 apps/mock-erp）承载",
+      "path": null
+    },
+    "queryAlertThresholdConfig": {
+      "form": "platform",
+      "note": "决策对象 / 配置表：MetaERP 无对应 API，由 Agentic Operator 的数据面（当前为 apps/mock-erp）承载",
+      "path": null
+    },
+    "queryAllPbpLinePage": {
+      "form": "openapi",
+      "path": "/beta/hsrm/srm/openapi/v1/queryAllPbpLinePage"
+    },
+    "queryAuditThresholdConfig": {
+      "form": "platform",
+      "note": "决策对象 / 配置表：MetaERP 无对应 API，由 Agentic Operator 的数据面（当前为 apps/mock-erp）承载",
+      "path": null
+    },
+    "queryAwardList": {
+      "form": "openapi",
+      "path": "/beta/hsrm/srm/openapi/v1/queryAwardList"
+    },
+    "queryBackwardSchedulePlans": {
+      "form": "platform",
+      "note": "决策对象 / 配置表：MetaERP 无对应 API，由 Agentic Operator 的数据面（当前为 apps/mock-erp）承载",
+      "path": null
+    },
+    "queryBackwardScheduleStages": {
+      "form": "platform",
+      "note": "决策对象 / 配置表：MetaERP 无对应 API，由 Agentic Operator 的数据面（当前为 apps/mock-erp）承载",
+      "path": null
+    },
+    "queryCentralCatalogConfig": {
+      "form": "platform",
+      "note": "决策对象 / 配置表：MetaERP 无对应 API，由 Agentic Operator 的数据面（当前为 apps/mock-erp）承载",
+      "path": null
+    },
+    "queryChainStageProgress": {
+      "form": "platform",
+      "note": "决策对象 / 配置表：MetaERP 无对应 API，由 Agentic Operator 的数据面（当前为 apps/mock-erp）承载",
+      "path": null
+    },
+    "queryContract": {
+      "form": "openapi",
+      "path": "/beta/hsrm/srm/openapi/v1/queryContract"
+    },
+    "queryDemandMergeSuggestions": {
+      "form": "platform",
+      "note": "决策对象 / 配置表：MetaERP 无对应 API，由 Agentic Operator 的数据面（当前为 apps/mock-erp）承载",
+      "path": null
+    },
+    "queryDeviationAlerts": {
+      "form": "platform",
+      "note": "决策对象 / 配置表：MetaERP 无对应 API，由 Agentic Operator 的数据面（当前为 apps/mock-erp）承载",
+      "path": null
+    },
+    "queryDigitalEmployeeTasks": {
+      "form": "platform",
+      "note": "决策对象 / 配置表：MetaERP 无对应 API，由 Agentic Operator 的数据面（当前为 apps/mock-erp）承载",
+      "path": null
+    },
+    "queryExecutionDeviations": {
+      "form": "platform",
+      "note": "决策对象 / 配置表：MetaERP 无对应 API，由 Agentic Operator 的数据面（当前为 apps/mock-erp）承载",
+      "path": null
+    },
+    "queryHistoricalOnTimeRate": {
+      "form": "platform",
+      "note": "决策对象 / 配置表：MetaERP 无对应 API，由 Agentic Operator 的数据面（当前为 apps/mock-erp）承载",
+      "path": null
+    },
+    "queryItemMinMaxLevel": {
+      "form": "ui",
+      "note": "openapi 无注册，未实证",
+      "path": "/beta/gateway/hinv/minv/services/getPlanItemLevel"
+    },
+    "queryOnhandQuantity": {
+      "form": "openapi",
+      "path": "/beta/hinv/minv/openapi/v1/multiOnhandQuantityQuery"
+    },
+    "queryOpenPbpHeader": {
+      "form": "openapi",
+      "note": "同 queryPbpHeader，STATUS=已批准过滤",
+      "path": "/beta/hsrm/srm/openapi/v1/queryPbpHeader"
+    },
+    "queryOpenPbpLine": {
+      "form": "openapi",
+      "path": "/beta/hsrm/srm/openapi/v1/queryPbpLine"
+    },
+    "queryOperationLogs": {
+      "form": "platform",
+      "note": "决策对象 / 配置表：MetaERP 无对应 API，由 Agentic Operator 的数据面（当前为 apps/mock-erp）承载",
+      "path": null
+    },
+    "queryPackageSchemes": {
+      "form": "platform",
+      "note": "决策对象 / 配置表：MetaERP 无对应 API，由 Agentic Operator 的数据面（当前为 apps/mock-erp）承载",
+      "path": null
+    },
+    "queryPackagingComplianceFindings": {
+      "form": "platform",
+      "note": "决策对象 / 配置表：MetaERP 无对应 API，由 Agentic Operator 的数据面（当前为 apps/mock-erp）承载",
+      "path": null
+    },
+    "queryPbpHeader": {
+      "form": "openapi",
+      "path": "/beta/hsrm/srm/openapi/v1/queryPbpHeader"
+    },
+    "queryPbpLine": {
+      "form": "openapi",
+      "path": "/beta/hsrm/srm/openapi/v1/queryPbpLine"
+    },
+    "queryPlanAuditFindings": {
+      "form": "platform",
+      "note": "决策对象 / 配置表：MetaERP 无对应 API，由 Agentic Operator 的数据面（当前为 apps/mock-erp）承载",
+      "path": null
+    },
+    "queryPlanAuditOpinions": {
+      "form": "platform",
+      "note": "决策对象 / 配置表：MetaERP 无对应 API，由 Agentic Operator 的数据面（当前为 apps/mock-erp）承载",
+      "path": null
+    },
+    "queryPoHeader": {
+      "form": "ui",
+      "path": "/beta/gateway/hpo/poquery/services/ui/queryPoService/v1/poHeader/{pageSize}/{curPage}"
+    },
+    "queryPoLine": {
+      "form": "openapi",
+      "note": "注册形态与文档路径不同形，参数需实测",
+      "path": "/beta/hpo/mpo/openapi/v1/queryPoLine"
+    },
+    "queryPoLineShipment": {
+      "form": "ui",
+      "path": "/beta/gateway/hpo/poquery/services/ui/queryPoService/v1/poShipment/{pageSize}/{curPage}"
+    },
+    "queryPr": {
+      "form": "openapi",
+      "path": "/beta/hpo/mpr/openapi/v1/queryPr"
+    },
+    "queryProbabilityAssessments": {
+      "form": "platform",
+      "note": "决策对象 / 配置表：MetaERP 无对应 API，由 Agentic Operator 的数据面（当前为 apps/mock-erp）承载",
+      "path": null
+    },
+    "queryProcPackageLineExecuteMode": {
+      "form": "openapi",
+      "path": "/beta/hsrm/srm/openapi/v1/queryProcPackageLineExecuteMode"
+    },
+    "queryProcPackageLines": {
+      "form": "platform",
+      "note": "决策对象 / 配置表：MetaERP 无对应 API，由 Agentic Operator 的数据面（当前为 apps/mock-erp）承载",
+      "path": null
+    },
+    "queryProcurementChains": {
+      "form": "platform",
+      "note": "决策对象 / 配置表：MetaERP 无对应 API，由 Agentic Operator 的数据面（当前为 apps/mock-erp）承载",
+      "path": null
+    },
+    "queryPurchaseCategory": {
+      "form": "platform",
+      "note": "决策对象 / 配置表：MetaERP 无对应 API，由 Agentic Operator 的数据面（当前为 apps/mock-erp）承载",
+      "path": null
+    },
+    "queryReservation": {
+      "form": "ui",
+      "note": "openapi 无注册；最接近的 openapi 为 queryMaterialReservation，未实证",
+      "path": "/beta/gateway/hinv/minv/services/queryReservation"
+    },
+    "queryRfxList": {
+      "form": "openapi",
+      "path": "/beta/hsrm/srm/openapi/v1/queryRfxList"
+    },
+    "queryRuleReviewItems": {
+      "form": "platform",
+      "note": "决策对象 / 配置表：MetaERP 无对应 API，由 Agentic Operator 的数据面（当前为 apps/mock-erp）承载",
+      "path": null
+    },
+    "querySpaLine": {
+      "form": "openapi",
+      "note": "协议行随头返回",
+      "path": "/beta/hsrm/srm/openapi/v1/querySPAList"
+    },
+    "querySpaList": {
+      "form": "openapi",
+      "path": "/beta/hsrm/srm/openapi/v1/querySPAList"
+    },
+    "queryStageCycleConfig": {
+      "form": "platform",
+      "note": "决策对象 / 配置表：MetaERP 无对应 API，由 Agentic Operator 的数据面（当前为 apps/mock-erp）承载",
+      "path": null
+    },
+    "queryStockCheckResults": {
+      "form": "platform",
+      "note": "决策对象 / 配置表：MetaERP 无对应 API，由 Agentic Operator 的数据面（当前为 apps/mock-erp）承载",
+      "path": null
+    },
+    "queryTransactionOrders": {
+      "form": "platform",
+      "note": "决策对象 / 配置表：MetaERP 无对应 API，由 Agentic Operator 的数据面（当前为 apps/mock-erp）承载",
+      "path": null
+    },
+    "queryTransferableStock": {
+      "form": "platform",
+      "note": "决策对象 / 配置表：MetaERP 无对应 API，由 Agentic Operator 的数据面（当前为 apps/mock-erp）承载",
+      "path": null
+    },
+    "splitDemandLine": {
+      "form": "platform",
+      "note": "决策对象 / 配置表：MetaERP 无对应 API，由 Agentic Operator 的数据面（当前为 apps/mock-erp）承载",
+      "path": null
+    },
+    "submitApproval": {
+      "form": "platform",
+      "note": "决策对象 / 配置表：MetaERP 无对应 API，由 Agentic Operator 的数据面（当前为 apps/mock-erp）承载",
+      "path": null
+    },
+    "updateTransactionOrder": {
+      "form": "openapi",
+      "note": "调拨单状态回传",
+      "path": "/beta/hinv/minv/openapi/v1/createTransactionOrderFulfill"
+    },
+    "writeEventLog": {
+      "form": "platform",
+      "note": "决策对象 / 配置表：MetaERP 无对应 API，由 Agentic Operator 的数据面（当前为 apps/mock-erp）承载",
+      "path": null
+    },
+    "writeOperationLog": {
+      "form": "platform",
+      "note": "决策对象 / 配置表：MetaERP 无对应 API，由 Agentic Operator 的数据面（当前为 apps/mock-erp）承载",
+      "path": null
+    }
+  },
+  "catalog_base": "/metaerp/openapi/v1",
+  "environments": {
+    "beta": {
+      "apigw": "https://apigw.his-beta.chinasoftinc.com",
+      "prefix": "/beta"
+    },
+    "v15": {
+      "apigw": "https://apigw.his.chinasoftinc.com",
+      "note": "把注册路径的 /beta/ 换成 /v15/",
+      "prefix": "/v15"
+    }
+  },
+  "forms": {
+    "openapi": "IAM token + x-renter-id（scripts/call_openapi.py）",
+    "platform": "MetaERP 无此 API；由平台数据面承载",
+    "ui": "门户会话 + x-csrf-token + Referer（scripts/call_uiapi.py）"
+  },
+  "source": "metaerp-openapi-call skill · reference/ppm-scenario2-apis.md (2026-09-04)"
+}

@@ -824,6 +824,8 @@ const AgentObjectSchema = z
     id: z.string(),
     name: z.string(),
     title: z.string().optional(),
+    // Display title per language tag; the portal picks the viewer language.
+    title_i18n: z.record(z.string(), z.string()).optional(),
     description: z.string().optional().default(""),
     actor: z.array(ActorEnum).min(1),
     trigger: z.array(z.string()),

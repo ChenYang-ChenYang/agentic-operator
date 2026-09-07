@@ -1,0 +1,24 @@
+{
+  "rows": [
+    {
+      "CLOSE_BIDDING_DATE": "2026-08-13T17:00:00+08:00",
+      "EFFECTIVE_DATE": "2026-07-29T09:00:00+08:00",
+      "PUBLISH_DATE": "2026-07-30T09:00:00+08:00",
+      "REBID_COUNT": 1,
+      "RFX_HEADER_ID": "RFX-2026-0662",
+      "RFX_NO": "RFX-2026-0662",
+      "RFX_STATUS": "激活",
+      "SOURCE_OBJECT_ID": "PKG-2026-0451"
+    },
+    {
+      "CLOSE_BIDDING_DATE": "2026-07-08T17:00:00+08:00",
+      "EFFECTIVE_DATE": "2026-06-25T09:00:00+08:00",
+      "PUBLISH_DATE": "2026-06-26T09:00:00+08:00",
+      "REBID_COUNT": 0,
+      "RFX_HEADER_ID": "RFX-2026-0701",
+      "RFX_NO": "RFX-2026-0701",
+      "RFX_STATUS": "定标完成",
+      "SOURCE_OBJECT_ID": "PKG-2026-0488"
+    }
+  ]
+}

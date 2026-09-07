@@ -1,0 +1,54 @@
+{
+  "rows": [
+    {
+      "INVENTORY_ORGANIZATION": "ORG-HD",
+      "INVENTORY_STATUS": "合格",
+      "MATERIAL_CODE": "M-CT-110",
+      "ONHAND_BALANCE_ID": "OH-HD-CT-01",
+      "ONHAND_QUANTITY": 6,
+      "PRIMARY_UOM": "台",
+      "SNAPSHOT_AT": "2026-09-07T06:00:00+08:00",
+      "STOREHOUSE_CODE": "WH-HD-02"
+    },
+    {
+      "INVENTORY_ORGANIZATION": "ORG-HD",
+      "INVENTORY_STATUS": "待检",
+      "MATERIAL_CODE": "M-CT-110",
+      "ONHAND_BALANCE_ID": "OH-HD-CT-02",
+      "ONHAND_QUANTITY": 3,
+      "PRIMARY_UOM": "台",
+      "SNAPSHOT_AT": "2026-09-07T06:00:00+08:00",
+      "STOREHOUSE_CODE": "WH-HD-02"
+    },
+    {
+      "INVENTORY_ORGANIZATION": "ORG-HD",
+      "INVENTORY_STATUS": "合格",
+      "MATERIAL_CODE": "M-CBL-YJV",
+      "ONHAND_BALANCE_ID": "OH-HD-CBL-01",
+      "ONHAND_QUANTITY": 5000,
+      "PRIMARY_UOM": "m",
+      "SNAPSHOT_AT": "2026-09-07T06:00:00+08:00",
+      "STOREHOUSE_CODE": "WH-HD-02"
+    },
+    {
+      "INVENTORY_ORGANIZATION": "ORG-HB",
+      "INVENTORY_STATUS": "合格",
+      "MATERIAL_CODE": "M-CBL-YJV",
+      "ONHAND_BALANCE_ID": "OH-HB-CBL-01",
+      "ONHAND_QUANTITY": 1200,
+      "PRIMARY_UOM": "m",
+      "SNAPSHOT_AT": "2026-09-07T06:00:00+08:00",
+      "STOREHOUSE_CODE": "WH-HB-01"
+    },
+    {
+      "INVENTORY_ORGANIZATION": "ORG-HD",
+      "INVENTORY_STATUS": "合格",
+      "MATERIAL_CODE": "M-BRK-126",
+      "ONHAND_BALANCE_ID": "OH-HD-BRK-01",
+      "ONHAND_QUANTITY": 0,
+      "PRIMARY_UOM": "台",
+      "SNAPSHOT_AT": "2026-09-07T06:00:00+08:00",
+      "STOREHOUSE_CODE": "WH-HD-02"
+    }
+  ]
+}

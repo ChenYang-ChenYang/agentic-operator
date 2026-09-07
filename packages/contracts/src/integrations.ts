@@ -88,6 +88,38 @@ export const ListIntegrationsResponse = z.object({
 export type ListIntegrationsResponse = z.infer<typeof ListIntegrationsResponse>;
 
 /**
+ * Reachability of one Meta ERP base URL the tenant's LIVE workflow depends on
+ * (`GET /v1/integrations/erp/status`). One row per `base_url_env` the
+ * manifest's `metaerp.invoke` entries name — usually just METAERP_BASE_URL.
+ * The portal shows a banner while `ok` is false so an operator learns that
+ * the VPN/proxy/address is wrong BEFORE watching a run fail on it.
+ */
+export const ErpIntegrationTarget = z.object({
+  /** Env var the manifest binds (`tool_use[].config.base_url_env`). */
+  env: z.string(),
+  configured: z.boolean(),
+  /** Origin only (`scheme://host[:port]`) — never path, query or credentials. */
+  baseUrl: z.string().nullable(),
+  /** null while not configured (nothing to probe). */
+  reachable: z.boolean().nullable(),
+  checkedAt: z.number().nullable(),
+  /** Transport failure summary when unreachable (e.g. `ECONNREFUSED`). */
+  error: z.string().nullable(),
+  /** Manifest agent names that invoke this ERP. */
+  agents: z.array(z.string()),
+});
+export type ErpIntegrationTarget = z.infer<typeof ErpIntegrationTarget>;
+
+export const ErpIntegrationStatus = z.object({
+  /** false when no live agent calls metaerp.invoke — nothing to warn about. */
+  usesErp: z.boolean(),
+  /** true when every target is configured and reachable (or none is used). */
+  ok: z.boolean(),
+  targets: z.array(ErpIntegrationTarget),
+});
+export type ErpIntegrationStatus = z.infer<typeof ErpIntegrationStatus>;
+
+/**
  * Upsert one integration. Keyed on (tenant, provider): a second PUT for the
  * same provider updates the existing row. `apiKey` is optional on update —
  * omit it to leave the stored key untouched (so the operator can change just

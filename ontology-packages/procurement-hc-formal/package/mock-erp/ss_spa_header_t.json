@@ -1,0 +1,40 @@
+{
+  "rows": [
+    {
+      "AGREEMENT_NO": "SPA-2026-0338",
+      "AGREEMENT_TYPE": "框架协议",
+      "AVAILABLE_AMOUNT": 4260000,
+      "CLOSED_STATUS": "未关闭",
+      "CONTRACT_ID": "CT-2026-0912",
+      "DISABLE_DATE": "2027-07-27",
+      "EFFECTIVE_DATE": "2026-07-28",
+      "IS_VALID": "Y",
+      "MANAGEMENT_UNIT": "华东检修分公司",
+      "SOURCE_OBJECT_ID": "RFX-2026-0701",
+      "SPA_HEADER_ID": "SPA-2026-0338",
+      "SPA_NUMBER": "SPA-2026-0338",
+      "SUPPLIER_CODE": "SUP-HD-CT-01",
+      "SUPPLIER_NAME": "华东互感器制造有限公司",
+      "TOTAL_AMOUNT": 6000000,
+      "USED_AMOUNT": 1740000
+    },
+    {
+      "AGREEMENT_NO": "SPA-2025-0207",
+      "AGREEMENT_TYPE": "框架协议",
+      "AVAILABLE_AMOUNT": 20000,
+      "CLOSED_STATUS": "已关闭",
+      "CONTRACT_ID": "CT-2025-0640",
+      "DISABLE_DATE": "2026-04-30",
+      "EFFECTIVE_DATE": "2025-05-01",
+      "IS_VALID": "N",
+      "MANAGEMENT_UNIT": "华东检修分公司",
+      "SOURCE_OBJECT_ID": "RFX-2025-0311",
+      "SPA_HEADER_ID": "SPA-2025-0207",
+      "SPA_NUMBER": "SPA-2025-0207",
+      "SUPPLIER_CODE": "SUP-HD-CBL-03",
+      "SUPPLIER_NAME": "华东电缆集团有限公司",
+      "TOTAL_AMOUNT": 2000000,
+      "USED_AMOUNT": 1980000
+    }
+  ]
+}

@@ -6,6 +6,8 @@ export const DagAgent = z.object({
   kebabId: z.string(),
   name: z.string(),
   title: z.string(),
+  /** Localized titles from the manifest (`title_i18n`), when declared. */
+  titleI18n: z.record(z.string(), z.string()).optional(),
   actor: ActorEnum,
   triggers: z.array(z.string()),
   emits: z.array(z.string()),

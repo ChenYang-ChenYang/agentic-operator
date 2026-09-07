@@ -60,8 +60,8 @@
 
 .badgeRow {
   position: absolute;
-  top: -9px;
-  right: 6px;
+  top: -11px;
+  right: 5px;
   display: flex;
   gap: 4px;
   pointer-events: none;

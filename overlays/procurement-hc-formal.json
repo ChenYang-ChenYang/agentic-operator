@@ -1,0 +1,1116 @@
+{
+  "domain": "allmeta-procurement-hc-formal",
+  "description": "采购-HC-Formal（immutable package procurement-hc-formal@0.1.8）编译器 overlay。场景一「采购全链路执行偏差三级预警」15 个 action 与 overlays/hc-procurement.json 逐字一致（①查 collectChainExecutionData → ②析 calculateExecutionDeviation → ③评 scoreOnTimeProbability → ④警 raiseDeviationAlert → ⑤断 generateAdjustmentOptions/approveAdjustmentOption → ⑥行 三分支 → ⑦升 escalateOverdueAlert → ⑧闭环 closeDeviationHandling → ⑨馈 recycleFalseAlarm）。场景二「数字化员工的智能作业实践」14 个 action：①查 scanApprovedDemandPlan → ②析 analyzeDemandMerge（→ 拆分 splitOversizedDemand）→ ③析 verifyInventoryAvailability（→ 可调度 createInventoryTransferOrder | 需采购 derivePurchaseSchedule）→ ④行 generateExecutionPlanDraft → ⑤审 auditAnnualPlanCompliance（→ 拦截 returnPlanForRectification）→ ⑥析 recommendPackagingScheme（→ 违规 raisePackagingComplianceAlert）→ ⑦行 annotateFrameAndCentralPurchase → ⑧断 confirmPlanAndPackage → ⑨行 submitPlanForApproval。上游分析 Agent 的 output_contracts 与下游闸口条件、工具参数路径逐字段对齐。",
+  "blocking_outcomes": {
+    "derivePurchaseSchedule": [
+      {
+        "when": "lastResult.blocking_note || !lastResult.draft_request || lastResult.stage_count == 0",
+        "code": "schedule_blocked",
+        "message_from": "lastResult.blocking_note"
+      }
+    ],
+    "calculateExecutionDeviation": [
+      {
+        "when": "lastResult.blocking_note",
+        "code": "deviation_calc_blocked",
+        "message_from": "lastResult.blocking_note"
+      }
+    ]
+  },
+  "title_locale": "zh",
+  "titles": {
+    "collectChainExecutionData": {
+      "zh": "全链路数据采集",
+      "en": "Collect Chain Execution Data"
+    },
+    "calculateExecutionDeviation": {
+      "zh": "计划倒排与偏差归因",
+      "en": "Calculate Execution Deviation"
+    },
+    "archiveDeviationMonitoring": {
+      "zh": "归档监控",
+      "en": "Archive Deviation Monitoring"
+    },
+    "scoreOnTimeProbability": {
+      "zh": "按期达成概率评分",
+      "en": "Score On-Time Probability"
+    },
+    "raiseDeviationAlert": {
+      "zh": "三级分级预警推送",
+      "en": "Raise Deviation Alert"
+    },
+    "handleBlueAlertLocally": {
+      "zh": "计划员自行处置",
+      "en": "Handle Blue Alert Locally"
+    },
+    "generateAdjustmentOptions": {
+      "zh": "调整方案与到货影响推演",
+      "en": "Generate Adjustment Options"
+    },
+    "approveAdjustmentOption": {
+      "zh": "领导审阅并拍板",
+      "en": "Approve Adjustment Option"
+    },
+    "escalateOverdueAlert": {
+      "zh": "预警超时自动上移",
+      "en": "Escalate Overdue Alert"
+    },
+    "compressDownstreamCycle": {
+      "zh": "压缩后续周期",
+      "en": "Compress Downstream Cycle"
+    },
+    "adjustRequiredArrivalDate": {
+      "zh": "调整需求到货日期",
+      "en": "Adjust Required Arrival Date"
+    },
+    "createStockTransferRequest": {
+      "zh": "生成调拨申请",
+      "en": "Create Stock Transfer Request"
+    },
+    "trackTransferFulfillment": {
+      "zh": "调拨到货与归还跟踪",
+      "en": "Track Transfer Fulfillment"
+    },
+    "closeDeviationHandling": {
+      "zh": "偏差消除校验与闭环留痕",
+      "en": "Close Deviation Handling"
+    },
+    "recycleFalseAlarm": {
+      "zh": "误报回收与阈值回流",
+      "en": "Recycle False Alarm"
+    },
+    "scanApprovedDemandPlan": {
+      "zh": "每日扫描已审批需求计划",
+      "en": "Scan Approved Demand Plans"
+    },
+    "analyzeDemandMerge": {
+      "zh": "需求合并分析",
+      "en": "Analyze Demand Merge"
+    },
+    "splitOversizedDemand": {
+      "zh": "差异超限拆分独立计划",
+      "en": "Split Oversized Demand"
+    },
+    "verifyInventoryAvailability": {
+      "zh": "库存校验",
+      "en": "Verify Inventory Availability"
+    },
+    "createInventoryTransferOrder": {
+      "zh": "转库存调拨",
+      "en": "Create Inventory Transfer Order"
+    },
+    "derivePurchaseSchedule": {
+      "zh": "倒排工期",
+      "en": "Derive Purchase Schedule"
+    },
+    "generateExecutionPlanDraft": {
+      "zh": "生成执行计划草稿",
+      "en": "Generate Execution Plan Draft"
+    },
+    "auditAnnualPlanCompliance": {
+      "zh": "年度计划审核",
+      "en": "Audit Annual Plan Compliance"
+    },
+    "returnPlanForRectification": {
+      "zh": "退回整改",
+      "en": "Return Plan for Rectification"
+    },
+    "recommendPackagingScheme": {
+      "zh": "品类识别与组包方案推荐",
+      "en": "Recommend Packaging Scheme"
+    },
+    "annotateFrameAndCentralPurchase": {
+      "zh": "框架协议识别与集采标注",
+      "en": "Annotate Frame & Central Purchase"
+    },
+    "raisePackagingComplianceAlert": {
+      "zh": "组包合规预警",
+      "en": "Raise Packaging Compliance Alert"
+    },
+    "confirmPlanAndPackage": {
+      "zh": "计划员确认计划与组包方案",
+      "en": "Confirm Plan and Package Scheme"
+    },
+    "submitPlanForApproval": {
+      "zh": "提交审批与全程留痕",
+      "en": "Submit Plan for Approval"
+    }
+  },
+  "emissions": {
+    "collectChainExecutionData": [
+      {
+        "event": "CHAIN_PROGRESS_SYNCED",
+        "payload_from": "results.collectChainExecutionData",
+        "when": "always"
+      }
+    ],
+    "calculateExecutionDeviation": [
+      {
+        "event": "EXECUTION_DEVIATION_CALCULATED",
+        "payload_from": "results.calculateExecutionDeviation",
+        "when": "always"
+      },
+      {
+        "event": "DEVIATION_DETECTED",
+        "payload_from": "results.calculateExecutionDeviation",
+        "when": "lastResult.deviation_found == true"
+      },
+      {
+        "event": "NO_DEVIATION_CONFIRMED",
+        "payload_from": "results.calculateExecutionDeviation",
+        "when": "lastResult.deviation_found == false"
+      }
+    ],
+    "archiveDeviationMonitoring": [
+      {
+        "event": "CHAIN_MONITORING_ARCHIVED",
+        "payload_from": "results.archiveDeviationMonitoring",
+        "when": "always"
+      }
+    ],
+    "scoreOnTimeProbability": [
+      {
+        "event": "ON_TIME_PROBABILITY_SCORED",
+        "payload_from": "results.scoreOnTimeProbability",
+        "when": "always"
+      }
+    ],
+    "generateAdjustmentOptions": [
+      {
+        "event": "ADJUSTMENT_OPTIONS_GENERATED",
+        "payload_from": "results.generateAdjustmentOptions",
+        "when": "lastResult.options_generated == true"
+      }
+    ],
+    "raiseDeviationAlert": [
+      {
+        "event": "DEVIATION_ALERT_RAISED",
+        "payload_from": "lastResult.alert_context",
+        "when": "always"
+      }
+    ],
+    "handleBlueAlertLocally": [
+      {
+        "event": "BLUE_ALERT_SELF_HANDLED",
+        "payload_from": "lastResult",
+        "when": "always"
+      }
+    ],
+    "approveAdjustmentOption": [
+      {
+        "event": "ADJUSTMENT_OPTION_APPROVED",
+        "payload_from": "lastResult.decision_context",
+        "when": "results.manual-5.decision == 'approved'"
+      }
+    ],
+    "escalateOverdueAlert": [
+      {
+        "event": "DEVIATION_ALERT_ESCALATED",
+        "payload_from": "lastResult.alert_context",
+        "when": "lastResult.escalated == true"
+      }
+    ],
+    "compressDownstreamCycle": [
+      {
+        "event": "CHAIN_PLAN_SCHEDULE_COMPRESSED",
+        "payload_from": "lastResult",
+        "when": "lastResult.applied == true"
+      }
+    ],
+    "adjustRequiredArrivalDate": [
+      {
+        "event": "REQUIRED_ARRIVAL_DATE_ADJUSTED",
+        "payload_from": "lastResult",
+        "when": "lastResult.applied == true"
+      }
+    ],
+    "createStockTransferRequest": [
+      {
+        "event": "STOCK_TRANSFER_REQUEST_CREATED",
+        "payload_from": "lastResult",
+        "when": "lastResult.applied == true"
+      }
+    ],
+    "trackTransferFulfillment": [
+      {
+        "event": "STOCK_TRANSFER_FULFILLED",
+        "payload_from": "lastResult",
+        "when": "lastResult.fulfilled == true"
+      }
+    ],
+    "closeDeviationHandling": [
+      {
+        "event": "DEVIATION_HANDLING_CLOSED",
+        "payload_from": "lastResult.closure_context",
+        "when": "always"
+      }
+    ],
+    "recycleFalseAlarm": [
+      {
+        "event": "FALSE_ALARM_RECYCLED",
+        "payload_from": "lastResult.recycle_context",
+        "when": "always"
+      },
+      {
+        "event": "THRESHOLD_REVIEW_ITEM_CREATED",
+        "payload_from": "lastResult.review_item",
+        "when": "lastResult.review_item_created == true"
+      }
+    ],
+    "scanApprovedDemandPlan": [
+      {
+        "event": "APPROVED_DEMAND_PLAN_SCANNED",
+        "payload_from": "results.scanApprovedDemandPlan",
+        "when": "always"
+      }
+    ],
+    "analyzeDemandMerge": [
+      {
+        "event": "DEMAND_MERGE_ANALYZED",
+        "payload_from": "results.analyzeDemandMerge",
+        "when": "lastResult.merge_ready == true"
+      },
+      {
+        "event": "DEMAND_SPLIT_REQUIRED",
+        "payload_from": "results.analyzeDemandMerge.split_request",
+        "when": "lastResult.split_required == true"
+      }
+    ],
+    "splitOversizedDemand": [
+      {
+        "event": "DEMAND_SPLIT_CONFIRMED",
+        "payload_from": "lastResult.split_context",
+        "when": "lastResult.applied == true"
+      }
+    ],
+    "verifyInventoryAvailability": [
+      {
+        "event": "INVENTORY_AVAILABILITY_VERIFIED",
+        "payload_from": "results.verifyInventoryAvailability",
+        "when": "always"
+      },
+      {
+        "event": "STOCK_SUFFICIENT_FOR_DEMAND",
+        "payload_from": "results.verifyInventoryAvailability.transfer_context",
+        "when": "lastResult.transfer_required == true"
+      },
+      {
+        "event": "PURCHASE_REQUIRED_CONFIRMED",
+        "payload_from": "results.verifyInventoryAvailability",
+        "when": "lastResult.purchase_required == true"
+      }
+    ],
+    "createInventoryTransferOrder": [
+      {
+        "event": "INVENTORY_TRANSFER_ORDER_CREATED",
+        "payload_from": "lastResult.transfer_context",
+        "when": "lastResult.applied == true"
+      }
+    ],
+    "derivePurchaseSchedule": [
+      {
+        "event": "PURCHASE_SCHEDULE_DERIVED",
+        "payload_from": "results.derivePurchaseSchedule",
+        "when": "always"
+      },
+      {
+        "event": "SCHEDULE_TIME_CONFLICT_DETECTED",
+        "payload_from": "results.derivePurchaseSchedule.conflict_context",
+        "when": "lastResult.time_conflict == true"
+      }
+    ],
+    "generateExecutionPlanDraft": [
+      {
+        "event": "EXECUTION_PLAN_DRAFT_GENERATED",
+        "payload_from": "lastResult.draft_context",
+        "when": "lastResult.source_mapping_written == true"
+      }
+    ],
+    "auditAnnualPlanCompliance": [
+      {
+        "event": "ANNUAL_PLAN_AUDITED",
+        "payload_from": "results.auditAnnualPlanCompliance",
+        "when": "lastResult.intercept == false"
+      },
+      {
+        "event": "PLAN_AUDIT_INTERCEPTED",
+        "payload_from": "results.auditAnnualPlanCompliance.intercept_context",
+        "when": "lastResult.intercept == true"
+      }
+    ],
+    "returnPlanForRectification": [
+      {
+        "event": "PLAN_RETURNED_FOR_RECTIFICATION",
+        "payload_from": "lastResult.return_context",
+        "when": "always"
+      },
+      {
+        "event": "PLAN_RECTIFICATION_SUBMITTED",
+        "payload_from": "lastResult.rectification_context",
+        "when": "results.manual-4.decision == 'approved'"
+      }
+    ],
+    "recommendPackagingScheme": [
+      {
+        "event": "PACKAGING_SCHEME_RECOMMENDED",
+        "payload_from": "results.recommendPackagingScheme",
+        "when": "lastResult.compliance_violated == false"
+      },
+      {
+        "event": "PACKAGING_COMPLIANCE_VIOLATED",
+        "payload_from": "results.recommendPackagingScheme.violation_context",
+        "when": "lastResult.compliance_violated == true"
+      }
+    ],
+    "annotateFrameAndCentralPurchase": [
+      {
+        "event": "FRAME_AND_CENTRAL_ANNOTATED",
+        "payload_from": "lastResult.annotation_context",
+        "when": "lastResult.applied == true"
+      }
+    ],
+    "raisePackagingComplianceAlert": [
+      {
+        "event": "PACKAGING_ALERT_RAISED",
+        "payload_from": "lastResult.task_context",
+        "when": "always"
+      }
+    ],
+    "confirmPlanAndPackage": [
+      {
+        "event": "PLAN_AND_PACKAGE_CONFIRMED",
+        "payload_from": "lastResult.confirm_context",
+        "when": "results.manual-2.decision == 'approved'"
+      },
+      {
+        "event": "PLAN_AND_PACKAGE_REJECTED",
+        "payload_from": "lastResult.rejection_context",
+        "when": "results.manual-2.decision == 'rejected'"
+      }
+    ],
+    "submitPlanForApproval": [
+      {
+        "event": "PLAN_SUBMITTED_FOR_APPROVAL",
+        "payload_from": "lastResult.submission_context",
+        "when": "always"
+      }
+    ]
+  },
+  "rule_gates": {
+    "BR-ALERT-03": {
+      "strategy": "condition",
+      "condition": "input.alert_level == '蓝色'"
+    },
+    "BR-OPT-05": {
+      "strategy": "condition",
+      "condition": "input.planner_confirmed_by"
+    },
+    "BR-FB-01": {
+      "strategy": "condition",
+      "condition": "input.verification_result == '误报'"
+    },
+    "BR2-STOCK-01": {
+      "strategy": "condition",
+      "condition": "input.stock_check_flag == '可调度' && input.is_urgent_demand == false"
+    },
+    "BR2-HITL-01": {
+      "strategy": "condition",
+      "condition": "input.selected_by && input.package_scheme_id"
+    }
+  },
+  "submission_gates": {
+    "compressDownstreamCycle": "input.option_type == '压缩后续周期'",
+    "adjustRequiredArrivalDate": "input.option_type == '调整需求日期'",
+    "createStockTransferRequest": "input.option_type == '执行调拨'"
+  },
+  "manual_steps": {
+    "handleBlueAlertLocally": {
+      "reviewBlueAlert": {
+        "task_type": "blue-alert.review",
+        "awaiting_role": "计划员",
+        "form_schema": {
+          "type": "object",
+          "title": "蓝色预警 · 查看偏差画像与按期概率",
+          "properties": {
+            "reviewed": {
+              "type": "boolean",
+              "title": "已查看偏差画像、按期概率与可解释理由"
+            },
+            "note": {
+              "type": "string",
+              "title": "备注（可选）"
+            }
+          },
+          "required": [
+            "reviewed"
+          ]
+        }
+      },
+      "decideSelfHandling": {
+        "task_type": "blue-alert.decide",
+        "awaiting_role": "计划员",
+        "form_schema": {
+          "type": "object",
+          "title": "蓝色预警 · 自行处置",
+          "properties": {
+            "handling_action": {
+              "type": "string",
+              "title": "处置方式",
+              "enum": [
+                "轻量调整",
+                "仅继续监控"
+              ]
+            },
+            "remark": {
+              "type": "string",
+              "title": "处置说明"
+            },
+            "alert_id": {
+              "type": "string",
+              "title": "预警编号"
+            }
+          },
+          "required": [
+            "alert_id",
+            "handling_action"
+          ],
+          "description": "预警编号由系统从本次预警上下文带出，不需要手工填写。"
+        }
+      }
+    },
+    "approveAdjustmentOption": {
+      "selectOption": {
+        "task_type": "adjustment.select",
+        "awaiting_role": "部门领导",
+        "form_schema": {
+          "type": "object",
+          "title": "调整方案 · 领导拍板",
+          "properties": {
+            "option_id": {
+              "type": "string",
+              "title": "选定方案编号"
+            },
+            "option_type": {
+              "type": "string",
+              "title": "方案类型",
+              "enum": [
+                "压缩后续周期",
+                "调整需求日期",
+                "执行调拨"
+              ]
+            },
+            "decision_role": {
+              "type": "string",
+              "title": "决策角色（须与预警等级匹配，BR-OPT-04）",
+              "enum": [
+                "分管领导",
+                "部门领导"
+              ]
+            },
+            "decided_by": {
+              "type": "string",
+              "title": "决策人姓名"
+            },
+            "comment": {
+              "type": "string",
+              "title": "决策意见"
+            },
+            "is_high_risk": {
+              "type": "boolean",
+              "title": "所选方案是否属于高危动作（随方案带入）"
+            },
+            "high_risk_confirmed_by": {
+              "type": "string",
+              "title": "高危确认人（BR-OPT-06，取当前登录人）"
+            }
+          },
+          "required": [
+            "option_id",
+            "option_type",
+            "decision_role",
+            "decided_by"
+          ],
+          "description": "选定一个方案即可；方案编号、类型、是否高危均随所选方案带入，决策人取当前登录人，都不需要手工填写（BR-OPT-04 决策角色须与预警等级匹配，BR-OPT-06 高危动作的确认人随本次选择一并留痕）。"
+        }
+      },
+      "plannerConfirm": {
+        "task_type": "adjustment.planner-confirm",
+        "awaiting_role": "计划员",
+        "form_schema": {
+          "type": "object",
+          "title": "计划员确认执行（BR-OPT-05）· 执行决策卡",
+          "description": "这是回写业务单据前的最后一次人工确认；执行分支所需的字段在此收齐。alert_id / chain_id / option_id / option_type 照抄上一步领导选定的方案。",
+          "properties": {
+            "decision": {
+              "type": "string",
+              "title": "确认结果",
+              "enum": [
+                "approved",
+                "rejected"
+              ]
+            },
+            "planner_confirmed_by": {
+              "type": "string",
+              "title": "计划员姓名（BR-OPT-05：未确认不得回写单据）"
+            },
+            "alert_id": {
+              "type": "string",
+              "title": "预警编号"
+            },
+            "chain_id": {
+              "type": "string",
+              "title": "采购执行链路编号"
+            },
+            "option_id": {
+              "type": "string",
+              "title": "选定方案编号"
+            },
+            "option_type": {
+              "type": "string",
+              "title": "方案类型（决定走哪条执行分支）",
+              "enum": [
+                "压缩后续周期",
+                "调整需求日期",
+                "执行调拨"
+              ]
+            },
+            "remark": {
+              "type": "string",
+              "title": "备注"
+            }
+          },
+          "required": [
+            "decision",
+            "planner_confirmed_by",
+            "alert_id",
+            "chain_id",
+            "option_id",
+            "option_type"
+          ]
+        }
+      }
+    },
+    "compressDownstreamCycle": {
+      "confirmByPlanner": {
+        "task_type": "execute.compress.planner-confirm",
+        "awaiting_role": "计划员",
+        "form_schema": {
+          "type": "object",
+          "title": "方案① · 确认压缩后的节点时间表可执行",
+          "properties": {
+            "decision": {
+              "type": "string",
+              "title": "确认结果",
+              "enum": [
+                "approved",
+                "rejected"
+              ]
+            },
+            "planner_confirmed_by": {
+              "type": "string",
+              "title": "确认人姓名"
+            }
+          },
+          "required": [
+            "decision",
+            "planner_confirmed_by"
+          ]
+        }
+      }
+    },
+    "adjustRequiredArrivalDate": {
+      "confirmByPlanner": {
+        "task_type": "execute.need-date.planner-confirm",
+        "awaiting_role": "计划员",
+        "form_schema": {
+          "type": "object",
+          "title": "方案② · 计划员与需求部门确认新到货日期可接受",
+          "properties": {
+            "decision": {
+              "type": "string",
+              "title": "确认结果",
+              "enum": [
+                "approved",
+                "rejected"
+              ]
+            },
+            "planner_confirmed_by": {
+              "type": "string",
+              "title": "确认人姓名"
+            },
+            "demand_department_agreed": {
+              "type": "boolean",
+              "title": "需求部门已确认"
+            }
+          },
+          "required": [
+            "decision",
+            "planner_confirmed_by"
+          ]
+        }
+      }
+    },
+    "createStockTransferRequest": {
+      "confirmByPlanner": {
+        "task_type": "execute.transfer.planner-confirm",
+        "awaiting_role": "计划员",
+        "form_schema": {
+          "type": "object",
+          "title": "方案③ · 确认调拨来源与数量",
+          "properties": {
+            "decision": {
+              "type": "string",
+              "title": "确认结果",
+              "enum": [
+                "approved",
+                "rejected"
+              ]
+            },
+            "planner_confirmed_by": {
+              "type": "string",
+              "title": "确认人姓名"
+            }
+          },
+          "required": [
+            "decision",
+            "planner_confirmed_by"
+          ]
+        }
+      }
+    },
+    "recycleFalseAlarm": {
+      "classifyFalseAlarm": {
+        "task_type": "feedback.classify",
+        "awaiting_role": "规则评审组",
+        "form_schema": {
+          "type": "object",
+          "title": "误报归因（BR-FB-01）",
+          "properties": {
+            "false_alarm_cause": {
+              "type": "string",
+              "title": "误报归因",
+              "enum": [
+                "阈值过严",
+                "数据质量",
+                "口径问题"
+              ]
+            },
+            "suggested_threshold_value": {
+              "type": "number",
+              "title": "建议阈值取值"
+            },
+            "remark": {
+              "type": "string",
+              "title": "归因说明"
+            }
+          },
+          "required": [
+            "false_alarm_cause"
+          ]
+        }
+      }
+    },
+    "splitOversizedDemand": {
+      "confirmSplitByPlanner": {
+        "task_type": "demand.split-confirm",
+        "awaiting_role": "采购计划员",
+        "form_schema": {
+          "type": "object",
+          "title": "需求拆分 · 计划员确认（BR2-MERGE-02 / BR2-MERGE-03）",
+          "description": "日期差超过 60 天的组合不得合并；30~60 天的灰区由计划员判断。merge_suggestion_id / plan_line_ids 随本次拆分建议带出，不需要手工填写。",
+          "properties": {
+            "decision": {
+              "type": "string",
+              "title": "确认结果",
+              "enum": [
+                "approved",
+                "rejected"
+              ]
+            },
+            "confirmed_by": {
+              "type": "string",
+              "title": "计划员姓名"
+            },
+            "merge_suggestion_id": {
+              "type": "string",
+              "title": "合并建议编号"
+            },
+            "plan_line_ids": {
+              "type": "array",
+              "title": "拆为独立计划的计划行",
+              "items": {
+                "type": "string"
+              }
+            },
+            "remark": {
+              "type": "string",
+              "title": "备注"
+            }
+          },
+          "required": [
+            "decision",
+            "confirmed_by",
+            "merge_suggestion_id"
+          ]
+        }
+      }
+    },
+    "returnPlanForRectification": {
+      "acceptRectification": {
+        "task_type": "plan.rectification-accept",
+        "awaiting_role": "需求申请人/需求部门",
+        "form_schema": {
+          "type": "object",
+          "title": "审核拦截 · 申请人整改或说明不按集采采购原因（BR2-CENTRAL-03）",
+          "description": "approved = 已整改（或已录入不按集采原因），回流复核；rejected = 撤回本次申报。audit_opinion_id / plan_id / plan_line_id 随审核意见带出。",
+          "properties": {
+            "decision": {
+              "type": "string",
+              "title": "整改结果",
+              "enum": [
+                "approved",
+                "rejected"
+              ]
+            },
+            "rectified_by": {
+              "type": "string",
+              "title": "申请人姓名"
+            },
+            "audit_opinion_id": {
+              "type": "string",
+              "title": "审核意见编号"
+            },
+            "plan_id": {
+              "type": "string",
+              "title": "计划编号"
+            },
+            "plan_line_id": {
+              "type": "string",
+              "title": "计划行编号"
+            },
+            "non_central_reason": {
+              "type": "string",
+              "title": "不按集采采购原因（应集采未集采项必填，留痕可审计）"
+            },
+            "response_note": {
+              "type": "string",
+              "title": "整改说明"
+            }
+          },
+          "required": [
+            "decision",
+            "rectified_by",
+            "audit_opinion_id",
+            "plan_id",
+            "plan_line_id"
+          ]
+        }
+      }
+    },
+    "confirmPlanAndPackage": {
+      "confirmByPlanner": {
+        "task_type": "plan.package-confirm",
+        "awaiting_role": "采购计划员",
+        "form_schema": {
+          "type": "object",
+          "title": "执行计划草稿 · 确认并选定组包方案（BR2-HITL-01）",
+          "description": "数字员工替代的是重复劳动，不是决策权：草稿与组包方案必须由计划员拍板。approved = 确认草稿并选定 package_scheme_id 对应的方案；rejected = 驳回，rejection_reason 必填（BR2-FEEDBACK-01，回流优化合并与组包规则）。package_scheme_id / scheme_no / plan_id / plan_line_id / package_id 随推送的方案带出。",
+          "properties": {
+            "decision": {
+              "type": "string",
+              "title": "确认结果",
+              "enum": [
+                "approved",
+                "rejected"
+              ]
+            },
+            "selected_by": {
+              "type": "string",
+              "title": "计划员姓名"
+            },
+            "package_scheme_id": {
+              "type": "string",
+              "title": "选定的组包方案编号"
+            },
+            "scheme_no": {
+              "type": "string",
+              "title": "方案号"
+            },
+            "plan_id": {
+              "type": "string",
+              "title": "执行计划编号"
+            },
+            "plan_line_id": {
+              "type": "string",
+              "title": "执行计划行编号"
+            },
+            "package_id": {
+              "type": "string",
+              "title": "采购包编号（标注步骤生成）"
+            },
+            "rejection_reason": {
+              "type": "string",
+              "title": "驳回原因（驳回时必填）"
+            },
+            "comment": {
+              "type": "string",
+              "title": "确认意见"
+            }
+          },
+          "required": [
+            "decision",
+            "selected_by",
+            "package_scheme_id",
+            "plan_id"
+          ]
+        }
+      }
+    }
+  },
+  "tool_arguments": {
+    "raiseDeviationAlert": {
+      "payload": {
+        "from": "event.data"
+      }
+    },
+    "handleBlueAlertLocally": {
+      "payload": {
+        "from": "results.manual-2"
+      }
+    },
+    "approveAdjustmentOption": {
+      "payload": {
+        "from": "lastResult"
+      }
+    },
+    "escalateOverdueAlert": {
+      "payload": {
+        "from": "event.data"
+      }
+    },
+    "compressDownstreamCycle": {
+      "payload": {
+        "from": "event.data"
+      }
+    },
+    "adjustRequiredArrivalDate": {
+      "payload": {
+        "from": "event.data"
+      }
+    },
+    "createStockTransferRequest": {
+      "payload": {
+        "from": "event.data"
+      }
+    },
+    "trackTransferFulfillment": {
+      "payload": {
+        "from": "event.data"
+      }
+    },
+    "closeDeviationHandling": {
+      "payload": {
+        "from": "event.data"
+      }
+    },
+    "recycleFalseAlarm": {
+      "payload": {
+        "from": "results.manual-1"
+      }
+    },
+    "splitOversizedDemand": {
+      "payload": {
+        "from": "results.manual-3"
+      }
+    },
+    "createInventoryTransferOrder": {
+      "payload": {
+        "from": "event.data"
+      }
+    },
+    "generateExecutionPlanDraft": {
+      "payload": {
+        "from": "event.data"
+      }
+    },
+    "returnPlanForRectification": {
+      "payload": {
+        "from": "results.manual-4"
+      }
+    },
+    "annotateFrameAndCentralPurchase": {
+      "payload": {
+        "from": "event.data"
+      }
+    },
+    "raisePackagingComplianceAlert": {
+      "payload": {
+        "from": "event.data"
+      }
+    },
+    "confirmPlanAndPackage": {
+      "payload": {
+        "from": "results.manual-2"
+      }
+    },
+    "submitPlanForApproval": {
+      "payload": {
+        "from": "event.data"
+      }
+    }
+  },
+  "output_contracts": {
+    "collectChainExecutionData": {
+      "fields": {
+        "procurement_chain": "采购执行链路列表（范围内每条计划行一条）：[{chain_id, plan_id, plan_line_id, business_type, material_code, material_name, quantity, unit, required_arrival_date, current_stage:'立项'|'组包'|'询价'|'定标'|'合同'|'订单'|'到货', chain_status:'在途'|'已完成'|'已终止', planner, buyer, demand_department, forecast_arrival_date, last_synced_at, stalled_at:string|null（本链路停滞在哪一节——「已完成节点之后的第一个未完成节点」；七节点全完成时为 null）}]。current_stage 取该链路当前所处节点。",
+        "stage_progress_list": "七个节点的进度记录，顺序固定为 立项/组包/询价/定标/合同/订单/到货：[{stage_progress_id, chain_id, stage_node, stage_sequence:1-7, actual_finish_date, stage_status:'未开始'|'进行中'|'已完成'|'部分完成', source_document_type, source_document_no, stage_started_at, synced_at}]。每个节点的实际完成时间必须来自对应单据的真实字段：立项=采购申请审批通过时间、组包=采购包 LAST_UPDATE_DATE、询价=询价单 EFFECTIVE_DATE、定标=定标 AWARD_DATE、合同=合同 SIGNING_DATE、订单=订单 EFFECTIVE_DATE、到货=验收完成时间（接收数量=订单数量才算完成，小于为部分完成）。查不到对应单据的节点写 stage_status='未开始'、actual_finish_date=null，不得编造。",
+        "synced_stage_count": "本次刷新的节点数（整数）。",
+        "coverage_note": "本次盯防范围说明：若触发事件带 plan_id/plan_no，写明「按事件指定范围只处理 <该计划>」；否则写明已按 BR-COV-01 全量纳入所有状态=已批准且在途的执行计划、未做抽查。",
+        "identifier_discipline": "【标识符纪律】plan_id / plan_line_id / 各单据号一律使用 metaERP 查询返回的原值（如 PBP-2026-0873、PBPL-2026-0873-01、PR-2026-11832、RFX-2026-0662），不得自造或翻译编码——下游按这些值 join ERP 台账。本字段填写一句确认语。",
+        "query_rounds_used": "本次实际发出的取数轮次（整数）：1=只发了寻源段 7 个调用（早停）；2=寻源段 7 + 执行段 6。如实填写实际发生的轮次。",
+        "queried_operations": "本次实际调用过的 op 名清单（数组，去重）。早停时其中**不得出现** querySpaList / queryContract / queryPoHeader / queryPoLineShipment / queryAcceptHeader / queryAcceptTransaction 中的任何一个。",
+        "scan_date": "触发事件负载里 scan_date 的值，**原样照抄**（YYYY-MM-DD 字符串，例如事件给 \"2026-09-01\" 就填 \"2026-09-01\"）。这是业务扫描日期，不是系统时间——与你认知里的今天不同也以它为准。**此字段必填，不得留空**。下游判定「今天」全部以它为准。"
+      }
+    },
+    "calculateExecutionDeviation": {
+      "fields": {
+        "procurement_chain": "原样透传上游链路对象，字段值不得改写或重新生成。",
+        "planned_dates": "各节点计划完成时间：[{stage_node, stage_sequence:1-7, standard_cycle_days, planned_finish_date:'YYYY-MM-DD', planned_date_derived:boolean}]。\n【倒排公式（逐字照算，不得凭感觉）】节点按 立项1/组包2/询价3/定标4/合同5/订单6/到货7 排序，标准周期取自 queryStageCycleConfig 中该 business_type 的行。\n  planned_finish(k) = required_arrival_date − Σ standard_cycle_days(j)，j 从 k+1 到 7\n即：到货(k=7) 的计划完成时间**就是** required_arrival_date 本身（不减任何东西）；其余节点 = 需求到货日期 减去**它之后**所有节点的标准周期之和，**不含本节点周期**。\n举例（物资类：立项10/组包15/询价20/定标15/合同15/订单10/到货70，需求到货 2026-11-30）：\n  到货 = 2026-11-30\n  订单 = 2026-11-30 − 70 = 2026-09-21\n  合同 = 2026-11-30 − (70+10) = 2026-09-11\n  定标 = 2026-11-30 − (70+10+15) = 2026-08-27\n  询价 = 2026-11-30 − (70+10+15+15) = 2026-08-12\n  组包 = 2026-11-30 − (70+10+15+15+20) = 2026-07-23\n  立项 = 2026-11-30 − (70+10+15+15+20+15) = 2026-07-08\n正排交叉校验：planned_finish(k) 应等于 planned_finish(k−1) + standard_cycle_days(k)；两向一致才置 planned_date_derived=true。缺任一节点周期配置则该节点不予推算并在 blocking_note 说明（BR-PLAN-01）。",
+        "thresholds_used": "本次判定实际采用的阈值，必须取自 queryAlertThresholdConfig 返回值，不得写死：{time_deviation_days, schedule_deviation_ratio, threshold_ids:[string]}（BR-DEV-02）。",
+        "execution_deviation": "执行偏差列表（范围内每条链路一条）：[{deviation_id, chain_id, stage_progress_id, stage_node（发生偏差的节点＝「已完成节点之后的第一个未完成节点」）, planned_finish_date（取 planned_dates 里该节点的值）, actual_finish_date, time_deviation_days:number, schedule_deviation_ratio:number, amount_deviation_ratio:number|null, has_deviation:boolean, deviation_level:'待定级', cause_tag, cause_explanation, cause_clarification_status, dwell_days:number, disposal_state:'待评分', evaluated_at}]。\n\n【actual_finish_date（硬性）】只有节点 stage_status 为「已完成」时才取对应单据的完成字段。「未开始」「进行中」**以及「部分完成」**一律视为未完成——到货节点的接收数量小于订单数量就是部分接收，链路仍在途，**不得**拿验收单时间戳当完成时间——此时**逐字填入上游透传的 scan_date 字符串**（不是你认为的今天，也不是任何单据上的时间戳）——不得凭空生成一个日期、不得使用系统当前时间、不得沿用上游任何别的时间戳。\n\n【time_deviation_days（硬性）】= actual_finish_date − planned_finish_date，单位天，**正数表示延迟**。未完成节点因为代入了 scan_date，这个值就等于「今天比该节点的计划完成时间晚了几天」。若算出负数，意味着该节点尚未到期。\n\n【evaluated_at（硬性·必填）】直接填 scan_date 的那个字符串。\n【dwell_days（必填）】= scan_date − 该节点开始时间，单位天。取不到节点开始时间时填 0，不要填 null。\n【deviation_level】本步一律填 '待定级'——等级由下游 scoreOnTimeProbability 按按期概率映射。\n【has_deviation】按 BR-DEV-01 判定：\n  has_deviation = time_deviation_days > 时间阈值\n                  或（time_deviation_days > 0 且 schedule_deviation_ratio > 进度阈值）\n两个阈值都取自 queryAlertThresholdConfig，不得写死（BR-DEV-02）。\n**关键：节点尚未到期时，进度偏差不单独构成偏差——未完成但未延期的采购不预警。**",
+        "blocking_note": "若因缺周期配置等原因无法完成推算，写明缺哪个「业务类型×节点」并置 has_deviation=false；否则填空字符串。",
+        "_parallel_tool_calls": "【并发取数（硬性）】本步需要的查询彼此独立，请在**同一轮**里一次性发出全部 metaerp.invoke 调用：queryStageCycleConfig、queryAlertThresholdConfig。本字段只是取数纪律说明，输出 JSON 里填一句确认语即可。",
+        "scan_date": "触发事件负载里 scan_date 的值，**原样照抄**（YYYY-MM-DD 字符串）。**此字段必填，不得留空**。本步所有涉及「今天」的计算一律用它。",
+        "deviation_found": "布尔值，必填。本批范围内只要 execution_deviation 里有任意一条 has_deviation=true 就填 true，全部为 false 才填 false。工作流据此二选一：true 走预警分支（DEVIATION_DETECTED→评分→预警），false 走归档分支（NO_DEVIATION_CONFIRMED→归档）。这是对 execution_deviation 的汇总，不得与其中任何一条自相矛盾。"
+      }
+    },
+    "archiveDeviationMonitoring": {
+      "fields": {
+        "archived_deviation": "归档后的偏差记录：{deviation_id, chain_id, disposal_state:'已归档', archived_at}。",
+        "monitoring_note": "一句话说明为何无需打扰任何人（如「时间偏差 1 天、进度偏差 0，均未达阈值」），链路继续在途盯防。"
+      }
+    },
+    "scoreOnTimeProbability": {
+      "fields": {
+        "execution_deviation": "只透传 has_deviation=true 的那些偏差对象，逐字原样，不得改写。上游 execution_deviation 里 has_deviation=false 的链路（未完成但未延期）**必须整条丢弃**——它没有偏差，不评分、不定级、不预警。",
+        "procurement_chain": "只透传上述保留下来的偏差所对应的链路对象，逐字原样。被丢弃的链路一并丢弃。",
+        "probability_assessment": "**只对 has_deviation=true 的链路评估**，每条一个对象：{assessment_id, deviation_id, chain_id, current_stage, remaining_standard_cycle_days:number（当前节点之后各节点标准周期之和，取自 queryStageCycleConfig）, days_to_required_arrival:number, dwell_days:number, historical_on_time_rate:number（取自 queryHistoricalOnTimeRate）, historical_sample_size:integer, on_time_probability:number（0~1）, probability_grade:'红色'|'黄色'|'蓝色', explanation:string（不得为空，BR-PROB-04）, assessed_at}。【定级硬性】必须用 queryAlertThresholdConfig 返回的分界值：概率<红色概率上限判红、介于红色上限与黄色下限之间判黄、>黄色概率下限判蓝（BR-PROB-01~03）。【explanation 硬性】必须同时说明剩余周期、滞留天数、历史达成率与样本量这四项如何影响了概率。",
+        "alert_level": "与 probability_grade 同值，供下游预警推送直接取用。**与 probability_assessment 一一对应、条数一致**。",
+        "_parallel_tool_calls": "【并发取数（硬性）】本步需要的查询彼此独立，请在**同一轮**里一次性发出全部 metaerp.invoke 调用：queryStageCycleConfig、queryHistoricalOnTimeRate、queryAlertThresholdConfig。本字段只是取数纪律说明，输出 JSON 里填一句确认语即可。",
+        "scan_date": "触发事件负载里 scan_date 的值，**原样照抄**（YYYY-MM-DD 字符串）。**此字段必填，不得留空**。剩余天数、滞留天数以它为「今天」。"
+      }
+    },
+    "generateAdjustmentOptions": {
+      "fields": {
+        "options_generated": "布尔值：预警等级为红色或黄色时为 true 并给出三个方案；蓝色时为 false 且 options 为空数组（BR-OPT-01：蓝色不生成方案）。",
+        "options": "三个可执行方案，缺一不可（BR-OPT-02）：[{option_id, alert_id, chain_id, option_type:'压缩后续周期'|'调整需求日期'|'执行调拨', option_summary, expected_arrival_date_after:Date, arrival_impact_days:number, arrival_impact_simulated:true（未完成推演的方案不得上会，BR-OPT-03）, feasibility_note, is_recommended:boolean, is_high_risk:boolean（暂停申请、整单调剂标为 true，BR-OPT-06）, option_status:'待决策', decision_role:'分管领导'（红色）|'部门领导'（黄色）（BR-OPT-04）}]。三个 option_type 必须各出现一次。",
+        "recommended_option": "被推荐的那一条方案对象（is_recommended=true），另附 recommendation_basis 说明为何推荐它。",
+        "transfer_source": "方案③的调拨来源，取自 queryTransferableStock：{warehouse_id, warehouse_name, item_code, available_qty, transfer_lead_days, transfer_quantity}。无可调库存时给出 {transfer_quantity: 0} 并在该方案的 feasibility_note 说明。",
+        "alert_context": "原样透传预警上下文：{alert_id, chain_id, deviation_id, alert_level, notified_role}。",
+        "_parallel_tool_calls": "【并发取数（硬性）】本步需要的查询彼此独立，请在**同一轮**里一次性发出全部 metaerp.invoke 调用：queryStageCycleConfig、queryTransferableStock。本字段只是取数纪律说明，输出 JSON 里填一句确认语即可。"
+      }
+    },
+    "closeDeviationHandling": {
+      "fields": {
+        "closure_context": "闭环上下文：{alert_id, deviation_id, chain_id, deviation_eliminated:boolean, verification_result:'属实'|'误报', closed_at}。deviation_eliminated 为 false 时不得闭环，退回重新生成调整方案（BR-CLOSE-01）。"
+      }
+    },
+    "scanApprovedDemandPlan": {
+      "fields": {
+        "scan_date": "触发事件负载里 scan_date 的值，**原样照抄**（YYYY-MM-DD）。事件没带时取 approved_at 的日期部分。**必填**；下游日期差、查重窗口、倒排「当前日期」全部以它为准。",
+        "scan_batch_id": "触发事件负载里 scan_batch_id 的值，原样照抄；事件没带时用 'SCAN-<scan_date>-<plan_id>'。",
+        "plan_id": "触发事件带 plan_id 时原样照抄；否则填本次范围内计划头数量最多的那个 PBP_HEADER_ID。",
+        "in_scope_line_count": "整数：圈进本轮作业范围的计划行数。",
+        "filtered_line_count": "整数：被 BR2-SCAN-01 过滤掉的计划行数（头不是已批准 / 头不是需求计划 / 行已取消 / 行已删除）。",
+        "procurement_plan": "本轮纳入的计划头：[{plan_id, plan_no, plan_category, plan_status:'已批准', business_type, plan_type, management_unit, unit_code, plan_period, planner, approved_at}]。字段值取 metaERP 返回原值。",
+        "scan_scope": "本轮纳入需求合并的计划行清单：[{plan_id, plan_no, plan_line_id, plan_line_no, material_code, material_name, line_type_code, category_id, quantity, unit, unit_price, required_arrival_date:'YYYY-MM-DD', demand_department, management_unit, inventory_organization, receiving_region, is_urgent:boolean, is_cancelled:false, is_deleted:false, central_purchase_level, attachment_complete:boolean}]。【标识符纪律】plan_id / plan_line_id / material_code 一律用 metaERP 返回原值（如 PBP-2026-1102、PBPL-2026-1102-01、M-CT-110），不得自造。",
+        "operation_log": "作业留痕（BR2-AUDIT-01 四要素）：{operation_type:'需求扫描', operator_role:'采购数字员工', occurred_at, plan_line_ids:[...], api_called:['queryPbpHeader','queryPbpLine'], input_digest, output_digest, decision_note, auditable:true}。",
+        "_parallel_tool_calls": "【并发取数（硬性）】queryPbpHeader 与 queryPbpLine 彼此独立，在**同一轮**一次性发出。本字段填一句确认语即可。"
+      }
+    },
+    "analyzeDemandMerge": {
+      "fields": {
+        "scan_date": "原样透传上游 scan_date。",
+        "scan_batch_id": "原样透传上游 scan_batch_id。",
+        "merge_suggestions": "按合并键（material_code + line_type_code，管理单元与库存组织不同的不并组）聚类后的每一组一条：[{merge_suggestion_id:'MS-<scan_date>-<序号>', merge_group_id:'MG-<scan_date>-<序号>', merge_key, material_code, material_name, line_type_code, category_id, business_type, management_unit, inventory_organization, receiving_region, suggestion_type:'可合并'|'需拆分'|'待确认'|'单行', max_date_gap_days:number（组内两两需求日期差的最大值，单行为 0）, merge_score:0-100, merge_reason:string, merged_quantity（组内数量求和）, weighted_unit_price（按数量加权平均）, merged_amount, merged_required_date（组内最早需求日期）, source_plan_line_ids:[plan_line_id...], source_plan_header_id, source_plan_no, is_urgent_demand:boolean, unit, plan_lines:[原样透传组内 scan_scope 行]}]。判定：max_date_gap_days ≤ 30 → 可合并（BR2-MERGE-01）；> 60 → 需拆分（BR2-MERGE-02）；30 < gap ≤ 60 → 待确认（BR2-MERGE-03）；组内只有一行 → 单行。",
+        "merge_ready": "布尔值，必填：只要存在任一 suggestion_type 为 可合并 或 单行 的组（可进入库存校验）就为 true。",
+        "split_required": "布尔值，必填：存在任一 suggestion_type 为 需拆分 或 待确认 的组时为 true。",
+        "split_request": "split_required=true 时给出（否则 null）：{merge_suggestion_id, merge_group_id, max_date_gap_days, plan_line_id（组内最早需求日期那一行）, plan_line_ids:[组内全部行], split_reason, scan_date}。取需拆分/待确认组中 max_date_gap_days 最大的一组。",
+        "stock_check_requests": "进入库存校验的清单（可合并 + 单行 组）：[{merge_suggestion_id, plan_line_id（组内首行）, material_code, inventory_organization, management_unit, demand_quantity（=merged_quantity）, required_arrival_date（=merged_required_date）, is_urgent_demand, business_type, category_id, unit_price（=weighted_unit_price）, unit, source_plan_line_ids}]。",
+        "operation_log": "作业留痕：{operation_type:'需求合并分析', operator_role:'采购数字员工', occurred_at, rule_hit:['BR2-MERGE-01',...], input_digest, output_digest, decision_note, auditable:true}。"
+      }
+    },
+    "verifyInventoryAvailability": {
+      "fields": {
+        "scan_date": "原样透传上游 scan_date。",
+        "merge_suggestions": "原样透传上游 merge_suggestions（拆分确认事件触发时按 split_context 重新构造单行组）。",
+        "stock_check_results": "每条待校验需求一条：[{stock_check_id:'SC-<scan_date>-<序号>', plan_line_id, merge_suggestion_id, material_code, inventory_organization, demand_quantity, onhand_total_quantity（只计 INVENTORY_STATUS=合格）, reserved_total_quantity, available_quantity（=现有量合计−预留合计）, max_stock_quantity, safety_stock_quantity, safety_stock_breached:boolean, is_urgent_demand:boolean, stock_check_flag:'可调度'|'需采购'|'触及安全库存', shortage_quantity（需采购时=需求数量−可用量，否则 0）, suggested_purchase_quantity（=缺口量+安全库存回补量）, checked_at}]。判定顺序：现有量合计 ≥ 最大库存 且 非紧急 → 可调度（BR2-STOCK-01）；可用量 < 需求数量 → 需采购（BR2-STOCK-02）；否则若 现有量合计 − 安全库存 < 需求数量 → 触及安全库存（BR2-STOCK-03）。",
+        "transfer_required": "布尔值，必填：存在任一 stock_check_flag='可调度' 的需求时为 true。",
+        "transfer_context": "transfer_required=true 时给出第一条可调度需求的调拨上下文（否则 null）：{stock_check_id, plan_line_id, merge_suggestion_id, material_code, material_name, inventory_organization, onhand_total_quantity, max_stock_quantity, demand_quantity, transfer_quantity（=demand_quantity）, is_urgent_demand:false, stock_check_flag:'可调度', source_warehouse（现有量所在 STOREHOUSE_CODE）, target_warehouse:'需求单位库', required_date（=required_arrival_date）, transfer_reason:'库存可调度', scan_date}。",
+        "purchase_required": "布尔值，必填：存在任一 stock_check_flag 为 需采购 或 触及安全库存 的需求时为 true。",
+        "stock_check_id": "purchase_required=true 时填第一条需采购/触及安全库存需求的 stock_check_id（事件 PURCHASE_REQUIRED_CONFIRMED 的必填字段）；否则填空字符串。",
+        "plan_line_id": "同上那条需求的 plan_line_id；否则空字符串。",
+        "shortage_quantity": "同上那条需求的 shortage_quantity（数字）；否则 0。",
+        "suggested_purchase_quantity": "同上那条需求的 suggested_purchase_quantity；否则 0。",
+        "purchase_requests": "需采购 + 触及安全库存 的需求清单（供倒排）：[{stock_check_id, plan_line_id, merge_suggestion_id, material_code, material_name, inventory_organization, management_unit, business_type, category_id, demand_quantity, shortage_quantity, suggested_purchase_quantity, required_arrival_date, is_urgent_demand, unit, unit_price, source_plan_line_ids, source_plan_header_id, source_plan_no, merge_group_id}]。",
+        "operation_log": "作业留痕：{operation_type:'库存校验', operator_role:'采购数字员工', occurred_at, rule_hit:[...], api_called:['queryOnhandQuantity','queryReservation','queryItemMinMaxLevel'], output_digest, auditable:true}。",
+        "_parallel_tool_calls": "【并发取数（硬性）】三个查询在**同一轮**一次性发出。本字段填一句确认语即可。"
+      }
+    },
+    "derivePurchaseSchedule": {
+      "fields": {
+        "scan_date": "原样透传上游 scan_date；「当前日期」=它，不取系统时间。",
+        "purchase_request": "本次倒排的需求（取上游 purchase_requests 中 stock_check_id 等于事件 stock_check_id 的那条，逐字透传）。",
+        "schedule_plan": "{schedule_plan_id:'BSP-<scan_date>-<序号>', plan_line_id, stock_check_id, merge_suggestion_id, business_type, required_arrival_date, total_cycle_days（各节点套用周期之和）, earliest_start_date（首节点计划开始日）, time_conflict:boolean, conflict_gap_days（= scan_date + total_cycle_days − required_arrival_date，>0 即冲突，BR2-SCHED-01）, adjust_scheme:'缩短周期'|'调整需求日期'|'拆分批次'|'无', green_channel:boolean（紧急采购按 MIN_CYCLE_DAYS 重算，BR2-SCHED-02）, escalated_to_leader:boolean（绿色通道仍冲突则 true，BR2-SCHED-03）, scheduled_at, schedule_date_basis:'需求到货日期倒排'}",
+        "schedule_stages": "七个节点各一条，按 stage_sequence 1-7：[{schedule_stage_id, schedule_plan_id, cycle_standard_id（取自 queryStageCycleConfig 的 CYCLE_STANDARD_ID）, stage_node, stage_sequence, standard_cycle_days, min_cycle_days, applied_cycle_days, planned_start_date, planned_finish_date, derived_by_formula:true}]。【倒排公式（逐字照算）】末节点计划完成日 = required_arrival_date；节点计划开始日 = 计划完成日 − applied_cycle_days + 1 天；前一节点计划完成日 = 本节点计划开始日 − 1 天。缺某节点周期配置则不予推算并置 blocking_note（BR-PLAN-01）。",
+        "time_conflict": "布尔值，必填，等于 schedule_plan.time_conflict。",
+        "schedule_plan_id": "等于 schedule_plan.schedule_plan_id（事件必填字段）。",
+        "total_cycle_days": "等于 schedule_plan.total_cycle_days。",
+        "stage_count": "整数，schedule_stages 的条数。",
+        "conflict_context": "time_conflict=true 时给出（否则 null）：{schedule_plan_id, conflict_gap_days, adjust_scheme, escalated_to_leader, plan_line_id, required_arrival_date, scan_date}。",
+        "draft_request": "供 createPbp 建执行计划草稿的完整请求：{business_type, plan_type:'执行计划', management_unit, unit_code, plan_period（required_arrival_date 的年份）, merge_group_id, merge_suggestion_id, scan_date, lines:[{item_code（=material_code）, item_name, line_type_code, category_id, quantity（=suggested_purchase_quantity 或 demand_quantity）, unit, unit_price, need_by_date（=required_arrival_date）, inventory_organization, sourcing_method:'公开询价', is_urgent, source_plan_line_ids:[...]}], source_plan_line_ids:[全部来源计划行 id], source_plan_header_id, source_plan_no, stage_schedule:[{stage_node, planned_start_date, planned_finish_date}]}。来源映射必须完整（BR2-MERGE-04）。",
+        "blocking_note": "缺周期配置时写明缺哪个「业务类型×节点」；否则空字符串。",
+        "operation_log": "作业留痕：{operation_type:'倒排工期', operator_role:'采购数字员工', occurred_at, rule_hit:[...], threshold_snapshot, output_digest, auditable:true}。"
+      }
+    },
+    "auditAnnualPlanCompliance": {
+      "fields": {
+        "scan_date": "原样透传上游 scan_date（事件没带时取 audited_at 的日期部分）。",
+        "plan_id": "被审核的计划编号：EXECUTION_PLAN_DRAFT_GENERATED 触发时取事件 plan_id；DEMAND_PLAN_SUBMITTED_FOR_APPROVAL / PLAN_RECTIFICATION_SUBMITTED 触发时取事件 plan_id。原样照抄。",
+        "plan_line_id": "被审核的首条计划行 id（事件带 plan_line_id 则原样照抄，否则取 plan_lines[0].plan_line_id）。",
+        "plan_lines": "被审核的计划行（EXECUTION_PLAN_DRAFT_GENERATED 触发时来自事件 plan_lines，字段名统一为 snake_case：plan_line_id, material_code, material_name, line_type_code, category_id, quantity, unit, unit_price, required_arrival_date, management_unit, inventory_organization, receiving_region, central_purchase_level, attachment_complete, is_urgent, source_plan_line_ids）。整改回流触发时按事件 plan_line_id 用 queryPbpLine 重新拉取。",
+        "thresholds_used": "本次采用的阈值快照，必须取自 queryAuditThresholdConfig（IS_ENABLED=Y 且生效期内）：{price_deviation_soft, price_deviation_escalate, duplicate_window_days, audit_threshold_ids:[...]}（BR2-THRESH-01）。",
+        "audit_opinion": "{audit_opinion_id:'AO-<scan_date>-<序号>', plan_id, plan_line_id, audit_result:'通过'|'预警'|'拦截', intercept:boolean, finding_count:integer, price_curve:[{management_unit, points:[{creation_date, unit_price}]}], price_curve_attached:boolean（含价格预警时必须为 true，BR2-PRICE-03）, rectify_advice:string, audited_at, opinion_status:'待复核'|'已通过'|'待整改', submitted_by}",
+        "audit_findings": "逐条校验项：[{audit_finding_id, audit_opinion_id, plan_line_id, check_item:'集采目录'|'价格异常'|'重复申报'|'技术附件', conclusion:'通过'|'软预警'|'升级'|'拦截', hit_data, catalog_id, audit_threshold_id, threshold_value, actual_value, current_unit_price, historical_avg_price（同物料同管理单元最近三笔 IS_CANCELLED=N 订单行均价）, historical_sample_size, price_deviation_ratio, duplicate_plan_no, duplicate_window_days, duplicate_gap_days, suggested_central_level, non_central_reason, non_central_reason_provided:boolean, attachment_complete:boolean, escalated_to_demand_leader:boolean, rectify_advice}]。判定：物料命中 IS_ENABLED=Y 的集采目录而行 central_purchase_level=未标识 → 应集采未集采，拦截并标注 suggested_central_level（BR2-CENTRAL-01）；偏差率 > 软预警阈值 → 软预警，> 升级阈值 → 升级需求部门领导（BR2-PRICE-01/02）；查重窗口内同物料+同管理单元+同库存组织未取消需求 → 重复申报软预警（BR2-DUP-01）；attachment_complete=false → 拦截（BR2-ATTACH-01）。",
+        "intercept": "布尔值，必填：存在任一 conclusion='拦截' 的校验项即 true（事件二选一：true → PLAN_AUDIT_INTERCEPTED，false → ANNUAL_PLAN_AUDITED）。",
+        "audit_opinion_id": "等于 audit_opinion.audit_opinion_id。",
+        "audit_result": "等于 audit_opinion.audit_result。",
+        "finding_count": "等于 audit_opinion.finding_count。",
+        "audited_at": "等于 audit_opinion.audited_at。",
+        "intercept_context": "intercept=true 时给出（否则 null）：{audit_opinion_id, plan_id, plan_line_id, intercept_items:string（逗号分隔的拦截项，如 '应集采未集采,技术附件缺失'）, rectify_advice, suggested_central_level, scan_date}。",
+        "operation_log": "作业留痕：{operation_type:'年度计划审核', operator_role:'采购数字员工', occurred_at, rule_hit:[...], threshold_snapshot, api_called:[...], output_digest, auditable:true}。",
+        "_parallel_tool_calls": "【并发取数（硬性）】queryAuditThresholdConfig、queryCentralCatalogConfig、queryPoLine、queryContract 在**同一轮**一次性发出。本字段填一句确认语即可。"
+      }
+    },
+    "recommendPackagingScheme": {
+      "fields": {
+        "scan_date": "原样透传上游 scan_date。",
+        "plan_id": "原样透传上游 plan_id。",
+        "plan_lines": "原样透传上游 plan_lines（PACKAGING_ALERT_RAISED / PLAN_AND_PACKAGE_REJECTED 触发的重算亦从事件上下文取）。",
+        "thresholds_used": "取自 queryAuditThresholdConfig：{delivery_span_days, delivery_overlap_rate, audit_threshold_ids:[...]}（BR2-THRESH-01）。",
+        "package_schemes": "2~3 套候选方案（不足两套不推送，BR2-PKG-04）：[{package_scheme_id:'PS-<scan_date>-<序号>', scheme_no, plan_id, purchasing_group_no, business_type, category_id, scenario_code:'常规寻源'|'单一来源'|'邀请招标', match_score:0-100（物料→品类→寻源方式→需求日期→采购组五级加权）, line_count, total_amount, region_similarity:0-1, delivery_overlap_rate:0-1, delivery_span_days, mixed_type_detected:boolean（按 queryPurchaseCategory 的 BUSINESS_TYPE 判包内是否混有工程/物资/服务，BR2-PKG-01）, split_advice, special_sourcing_method:'无'|'单一来源'|'邀请招标', is_recommended:boolean（有且只有一套为 true）, sibling_scheme_count（=本批方案数）, scheme_status:'待选择', management_unit, package_lines:[{plan_line_id, material_code, material_name, management_unit, inventory_organization, category_id, quantity, unit_price, required_arrival_date, sourcing_method}], recommendation_basis}]",
+        "recommended_scheme": "is_recommended=true 的那一套方案对象，逐字与 package_schemes 中的一致。",
+        "compliance_violated": "布尔值，必填：任一方案 mixed_type_detected=true（硬拦截）、或推荐方案 delivery_span_days 超阈值、或识别到特殊采购方式时为 true。",
+        "compliance_findings": "逐项合规结论：[{pkg_finding_id:'PCF-<scan_date>-<序号>', package_scheme_id, audit_threshold_id, check_item:'类型一致'|'交货跨度'|'特殊采购方式', conclusion:'通过'|'拦截'|'拆包建议'|'待补充说明', detected_types:[...], delivery_span_days, threshold_value, split_advice, special_sourcing_method, rectify_advice, resolved:false}]",
+        "violation_context": "compliance_violated=true 时给出（否则 null）：{pkg_finding_id, package_scheme_id, check_item, conclusion, rectify_advice, split_advice, special_sourcing_method, plan_id, scan_date}。",
+        "package_scheme_id": "等于 recommended_scheme.package_scheme_id（事件必填字段）。",
+        "scheme_no": "等于 recommended_scheme.scheme_no。",
+        "match_score": "等于 recommended_scheme.match_score。",
+        "sibling_scheme_count": "等于 package_schemes 的条数。",
+        "is_recommended": "固定 true（事件字段，指 package_scheme_id 那套是推荐方案）。",
+        "operation_log": "作业留痕：{operation_type:'组包推荐', operator_role:'采购数字员工', occurred_at, rule_hit:[...], threshold_snapshot, output_digest, auditable:true}。",
+        "_parallel_tool_calls": "【并发取数（硬性）】queryAuditThresholdConfig、queryPurchaseCategory 在**同一轮**一次性发出。本字段填一句确认语即可。"
+      }
+    }
+  }
+}

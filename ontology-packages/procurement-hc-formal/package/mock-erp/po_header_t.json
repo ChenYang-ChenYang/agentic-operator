@@ -1,0 +1,15 @@
+{
+  "rows": [
+    {
+      "APPROVAL_STATUS": "已审批",
+      "APPROVED_DATE": "2026-08-03T10:30:00+08:00",
+      "CONTRACT_ID": "CT-2026-0912",
+      "EFFECTIVE_DATE": "2026-08-05T00:00:00+08:00",
+      "INCURRED_AMOUNT": 1740000,
+      "PO_HEADER_ID": "PO-2026-20487",
+      "PO_NUMBER": "PO-2026-20487",
+      "SOURCE_DOC_HEADER_ID": "PR-2026-11907",
+      "SUPPLIER_NAME": "华东互感器制造有限公司"
+    }
+  ]
+}

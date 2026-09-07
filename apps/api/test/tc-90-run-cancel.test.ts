@@ -29,6 +29,7 @@ import {
   runs,
   tenants,
   workflows,
+  events,
 } from "@agentic/db";
 import { inngest } from "@agentic/runtime";
 import { makeId } from "@agentic/shared";
@@ -186,6 +187,7 @@ describe("TC-90: POST /v1/runs/:id/cancel", () => {
     status: "running" | "ok" | "failed" | "cancelled" | "waiting" | "queued";
     subject?: string;
     startedAt?: number;
+    triggerEventId?: string | null;
   }): string {
     const db = getDb();
     const runId = args.runId ?? makeId("run");
@@ -194,7 +196,7 @@ describe("TC-90: POST /v1/runs/:id/cancel", () => {
         id: runId,
         tenantId: args.tenantId,
         agentId: args.agentId,
-        triggerEventId: null,
+        triggerEventId: args.triggerEventId ?? null,
         status: args.status,
         startedAt: new Date(args.startedAt ?? Date.now() - 5_000),
         correlationId: makeId("cor"),
@@ -288,6 +290,43 @@ describe("TC-90: POST /v1/runs/:id/cancel", () => {
         expect(evt.data.subject).toBe(subject);
         expect(evt.data.previousStatus).toBe("running");
         expect(evt.data.cancelledBy).toBe(TENANT_A_SLUG);
+        // The precise cancelOn key: which function (agent) and which trigger
+        // delivery. Null here because this fixture has no trigger event.
+        expect(typeof evt.data.agent).toBe("string");
+        expect(evt.data.agent).not.toBe("");
+        expect(evt.data.triggerEventId).toBeNull();
+      } finally {
+        cap.restore();
+      }
+    });
+
+    it("names the trigger event id so cancelOn targets exactly one run (a null subject must never match the whole function)", async () => {
+      const triggerEventId = `evt-precise-${SUFFIX}`;
+      // runs.trigger_event_id is a foreign key: the delivery must exist.
+      getDb()
+        .insert(events)
+        .values({
+          id: triggerEventId,
+          tenantId: tenantAId,
+          name: "CANCEL_PRECISE_TEST",
+          subject: null,
+          receivedAt: new Date(),
+          payloadRef: "test://cancel-precise",
+        })
+        .run();
+      const runId = seedRun({
+        tenantId: tenantAId,
+        agentId: manifestAgentId,
+        status: "running",
+        triggerEventId,
+      });
+      const cap = captureInngest();
+      try {
+        const res = await env.fetch(`/v1/runs/${runId}/cancel`, { method: "POST" });
+        expect(res.status).toBe(200);
+        const evt = cap.calls[0]!;
+        expect(evt.data.triggerEventId).toBe(`evt-precise-${SUFFIX}`);
+        expect(evt.data.runId).toBe(runId);
       } finally {
         cap.restore();
       }

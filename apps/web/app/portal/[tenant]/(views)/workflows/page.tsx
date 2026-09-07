@@ -132,6 +132,8 @@ import {
   type MonitorInspectorTab,
 } from "@/app/portal/components/workflow-monitor";
 import { useDag } from "@/lib/hooks/useAgents";
+import { agentDisplayTitle } from "@/lib/agent-title";
+import { ErpIntegrationBanner } from "@/app/portal/components/workflows/ErpIntegrationBanner";
 import { useAgentEditor } from "@/lib/hooks/useAgentStudio";
 import { useEvents } from "@/lib/hooks/useEvents";
 import type { RunListRow } from "@/lib/hooks/useRuns";
@@ -480,8 +482,10 @@ export default function WorkflowsPage() {
   );
   const agentTitlesByName = useMemo(
     () =>
-      Object.fromEntries(agents.map((agent) => [agent.name, agent.title])),
-    [agents],
+      Object.fromEntries(
+        agents.map((agent) => [agent.name, agentDisplayTitle(agent, language)]),
+      ),
+    [agents, language],
   );
   const kebabByName = useMemo(
     () => new Map(agents.map((agent) => [agent.name, agent.kebabId])),
@@ -705,6 +709,10 @@ export default function WorkflowsPage() {
   // This keeps topology-packed stage-99 workflows and local draft additions
   // aligned with their actual nodes.
   const stages = useMemo(() => {
+    const declaredStages = new Set(
+      agents.map((agent) => agent.stage).filter((stage) => stage !== 99),
+    );
+    const stagesDeclared = declaredStages.size > 1;
     const byColumn = new Map<number, Set<number>>();
     for (const agent of agents) {
       const position = renderedPositions.get(agent.kebabId);
@@ -722,9 +730,11 @@ export default function WorkflowsPage() {
         return {
           id: column,
           column,
-          label: STAGE_KEYS[stage]
-            ? t(`workflowPage.stage.${STAGE_KEYS[stage]}`)
-            : t("workflowPage.stageFallback", { stage }),
+          label: !stagesDeclared
+            ? ""
+            : STAGE_KEYS[stage]
+              ? t(`workflowPage.stage.${STAGE_KEYS[stage]}`)
+              : t("workflowPage.stageFallback", { stage }),
         };
       });
   }, [agents, renderedPositions, t]);
@@ -957,7 +967,16 @@ export default function WorkflowsPage() {
       setValidation(null);
       setCanvasAnnouncement(
         t("workflowPage.announcement.agentReturned", {
-          agent: returned.definition.title ?? requestedAgent,
+          agent: agentDisplayTitle(
+            {
+              name: requestedAgent,
+              title: returned.definition.title ?? null,
+              titleI18n:
+                (returned.definition as { title_i18n?: Record<string, string> })
+                  .title_i18n ?? null,
+            },
+            language,
+          ),
         }),
       );
       toast({
@@ -1382,7 +1401,16 @@ export default function WorkflowsPage() {
     setValidation(null);
     setCanvasAnnouncement(
       t("workflowPage.announcement.agentAdded", {
-        agent: definition.title ?? definition.name,
+        agent: agentDisplayTitle(
+          {
+            name: definition.name,
+            title: definition.title ?? null,
+            titleI18n:
+              (definition as { title_i18n?: Record<string, string> }).title_i18n ??
+              null,
+          },
+          language,
+        ),
       }),
     );
   }
@@ -2005,6 +2033,9 @@ export default function WorkflowsPage() {
 
       {editing && <EditDraftBanner counts={draftCounts} />}
 
+      {/* Meta ERP reachability — a red run minutes from now is not a reminder. */}
+      {!editing && <ErpIntegrationBanner />}
+
       {/* §G4 — run scrubber: recent runs across this workflow's agents.
           Selecting a chip highlights the node + its emitted-event edges. */}
       {!editing && (
@@ -2168,7 +2199,8 @@ export default function WorkflowsPage() {
                     color: "var(--text-3)",
                   }}
                 >
-                  {String(s.column).padStart(2, "0")} · {s.label}
+                  {String(s.column).padStart(2, "0")}
+                  {s.label ? ` · ${s.label}` : ""}
                 </div>
               ))}
             </div>
@@ -2354,6 +2386,17 @@ export default function WorkflowsPage() {
                 {agents.map((a) => {
                   const p = renderedPositions.get(a.kebabId) ?? { x: 0, y: 0 };
                   const isSel = selectedAgent === a.kebabId;
+                  const displayTitle = agentDisplayTitle(a, language);
+                  // CJK glyphs are ~2× as wide as latin ones at this size; a title
+                  // that needs two lines leaves no room for the id row inside
+                  // NODE_H, so the id then lives only in the tooltip/aria label.
+                  const titleUnits = Array.from(displayTitle).reduce(
+                    (units, ch) =>
+                      units +
+                      (/[\u2E80-\u9FFF\uF900-\uFAFF\uFF00-\uFFEF]/.test(ch) ? 2 : 1),
+                    0,
+                  );
+                  const showIdRow = titleUnits <= 24;
                   const isConnectSource = connectFrom === a.kebabId;
                   const isDropTarget = linkDrag?.targetId === a.kebabId;
                   const isDragging = nodeDrag?.id === a.kebabId;
@@ -2388,7 +2431,7 @@ export default function WorkflowsPage() {
                       a.actor === "Agent"
                         ? t("workflowPage.actorAgent")
                         : t("workflowPage.actorHuman"),
-                    title: a.title,
+                    title: displayTitle,
                     id: a.kebabId,
                     state,
                   });
@@ -2438,10 +2481,10 @@ export default function WorkflowsPage() {
                         title={
                           editing
                             ? t("workflowPage.nodeEditTitle", {
-                                title: a.title,
+                                title: displayTitle,
                               })
                             : t("workflowPage.nodeViewTitle", {
-                                title: a.title,
+                                title: displayTitle,
                               })
                         }
                         style={{
@@ -2470,14 +2513,7 @@ export default function WorkflowsPage() {
                             : "none",
                         }}
                       >
-                        <div
-                          style={{
-                            display: "flex",
-                            alignItems: "center",
-                            gap: 6,
-                            marginBottom: 4,
-                          }}
-                        >
+                        <div className={styles.nodeHeader}>
                           <ActorTag
                             actor={a.actor}
                             label={
@@ -2496,47 +2532,21 @@ export default function WorkflowsPage() {
                               {t("workflowPage.modifiedBadge")}
                             </Badge>
                           )}
-                          <span
-                            style={{
-                              marginLeft: "auto",
-                              minWidth: 0,
-                              maxWidth: "58%",
-                              fontSize: 10,
-                              fontFamily: "var(--mono)",
-                              color: "var(--text-3)",
-                              // The technical id is secondary to the title on a
-                              // projector; clamp it to an ellipsis instead of
-                              // letting it clip mid-glyph.
-                              overflow: "hidden",
-                              textOverflow: "ellipsis",
-                              whiteSpace: "nowrap",
-                              direction: "rtl",
-                              textAlign: "right",
-                            }}
-                            title={a.kebabId}
-                          >
-                            {a.kebabId}
-                          </span>
                         </div>
+                        {/* The human-readable name is what a room reads; the
+                            technical id becomes a subtitle instead of fighting
+                            the title for the same line. */}
                         <div
-                          style={{
-                            // The human-readable name is what a room reads;
-                            // it outranks the id above it.
-                            fontSize: 14,
-                            color: "var(--text)",
-                            fontWeight: 600,
-                            lineHeight: 1.25,
-                            overflow: "hidden",
-                            textOverflow: "ellipsis",
-                            display: "-webkit-box",
-                            WebkitLineClamp: 2,
-                            WebkitBoxOrient: "vertical",
-                            wordBreak: "break-word",
-                          }}
-                          title={a.title}
+                          className={styles.nodeTitle}
+                          title={`${displayTitle} · ${a.kebabId}`}
                         >
-                          {a.title}
+                          {displayTitle}
                         </div>
+                        {showIdRow && (
+                          <div className={styles.nodeId} title={a.kebabId}>
+                            {a.kebabId}
+                          </div>
+                        )}
                       </button>
                       {editing && (
                         <>
@@ -2547,10 +2557,10 @@ export default function WorkflowsPage() {
                             }`}
                             data-workflow-input={a.kebabId}
                             aria-label={t("workflowPage.connectIntoAria", {
-                              title: a.title,
+                              title: displayTitle,
                             })}
                             title={t("workflowPage.inputPortTitle", {
-                              title: a.title,
+                              title: displayTitle,
                             })}
                             onClick={(event) => {
                               event.stopPropagation();
@@ -2569,10 +2579,10 @@ export default function WorkflowsPage() {
                                 : ""
                             }`}
                             aria-label={t("workflowPage.startConnectionAria", {
-                              title: a.title,
+                              title: displayTitle,
                             })}
                             title={t("workflowPage.outputPortTitle", {
-                              title: a.title,
+                              title: displayTitle,
                             })}
                             onPointerDown={(event) =>
                               beginLinkDrag(event, a.kebabId)

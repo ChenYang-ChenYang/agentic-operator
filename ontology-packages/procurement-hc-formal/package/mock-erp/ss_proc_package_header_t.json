@@ -1,0 +1,30 @@
+{
+  "rows": [
+    {
+      "CENTRAL_PURCHASE_LEVEL": "一级集采",
+      "EXPECTED_FINISH_SOURCING_DATE": "2026-09-05",
+      "ITEM_CODE": "M-BRK-126",
+      "LAST_UPDATE_DATE": "2026-07-21T15:05:00+08:00",
+      "PACKAGE_NAME": "断路器大修专项采购包",
+      "PACKAGE_NO": "PKG-2026-0451",
+      "PROC_PACKAGE_HEADER_ID": "PKG-2026-0451",
+      "PROC_PACKAGE_LINE_ID": "PKGL-2026-0451-01",
+      "PURCHASING_GROUP_NO": "PG-HD-01",
+      "SOURCE_OBJECT_ID": "PR-2026-11832",
+      "STATUS": "有效"
+    },
+    {
+      "CENTRAL_PURCHASE_LEVEL": "未标识",
+      "EXPECTED_FINISH_SOURCING_DATE": "2026-08-10",
+      "ITEM_CODE": "M-CT-110",
+      "LAST_UPDATE_DATE": "2026-06-18T10:00:00+08:00",
+      "PACKAGE_NAME": "互感器年度采购包",
+      "PACKAGE_NO": "PKG-2026-0488",
+      "PROC_PACKAGE_HEADER_ID": "PKG-2026-0488",
+      "PROC_PACKAGE_LINE_ID": "PKGL-2026-0488-02",
+      "PURCHASING_GROUP_NO": "PG-HN-02",
+      "SOURCE_OBJECT_ID": "PR-2026-11907",
+      "STATUS": "有效"
+    }
+  ]
+}

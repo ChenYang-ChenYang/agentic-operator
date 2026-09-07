@@ -1,0 +1,20 @@
+{
+  "rows": [
+    {
+      "AGREEMENT_PRICE": 56500,
+      "AGREEMENT_QUANTITY": 100,
+      "CATEGORY_ID": "CAT-EL-CT",
+      "MATERIAL_CODE": "M-CT-110",
+      "SPA_HEADER_ID": "SPA-2026-0338",
+      "SPA_LINE_ID": "SPAL-2026-0338-01"
+    },
+    {
+      "AGREEMENT_PRICE": 310,
+      "AGREEMENT_QUANTITY": 6000,
+      "CATEGORY_ID": "CAT-EL-CBL",
+      "MATERIAL_CODE": "M-CBL-YJV",
+      "SPA_HEADER_ID": "SPA-2025-0207",
+      "SPA_LINE_ID": "SPAL-2025-0207-01"
+    }
+  ]
+}
