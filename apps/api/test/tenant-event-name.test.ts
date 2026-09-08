@@ -136,8 +136,14 @@ describe("tenantEventName", () => {
     expect(opts.triggers).toEqual([{ event: "RESUME_DOWNLOADED" }]);
     expect(opts.concurrency.key).toBe('"zhaopin:" + event.data.entity_id');
     expect(opts.cancelOn[0]?.event).toBe("run.cancel");
-    expect(opts.cancelOn[0]?.if).toBe(
-      "async.data.entity_id == event.data.entity_id",
+    // Precise trigger-id match first; the adapter's entity_id subject stays
+    // as the legacy fallback, guarded against a null subject matching every
+    // in-flight run (2026-09-07).
+    expect(opts.cancelOn[0]?.if).toContain(
+      "async.data.triggerEventId != null && async.data.triggerEventId == event.data.__triggerEventId && async.data.agent == ",
+    );
+    expect(opts.cancelOn[0]?.if).toContain(
+      "async.data.triggerEventId == null && async.data.entity_id != null && async.data.entity_id == event.data.entity_id",
     );
   });
 

@@ -1,0 +1,12 @@
+{
+  "rows": [
+    {
+      "ITEM_CODE": "M-CT-110",
+      "NEED_BY_DATE": "2026-12-20",
+      "PO_HEADER_ID": "PO-2026-20487",
+      "PO_LINE_SHIPMENT_ID": "POS-2026-20487-01",
+      "QUANTITY": 30,
+      "RECEIVED_QUANTITY": 18
+    }
+  ]
+}

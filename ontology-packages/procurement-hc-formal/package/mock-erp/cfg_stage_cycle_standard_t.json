@@ -1,0 +1,158 @@
+{
+  "rows": [
+    {
+      "BUSINESS_TYPE": "物资",
+      "CYCLE_STANDARD_ID": "CYC-WZ-1",
+      "DISABLE_DATE": "2099-12-31",
+      "EFFECTIVE_DATE": "2026-01-01",
+      "MAINTAINER": "系统管理员",
+      "MIN_CYCLE_DAYS": 5,
+      "STAGE_NODE": "立项",
+      "STAGE_SEQUENCE": 1,
+      "STANDARD_CYCLE_DAYS": 10
+    },
+    {
+      "BUSINESS_TYPE": "物资",
+      "CYCLE_STANDARD_ID": "CYC-WZ-2",
+      "DISABLE_DATE": "2099-12-31",
+      "EFFECTIVE_DATE": "2026-01-01",
+      "MAINTAINER": "系统管理员",
+      "MIN_CYCLE_DAYS": 7,
+      "STAGE_NODE": "组包",
+      "STAGE_SEQUENCE": 2,
+      "STANDARD_CYCLE_DAYS": 15
+    },
+    {
+      "BUSINESS_TYPE": "物资",
+      "CYCLE_STANDARD_ID": "CYC-WZ-3",
+      "DISABLE_DATE": "2099-12-31",
+      "EFFECTIVE_DATE": "2026-01-01",
+      "MAINTAINER": "系统管理员",
+      "MIN_CYCLE_DAYS": 10,
+      "STAGE_NODE": "询价",
+      "STAGE_SEQUENCE": 3,
+      "STANDARD_CYCLE_DAYS": 20
+    },
+    {
+      "BUSINESS_TYPE": "物资",
+      "CYCLE_STANDARD_ID": "CYC-WZ-4",
+      "DISABLE_DATE": "2099-12-31",
+      "EFFECTIVE_DATE": "2026-01-01",
+      "MAINTAINER": "系统管理员",
+      "MIN_CYCLE_DAYS": 7,
+      "STAGE_NODE": "定标",
+      "STAGE_SEQUENCE": 4,
+      "STANDARD_CYCLE_DAYS": 15
+    },
+    {
+      "BUSINESS_TYPE": "物资",
+      "CYCLE_STANDARD_ID": "CYC-WZ-5",
+      "DISABLE_DATE": "2099-12-31",
+      "EFFECTIVE_DATE": "2026-01-01",
+      "MAINTAINER": "系统管理员",
+      "MIN_CYCLE_DAYS": 7,
+      "STAGE_NODE": "合同",
+      "STAGE_SEQUENCE": 5,
+      "STANDARD_CYCLE_DAYS": 15
+    },
+    {
+      "BUSINESS_TYPE": "物资",
+      "CYCLE_STANDARD_ID": "CYC-WZ-6",
+      "DISABLE_DATE": "2099-12-31",
+      "EFFECTIVE_DATE": "2026-01-01",
+      "MAINTAINER": "系统管理员",
+      "MIN_CYCLE_DAYS": 5,
+      "STAGE_NODE": "订单",
+      "STAGE_SEQUENCE": 6,
+      "STANDARD_CYCLE_DAYS": 10
+    },
+    {
+      "BUSINESS_TYPE": "物资",
+      "CYCLE_STANDARD_ID": "CYC-WZ-7",
+      "DISABLE_DATE": "2099-12-31",
+      "EFFECTIVE_DATE": "2026-01-01",
+      "MAINTAINER": "系统管理员",
+      "MIN_CYCLE_DAYS": 45,
+      "STAGE_NODE": "到货",
+      "STAGE_SEQUENCE": 7,
+      "STANDARD_CYCLE_DAYS": 70
+    },
+    {
+      "BUSINESS_TYPE": "工程",
+      "CYCLE_STANDARD_ID": "CYC-GC-1",
+      "DISABLE_DATE": "2099-12-31",
+      "EFFECTIVE_DATE": "2026-01-01",
+      "MAINTAINER": "系统管理员",
+      "MIN_CYCLE_DAYS": 7,
+      "STAGE_NODE": "立项",
+      "STAGE_SEQUENCE": 1,
+      "STANDARD_CYCLE_DAYS": 15
+    },
+    {
+      "BUSINESS_TYPE": "工程",
+      "CYCLE_STANDARD_ID": "CYC-GC-2",
+      "DISABLE_DATE": "2099-12-31",
+      "EFFECTIVE_DATE": "2026-01-01",
+      "MAINTAINER": "系统管理员",
+      "MIN_CYCLE_DAYS": 10,
+      "STAGE_NODE": "组包",
+      "STAGE_SEQUENCE": 2,
+      "STANDARD_CYCLE_DAYS": 20
+    },
+    {
+      "BUSINESS_TYPE": "工程",
+      "CYCLE_STANDARD_ID": "CYC-GC-3",
+      "DISABLE_DATE": "2099-12-31",
+      "EFFECTIVE_DATE": "2026-01-01",
+      "MAINTAINER": "系统管理员",
+      "MIN_CYCLE_DAYS": 12,
+      "STAGE_NODE": "询价",
+      "STAGE_SEQUENCE": 3,
+      "STANDARD_CYCLE_DAYS": 25
+    },
+    {
+      "BUSINESS_TYPE": "工程",
+      "CYCLE_STANDARD_ID": "CYC-GC-4",
+      "DISABLE_DATE": "2099-12-31",
+      "EFFECTIVE_DATE": "2026-01-01",
+      "MAINTAINER": "系统管理员",
+      "MIN_CYCLE_DAYS": 10,
+      "STAGE_NODE": "定标",
+      "STAGE_SEQUENCE": 4,
+      "STANDARD_CYCLE_DAYS": 20
+    },
+    {
+      "BUSINESS_TYPE": "工程",
+      "CYCLE_STANDARD_ID": "CYC-GC-5",
+      "DISABLE_DATE": "2099-12-31",
+      "EFFECTIVE_DATE": "2026-01-01",
+      "MAINTAINER": "系统管理员",
+      "MIN_CYCLE_DAYS": 10,
+      "STAGE_NODE": "合同",
+      "STAGE_SEQUENCE": 5,
+      "STANDARD_CYCLE_DAYS": 20
+    },
+    {
+      "BUSINESS_TYPE": "工程",
+      "CYCLE_STANDARD_ID": "CYC-GC-6",
+      "DISABLE_DATE": "2099-12-31",
+      "EFFECTIVE_DATE": "2026-01-01",
+      "MAINTAINER": "系统管理员",
+      "MIN_CYCLE_DAYS": 7,
+      "STAGE_NODE": "订单",
+      "STAGE_SEQUENCE": 6,
+      "STANDARD_CYCLE_DAYS": 15
+    },
+    {
+      "BUSINESS_TYPE": "工程",
+      "CYCLE_STANDARD_ID": "CYC-GC-7",
+      "DISABLE_DATE": "2099-12-31",
+      "EFFECTIVE_DATE": "2026-01-01",
+      "MAINTAINER": "系统管理员",
+      "MIN_CYCLE_DAYS": 60,
+      "STAGE_NODE": "到货",
+      "STAGE_SEQUENCE": 7,
+      "STANDARD_CYCLE_DAYS": 90
+    }
+  ]
+}

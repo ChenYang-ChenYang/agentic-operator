@@ -1,0 +1,36 @@
+{
+  "rows": [
+    {
+      "BUSINESS_TYPE": "物资",
+      "CATEGORY_ID": "CAT-EL-CT",
+      "CATEGORY_PATH": "电气设备/一次设备/互感器",
+      "CATEGORY_USAGE_ID": "PU-CT",
+      "DIMENSION_TYPE": "采购品类",
+      "IS_ENABLED": "Y"
+    },
+    {
+      "BUSINESS_TYPE": "物资",
+      "CATEGORY_ID": "CAT-EL-BRK",
+      "CATEGORY_PATH": "电气设备/一次设备/断路器",
+      "CATEGORY_USAGE_ID": "PU-BRK",
+      "DIMENSION_TYPE": "采购品类",
+      "IS_ENABLED": "Y"
+    },
+    {
+      "BUSINESS_TYPE": "物资",
+      "CATEGORY_ID": "CAT-EL-CBL",
+      "CATEGORY_PATH": "电气设备/线缆/电力电缆",
+      "CATEGORY_USAGE_ID": "PU-CBL",
+      "DIMENSION_TYPE": "采购品类",
+      "IS_ENABLED": "Y"
+    },
+    {
+      "BUSINESS_TYPE": "服务",
+      "CATEGORY_ID": "CAT-SVC-TEST",
+      "CATEGORY_PATH": "服务/检测试验/预防性试验",
+      "CATEGORY_USAGE_ID": "PU-TEST",
+      "DIMENSION_TYPE": "采购品类",
+      "IS_ENABLED": "Y"
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "rows": [
+    {
+      "APPROVED_AT": "2026-07-06T11:20:00+08:00",
+      "DEMAND_DEPARTMENT": "检修一部",
+      "ITEM_CODE": "M-BRK-126",
+      "PR_HEADER_ID": "PR-2026-11832",
+      "PR_HEADER_STATUS": "已审批",
+      "PR_NUMBER": "PR-2026-11832",
+      "SOURCE_DOC_HEADER_ID": "PBP-2026-0873",
+      "SOURCE_DOC_LINE_ID": "PBPL-2026-0873-01"
+    },
+    {
+      "APPROVED_AT": "2026-06-02T09:40:00+08:00",
+      "DEMAND_DEPARTMENT": "检修二部",
+      "ITEM_CODE": "M-CT-110",
+      "PR_HEADER_ID": "PR-2026-11907",
+      "PR_HEADER_STATUS": "已审批",
+      "PR_NUMBER": "PR-2026-11907",
+      "SOURCE_DOC_HEADER_ID": "PBP-2026-0914",
+      "SOURCE_DOC_LINE_ID": "PBPL-2026-0914-03"
+    }
+  ]
+}

@@ -57,6 +57,63 @@ const DEFAULT_BASE_URL_ENV = "METAERP_BASE_URL";
 const DEFAULT_TIMEOUT_MS = 15_000;
 const MAX_DIAGNOSTIC_CHARS = 2_000;
 
+/** `code`/`kind` fact carried by a transport-level failure (no HTTP response
+ * at all: refused connection, DNS failure, TLS handshake, timeout). Declarative
+ * error ladders match it as `code == integration_unreachable`. */
+export const METAERP_UNREACHABLE_CODE = "integration_unreachable";
+
+/**
+ * The ERP could not be reached — as opposed to the ERP answering with an
+ * error. The two must never look alike to an operator: an HTTP 400 is the
+ * agent's payload being wrong (deterministic, do not retry), while this is
+ * the network/VPN/proxy/base-URL being wrong (transient at best, and the
+ * fix is outside the workflow). The message is bilingual and names the
+ * base URL + env var so the run's error is actionable without reading code.
+ */
+export class IntegrationUnreachableError extends Error {
+  readonly code = METAERP_UNREACHABLE_CODE;
+  readonly kind = METAERP_UNREACHABLE_CODE;
+  readonly integration = "metaerp";
+  readonly operation: string;
+  readonly baseUrl: string;
+  readonly baseUrlEnv: string;
+  readonly reason: string;
+
+  constructor(args: {
+    operation: string;
+    baseUrl: string;
+    baseUrlEnv: string;
+    reason: string;
+  }) {
+    super(
+      `${METAERP_UNREACHABLE_CODE}: Meta ERP 接口不可达（${args.baseUrlEnv}=${args.baseUrl}，操作 ${args.operation}）— ${args.reason}。` +
+        `请检查 VPN／代理／接口地址；接口恢复前该步骤会按重试策略重试，用尽后以失败结束。 ` +
+        `/ Meta ERP unreachable at ${args.baseUrl} while invoking '${args.operation}' (${args.reason}); check VPN, proxy and ${args.baseUrlEnv}.`,
+    );
+    this.name = "IntegrationUnreachableError";
+    this.operation = args.operation;
+    this.baseUrl = args.baseUrl;
+    this.baseUrlEnv = args.baseUrlEnv;
+    this.reason = args.reason;
+  }
+}
+
+/** Human-readable transport failure reason (the undici `fetch failed` wrapper
+ * hides the real cause in `error.cause`). */
+function transportFailureReason(error: unknown, timeoutMs: number): string {
+  if (error instanceof Error && error.name === "TimeoutError") {
+    return `timed out after ${timeoutMs}ms`;
+  }
+  const cause = (error as { cause?: unknown } | null)?.cause;
+  const causeCode =
+    cause && typeof cause === "object" && typeof (cause as { code?: unknown }).code === "string"
+      ? (cause as { code: string }).code
+      : undefined;
+  const causeMessage = cause instanceof Error ? cause.message : undefined;
+  const own = error instanceof Error ? error.message : String(error);
+  return [own, causeCode ?? causeMessage].filter(Boolean).join(": ");
+}
+
 /** Parsed catalogs keyed by absolute file path. The compiler output is
  * byte-stable per deploy; a redeploy rewrites the file, and the api process
  * restarts (or hot-swaps manifests) around it, so a process-lifetime cache
@@ -299,15 +356,15 @@ export const metaerpInvoke = defineTool({
         signal,
       });
     } catch (error) {
-      const reason =
-        error instanceof Error && error.name === "TimeoutError"
-          ? `timed out after ${timeoutMs}ms`
-          : error instanceof Error
-            ? error.message
-            : String(error);
-      throw new Error(
-        `metaerp.invoke: '${operationName}' request to ${url} failed — ${reason}`,
-      );
+      // No HTTP response at all — the ERP was never reached. Typed so the
+      // run's error ladder and the operator can tell "ERP unreachable" from
+      // "ERP rejected the payload" (the HTTP-status branch below).
+      throw new IntegrationUnreachableError({
+        operation: operationName,
+        baseUrl,
+        baseUrlEnv: config.base_url_env?.trim() || DEFAULT_BASE_URL_ENV,
+        reason: transportFailureReason(error, timeoutMs),
+      });
     }
 
     const bodyText = await response.text();

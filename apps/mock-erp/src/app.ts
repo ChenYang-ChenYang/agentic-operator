@@ -13,6 +13,33 @@ import { renderHome, renderRequisitions, renderTransfers } from "./ui.js";
 
 const APP_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
+const columnKey = (name: string): string => name.toLowerCase().replace(/[^a-z0-9]/g, "");
+
+/**
+ * Resolve a filter key to a real column the way a model actually writes
+ * filters (observed on live runs): any case/style (`material_code`,
+ * `materialCode` → `MATERIAL_CODE`) and the list spellings the real MetaERP
+ * swaggers use (`material_codes`, `itemCodeList`, `pbp_header_id_list` →
+ * the singular column). Returns null when no column matches.
+ */
+function resolveColumn(columns: string[], key: string): string | null {
+  const base = columnKey(key);
+  const candidates = [base, base.replace(/list$/, ""), base.replace(/s$/, ""), base.replace(/ids$/, "id")];
+  for (const candidate of candidates) {
+    const hit = columns.find((name) => columnKey(name) === candidate);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+/** Exact match on one resolved column; list values are an IN. */
+function matchesColumn(row: Row, column: string, value: unknown): boolean {
+  const actual = row[column];
+  const same = (candidate: unknown): boolean =>
+    candidate === actual || String(candidate) === String(actual);
+  return Array.isArray(value) ? value.some(same) : same(value);
+}
+
 export interface BuildAppOptions {
   dataDir?: string;
   transformMapsPath?: string;
@@ -58,11 +85,27 @@ export function buildApp(opts: BuildAppOptions = {}): MockErpApp {
       const entity = store.queryOps.get(op);
       if (entity) {
         let rows = store.rows(entity);
-        const filters = Object.entries(payload).filter(([, v]) => v !== undefined);
-        if (filters.length > 0) {
-          rows = rows.filter((row) => filters.every(([k, v]) => row[k] === v));
+        const filters = Object.entries(payload).filter(
+          ([, v]) => v !== undefined && v !== null && v !== "",
+        );
+        if (filters.length === 0) return { rows };
+        // Column vocabulary of the table = union of the stub rows' keys.
+        const columns = [...new Set(rows.flatMap((row) => Object.keys(row)))];
+        const applied: Array<[string, unknown]> = [];
+        const ignored: string[] = [];
+        for (const [key, value] of filters) {
+          const column = resolveColumn(columns, key);
+          if (column) applied.push([column, value]);
+          else ignored.push(key);
         }
-        return { rows };
+        rows = rows.filter((row) => applied.every(([column, value]) => matchesColumn(row, column, value)));
+        // A filter naming no column of this table is reported, not silently
+        // honoured as "match nothing": the model can see its parameter name
+        // was not a column and correct it, instead of concluding the table is
+        // empty (which on a stock check reads as "库存为 0").
+        return ignored.length > 0
+          ? { rows, ignored_filters: ignored, columns }
+          : { rows };
       }
 
       // Write op: apply the effect, journal, respond.

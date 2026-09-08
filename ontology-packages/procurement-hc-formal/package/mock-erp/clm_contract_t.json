@@ -1,0 +1,17 @@
+{
+  "rows": [
+    {
+      "AWARD_ID": "BID-2026-0533",
+      "CONTRACT_AMOUNT": 1740000,
+      "CONTRACT_ID": "CT-2026-0912",
+      "CONTRACT_NO": "CT-2026-0912",
+      "CONTRACT_STATUS": "已生效",
+      "EFFECTIVE_DATE": "2026-07-28T00:00:00+08:00",
+      "ITEM_CODE": "M-CT-110",
+      "SIGNING_DATE": "2026-07-25T14:00:00+08:00",
+      "SIGNING_STATUS": "已签署",
+      "SPA_NUMBER": "SPA-2026-0338",
+      "SUPPLIER_NAME": "华东互感器制造有限公司"
+    }
+  ]
+}

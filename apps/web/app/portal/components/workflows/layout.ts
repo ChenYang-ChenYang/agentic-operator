@@ -10,9 +10,15 @@
  */
 
 export const NODE_W = 184;
-export const NODE_H = 64;
+/** 76 = the card's measured content budget (see `.nodeTitle` in
+ * workflow.module.css): 2px border + 11px padding + 20.7px actor pill row +
+ * 3px gap + a two-line 18px title (+1px) = 73.7, or a one-line title plus
+ * the 14px kebab-id row = 69.7. 64 clipped the glyphs of every title; 72
+ * still shrank two-line English titles by 2px. */
+export const NODE_H = 76;
 export const COL_W = 220;
-export const ROW_H = 90;
+/** Keeps the inter-row gap at 28px after the node grew from 64 to 76. */
+export const ROW_H = 104;
 export const PAD_X = 30;
 export const PAD_Y = 30;
 

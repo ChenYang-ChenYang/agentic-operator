@@ -31,9 +31,12 @@ import {
 describe("workflows/layout LAYOUT map", () => {
   it("matches the canonical v1_1 dimensions", () => {
     expect(NODE_W).toBe(184);
-    expect(NODE_H).toBe(64);
+    // 76/104 since 2026-09-07: 64 clipped the bottom of every title glyph
+    // (CJK line boxes) and the second line of English titles; 72 still
+    // shrank two-line English titles by 2px (measured in the live DOM).
+    expect(NODE_H).toBe(76);
     expect(COL_W).toBe(220);
-    expect(ROW_H).toBe(90);
+    expect(ROW_H).toBe(104);
     expect(PAD_X).toBe(30);
     expect(PAD_Y).toBe(30);
   });

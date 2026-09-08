@@ -1,0 +1,19 @@
+{
+  "rows": [
+    {
+      "CATEGORY_ID": "CAT-EL-CT",
+      "FRAME_HIT": "N",
+      "INVENTORY_ORGANIZATION": "ORG-HN",
+      "MANAGEMENT_UNIT": "华南检修分公司",
+      "MATERIAL_CODE": "M-CT-110",
+      "PACKAGE_ID": "PKG-2026-0488",
+      "PACKAGE_LINE_ID": "PKGL-2026-0488-02",
+      "PLAN_LINE_ID": "PBPL-2026-0914-03",
+      "PLANNER": "赵计划",
+      "QUANTITY": 30,
+      "REQUIRED_ARRIVAL_DATE": "2027-01-20",
+      "SOURCE_OBJECT_TYPE": "PBP_LINE",
+      "SOURCING_METHOD": "公开询价"
+    }
+  ]
+}

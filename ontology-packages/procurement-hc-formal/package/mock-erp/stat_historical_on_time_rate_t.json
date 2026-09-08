@@ -1,0 +1,31 @@
+{
+  "rows": [
+    {
+      "BUSINESS_TYPE": "物资",
+      "ITEM_CATEGORY": "断路器",
+      "ON_TIME_RATE": 0.62,
+      "SAMPLE_SIZE": 18,
+      "STAGE_NODE": "询价",
+      "STAT_ID": "STAT-WZ-BRK",
+      "WINDOW": "近 24 个月"
+    },
+    {
+      "BUSINESS_TYPE": "物资",
+      "ITEM_CATEGORY": "互感器",
+      "ON_TIME_RATE": 0.81,
+      "SAMPLE_SIZE": 34,
+      "STAGE_NODE": "订单",
+      "STAT_ID": "STAT-WZ-CT",
+      "WINDOW": "近 24 个月"
+    },
+    {
+      "BUSINESS_TYPE": "物资",
+      "ITEM_CATEGORY": "全部",
+      "ON_TIME_RATE": 0.74,
+      "SAMPLE_SIZE": 126,
+      "STAGE_NODE": "全部",
+      "STAT_ID": "STAT-WZ-ALL",
+      "WINDOW": "近 24 个月"
+    }
+  ]
+}

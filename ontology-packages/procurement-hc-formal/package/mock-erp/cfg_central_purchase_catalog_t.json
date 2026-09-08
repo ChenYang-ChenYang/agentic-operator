@@ -1,0 +1,49 @@
+{
+  "rows": [
+    {
+      "APPROVE_FLOW_CODE": "FLOW-GRP-L1",
+      "CATALOG_ID": "CPC-0001",
+      "CATEGORY_ID": "CAT-EL-BRK",
+      "CENTRAL_LEVEL": "一级集采",
+      "CENTRAL_PATTERN": "集团统谈统签",
+      "DISABLE_DATE": "2099-12-31",
+      "EFFECTIVE_DATE": "2026-01-01",
+      "IS_ENABLED": "Y",
+      "MAINTAINER": "集采管理岗",
+      "MANAGEMENT_UNIT": "全集团",
+      "MATERIAL_CODE": "M-BRK-126",
+      "MATERIAL_NAME": "126kV SF6 断路器",
+      "TENANT_ID": "T-HD"
+    },
+    {
+      "APPROVE_FLOW_CODE": "FLOW-BU-L2",
+      "CATALOG_ID": "CPC-0002",
+      "CATEGORY_ID": "CAT-EL-CBL",
+      "CENTRAL_LEVEL": "二级集采",
+      "CENTRAL_PATTERN": "分公司集中采购",
+      "DISABLE_DATE": "2099-12-31",
+      "EFFECTIVE_DATE": "2026-01-01",
+      "IS_ENABLED": "Y",
+      "MAINTAINER": "集采管理岗",
+      "MANAGEMENT_UNIT": "华东检修分公司",
+      "MATERIAL_CODE": "M-CBL-YJV",
+      "MATERIAL_NAME": "YJV22 10kV 电力电缆 3×240",
+      "TENANT_ID": "T-HD"
+    },
+    {
+      "APPROVE_FLOW_CODE": "FLOW-BU-L2",
+      "CATALOG_ID": "CPC-0003",
+      "CATEGORY_ID": "CAT-EL-CT",
+      "CENTRAL_LEVEL": "二级集采",
+      "CENTRAL_PATTERN": "分公司集中采购",
+      "DISABLE_DATE": "2025-06-30",
+      "EFFECTIVE_DATE": "2024-01-01",
+      "IS_ENABLED": "N",
+      "MAINTAINER": "集采管理岗",
+      "MANAGEMENT_UNIT": "华东检修分公司",
+      "MATERIAL_CODE": "M-CT-110",
+      "MATERIAL_NAME": "110kV 电流互感器",
+      "TENANT_ID": "T-HD"
+    }
+  ]
+}

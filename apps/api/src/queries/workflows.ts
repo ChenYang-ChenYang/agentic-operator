@@ -219,6 +219,7 @@ export async function getDag(
       kebabId: definition.id,
       name: definition.name,
       title: definition.title ?? definition.name,
+      ...(definition.title_i18n ? { titleI18n: definition.title_i18n } : {}),
       actor: definition.actor[0] === "Human" ? "Human" : "Agent",
       triggers: definition.trigger ?? [],
       emits: definition.triggered_event ?? [],

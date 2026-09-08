@@ -75,6 +75,162 @@ function findRow(
   return row;
 }
 
+function isoNow(): string {
+  return new Date().toISOString();
+}
+
+function arr(value: unknown): Row[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is Row => Boolean(item) && typeof item === "object")
+    : [];
+}
+
+function strings(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.map((item) => String(item)).filter((item) => item.length > 0)
+    : typeof value === "string" && value
+      ? [value]
+      : [];
+}
+
+/** Rows of a table the loaded package may or may not declare (empty if absent). */
+function rowsIfTable(store: MockErpStore, entity: string): Row[] {
+  return store.tables.get(entity) ?? [];
+}
+
+/** Append a row to a table only when the loaded package declares it — the
+ * 场景二 作业留痕 / 待办 tables exist in procurement-hc-formal but not in the
+ * older hc-procurement package, and a write op must not fail on the ledger. */
+function appendIfTable(store: MockErpStore, entity: string, row: Row): boolean {
+  const rows = store.tables.get(entity);
+  if (!rows) return false;
+  rows.push(row);
+  return true;
+}
+
+/** Replace-or-insert by id column; returns the live row. */
+function upsertRow(
+  store: MockErpStore,
+  entity: string,
+  idField: string,
+  id: string,
+  patch: Row,
+): Row | null {
+  const rows = store.tables.get(entity);
+  if (!rows) return null;
+  const existing = rows.find((row) => row[idField] === id);
+  if (existing) {
+    Object.assign(existing, patch);
+    return existing;
+  }
+  const row: Row = { [idField]: id, ...patch };
+  rows.push(row);
+  return row;
+}
+
+/** 场景二 数字员工作业留痕（BR2-AUDIT-01：角色、时间、依据、结论四要素）。 */
+function operationLog(
+  store: MockErpStore,
+  entry: {
+    operation_type: string;
+    operator_role: string;
+    operator?: string;
+    plan_line_id?: unknown;
+    related_object_type?: string;
+    related_object_id?: unknown;
+    rule_hit?: string[];
+    api_called?: string;
+    decision_note?: string;
+  },
+): string {
+  const id = makeId("OPL");
+  appendIfTable(store, "de_operation_log_t", {
+    OPERATION_LOG_ID: id,
+    OPERATION_TYPE: entry.operation_type,
+    OPERATOR_ROLE: entry.operator_role,
+    OPERATOR: entry.operator ?? "",
+    OCCURRED_AT: isoNow(),
+    PLAN_LINE_ID: entry.plan_line_id ?? "",
+    RELATED_OBJECT_TYPE: entry.related_object_type ?? "",
+    RELATED_OBJECT_ID: entry.related_object_id ?? "",
+    RULE_HIT: entry.rule_hit ?? [],
+    API_CALLED: entry.api_called ?? "",
+    DECISION_NOTE: entry.decision_note ?? "",
+    AUDITABLE: true,
+  });
+  return id;
+}
+
+/**
+ * 场景二 ⑤行 — 库存判为「可调度」时不建采购计划，直接生成调拨申请单
+ * （BR2-STOCK-01 硬拦截分支）。与场景一由偏差调整方案落地的调拨共用同一张
+ * 调拨申请（inv_transaction_order_t），以 TRANSFER_REASON 区分来路。
+ */
+function createDemandTransfer(store: MockErpStore, payload: Row): EffectResult & Row {
+  const flag = String(pick(payload, "stock_check_flag") ?? "可调度");
+  if (flag !== "可调度") {
+    throw new MockErpError(400, `BR2-STOCK-01: stock_check_flag must be 可调度, got ${flag}`);
+  }
+  if (pick(payload, "is_urgent_demand") === true) {
+    throw new MockErpError(400, "BR2-STOCK-01: urgent demand is not transferable");
+  }
+  const material = String(required(payload, "MATERIAL_CODE", "material_code"));
+  const quantity = num(required(payload, "TRANSFER_QUANTITY", "transfer_quantity", "demand_quantity")) ?? 0;
+  const planLineId = String(pick(payload, "plan_line_id") ?? "");
+  const stockCheckId = String(pick(payload, "stock_check_id") ?? "");
+  const sourceWarehouse = String(pick(payload, "source_warehouse", "storehouse_code") ?? "WH-HD-02");
+  const targetWarehouse = String(pick(payload, "target_warehouse") ?? "需求单位库");
+  const organization = String(pick(payload, "inventory_organization") ?? "");
+  const id = makeId("TRO");
+  const createdAt = isoNow();
+  const expected = new Date(Date.now() + 5 * 86_400_000).toISOString().slice(0, 10);
+  const row: Row = {
+    TRANSFER_REQUEST_ID: id,
+    TRANSFER_NO: id,
+    PLAN_LINE_ID: planLineId,
+    STOCK_CHECK_ID: stockCheckId,
+    MATERIAL_CODE: material,
+    TRANSFER_QUANTITY: quantity,
+    SOURCE_WAREHOUSE: sourceWarehouse,
+    TARGET_WAREHOUSE: targetWarehouse,
+    INVENTORY_ORGANIZATION: organization,
+    TRANSFER_REASON: "库存可调度",
+    REQUEST_STATUS: "已提交",
+    EXPECTED_ARRIVAL_DATE: expected,
+    CREATED_AT: createdAt,
+  };
+  store.rows("inv_transaction_order_t").push(row);
+  operationLog(store, {
+    operation_type: "调拨转办",
+    operator_role: "采购数字员工",
+    plan_line_id: planLineId,
+    related_object_type: "Stock_Transfer_Request",
+    related_object_id: id,
+    rule_hit: ["BR2-STOCK-01"],
+    api_called: "createTransactionOrder",
+    decision_note: `库存可调度：${material} × ${quantity} 从 ${sourceWarehouse} 调拨，不建采购计划`,
+  });
+  return {
+    ok: true,
+    id,
+    row,
+    applied: true,
+    transfer_context: {
+      transfer_request_id: id,
+      transfer_no: id,
+      transfer_reason: "库存可调度",
+      transfer_quantity: quantity,
+      expected_arrival_date: expected,
+      plan_line_id: planLineId,
+      stock_check_id: stockCheckId,
+      material_code: material,
+      source_warehouse: sourceWarehouse,
+      target_warehouse: targetWarehouse,
+      created_at: createdAt,
+    },
+  };
+}
+
 /**
  * Hand-written ERP semantics for the 15 write operations declared in
  * transform-maps action_maps (operation_id present). CREATE ops append a row
@@ -556,8 +712,31 @@ export const WRITE_EFFECTS: Record<string, Effect> = {
     if (optionType !== "调整需求日期") {
       return { ok: true, id: "SKIPPED", applied: false, skipped_reason: optionType };
     }
-    const planLineId = String(required(payload, "PLAN_LINE_ID", "plan_line_id"));
-    const newDate = String(required(payload, "REQUIRED_ARRIVAL_DATE", "required_arrival_date"));
+    // The approval context names the option, not the date: the new required
+    // date is the option's simulated arrival (expected_arrival_date_after),
+    // carried forward from ADJUSTMENT_OPTIONS_GENERATED. An explicit date
+    // still wins when a caller supplies one.
+    const optionId = String(pick(payload, "option_id") ?? "");
+    const carriedOptions = arr(pick(payload, "options"));
+    const selectedOption =
+      (carriedOptions.find((option) => String(pick(option, "option_id") ?? "") === optionId) as Row | undefined) ??
+      (pick(payload, "recommended_option") as Row | undefined);
+    const planLineId = String(
+      pick(payload, "PLAN_LINE_ID", "plan_line_id") ??
+        pick(selectedOption ?? {}, "plan_line_id") ??
+        pick((arr(pick(payload, "procurement_chain"))[0] ?? {}) as Row, "plan_line_id") ??
+        required(payload, "PLAN_LINE_ID", "plan_line_id"),
+    );
+    const newDateValue =
+      pick(payload, "REQUIRED_ARRIVAL_DATE", "required_arrival_date", "new_required_arrival_date") ??
+      pick(selectedOption ?? {}, "expected_arrival_date_after");
+    if (newDateValue === undefined || newDateValue === null || String(newDateValue) === "") {
+      throw new MockErpError(
+        400,
+        "changePbpLine: missing required field: REQUIRED_ARRIVAL_DATE (no explicit date and the selected option carries no expected_arrival_date_after)",
+      );
+    }
+    const newDate = String(newDateValue);
     const row = findRow(store, "ss_pbp_line_t", "PBP_LINE_ID", planLineId);
     const original = String(row["ORIGINAL_NEED_BY_DATE"] ?? "") || String(row["NEED_BY_DATE"] ?? "");
     row["ORIGINAL_NEED_BY_DATE"] = original;
@@ -576,8 +755,18 @@ export const WRITE_EFFECTS: Record<string, Effect> = {
     };
   },
 
-  /** ⑥行 方案③ — 生成调拨申请单并取得 ERP 正式单号。 */
+  /**
+   * ⑥行 方案③ — 生成调拨申请单并取得 ERP 正式单号。
+   *
+   * Two callers share this op id: 场景一 createStockTransferRequest sends the
+   * decision context (option_type present — only「执行调拨」applies), 场景二
+   * createInventoryTransferOrder sends a stock-check context with no
+   * option_type at all. The payload shape, not a flag, picks the semantics.
+   */
   createTransactionOrder: (store, payload) => {
+    if (pick(payload, "option_type") === undefined) {
+      return createDemandTransfer(store, payload);
+    }
     const optionType = String(pick(payload, "option_type") ?? "");
     if (optionType !== "执行调拨") {
       return { ok: true, id: "SKIPPED", applied: false, skipped_reason: optionType };
@@ -727,6 +916,669 @@ export const WRITE_EFFECTS: Record<string, Effect> = {
         suggested_threshold_value: row["SUGGESTED_THRESHOLD_VALUE"],
         false_alarm_rate: row["FALSE_ALARM_RATE"],
         submitted_at: submittedAt,
+      },
+    };
+  },
+
+  // ---- 采购-HC-Formal · 场景二 数字化员工的智能作业实践 ----------------------
+  // The seven ops below are declared by procurement-hc-formal@0.1.8 only. The
+  // package's 决策/作业 objects (de_*) start empty and are written here; every
+  // op leaves a de_operation_log_t row (BR2-AUDIT-01) and echoes the context
+  // the next agent in the chain reads out of its trigger event.
+
+  /** ③行 — 计划员确认拆分后，把超限组合拆为独立计划行（BR2-MERGE-02/03）。 */
+  splitDemandLine: (store, payload) => {
+    const decision = String(pick(payload, "decision") ?? "approved");
+    if (decision !== "approved") {
+      return { ok: true, id: "SKIPPED", applied: false, skipped_reason: decision };
+    }
+    const suggestionId = String(required(payload, "MERGE_SUGGESTION_ID", "merge_suggestion_id"));
+    const confirmedBy = String(required(payload, "CONFIRMED_BY", "confirmed_by"));
+    const lineIds = strings(pick(payload, "plan_line_ids", "source_plan_line_ids"));
+    const single = pick(payload, "plan_line_id");
+    if (lineIds.length === 0 && single !== undefined) lineIds.push(String(single));
+    const confirmedAt = isoNow();
+    let splitCount = 0;
+    for (const lineId of lineIds) {
+      const line = rowsIfTable(store, "ss_pbp_line_t").find((row) => row["PBP_LINE_ID"] === lineId);
+      if (!line) continue;
+      line["IS_SPLIT"] = "Y";
+      line["MERGE_GROUP_ID"] = String(pick(payload, "merge_group_id") ?? "");
+      line["SOURCE_OBJECT_TYPE"] = "PBP_LINE";
+      line["SOURCE_OBJECT_LINE_ID"] = lineId;
+      splitCount += 1;
+    }
+    upsertRow(store, "de_demand_merge_suggestion_t", "MERGE_SUGGESTION_ID", suggestionId, {
+      SUGGESTION_STATUS: "已拆分",
+      SUGGESTION_TYPE: "需拆分",
+      CONFIRMED_BY: confirmedBy,
+      CONFIRMED_AT: confirmedAt,
+      SOURCE_PLAN_LINE_IDS: lineIds,
+      SPLIT_LINE_COUNT: splitCount,
+    });
+    const logId = operationLog(store, {
+      operation_type: "需求拆分",
+      operator_role: "采购计划员",
+      operator: confirmedBy,
+      plan_line_id: lineIds[0] ?? "",
+      related_object_type: "Demand_Merge_Suggestion",
+      related_object_id: suggestionId,
+      rule_hit: ["BR2-MERGE-02", "BR2-MERGE-03"],
+      decision_note: String(pick(payload, "remark") ?? "计划员确认拆分为独立计划行"),
+    });
+    return {
+      ok: true,
+      id: suggestionId,
+      applied: true,
+      operation_log_id: logId,
+      split_context: {
+        merge_suggestion_id: suggestionId,
+        split_line_count: splitCount,
+        confirmed_by: confirmedBy,
+        confirmed_at: confirmedAt,
+        plan_line_ids: lineIds,
+        plan_line_id: lineIds[0] ?? "",
+      },
+    };
+  },
+
+  /**
+   * ④行 — 执行计划草稿：createPbp 建执行计划头行，并把来源需求行映射写入
+   * 采购业务计划关系表（BR2-MERGE-04：合并计划没有来源映射不得生成）。
+   */
+  createPbp: (store, payload) => {
+    const draft = (pick(payload, "draft_request") ?? payload) as Row;
+    const lines = arr(pick(draft, "lines", "plan_lines", "pbpCreateLineDTOList"));
+    if (lines.length === 0) {
+      throw new MockErpError(400, "createPbp: at least one plan line is required");
+    }
+    const sourceLineIds = new Set<string>(strings(pick(draft, "source_plan_line_ids")));
+    for (const line of lines) for (const id of strings(pick(line, "source_plan_line_ids"))) sourceLineIds.add(id);
+    const merged =
+      sourceLineIds.size > 1 || lines.some((line) => strings(pick(line, "source_plan_line_ids")).length > 1);
+    if (merged && sourceLineIds.size === 0) {
+      throw new MockErpError(400, "BR2-MERGE-04: merged execution plan needs source_plan_line_ids (来源需求行映射未写入)");
+    }
+    const headerId = makeId("PBP-EXEC");
+    const createdAt = isoNow();
+    const businessType = String(pick(draft, "business_type") ?? "物资");
+    const managementUnit = String(pick(draft, "management_unit") ?? "");
+    const mergeGroupId = String(pick(draft, "merge_group_id") ?? "");
+    const header: Row = {
+      PBP_HEADER_ID: headerId,
+      PLAN_NO: headerId,
+      PLAN_CATEGORY: "执行计划",
+      BUSINESS_TYPE: businessType,
+      PLAN_TYPE: String(pick(draft, "plan_type") ?? "执行计划"),
+      STATUS: "草稿",
+      IS_EXECUTION_PLAN_DRAFT: "Y",
+      UNIT_CODE: String(pick(draft, "unit_code") ?? ""),
+      MANAGEMENT_UNIT: managementUnit,
+      PLAN_PERIOD: String(pick(draft, "plan_period") ?? ""),
+      MERGE_GROUP_ID: mergeGroupId,
+      IS_DELETED: "N",
+      CREATED_AT: createdAt,
+    };
+    store.rows("ss_pbp_header_t").push(header);
+    const lineRows: Row[] = [];
+    lines.forEach((line, index) => {
+      const lineId = `${headerId}-${String(index + 1).padStart(2, "0")}`;
+      const lineSources = strings(pick(line, "source_plan_line_ids"));
+      const sources = lineSources.length ? lineSources : [...sourceLineIds];
+      const row: Row = {
+        PBP_LINE_ID: lineId,
+        PBP_LINE_NUMBER: String(index + 1),
+        PBP_HEADER_ID: headerId,
+        ITEM_CODE: String(required(line, "ITEM_CODE", "item_code", "material_code")),
+        ITEM_NAME: String(pick(line, "item_name", "material_name") ?? ""),
+        PBP_LINE_TYPE_CODE: String(pick(line, "line_type_code") ?? "物资"),
+        CATEGORY_ID: String(pick(line, "category_id") ?? ""),
+        QUANTITY: num(required(line, "QUANTITY", "quantity")) ?? 0,
+        UNIT: String(pick(line, "unit") ?? ""),
+        UNIT_PRICE: num(pick(line, "unit_price")) ?? 0,
+        NEED_BY_DATE: String(pick(line, "need_by_date", "required_arrival_date") ?? ""),
+        INVENTORY_ORGANIZATION: String(pick(line, "inventory_organization") ?? ""),
+        SOURCING_METHOD: String(pick(line, "sourcing_method") ?? "公开询价"),
+        IS_EXECUTION_PLAN_DRAFT: "Y",
+        MERGE_GROUP_ID: mergeGroupId,
+        SOURCE_OBJECT_TYPE: "PBP_LINE",
+        SOURCE_OBJECT_LINE_ID: sources[0] ?? "",
+        SOURCE_PLAN_LINE_IDS: sources,
+        LINE_STATUS: "草稿",
+        IS_CANCELLED: "N",
+        IS_DELETED: "N",
+        IS_URGENT: pick(line, "is_urgent") === true ? "Y" : "N",
+        CENTRAL_PURCHASE_LEVEL: "未标识",
+        ATTACHMENT_COMPLETE: "Y",
+      };
+      store.rows("ss_pbp_line_t").push(row);
+      lineRows.push(row);
+      const relations = rowsIfTable(store, "ss_pbp_rel_t");
+      for (const source of sources) {
+        relations.push({
+          PBP_REL_ID: makeId("REL"),
+          PBP_HEADER_ID: headerId,
+          PBP_LINE_ID: lineId,
+          SOURCE_PLAN_LINE_ID: source,
+          SOURCE_PLAN_HEADER_ID: String(pick(draft, "source_plan_header_id") ?? ""),
+        });
+      }
+    });
+    const suggestionId = String(pick(draft, "merge_suggestion_id") ?? "");
+    if (suggestionId) {
+      upsertRow(store, "de_demand_merge_suggestion_t", "MERGE_SUGGESTION_ID", suggestionId, {
+        MERGE_GROUP_ID: mergeGroupId,
+        SOURCE_PLAN_LINE_IDS: [...sourceLineIds],
+        SOURCE_PLAN_HEADER_ID: headerId,
+        SOURCE_PLAN_NO: headerId,
+        RELATION_RECORD_ID: headerId,
+        SOURCE_MAPPING_WRITTEN: true,
+        SUGGESTION_STATUS: "已采纳",
+      });
+    }
+    const taskId = makeId("TSK");
+    appendIfTable(store, "de_digital_employee_task_t", {
+      TASK_ID: taskId,
+      TASK_TYPE: "草稿确认",
+      ASSIGNED_ROLE: "采购计划员",
+      ASSIGNEE: "",
+      PLAN_LINE_ID: lineRows[0]?.["PBP_LINE_ID"] ?? "",
+      RELATED_OBJECT_TYPE: "Procurement_Plan",
+      RELATED_OBJECT_ID: headerId,
+      TASK_SUMMARY: `执行计划草稿 ${headerId} 待确认（${lineRows.length} 行）`,
+      TASK_STATUS: "待处理",
+      CREATED_AT: createdAt,
+    });
+    const logId = operationLog(store, {
+      operation_type: "执行计划草稿生成",
+      operator_role: "采购数字员工",
+      plan_line_id: lineRows[0]?.["PBP_LINE_ID"] ?? "",
+      related_object_type: "Procurement_Plan",
+      related_object_id: headerId,
+      rule_hit: ["BR2-MERGE-04"],
+      api_called: "createPbp",
+      decision_note: `来源行 ${[...sourceLineIds].join("、") || "（单行）"} → ${headerId}`,
+    });
+    const planLines = lineRows.map((row) => ({
+      plan_id: headerId,
+      plan_no: headerId,
+      plan_line_id: row["PBP_LINE_ID"],
+      plan_line_no: row["PBP_LINE_NUMBER"],
+      material_code: row["ITEM_CODE"],
+      material_name: row["ITEM_NAME"],
+      line_type_code: row["PBP_LINE_TYPE_CODE"],
+      category_id: row["CATEGORY_ID"],
+      quantity: row["QUANTITY"],
+      unit: row["UNIT"],
+      unit_price: row["UNIT_PRICE"],
+      required_arrival_date: row["NEED_BY_DATE"],
+      management_unit: managementUnit,
+      inventory_organization: row["INVENTORY_ORGANIZATION"],
+      sourcing_method: row["SOURCING_METHOD"],
+      central_purchase_level: row["CENTRAL_PURCHASE_LEVEL"],
+      attachment_complete: true,
+      is_urgent: row["IS_URGENT"] === "Y",
+      source_plan_line_ids: row["SOURCE_PLAN_LINE_IDS"],
+    }));
+    return {
+      ok: true,
+      id: headerId,
+      row: header,
+      rows: lineRows,
+      source_mapping_written: true,
+      operation_log_id: logId,
+      draft_context: {
+        plan_id: headerId,
+        plan_no: headerId,
+        draft_line_count: lineRows.length,
+        merge_group_id: mergeGroupId,
+        merge_suggestion_id: suggestionId,
+        source_mapping_written: true,
+        plan_line_id: lineRows[0]?.["PBP_LINE_ID"] ?? "",
+        plan_lines: planLines,
+        business_type: businessType,
+        management_unit: managementUnit,
+        source_plan_line_ids: [...sourceLineIds],
+        task_id: taskId,
+        scan_date: pick(payload, "scan_date") ?? "",
+        schedule_plan: pick(payload, "schedule_plan") ?? null,
+        stage_schedule: pick(draft, "stage_schedule") ?? [],
+      },
+    };
+  },
+
+  /**
+   * 待办推送 — two callers: ⑨警 returnPlanForRectification (payload is the
+   * applicant's rectification form: audit_opinion_id present) and ⑫警
+   * raisePackagingComplianceAlert (payload is the compliance violation). Both
+   * open a 数字员工待办; the rectification caller also moves the audit opinion.
+   */
+  pushTask: (store, payload) => {
+    const id = makeId("TSK");
+    const now = isoNow();
+    const auditOpinionId = pick(payload, "audit_opinion_id");
+    const isRectification = auditOpinionId !== undefined;
+    const decision = String(pick(payload, "decision") ?? "");
+    const special = String(pick(payload, "special_sourcing_method") ?? "无");
+    const assignedRole = String(
+      pick(payload, "assigned_role") ??
+        (isRectification ? "需求申请人" : special !== "无" ? "集采管理岗" : "采购计划员"),
+    );
+    const taskType = String(pick(payload, "task_type") ?? (isRectification ? "整改退回" : "组包预警"));
+    const planLineId = pick(payload, "plan_line_id") ?? "";
+    const relatedId = isRectification ? auditOpinionId : (pick(payload, "pkg_finding_id") ?? "");
+    const summary = String(
+      pick(payload, "task_summary", "rectify_advice", "intercept_items", "conclusion") ?? "",
+    );
+    const row: Row = {
+      TASK_ID: id,
+      TASK_TYPE: taskType,
+      ASSIGNED_ROLE: assignedRole,
+      ASSIGNEE: pick(payload, "assignee", "rectified_by") ?? "",
+      PLAN_LINE_ID: planLineId,
+      RELATED_OBJECT_TYPE: isRectification ? "Plan_Audit_Opinion" : "Packaging_Compliance_Finding",
+      RELATED_OBJECT_ID: relatedId,
+      TASK_SUMMARY: summary,
+      TASK_STATUS: isRectification && decision === "approved" ? "已完成" : "待处理",
+      CREATED_AT: now,
+      DUE_AT: "",
+      COMPLETED_AT: isRectification && decision === "approved" ? now : "",
+      RESPONSE_NOTE: pick(payload, "response_note", "non_central_reason") ?? "",
+      REJECTION_REASON: decision === "rejected" ? String(pick(payload, "response_note") ?? "撤回申报") : "",
+    };
+    appendIfTable(store, "de_digital_employee_task_t", row);
+    if (isRectification) {
+      upsertRow(store, "de_plan_audit_opinion_t", "AUDIT_OPINION_ID", String(auditOpinionId), {
+        PLAN_ID: pick(payload, "plan_id") ?? "",
+        PLAN_LINE_ID: planLineId,
+        OPINION_STATUS: decision === "approved" ? "已整改" : decision === "rejected" ? "已撤回" : "待整改",
+        RECTIFY_ADVICE: pick(payload, "rectify_advice", "intercept_items") ?? "",
+        RECTIFIED_AT: decision === "approved" ? now : "",
+        SUBMITTED_BY: pick(payload, "rectified_by") ?? "",
+        NON_CENTRAL_REASON: pick(payload, "non_central_reason") ?? "",
+      });
+    } else {
+      const findingId = String(pick(payload, "pkg_finding_id") ?? makeId("PCF"));
+      upsertRow(store, "de_packaging_compliance_finding_t", "PKG_FINDING_ID", findingId, {
+        PACKAGE_SCHEME_ID: pick(payload, "package_scheme_id") ?? "",
+        CHECK_ITEM: pick(payload, "check_item") ?? "",
+        CONCLUSION: pick(payload, "conclusion") ?? "",
+        SPLIT_ADVICE: pick(payload, "split_advice") ?? "",
+        SPECIAL_SOURCING_METHOD: special,
+        SUPPLEMENT_TASK_CREATED: true,
+        RECTIFY_ADVICE: pick(payload, "rectify_advice") ?? "",
+        RESOLVED: false,
+      });
+      const schemeId = pick(payload, "package_scheme_id");
+      if (schemeId !== undefined) {
+        upsertRow(store, "de_package_scheme_t", "PACKAGE_SCHEME_ID", String(schemeId), {
+          SCHEME_STATUS: "待调整",
+          SPLIT_ADVICE: pick(payload, "split_advice") ?? "",
+        });
+      }
+    }
+    const logId = operationLog(store, {
+      operation_type: isRectification ? "退回整改" : "组包预警推送",
+      operator_role: isRectification ? "需求申请人" : "采购数字员工",
+      operator: String(pick(payload, "rectified_by") ?? ""),
+      plan_line_id: planLineId,
+      related_object_type: row["RELATED_OBJECT_TYPE"] as string,
+      related_object_id: relatedId,
+      rule_hit: isRectification ? ["BR2-CENTRAL-03"] : ["BR2-PKG-01", "BR2-PKG-03", "BR2-FRAME-03"],
+      api_called: "pushTask",
+      decision_note: summary,
+    });
+    return {
+      ok: true,
+      id,
+      row,
+      operation_log_id: logId,
+      task_context: {
+        task_id: id,
+        task_type: taskType,
+        assigned_role: assignedRole,
+        pkg_finding_id: pick(payload, "pkg_finding_id") ?? "",
+        package_scheme_id: pick(payload, "package_scheme_id") ?? "",
+        check_item: pick(payload, "check_item") ?? "",
+        rectify_advice: pick(payload, "rectify_advice") ?? "",
+        split_advice: pick(payload, "split_advice") ?? "",
+        special_sourcing_method: special,
+        plan_id: pick(payload, "plan_id") ?? "",
+        plan_line_id: planLineId,
+        scan_date: pick(payload, "scan_date") ?? "",
+      },
+      return_context: {
+        audit_opinion_id: auditOpinionId ?? "",
+        task_id: id,
+        assigned_role: assignedRole,
+        returned_at: now,
+        plan_id: pick(payload, "plan_id") ?? "",
+        plan_line_id: planLineId,
+        intercept_items: pick(payload, "intercept_items") ?? "",
+        rectify_advice: pick(payload, "rectify_advice") ?? "",
+      },
+      rectification_context: {
+        audit_opinion_id: auditOpinionId ?? "",
+        task_id: id,
+        non_central_reason: pick(payload, "non_central_reason") ?? "",
+        rectified_at: now,
+        rectified_by: pick(payload, "rectified_by") ?? "",
+        response_note: pick(payload, "response_note") ?? "",
+        plan_id: pick(payload, "plan_id") ?? "",
+        plan_line_id: planLineId,
+        scan_date: pick(payload, "scan_date") ?? "",
+      },
+    };
+  },
+
+  /** ⑧断 — 计划员确认草稿并选定组包方案（BR2-HITL-01）；驳回必须带原因（BR2-FEEDBACK-01）。 */
+  writeOperationLog: (store, payload) => {
+    const decision = String(pick(payload, "decision") ?? "approved");
+    if (decision !== "approved" && decision !== "rejected") {
+      throw new MockErpError(400, `unsupported decision: ${decision}`);
+    }
+    const schemeId = String(required(payload, "PACKAGE_SCHEME_ID", "package_scheme_id"));
+    const actor = String(pick(payload, "selected_by", "rejected_by", "operator") ?? "");
+    const reason = String(pick(payload, "rejection_reason") ?? "");
+    if (decision === "approved" && !actor) {
+      throw new MockErpError(400, "BR2-HITL-01: selected_by is required to confirm the draft");
+    }
+    if (decision === "rejected" && !reason) {
+      throw new MockErpError(400, "BR2-FEEDBACK-01: rejection_reason is required when rejecting");
+    }
+    const now = isoNow();
+    const planId = String(pick(payload, "plan_id") ?? "");
+    const planLineId = String(pick(payload, "plan_line_id") ?? "");
+    upsertRow(store, "de_package_scheme_t", "PACKAGE_SCHEME_ID", schemeId, {
+      SCHEME_NO: pick(payload, "scheme_no") ?? schemeId,
+      PLAN_ID: planId,
+      SCHEME_STATUS: decision === "approved" ? "已选定" : "未采纳",
+      SELECTED_BY: decision === "approved" ? actor : "",
+      SELECTED_AT: decision === "approved" ? now : "",
+      REJECTION_REASON: reason,
+    });
+    if (decision === "approved" && planLineId) {
+      const line = rowsIfTable(store, "ss_pbp_line_t").find((row) => row["PBP_LINE_ID"] === planLineId);
+      if (line) {
+        line["DRAFT_CONFIRMED_BY"] = actor;
+        line["DRAFT_CONFIRMED_AT"] = now;
+        line["LINE_STATUS"] = "已确认";
+      }
+    }
+    for (const task of rowsIfTable(store, "de_digital_employee_task_t")) {
+      if (task["RELATED_OBJECT_ID"] === planId && task["TASK_STATUS"] === "待处理") {
+        task["TASK_STATUS"] = "已完成";
+        task["COMPLETED_AT"] = now;
+        task["RESPONSE_NOTE"] = decision === "approved" ? `选定 ${schemeId}` : reason;
+      }
+    }
+    const logId = operationLog(store, {
+      operation_type: "确认草稿与组包方案",
+      operator_role: "采购计划员",
+      operator: actor,
+      plan_line_id: planLineId,
+      related_object_type: "Package_Scheme",
+      related_object_id: schemeId,
+      rule_hit: decision === "approved" ? ["BR2-HITL-01"] : ["BR2-FEEDBACK-01"],
+      api_called: "writeOperationLog",
+      decision_note: decision === "approved" ? `确认草稿并选定 ${schemeId}` : `驳回：${reason}`,
+    });
+    return {
+      ok: true,
+      id: logId,
+      decision,
+      confirm_context: {
+        package_scheme_id: schemeId,
+        scheme_no: pick(payload, "scheme_no") ?? "",
+        plan_id: planId,
+        plan_line_id: planLineId,
+        package_id: pick(payload, "package_id") ?? "",
+        selected_by: actor,
+        selected_at: now,
+        comment: pick(payload, "comment") ?? "",
+      },
+      rejection_context: {
+        package_scheme_id: schemeId,
+        rejection_reason: reason,
+        rejected_by: actor,
+        rejected_at: now,
+        plan_id: planId,
+        plan_line_id: planLineId,
+      },
+    };
+  },
+
+  /**
+   * ⑦行 — 按推荐方案生成采购包头行，并在 ERP 写边界内做框架协议命中
+   * （BR2-FRAME-01/02）、集采层级与审批流程模板标注（BR2-CENTRAL-02/04）、
+   * 特殊采购方式待办（BR2-FRAME-03）。
+   */
+  createProcPackageLines: (store, payload) => {
+    const schemes = arr(pick(payload, "package_schemes"));
+    const scheme = ((pick(payload, "recommended_scheme") as Row | undefined) ??
+      schemes.find((candidate) => pick(candidate, "is_recommended") === true) ??
+      schemes[0]) as Row | undefined;
+    if (!scheme) throw new MockErpError(400, "createProcPackageLines: no package scheme in payload");
+    const lines = arr(pick(scheme, "package_lines", "lines"));
+    if (lines.length === 0) throw new MockErpError(400, "createProcPackageLines: package scheme has no lines");
+    const schemeId = String(pick(scheme, "package_scheme_id") ?? pick(payload, "package_scheme_id") ?? makeId("PS"));
+    const unit = String(pick(scheme, "management_unit") ?? pick(lines[0]!, "management_unit") ?? "");
+    const todayIso = String(pick(payload, "scan_date") ?? today());
+    const now = isoNow();
+
+    // BR2-FRAME-01/02 — frame agreement match by material + management unit.
+    const spaHeaders = rowsIfTable(store, "ss_spa_header_t");
+    const spaLines = rowsIfTable(store, "ss_spa_line_t");
+    let frameHit = false;
+    let frameNo = "";
+    let frameHeaderId = "";
+    let frameLineId = "";
+    let quotaSufficient = true;
+    let demandAmount = 0;
+    for (const line of lines) {
+      const material = String(pick(line, "material_code", "item_code") ?? "");
+      const quantity = num(pick(line, "quantity")) ?? 0;
+      const price = num(pick(line, "unit_price")) ?? 0;
+      demandAmount += quantity * price;
+      for (const spaLine of spaLines) {
+        if (spaLine["MATERIAL_CODE"] !== material) continue;
+        const header = spaHeaders.find((candidate) => candidate["SPA_HEADER_ID"] === spaLine["SPA_HEADER_ID"]);
+        if (!header) continue;
+        const valid =
+          header["IS_VALID"] === "Y" &&
+          header["CLOSED_STATUS"] === "未关闭" &&
+          String(header["DISABLE_DATE"] ?? "") > todayIso &&
+          (!unit || header["MANAGEMENT_UNIT"] === unit);
+        if (!valid) continue;
+        frameHit = true;
+        frameNo = String(header["AGREEMENT_NO"] ?? header["SPA_NUMBER"] ?? "");
+        frameHeaderId = String(header["SPA_HEADER_ID"] ?? "");
+        frameLineId = String(spaLine["SPA_LINE_ID"] ?? "");
+        quotaSufficient = (num(header["AVAILABLE_AMOUNT"]) ?? 0) >= demandAmount;
+      }
+    }
+
+    // BR2-CENTRAL-02/04 — central catalog annotation on the package header.
+    const catalog = rowsIfTable(store, "cfg_central_purchase_catalog_t").filter(
+      (row) => row["IS_ENABLED"] === "Y" && lines.some((line) => pick(line, "material_code", "item_code") === row["MATERIAL_CODE"]),
+    );
+    const rank = (level: unknown): number => (level === "一级集采" ? 2 : level === "二级集采" ? 1 : 0);
+    const top = catalog.reduce<Row | null>((best, row) => (!best || rank(row["CENTRAL_LEVEL"]) > rank(best["CENTRAL_LEVEL"]) ? row : best), null);
+    const centralLevel = String(top?.["CENTRAL_LEVEL"] ?? "非集采");
+    const centralPattern = String(top?.["CENTRAL_PATTERN"] ?? "常规采购");
+    const approveFlow = String(top?.["APPROVE_FLOW_CODE"] ?? "FLOW-BU-STD");
+    if (centralLevel === "一级集采" && !approveFlow) {
+      throw new MockErpError(400, "BR2-CENTRAL-04: 一级集采 requires a group-level approve_flow_code");
+    }
+    const special = String(pick(scheme, "special_sourcing_method") ?? "无");
+
+    const packageId = makeId("PKG");
+    const header: Row = {
+      PROC_PACKAGE_HEADER_ID: packageId,
+      PACKAGE_NO: packageId,
+      PACKAGE_NAME: String(pick(scheme, "scheme_no") ?? schemeId),
+      PACKAGE_SCHEME_ID: schemeId,
+      PURCHASING_GROUP_NO: String(pick(scheme, "purchasing_group_no") ?? ""),
+      SCENARIO_CODE: String(pick(scheme, "scenario_code") ?? "常规寻源"),
+      STATUS: "草稿",
+      CENTRAL_PURCHASE_LEVEL: centralLevel,
+      CENTRAL_PURCHASE_PATTERN: centralPattern,
+      APPROVE_FLOW_CODE: approveFlow,
+      SPECIAL_SOURCING_METHOD: special,
+      FRAME_HIT: frameHit ? "Y" : "N",
+      FRAME_AGREEMENT_NO: frameNo,
+      LAST_UPDATE_DATE: now,
+      EXPECTED_FINISH_SOURCING_DATE: "",
+    };
+    store.rows("ss_proc_package_header_t").push(header);
+    const packageLines = rowsIfTable(store, "ss_proc_package_line_t");
+    let firstPlanLineId = "";
+    lines.forEach((line, index) => {
+      const planLineId = String(pick(line, "plan_line_id") ?? "");
+      if (!firstPlanLineId) firstPlanLineId = planLineId;
+      packageLines.push({
+        PACKAGE_LINE_ID: `${packageId}-${String(index + 1).padStart(2, "0")}`,
+        PACKAGE_ID: packageId,
+        PLAN_LINE_ID: planLineId,
+        SOURCE_OBJECT_TYPE: "PBP_LINE",
+        MATERIAL_CODE: String(pick(line, "material_code", "item_code") ?? ""),
+        MANAGEMENT_UNIT: String(pick(line, "management_unit") ?? unit),
+        INVENTORY_ORGANIZATION: String(pick(line, "inventory_organization") ?? ""),
+        CATEGORY_ID: String(pick(line, "category_id") ?? ""),
+        QUANTITY: num(pick(line, "quantity")) ?? 0,
+        REQUIRED_ARRIVAL_DATE: String(pick(line, "required_arrival_date") ?? ""),
+        SOURCING_METHOD: String(pick(line, "sourcing_method") ?? "公开询价"),
+        PLANNER: String(pick(payload, "planner") ?? ""),
+        FRAME_AGREEMENT_ID: frameHit ? frameHeaderId : "",
+        FRAME_AGREEMENT_ITEM_ID: frameHit ? frameLineId : "",
+        FRAME_AGREEMENT_NO: frameNo,
+        FRAME_HIT: frameHit ? "Y" : "N",
+      });
+    });
+    upsertRow(store, "de_package_scheme_t", "PACKAGE_SCHEME_ID", schemeId, {
+      SCHEME_NO: pick(scheme, "scheme_no") ?? schemeId,
+      PLAN_ID: pick(scheme, "plan_id") ?? pick(payload, "plan_id") ?? "",
+      MATCH_SCORE: num(pick(scheme, "match_score")) ?? 0,
+      LINE_COUNT: lines.length,
+      TOTAL_AMOUNT: demandAmount,
+      FRAME_HIT: frameHit,
+      FRAME_AGREEMENT_NO: frameNo,
+      FRAME_QUOTA_SUFFICIENT: quotaSufficient,
+      CENTRAL_LEVEL: centralLevel,
+      CENTRAL_PATTERN: centralPattern,
+      APPROVE_FLOW_CODE: approveFlow,
+      SPECIAL_SOURCING_METHOD: special,
+      SCHEME_STATUS: "待选择",
+      GENERATED_PACKAGE_ID: packageId,
+      SIBLING_SCHEME_COUNT: num(pick(scheme, "sibling_scheme_count")) ?? schemes.length,
+      IS_RECOMMENDED: true,
+    });
+    let supplementTaskId = "";
+    if (special !== "无") {
+      supplementTaskId = makeId("TSK");
+      appendIfTable(store, "de_digital_employee_task_t", {
+        TASK_ID: supplementTaskId,
+        TASK_TYPE: "特殊采购方式补充说明",
+        ASSIGNED_ROLE: "集采管理岗",
+        ASSIGNEE: "",
+        PLAN_LINE_ID: firstPlanLineId,
+        RELATED_OBJECT_TYPE: "Package_Scheme",
+        RELATED_OBJECT_ID: schemeId,
+        TASK_SUMMARY: `方案 ${schemeId} 识别为 ${special}，需集采管理岗补充说明（BR2-FRAME-03）`,
+        TASK_STATUS: "待处理",
+        CREATED_AT: now,
+      });
+    }
+    const logId = operationLog(store, {
+      operation_type: "框架集采标注与采购包生成",
+      operator_role: "采购数字员工",
+      plan_line_id: firstPlanLineId,
+      related_object_type: "Sourcing_Package",
+      related_object_id: packageId,
+      rule_hit: ["BR2-FRAME-01", "BR2-FRAME-02", "BR2-CENTRAL-02", "BR2-CENTRAL-04", "BR2-FRAME-03"],
+      api_called: "createProcPackageLines",
+      decision_note: `框架命中=${frameHit ? frameNo : "无"}，集采层级=${centralLevel}，审批流程=${approveFlow}`,
+    });
+    return {
+      ok: true,
+      id: packageId,
+      row: header,
+      applied: true,
+      operation_log_id: logId,
+      annotation_context: {
+        package_scheme_id: schemeId,
+        scheme_no: pick(scheme, "scheme_no") ?? schemeId,
+        plan_id: pick(scheme, "plan_id") ?? pick(payload, "plan_id") ?? "",
+        plan_line_id: firstPlanLineId,
+        package_id: packageId,
+        line_count: lines.length,
+        frame_hit: frameHit,
+        frame_agreement_no: frameNo,
+        frame_quota_sufficient: quotaSufficient,
+        central_level: centralLevel,
+        central_pattern: centralPattern,
+        approve_flow_code: approveFlow,
+        special_sourcing_method: special,
+        supplement_task_id: supplementTaskId,
+        match_score: num(pick(scheme, "match_score")) ?? 0,
+        sibling_scheme_count: num(pick(scheme, "sibling_scheme_count")) ?? schemes.length,
+        scan_date: pick(payload, "scan_date") ?? "",
+      },
+    };
+  },
+
+  /** ⑨行 — 确认后的执行计划与采购包提交审批，并封存本轮作业留痕（BR2-HITL-01 / BR2-AUDIT-01）。 */
+  submitApproval: (store, payload) => {
+    const planId = String(required(payload, "PLAN_ID", "plan_id"));
+    if (!pick(payload, "selected_by")) {
+      throw new MockErpError(400, "BR2-HITL-01: selected_by is required — 未经计划员确认不得提交审批");
+    }
+    const schemeId = String(pick(payload, "package_scheme_id") ?? "");
+    const now = isoNow();
+    const header = rowsIfTable(store, "ss_pbp_header_t").find((row) => row["PBP_HEADER_ID"] === planId);
+    if (!header) throw new MockErpError(404, `ss_pbp_header_t: no row with PBP_HEADER_ID=${planId}`);
+    header["STATUS"] = "审批中";
+    header["SUBMITTED_AT"] = now;
+    const packages = rowsIfTable(store, "ss_proc_package_header_t");
+    const explicitPackageId = String(pick(payload, "package_id") ?? "");
+    const pkg =
+      packages.find((row) => explicitPackageId && row["PROC_PACKAGE_HEADER_ID"] === explicitPackageId) ??
+      packages.find((row) => schemeId && row["PACKAGE_SCHEME_ID"] === schemeId);
+    if (pkg) {
+      pkg["STATUS"] = "审批中";
+      pkg["PACKAGED_AT"] = now;
+    }
+    const approveFlow = String(pkg?.["APPROVE_FLOW_CODE"] ?? pick(payload, "approve_flow_code") ?? "");
+    if (schemeId) {
+      upsertRow(store, "de_package_scheme_t", "PACKAGE_SCHEME_ID", schemeId, {
+        SCHEME_STATUS: "已生成采购包",
+        GENERATED_PACKAGE_ID: pkg?.["PROC_PACKAGE_HEADER_ID"] ?? "",
+        GENERATED_AT: now,
+      });
+    }
+    const logId = operationLog(store, {
+      operation_type: "提交审批并封存留痕",
+      operator_role: "采购数字员工",
+      operator: String(pick(payload, "selected_by") ?? ""),
+      plan_line_id: pick(payload, "plan_line_id") ?? "",
+      related_object_type: "Procurement_Plan",
+      related_object_id: planId,
+      rule_hit: ["BR2-HITL-01", "BR2-AUDIT-01"],
+      api_called: "submitApproval",
+      decision_note: `执行计划 ${planId} 与采购包 ${pkg?.["PROC_PACKAGE_HEADER_ID"] ?? "（无）"} 提交审批，审批流程 ${approveFlow || "（默认）"}`,
+    });
+    return {
+      ok: true,
+      id: planId,
+      row: header,
+      operation_log_id: logId,
+      submission_context: {
+        plan_id: planId,
+        package_id: pkg?.["PROC_PACKAGE_HEADER_ID"] ?? "",
+        package_scheme_id: schemeId,
+        approve_flow_code: approveFlow,
+        submitted_at: now,
+        trace_sealed: true,
       },
     };
   },

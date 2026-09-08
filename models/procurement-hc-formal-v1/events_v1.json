@@ -1,0 +1,3535 @@
+{
+  "events": [
+    {
+      "description": "每日偏差扫描批次到点：对全集团在途采购链路逐节点跑一次偏差计算，把「事后发现」变为「事中预警」。",
+      "event_version": "1.0.0",
+      "name": "DAILY_DEVIATION_SCAN_SCHEDULED",
+      "payload": {
+        "event_data": [
+          {
+            "description": "扫描业务日期。",
+            "name": "scan_date",
+            "required": true,
+            "type": "Date"
+          },
+          {
+            "description": "扫描批次号，用于批内追溯。",
+            "name": "scan_batch_id",
+            "required": true,
+            "type": "String"
+          },
+          {
+            "description": "扫描范围：全集团或指定单位。",
+            "name": "chain_scope",
+            "required": false,
+            "type": "String"
+          },
+          {
+            "description": "限定只处理该采购计划（ss_pbp_header_t.PBP_HEADER_ID）。为空时按 chain_scope 与 BR-COV-01 全量扫描；显式指定时为排障口径，不是抽查。",
+            "name": "plan_id",
+            "required": false,
+            "target_object": "Procurement_Plan",
+            "type": "String"
+          }
+        ],
+        "source_action": null,
+        "state_mutations": []
+      },
+      "producers": [
+        {
+          "id": "调度中心",
+          "type": "System"
+        }
+      ],
+      "provenance": "extracted",
+      "subscribers": [
+        {
+          "id": "collectChainExecutionData",
+          "type": "Action"
+        },
+        {
+          "id": "procurement-chain-deviation-alert",
+          "type": "Workflow"
+        }
+      ]
+    },
+    {
+      "description": "链路上任一业务单据的状态或关键时间字段发生变更：申请审批、组包生效、询价发标、中标、合同签署、订单生效、验收接收，都从这里进来。",
+      "event_version": "1.0.0",
+      "name": "PROCUREMENT_DOCUMENT_STATUS_CHANGED",
+      "payload": {
+        "event_data": [
+          {
+            "description": "变更单据类型：采购申请/采购包/询价单/定标结果/采购合同/采购订单/采购验收。",
+            "name": "document_type",
+            "required": true,
+            "type": "String"
+          },
+          {
+            "description": "变更单据主键。",
+            "name": "document_id",
+            "required": true,
+            "type": "String"
+          },
+          {
+            "description": "受影响的采购执行链路。",
+            "name": "chain_id",
+            "required": true,
+            "target_object": "Procurement_Chain",
+            "type": "String"
+          },
+          {
+            "description": "变更后的单据状态。",
+            "name": "new_status",
+            "required": true,
+            "type": "String"
+          },
+          {
+            "description": "状态变更时间。",
+            "name": "changed_at",
+            "required": true,
+            "type": "Timestamp"
+          }
+        ],
+        "source_action": null,
+        "state_mutations": []
+      },
+      "producers": [
+        {
+          "id": "metaERP",
+          "type": "ExternalSystem"
+        }
+      ],
+      "provenance": "extracted",
+      "subscribers": [
+        {
+          "id": "collectChainExecutionData",
+          "type": "Action"
+        },
+        {
+          "id": "procurement-chain-deviation-alert",
+          "type": "Workflow"
+        }
+      ]
+    },
+    {
+      "description": "预警处置时效扫描到点：检查黄色预警是否超 48 小时未处理、红色预警是否超 24 小时未闭环。",
+      "event_version": "1.0.0",
+      "name": "ALERT_TIMEOUT_SCAN_SCHEDULED",
+      "payload": {
+        "event_data": [
+          {
+            "description": "扫描时刻。",
+            "name": "scan_at",
+            "required": true,
+            "type": "Timestamp"
+          },
+          {
+            "description": "扫描批次号。",
+            "name": "scan_batch_id",
+            "required": true,
+            "type": "String"
+          }
+        ],
+        "source_action": null,
+        "state_mutations": []
+      },
+      "producers": [
+        {
+          "id": "调度中心",
+          "type": "System"
+        }
+      ],
+      "provenance": "extracted",
+      "subscribers": [
+        {
+          "id": "escalateOverdueAlert",
+          "type": "Action"
+        },
+        {
+          "id": "procurement-chain-deviation-alert",
+          "type": "Workflow"
+        }
+      ]
+    },
+    {
+      "description": "链路节点进度已刷新：七个节点的实际完成状态与时间回写完成，计划员随时看得到每单走到哪一步。",
+      "event_version": "1.0.0",
+      "name": "CHAIN_PROGRESS_SYNCED",
+      "payload": {
+        "event_data": [
+          {
+            "description": "采购执行链路编号。",
+            "name": "chain_id",
+            "required": true,
+            "target_object": "Procurement_Chain",
+            "type": "String"
+          },
+          {
+            "description": "刷新后的链路当前节点。",
+            "name": "current_stage",
+            "required": true,
+            "target_object": "Procurement_Chain",
+            "type": "String"
+          },
+          {
+            "description": "本次刷新的节点数。",
+            "name": "synced_stage_count",
+            "required": true,
+            "target_object": "Chain_Stage_Progress",
+            "type": "Integer"
+          },
+          {
+            "description": "本次同步时间。",
+            "name": "last_synced_at",
+            "required": true,
+            "target_object": "Procurement_Chain",
+            "type": "Timestamp"
+          }
+        ],
+        "source_action": "collectChainExecutionData",
+        "state_mutations": [
+          {
+            "impacted_properties": [
+              "current_stage",
+              "chain_status",
+              "last_synced_at"
+            ],
+            "mutation_type": "CREATE_OR_MODIFY",
+            "target_object": "Procurement_Chain"
+          },
+          {
+            "impacted_properties": [
+              "actual_finish_date",
+              "stage_status",
+              "source_document_no",
+              "synced_at"
+            ],
+            "mutation_type": "CREATE_OR_MODIFY",
+            "target_object": "Chain_Stage_Progress"
+          }
+        ]
+      },
+      "producers": [
+        {
+          "id": "collectChainExecutionData",
+          "type": "Action"
+        }
+      ],
+      "provenance": "extracted",
+      "subscribers": [
+        {
+          "id": "calculateExecutionDeviation",
+          "type": "Action"
+        },
+        {
+          "id": "procurement-chain-deviation-alert",
+          "type": "Workflow"
+        }
+      ]
+    },
+    {
+      "description": "执行偏差已算出：计划完成时间双向推算补齐，时间/进度/金额三项偏差、成因标签与偏差画像落到执行偏差对象上；停滞在采购环节的已触发采购员澄清。",
+      "event_version": "1.0.0",
+      "name": "EXECUTION_DEVIATION_CALCULATED",
+      "payload": {
+        "event_data": [
+          {
+            "description": "执行偏差编号。",
+            "name": "deviation_id",
+            "required": true,
+            "target_object": "Execution_Deviation",
+            "type": "String"
+          },
+          {
+            "description": "所属采购执行链路。",
+            "name": "chain_id",
+            "required": true,
+            "target_object": "Procurement_Chain",
+            "type": "String"
+          },
+          {
+            "description": "发生偏差的节点。",
+            "name": "stage_node",
+            "required": true,
+            "target_object": "Execution_Deviation",
+            "type": "String"
+          },
+          {
+            "description": "时间偏差天数。",
+            "name": "time_deviation_days",
+            "required": true,
+            "target_object": "Execution_Deviation",
+            "type": "Float"
+          },
+          {
+            "description": "进度偏差比例。",
+            "name": "schedule_deviation_ratio",
+            "required": true,
+            "target_object": "Execution_Deviation",
+            "type": "Float"
+          },
+          {
+            "description": "金额偏差比例。",
+            "name": "amount_deviation_ratio",
+            "required": false,
+            "target_object": "Execution_Deviation",
+            "type": "Float"
+          },
+          {
+            "description": "成因标签。",
+            "name": "cause_tag",
+            "required": true,
+            "target_object": "Execution_Deviation",
+            "type": "String"
+          }
+        ],
+        "source_action": "calculateExecutionDeviation",
+        "state_mutations": [
+          {
+            "impacted_properties": [
+              "time_deviation_days",
+              "schedule_deviation_ratio",
+              "amount_deviation_ratio",
+              "time_threshold_days",
+              "schedule_threshold_ratio",
+              "cause_tag",
+              "cause_clarification_status",
+              "evaluated_at"
+            ],
+            "mutation_type": "CREATE_OR_MODIFY",
+            "target_object": "Execution_Deviation"
+          },
+          {
+            "impacted_properties": [
+              "planned_finish_date",
+              "standard_cycle_days",
+              "planned_date_derived"
+            ],
+            "mutation_type": "MODIFY",
+            "target_object": "Chain_Stage_Progress"
+          }
+        ]
+      },
+      "producers": [
+        {
+          "id": "calculateExecutionDeviation",
+          "type": "Action"
+        }
+      ],
+      "provenance": "extracted",
+      "subscribers": [
+        {
+          "id": "procurement-chain-deviation-alert",
+          "type": "Workflow"
+        }
+      ]
+    },
+    {
+      "description": "识别出执行偏差：时间偏差超 7 天或进度偏差超 20%，进入按期达成概率评分。",
+      "event_version": "1.0.0",
+      "name": "DEVIATION_DETECTED",
+      "payload": {
+        "event_data": [
+          {
+            "description": "执行偏差编号。",
+            "name": "deviation_id",
+            "required": true,
+            "target_object": "Execution_Deviation",
+            "type": "String"
+          },
+          {
+            "description": "所属采购执行链路。",
+            "name": "chain_id",
+            "required": true,
+            "target_object": "Procurement_Chain",
+            "type": "String"
+          },
+          {
+            "description": "发生偏差的节点。",
+            "name": "stage_node",
+            "required": true,
+            "target_object": "Execution_Deviation",
+            "type": "String"
+          },
+          {
+            "description": "时间偏差天数。",
+            "name": "time_deviation_days",
+            "required": true,
+            "target_object": "Execution_Deviation",
+            "type": "Float"
+          },
+          {
+            "description": "进度偏差比例。",
+            "name": "schedule_deviation_ratio",
+            "required": true,
+            "target_object": "Execution_Deviation",
+            "type": "Float"
+          }
+        ],
+        "source_action": "calculateExecutionDeviation",
+        "state_mutations": [
+          {
+            "impacted_properties": [
+              "has_deviation",
+              "disposal_state"
+            ],
+            "mutation_type": "MODIFY",
+            "target_object": "Execution_Deviation"
+          }
+        ]
+      },
+      "producers": [
+        {
+          "id": "calculateExecutionDeviation",
+          "type": "Action"
+        }
+      ],
+      "provenance": "extracted",
+      "subscribers": [
+        {
+          "id": "scoreOnTimeProbability",
+          "type": "Action"
+        },
+        {
+          "id": "procurement-chain-deviation-alert",
+          "type": "Workflow"
+        }
+      ]
+    },
+    {
+      "description": "确认无偏差：未超阈值，本单不打扰任何人，直接转归档监控等待下一次扫描。",
+      "event_version": "1.0.0",
+      "name": "NO_DEVIATION_CONFIRMED",
+      "payload": {
+        "event_data": [
+          {
+            "description": "执行偏差编号。",
+            "name": "deviation_id",
+            "required": true,
+            "target_object": "Execution_Deviation",
+            "type": "String"
+          },
+          {
+            "description": "所属采购执行链路。",
+            "name": "chain_id",
+            "required": true,
+            "target_object": "Procurement_Chain",
+            "type": "String"
+          },
+          {
+            "description": "判定时间。",
+            "name": "evaluated_at",
+            "required": true,
+            "target_object": "Execution_Deviation",
+            "type": "Timestamp"
+          }
+        ],
+        "source_action": "calculateExecutionDeviation",
+        "state_mutations": [
+          {
+            "impacted_properties": [
+              "has_deviation",
+              "deviation_level"
+            ],
+            "mutation_type": "MODIFY",
+            "target_object": "Execution_Deviation"
+          }
+        ]
+      },
+      "producers": [
+        {
+          "id": "calculateExecutionDeviation",
+          "type": "Action"
+        }
+      ],
+      "provenance": "extracted",
+      "subscribers": [
+        {
+          "id": "archiveDeviationMonitoring",
+          "type": "Action"
+        },
+        {
+          "id": "procurement-chain-deviation-alert",
+          "type": "Workflow"
+        }
+      ]
+    },
+    {
+      "description": "无偏差链路已归档为监控留痕，链路继续在途盯防。",
+      "event_version": "1.0.0",
+      "name": "CHAIN_MONITORING_ARCHIVED",
+      "payload": {
+        "event_data": [
+          {
+            "description": "已归档的偏差记录。",
+            "name": "deviation_id",
+            "required": true,
+            "target_object": "Execution_Deviation",
+            "type": "String"
+          },
+          {
+            "description": "所属采购执行链路。",
+            "name": "chain_id",
+            "required": true,
+            "target_object": "Procurement_Chain",
+            "type": "String"
+          },
+          {
+            "description": "归档时间。",
+            "name": "archived_at",
+            "required": true,
+            "type": "Timestamp"
+          }
+        ],
+        "source_action": "archiveDeviationMonitoring",
+        "state_mutations": [
+          {
+            "impacted_properties": [
+              "disposal_state"
+            ],
+            "mutation_type": "MODIFY",
+            "target_object": "Execution_Deviation"
+          },
+          {
+            "impacted_properties": [
+              "last_synced_at"
+            ],
+            "mutation_type": "MODIFY",
+            "target_object": "Procurement_Chain"
+          }
+        ]
+      },
+      "producers": [
+        {
+          "id": "archiveDeviationMonitoring",
+          "type": "Action"
+        }
+      ],
+      "provenance": "extracted",
+      "subscribers": [
+        {
+          "id": "procurement-chain-deviation-alert",
+          "type": "Workflow"
+        }
+      ]
+    },
+    {
+      "description": "按期达成概率已评分：给出概率、红黄蓝分级与可解释理由，让领导判断这单能不能按期到。",
+      "event_version": "1.0.0",
+      "name": "ON_TIME_PROBABILITY_SCORED",
+      "payload": {
+        "event_data": [
+          {
+            "description": "概率评估编号。",
+            "name": "assessment_id",
+            "required": true,
+            "target_object": "Delivery_Probability_Assessment",
+            "type": "String"
+          },
+          {
+            "description": "被评估的执行偏差。",
+            "name": "deviation_id",
+            "required": true,
+            "target_object": "Execution_Deviation",
+            "type": "String"
+          },
+          {
+            "description": "所属采购执行链路。",
+            "name": "chain_id",
+            "required": true,
+            "target_object": "Procurement_Chain",
+            "type": "String"
+          },
+          {
+            "description": "按期完成概率。",
+            "name": "on_time_probability",
+            "required": true,
+            "target_object": "Delivery_Probability_Assessment",
+            "type": "Float"
+          },
+          {
+            "description": "概率分级：红色/黄色/蓝色。",
+            "name": "probability_grade",
+            "required": true,
+            "target_object": "Delivery_Probability_Assessment",
+            "type": "String"
+          },
+          {
+            "description": "可解释理由。",
+            "name": "explanation",
+            "required": true,
+            "target_object": "Delivery_Probability_Assessment",
+            "type": "String"
+          }
+        ],
+        "source_action": "scoreOnTimeProbability",
+        "state_mutations": [
+          {
+            "impacted_properties": [
+              "on_time_probability",
+              "probability_grade",
+              "explanation",
+              "assessed_at"
+            ],
+            "mutation_type": "CREATE",
+            "target_object": "Delivery_Probability_Assessment"
+          },
+          {
+            "impacted_properties": [
+              "deviation_level",
+              "disposal_state"
+            ],
+            "mutation_type": "MODIFY",
+            "target_object": "Execution_Deviation"
+          }
+        ]
+      },
+      "producers": [
+        {
+          "id": "scoreOnTimeProbability",
+          "type": "Action"
+        }
+      ],
+      "provenance": "extracted",
+      "subscribers": [
+        {
+          "id": "raiseDeviationAlert",
+          "type": "Action"
+        },
+        {
+          "id": "procurement-chain-deviation-alert",
+          "type": "Workflow"
+        }
+      ]
+    },
+    {
+      "description": "三级预警已按角色推送：红色报分管领导、黄色报部门领导、蓝色提示计划员；预警生成时间同时成为超时升级的起算点。",
+      "event_version": "1.0.0",
+      "name": "DEVIATION_ALERT_RAISED",
+      "payload": {
+        "event_data": [
+          {
+            "description": "偏差预警编号。",
+            "name": "alert_id",
+            "required": true,
+            "target_object": "Deviation_Alert",
+            "type": "String"
+          },
+          {
+            "description": "对应的执行偏差。",
+            "name": "deviation_id",
+            "required": true,
+            "target_object": "Execution_Deviation",
+            "type": "String"
+          },
+          {
+            "description": "所属采购执行链路。",
+            "name": "chain_id",
+            "required": true,
+            "target_object": "Procurement_Chain",
+            "type": "String"
+          },
+          {
+            "description": "预警等级：红色/黄色/蓝色。",
+            "name": "alert_level",
+            "required": true,
+            "target_object": "Deviation_Alert",
+            "type": "String"
+          },
+          {
+            "description": "推送对象角色。",
+            "name": "notified_role",
+            "required": true,
+            "target_object": "Deviation_Alert",
+            "type": "String"
+          },
+          {
+            "description": "预警生成时间。",
+            "name": "raised_at",
+            "required": true,
+            "target_object": "Deviation_Alert",
+            "type": "Timestamp"
+          }
+        ],
+        "source_action": "raiseDeviationAlert",
+        "state_mutations": [
+          {
+            "impacted_properties": [
+              "alert_level",
+              "notified_role",
+              "notified_to",
+              "raised_at",
+              "handling_status"
+            ],
+            "mutation_type": "CREATE_OR_MODIFY",
+            "target_object": "Deviation_Alert"
+          },
+          {
+            "impacted_properties": [
+              "handling_action",
+              "operator_role",
+              "occurred_at"
+            ],
+            "mutation_type": "CREATE",
+            "target_object": "Alert_Handling_Record"
+          }
+        ]
+      },
+      "producers": [
+        {
+          "id": "raiseDeviationAlert",
+          "type": "Action"
+        }
+      ],
+      "provenance": "extracted",
+      "subscribers": [
+        {
+          "id": "handleBlueAlertLocally",
+          "type": "Action"
+        },
+        {
+          "id": "generateAdjustmentOptions",
+          "type": "Action"
+        },
+        {
+          "id": "procurement-chain-deviation-alert",
+          "type": "Workflow"
+        }
+      ]
+    },
+    {
+      "description": "蓝色预警由计划员自行处置完毕：或做轻量调整，或仅继续监控，就地闭环不上报。",
+      "event_version": "1.0.0",
+      "name": "BLUE_ALERT_SELF_HANDLED",
+      "payload": {
+        "event_data": [
+          {
+            "description": "蓝色偏差预警。",
+            "name": "alert_id",
+            "required": true,
+            "target_object": "Deviation_Alert",
+            "type": "String"
+          },
+          {
+            "description": "所属采购执行链路。",
+            "name": "chain_id",
+            "required": true,
+            "target_object": "Procurement_Chain",
+            "type": "String"
+          },
+          {
+            "description": "处置留痕编号。",
+            "name": "handling_record_id",
+            "required": true,
+            "target_object": "Alert_Handling_Record",
+            "type": "String"
+          },
+          {
+            "description": "闭环时间。",
+            "name": "closed_at",
+            "required": true,
+            "target_object": "Deviation_Alert",
+            "type": "Timestamp"
+          }
+        ],
+        "source_action": "handleBlueAlertLocally",
+        "state_mutations": [
+          {
+            "impacted_properties": [
+              "handling_status",
+              "closed_at"
+            ],
+            "mutation_type": "MODIFY",
+            "target_object": "Deviation_Alert"
+          },
+          {
+            "impacted_properties": [
+              "handling_action",
+              "operator_role",
+              "operator",
+              "occurred_at",
+              "remark"
+            ],
+            "mutation_type": "CREATE",
+            "target_object": "Alert_Handling_Record"
+          },
+          {
+            "impacted_properties": [
+              "disposal_state"
+            ],
+            "mutation_type": "MODIFY",
+            "target_object": "Execution_Deviation"
+          }
+        ]
+      },
+      "producers": [
+        {
+          "id": "handleBlueAlertLocally",
+          "type": "Action"
+        }
+      ],
+      "provenance": "extracted",
+      "subscribers": [
+        {
+          "id": "procurement-chain-deviation-alert",
+          "type": "Workflow"
+        }
+      ]
+    },
+    {
+      "description": "三个可执行调整方案已生成：压缩后续周期、调整需求日期、执行调拨，每案附到货影响推演与推荐依据。",
+      "event_version": "1.0.0",
+      "name": "ADJUSTMENT_OPTIONS_GENERATED",
+      "payload": {
+        "event_data": [
+          {
+            "description": "触发方案生成的预警。",
+            "name": "alert_id",
+            "required": true,
+            "target_object": "Deviation_Alert",
+            "type": "String"
+          },
+          {
+            "description": "所属采购执行链路。",
+            "name": "chain_id",
+            "required": true,
+            "target_object": "Procurement_Chain",
+            "type": "String"
+          },
+          {
+            "description": "三个方案的编号。",
+            "name": "option_ids",
+            "required": true,
+            "target_object": "Adjustment_Option",
+            "type": "List<String>"
+          },
+          {
+            "description": "推荐方案类型。",
+            "name": "recommended_option_type",
+            "required": true,
+            "target_object": "Adjustment_Option",
+            "type": "String"
+          },
+          {
+            "description": "方案生成时间。",
+            "name": "generated_at",
+            "required": true,
+            "type": "Timestamp"
+          }
+        ],
+        "source_action": "generateAdjustmentOptions",
+        "state_mutations": [
+          {
+            "impacted_properties": [
+              "option_type",
+              "option_summary",
+              "expected_arrival_date_after",
+              "arrival_impact_days",
+              "arrival_impact_simulated",
+              "is_recommended",
+              "is_high_risk",
+              "option_status",
+              "decision_role"
+            ],
+            "mutation_type": "CREATE",
+            "target_object": "Adjustment_Option"
+          },
+          {
+            "impacted_properties": [
+              "generated_option_count"
+            ],
+            "mutation_type": "MODIFY",
+            "target_object": "Deviation_Alert"
+          },
+          {
+            "impacted_properties": [
+              "disposal_state"
+            ],
+            "mutation_type": "MODIFY",
+            "target_object": "Execution_Deviation"
+          }
+        ]
+      },
+      "producers": [
+        {
+          "id": "generateAdjustmentOptions",
+          "type": "Action"
+        }
+      ],
+      "provenance": "extracted",
+      "subscribers": [
+        {
+          "id": "approveAdjustmentOption",
+          "type": "Action"
+        },
+        {
+          "id": "procurement-chain-deviation-alert",
+          "type": "Workflow"
+        }
+      ]
+    },
+    {
+      "description": "领导已拍板并经计划员确认：选定方案进入执行，其余方案置为未采纳。",
+      "event_version": "1.0.0",
+      "name": "ADJUSTMENT_OPTION_APPROVED",
+      "payload": {
+        "event_data": [
+          {
+            "description": "选定的调整方案。",
+            "name": "option_id",
+            "required": true,
+            "target_object": "Adjustment_Option",
+            "type": "String"
+          },
+          {
+            "description": "方案类型，决定走哪条执行分支。",
+            "name": "option_type",
+            "required": true,
+            "target_object": "Adjustment_Option",
+            "type": "String"
+          },
+          {
+            "description": "对应的偏差预警。",
+            "name": "alert_id",
+            "required": true,
+            "target_object": "Deviation_Alert",
+            "type": "String"
+          },
+          {
+            "description": "所属采购执行链路。",
+            "name": "chain_id",
+            "required": true,
+            "target_object": "Procurement_Chain",
+            "type": "String"
+          },
+          {
+            "description": "决策人。",
+            "name": "decided_by",
+            "required": true,
+            "target_object": "Adjustment_Option",
+            "type": "String"
+          },
+          {
+            "description": "决策时间。",
+            "name": "decided_at",
+            "required": true,
+            "target_object": "Adjustment_Option",
+            "type": "Timestamp"
+          }
+        ],
+        "source_action": "approveAdjustmentOption",
+        "state_mutations": [
+          {
+            "impacted_properties": [
+              "option_status",
+              "decided_by",
+              "decided_at",
+              "high_risk_confirmed_by",
+              "planner_confirmed_by",
+              "planner_confirmed_at"
+            ],
+            "mutation_type": "MODIFY",
+            "target_object": "Adjustment_Option"
+          },
+          {
+            "impacted_properties": [
+              "handling_status",
+              "acknowledged_at"
+            ],
+            "mutation_type": "MODIFY",
+            "target_object": "Deviation_Alert"
+          },
+          {
+            "impacted_properties": [
+              "handling_action",
+              "operator_role",
+              "operator",
+              "occurred_at"
+            ],
+            "mutation_type": "CREATE",
+            "target_object": "Alert_Handling_Record"
+          }
+        ]
+      },
+      "producers": [
+        {
+          "id": "approveAdjustmentOption",
+          "type": "Action"
+        }
+      ],
+      "provenance": "extracted",
+      "subscribers": [
+        {
+          "id": "compressDownstreamCycle",
+          "type": "Action"
+        },
+        {
+          "id": "adjustRequiredArrivalDate",
+          "type": "Action"
+        },
+        {
+          "id": "createStockTransferRequest",
+          "type": "Action"
+        },
+        {
+          "id": "procurement-chain-deviation-alert",
+          "type": "Workflow"
+        }
+      ]
+    },
+    {
+      "description": "预警超时自动升级：黄色超 48 小时未处理升为红色、红色超 24 小时未闭环上报分管领导，并写升级留痕。",
+      "event_version": "1.0.0",
+      "name": "DEVIATION_ALERT_ESCALATED",
+      "payload": {
+        "event_data": [
+          {
+            "description": "被升级的偏差预警。",
+            "name": "alert_id",
+            "required": true,
+            "target_object": "Deviation_Alert",
+            "type": "String"
+          },
+          {
+            "description": "所属采购执行链路。",
+            "name": "chain_id",
+            "required": true,
+            "target_object": "Procurement_Chain",
+            "type": "String"
+          },
+          {
+            "description": "升级前等级。",
+            "name": "from_level",
+            "required": true,
+            "target_object": "Deviation_Alert",
+            "type": "String"
+          },
+          {
+            "description": "升级后等级。",
+            "name": "to_level",
+            "required": true,
+            "target_object": "Deviation_Alert",
+            "type": "String"
+          },
+          {
+            "description": "升级后的推送对象角色。",
+            "name": "notified_role",
+            "required": true,
+            "target_object": "Deviation_Alert",
+            "type": "String"
+          },
+          {
+            "description": "升级时间。",
+            "name": "escalated_at",
+            "required": true,
+            "target_object": "Deviation_Alert",
+            "type": "Timestamp"
+          }
+        ],
+        "source_action": "escalateOverdueAlert",
+        "state_mutations": [
+          {
+            "impacted_properties": [
+              "alert_level",
+              "notified_role",
+              "notified_to",
+              "handling_status",
+              "escalated_at",
+              "escalation_count"
+            ],
+            "mutation_type": "MODIFY",
+            "target_object": "Deviation_Alert"
+          },
+          {
+            "impacted_properties": [
+              "handling_action",
+              "operator_role",
+              "occurred_at"
+            ],
+            "mutation_type": "CREATE",
+            "target_object": "Alert_Handling_Record"
+          }
+        ]
+      },
+      "producers": [
+        {
+          "id": "escalateOverdueAlert",
+          "type": "Action"
+        }
+      ],
+      "provenance": "extracted",
+      "subscribers": [
+        {
+          "id": "raiseDeviationAlert",
+          "type": "Action"
+        },
+        {
+          "id": "procurement-chain-deviation-alert",
+          "type": "Workflow"
+        }
+      ]
+    },
+    {
+      "description": "方案①已执行：后续节点周期被压缩，新的节点计划完成时间已回写采购计划。",
+      "event_version": "1.0.0",
+      "name": "CHAIN_PLAN_SCHEDULE_COMPRESSED",
+      "payload": {
+        "event_data": [
+          {
+            "description": "已执行的压缩方案。",
+            "name": "option_id",
+            "required": true,
+            "target_object": "Adjustment_Option",
+            "type": "String"
+          },
+          {
+            "description": "所属采购执行链路。",
+            "name": "chain_id",
+            "required": true,
+            "target_object": "Procurement_Chain",
+            "type": "String"
+          },
+          {
+            "description": "累计压缩天数。",
+            "name": "compressed_days",
+            "required": true,
+            "target_object": "Chain_Stage_Progress",
+            "type": "Float"
+          },
+          {
+            "description": "执行时间。",
+            "name": "executed_at",
+            "required": true,
+            "target_object": "Adjustment_Option",
+            "type": "Timestamp"
+          }
+        ],
+        "source_action": "compressDownstreamCycle",
+        "state_mutations": [
+          {
+            "impacted_properties": [
+              "planned_finish_date",
+              "standard_cycle_days"
+            ],
+            "mutation_type": "MODIFY",
+            "target_object": "Chain_Stage_Progress"
+          },
+          {
+            "impacted_properties": [
+              "option_status",
+              "executed_at"
+            ],
+            "mutation_type": "MODIFY",
+            "target_object": "Adjustment_Option"
+          },
+          {
+            "impacted_properties": [
+              "forecast_arrival_date"
+            ],
+            "mutation_type": "MODIFY",
+            "target_object": "Procurement_Chain"
+          }
+        ]
+      },
+      "producers": [
+        {
+          "id": "compressDownstreamCycle",
+          "type": "Action"
+        }
+      ],
+      "provenance": "extracted",
+      "subscribers": [
+        {
+          "id": "closeDeviationHandling",
+          "type": "Action"
+        },
+        {
+          "id": "procurement-chain-deviation-alert",
+          "type": "Workflow"
+        }
+      ]
+    },
+    {
+      "description": "方案②已执行：计划行需求到货日期改写完成，原始日期留痕，各节点计划时间按新终点重新倒排。",
+      "event_version": "1.0.0",
+      "name": "REQUIRED_ARRIVAL_DATE_ADJUSTED",
+      "payload": {
+        "event_data": [
+          {
+            "description": "已执行的调整日期方案。",
+            "name": "option_id",
+            "required": true,
+            "target_object": "Adjustment_Option",
+            "type": "String"
+          },
+          {
+            "description": "被调整的计划行。",
+            "name": "plan_line_id",
+            "required": true,
+            "target_object": "Procurement_Plan_Line",
+            "type": "String"
+          },
+          {
+            "description": "所属采购执行链路。",
+            "name": "chain_id",
+            "required": true,
+            "target_object": "Procurement_Chain",
+            "type": "String"
+          },
+          {
+            "description": "调整前的需求到货日期。",
+            "name": "original_required_arrival_date",
+            "required": true,
+            "target_object": "Procurement_Plan_Line",
+            "type": "Date"
+          },
+          {
+            "description": "调整后的需求到货日期。",
+            "name": "required_arrival_date",
+            "required": true,
+            "target_object": "Procurement_Plan_Line",
+            "type": "Date"
+          }
+        ],
+        "source_action": "adjustRequiredArrivalDate",
+        "state_mutations": [
+          {
+            "impacted_properties": [
+              "required_arrival_date",
+              "original_required_arrival_date"
+            ],
+            "mutation_type": "MODIFY",
+            "target_object": "Procurement_Plan_Line"
+          },
+          {
+            "impacted_properties": [
+              "planned_finish_date"
+            ],
+            "mutation_type": "MODIFY",
+            "target_object": "Chain_Stage_Progress"
+          },
+          {
+            "impacted_properties": [
+              "required_arrival_date",
+              "forecast_arrival_date"
+            ],
+            "mutation_type": "MODIFY",
+            "target_object": "Procurement_Chain"
+          },
+          {
+            "impacted_properties": [
+              "option_status",
+              "executed_at"
+            ],
+            "mutation_type": "MODIFY",
+            "target_object": "Adjustment_Option"
+          }
+        ]
+      },
+      "producers": [
+        {
+          "id": "adjustRequiredArrivalDate",
+          "type": "Action"
+        }
+      ],
+      "provenance": "extracted",
+      "subscribers": [
+        {
+          "id": "closeDeviationHandling",
+          "type": "Action"
+        },
+        {
+          "id": "procurement-chain-deviation-alert",
+          "type": "Workflow"
+        }
+      ]
+    },
+    {
+      "description": "方案③已执行：调拨申请单生成并取得 ERP 正式单号，物资先从其他库点顶上。",
+      "event_version": "1.0.0",
+      "name": "STOCK_TRANSFER_REQUEST_CREATED",
+      "payload": {
+        "event_data": [
+          {
+            "description": "调拨申请编号。",
+            "name": "transfer_request_id",
+            "required": true,
+            "target_object": "Stock_Transfer_Request",
+            "type": "String"
+          },
+          {
+            "description": "ERP 正式调拨单号。",
+            "name": "transfer_no",
+            "required": true,
+            "target_object": "Stock_Transfer_Request",
+            "type": "String"
+          },
+          {
+            "description": "来源调整方案。",
+            "name": "option_id",
+            "required": true,
+            "target_object": "Adjustment_Option",
+            "type": "String"
+          },
+          {
+            "description": "所属采购执行链路。",
+            "name": "chain_id",
+            "required": true,
+            "target_object": "Procurement_Chain",
+            "type": "String"
+          },
+          {
+            "description": "调拨数量。",
+            "name": "transfer_quantity",
+            "required": true,
+            "target_object": "Stock_Transfer_Request",
+            "type": "Float"
+          },
+          {
+            "description": "调拨预计到货日期。",
+            "name": "expected_arrival_date",
+            "required": true,
+            "target_object": "Stock_Transfer_Request",
+            "type": "Date"
+          }
+        ],
+        "source_action": "createStockTransferRequest",
+        "state_mutations": [
+          {
+            "impacted_properties": [
+              "transfer_no",
+              "material_code",
+              "transfer_quantity",
+              "source_warehouse",
+              "target_warehouse",
+              "request_status",
+              "created_at"
+            ],
+            "mutation_type": "CREATE",
+            "target_object": "Stock_Transfer_Request"
+          },
+          {
+            "impacted_properties": [
+              "option_status",
+              "executed_at"
+            ],
+            "mutation_type": "MODIFY",
+            "target_object": "Adjustment_Option"
+          }
+        ]
+      },
+      "producers": [
+        {
+          "id": "createStockTransferRequest",
+          "type": "Action"
+        }
+      ],
+      "provenance": "extracted",
+      "subscribers": [
+        {
+          "id": "trackTransferFulfillment",
+          "type": "Action"
+        },
+        {
+          "id": "procurement-chain-deviation-alert",
+          "type": "Workflow"
+        }
+      ]
+    },
+    {
+      "description": "调拨已到货并完成归还：链路预计到货日期刷新，调拨分支闭环。",
+      "event_version": "1.0.0",
+      "name": "STOCK_TRANSFER_FULFILLED",
+      "payload": {
+        "event_data": [
+          {
+            "description": "调拨申请编号。",
+            "name": "transfer_request_id",
+            "required": true,
+            "target_object": "Stock_Transfer_Request",
+            "type": "String"
+          },
+          {
+            "description": "所属采购执行链路。",
+            "name": "chain_id",
+            "required": true,
+            "target_object": "Procurement_Chain",
+            "type": "String"
+          },
+          {
+            "description": "调拨最终状态。",
+            "name": "request_status",
+            "required": true,
+            "target_object": "Stock_Transfer_Request",
+            "type": "String"
+          },
+          {
+            "description": "调拨实际到货日期。",
+            "name": "actual_arrival_date",
+            "required": true,
+            "target_object": "Stock_Transfer_Request",
+            "type": "Date"
+          },
+          {
+            "description": "归还时间。",
+            "name": "returned_at",
+            "required": false,
+            "target_object": "Stock_Transfer_Request",
+            "type": "Timestamp"
+          }
+        ],
+        "source_action": "trackTransferFulfillment",
+        "state_mutations": [
+          {
+            "impacted_properties": [
+              "request_status",
+              "actual_arrival_date",
+              "returned_at"
+            ],
+            "mutation_type": "MODIFY",
+            "target_object": "Stock_Transfer_Request"
+          },
+          {
+            "impacted_properties": [
+              "forecast_arrival_date"
+            ],
+            "mutation_type": "MODIFY",
+            "target_object": "Procurement_Chain"
+          }
+        ]
+      },
+      "producers": [
+        {
+          "id": "trackTransferFulfillment",
+          "type": "Action"
+        }
+      ],
+      "provenance": "extracted",
+      "subscribers": [
+        {
+          "id": "closeDeviationHandling",
+          "type": "Action"
+        },
+        {
+          "id": "procurement-chain-deviation-alert",
+          "type": "Workflow"
+        }
+      ]
+    },
+    {
+      "description": "偏差处置闭环：重算确认偏差已消除，处置结果与核实结论留痕完成。",
+      "event_version": "1.0.0",
+      "name": "DEVIATION_HANDLING_CLOSED",
+      "payload": {
+        "event_data": [
+          {
+            "description": "闭环的偏差预警。",
+            "name": "alert_id",
+            "required": true,
+            "target_object": "Deviation_Alert",
+            "type": "String"
+          },
+          {
+            "description": "闭环的执行偏差。",
+            "name": "deviation_id",
+            "required": true,
+            "target_object": "Execution_Deviation",
+            "type": "String"
+          },
+          {
+            "description": "所属采购执行链路。",
+            "name": "chain_id",
+            "required": true,
+            "target_object": "Procurement_Chain",
+            "type": "String"
+          },
+          {
+            "description": "偏差是否已消除。",
+            "name": "deviation_eliminated",
+            "required": true,
+            "target_object": "Alert_Handling_Record",
+            "type": "Boolean"
+          },
+          {
+            "description": "业务核实结果：属实/误报。",
+            "name": "verification_result",
+            "required": true,
+            "target_object": "Deviation_Alert",
+            "type": "String"
+          },
+          {
+            "description": "闭环时间。",
+            "name": "closed_at",
+            "required": true,
+            "target_object": "Deviation_Alert",
+            "type": "Timestamp"
+          }
+        ],
+        "source_action": "closeDeviationHandling",
+        "state_mutations": [
+          {
+            "impacted_properties": [
+              "has_deviation",
+              "disposal_state",
+              "evaluated_at"
+            ],
+            "mutation_type": "MODIFY",
+            "target_object": "Execution_Deviation"
+          },
+          {
+            "impacted_properties": [
+              "handling_status",
+              "closed_at",
+              "verification_result"
+            ],
+            "mutation_type": "MODIFY",
+            "target_object": "Deviation_Alert"
+          },
+          {
+            "impacted_properties": [
+              "handling_action",
+              "operator_role",
+              "occurred_at",
+              "deviation_eliminated",
+              "verification_result"
+            ],
+            "mutation_type": "CREATE",
+            "target_object": "Alert_Handling_Record"
+          }
+        ]
+      },
+      "producers": [
+        {
+          "id": "closeDeviationHandling",
+          "type": "Action"
+        }
+      ],
+      "provenance": "extracted",
+      "subscribers": [
+        {
+          "id": "recycleFalseAlarm",
+          "type": "Action"
+        },
+        {
+          "id": "procurement-chain-deviation-alert",
+          "type": "Workflow"
+        }
+      ]
+    },
+    {
+      "description": "误报已归因：标注阈值过严／数据质量／口径问题，误报预警撤销并进入阈值回流。",
+      "event_version": "1.0.0",
+      "name": "FALSE_ALARM_RECYCLED",
+      "payload": {
+        "event_data": [
+          {
+            "description": "被判定为误报的预警。",
+            "name": "alert_id",
+            "required": true,
+            "target_object": "Deviation_Alert",
+            "type": "String"
+          },
+          {
+            "description": "所属采购执行链路。",
+            "name": "chain_id",
+            "required": true,
+            "target_object": "Procurement_Chain",
+            "type": "String"
+          },
+          {
+            "description": "误报归因标签。",
+            "name": "false_alarm_cause",
+            "required": true,
+            "target_object": "Alert_Handling_Record",
+            "type": "String"
+          },
+          {
+            "description": "当前统计口径下的误报率。",
+            "name": "false_alarm_rate",
+            "required": true,
+            "target_object": "Rule_Review_Item",
+            "type": "Float"
+          },
+          {
+            "description": "归因时间。",
+            "name": "recycled_at",
+            "required": true,
+            "type": "Timestamp"
+          }
+        ],
+        "source_action": "recycleFalseAlarm",
+        "state_mutations": [
+          {
+            "impacted_properties": [
+              "handling_action",
+              "verification_result",
+              "false_alarm_cause",
+              "occurred_at"
+            ],
+            "mutation_type": "CREATE",
+            "target_object": "Alert_Handling_Record"
+          },
+          {
+            "impacted_properties": [
+              "verification_result",
+              "handling_status"
+            ],
+            "mutation_type": "MODIFY",
+            "target_object": "Deviation_Alert"
+          }
+        ]
+      },
+      "producers": [
+        {
+          "id": "recycleFalseAlarm",
+          "type": "Action"
+        }
+      ],
+      "provenance": "extracted",
+      "subscribers": [
+        {
+          "id": "procurement-chain-deviation-alert",
+          "type": "Workflow"
+        }
+      ]
+    },
+    {
+      "description": "阈值调整提议已回流规则评审队列：附误报归因、当前误报率与建议取值，闭环误报率不高于 20%。",
+      "event_version": "1.0.0",
+      "name": "THRESHOLD_REVIEW_ITEM_CREATED",
+      "payload": {
+        "event_data": [
+          {
+            "description": "规则评审条目编号。",
+            "name": "review_item_id",
+            "required": true,
+            "target_object": "Rule_Review_Item",
+            "type": "String"
+          },
+          {
+            "description": "提议调整的阈值配置项。",
+            "name": "threshold_id",
+            "required": true,
+            "target_object": "Alert_Threshold_Setting",
+            "type": "String"
+          },
+          {
+            "description": "误报归因。",
+            "name": "false_alarm_cause",
+            "required": true,
+            "target_object": "Rule_Review_Item",
+            "type": "String"
+          },
+          {
+            "description": "当前阈值。",
+            "name": "current_threshold_value",
+            "required": true,
+            "target_object": "Rule_Review_Item",
+            "type": "Float"
+          },
+          {
+            "description": "建议阈值。",
+            "name": "suggested_threshold_value",
+            "required": true,
+            "target_object": "Rule_Review_Item",
+            "type": "Float"
+          },
+          {
+            "description": "回流时间。",
+            "name": "submitted_at",
+            "required": true,
+            "target_object": "Rule_Review_Item",
+            "type": "Timestamp"
+          }
+        ],
+        "source_action": "recycleFalseAlarm",
+        "state_mutations": [
+          {
+            "impacted_properties": [
+              "false_alarm_cause",
+              "current_threshold_value",
+              "suggested_threshold_value",
+              "false_alarm_rate",
+              "review_status",
+              "submitted_at"
+            ],
+            "mutation_type": "CREATE",
+            "target_object": "Rule_Review_Item"
+          },
+          {
+            "impacted_properties": [
+              "last_tuned_at",
+              "tuning_reason"
+            ],
+            "mutation_type": "MODIFY",
+            "target_object": "Alert_Threshold_Setting"
+          }
+        ]
+      },
+      "producers": [
+        {
+          "id": "recycleFalseAlarm",
+          "type": "Action"
+        }
+      ],
+      "provenance": "extracted",
+      "subscribers": [
+        {
+          "id": "procurement-chain-deviation-alert",
+          "type": "Workflow"
+        }
+      ]
+    },
+    {
+      "description": "每日需求计划扫描批次到点：数字员工对全集团已审批需求计划跑一次合并与库存校验，把计划员每天的逐条比对变成一次批量作业。",
+      "event_version": "1.0.0",
+      "name": "DAILY_DEMAND_PLAN_SCAN_SCHEDULED",
+      "payload": {
+        "event_data": [
+          {
+            "description": "扫描业务日期，全流程「当前日期」的唯一定义。",
+            "name": "scan_date",
+            "required": true,
+            "type": "Date"
+          },
+          {
+            "description": "扫描批次号，用于批内追溯。",
+            "name": "scan_batch_id",
+            "required": true,
+            "type": "String"
+          },
+          {
+            "description": "扫描范围：全集团或指定管理单元。",
+            "name": "scan_scope",
+            "required": false,
+            "type": "String"
+          },
+          {
+            "description": "限定只处理该采购计划；为空时按 BR2-SCAN-01 全量扫描，显式指定时为排障口径、不是抽查。",
+            "name": "plan_id",
+            "required": false,
+            "target_object": "Procurement_Plan",
+            "type": "String"
+          }
+        ],
+        "source_action": null,
+        "state_mutations": []
+      },
+      "producers": [
+        {
+          "id": "调度中心",
+          "type": "System"
+        }
+      ],
+      "provenance": "extracted",
+      "subscribers": [
+        {
+          "id": "scanApprovedDemandPlan",
+          "type": "Action"
+        },
+        {
+          "id": "procurement-digital-employee-operations",
+          "type": "Workflow"
+        }
+      ]
+    },
+    {
+      "description": "需求计划审批通过：不等次日批次，立即纳入当轮合并与库存校验，让「已审批就开始编制」成立。",
+      "event_version": "1.0.0",
+      "name": "DEMAND_PLAN_APPROVED",
+      "payload": {
+        "event_data": [
+          {
+            "description": "采购业务计划头标识。",
+            "name": "plan_id",
+            "required": true,
+            "target_object": "Procurement_Plan",
+            "type": "String"
+          },
+          {
+            "description": "采购计划编号。",
+            "name": "plan_no",
+            "required": true,
+            "target_object": "Procurement_Plan",
+            "type": "String"
+          },
+          {
+            "description": "审批通过时间。",
+            "name": "approved_at",
+            "required": true,
+            "type": "Timestamp"
+          },
+          {
+            "description": "业务类型。",
+            "name": "business_type",
+            "required": true,
+            "target_object": "Procurement_Plan",
+            "type": "String"
+          }
+        ],
+        "source_action": null,
+        "state_mutations": []
+      },
+      "producers": [
+        {
+          "id": "metaERP 寻源",
+          "type": "System"
+        }
+      ],
+      "provenance": "extracted",
+      "subscribers": [
+        {
+          "id": "scanApprovedDemandPlan",
+          "type": "Action"
+        },
+        {
+          "id": "procurement-digital-employee-operations",
+          "type": "Workflow"
+        }
+      ]
+    },
+    {
+      "description": "需求计划提交审批的那一瞬间：四类校验并行起跑，把问题拦在审批之前而不是审批之后。",
+      "event_version": "1.0.0",
+      "name": "DEMAND_PLAN_SUBMITTED_FOR_APPROVAL",
+      "payload": {
+        "event_data": [
+          {
+            "description": "采购业务计划头标识。",
+            "name": "plan_id",
+            "required": true,
+            "target_object": "Procurement_Plan",
+            "type": "String"
+          },
+          {
+            "description": "提交审批的计划行标识。",
+            "name": "plan_line_id",
+            "required": true,
+            "target_object": "Procurement_Plan_Line",
+            "type": "String"
+          },
+          {
+            "description": "提交时间。",
+            "name": "submitted_at",
+            "required": true,
+            "type": "Timestamp"
+          },
+          {
+            "description": "提交人（需求申请人）。",
+            "name": "submitted_by",
+            "required": false,
+            "type": "String"
+          }
+        ],
+        "source_action": null,
+        "state_mutations": []
+      },
+      "producers": [
+        {
+          "id": "metaERP 寻源",
+          "type": "System"
+        }
+      ],
+      "provenance": "extracted",
+      "subscribers": [
+        {
+          "id": "auditAnnualPlanCompliance",
+          "type": "Action"
+        },
+        {
+          "id": "procurement-digital-employee-operations",
+          "type": "Workflow"
+        }
+      ]
+    },
+    {
+      "description": "已审批需求计划扫描完成，当轮作业范围圈定：命中多少行、过滤掉多少行都记在案。",
+      "event_version": "1.0.0",
+      "name": "APPROVED_DEMAND_PLAN_SCANNED",
+      "payload": {
+        "event_data": [
+          {
+            "description": "扫描批次号。",
+            "name": "scan_batch_id",
+            "required": true,
+            "type": "String"
+          },
+          {
+            "description": "扫描业务日期。",
+            "name": "scan_date",
+            "required": true,
+            "type": "Date"
+          },
+          {
+            "description": "纳入范围的计划行条数。",
+            "name": "in_scope_line_count",
+            "required": true,
+            "type": "Integer"
+          },
+          {
+            "description": "被过滤的计划行条数。",
+            "name": "filtered_line_count",
+            "required": false,
+            "type": "Integer"
+          },
+          {
+            "description": "本批次覆盖的采购计划。",
+            "name": "plan_id",
+            "required": false,
+            "target_object": "Procurement_Plan",
+            "type": "String"
+          }
+        ],
+        "source_action": "scanApprovedDemandPlan",
+        "state_mutations": [
+          {
+            "impacted_properties": [
+              "operation_type",
+              "operator_role",
+              "occurred_at",
+              "input_digest",
+              "output_digest",
+              "api_called",
+              "auditable"
+            ],
+            "mutation_type": "CREATE",
+            "target_object": "Digital_Employee_Operation_Log"
+          }
+        ]
+      },
+      "producers": [
+        {
+          "id": "scanApprovedDemandPlan",
+          "type": "Action"
+        }
+      ],
+      "provenance": "extracted",
+      "subscribers": [
+        {
+          "id": "analyzeDemandMerge",
+          "type": "Action"
+        },
+        {
+          "id": "procurement-digital-employee-operations",
+          "type": "Workflow"
+        }
+      ]
+    },
+    {
+      "description": "需求合并分析完成：可合并簇、需拆分行与待确认灰区一次给全，每条都带得出理由。",
+      "event_version": "1.0.0",
+      "name": "DEMAND_MERGE_ANALYZED",
+      "payload": {
+        "event_data": [
+          {
+            "description": "合并建议标识。",
+            "name": "merge_suggestion_id",
+            "required": true,
+            "target_object": "Demand_Merge_Suggestion",
+            "type": "String"
+          },
+          {
+            "description": "合并组编号。",
+            "name": "merge_group_id",
+            "required": true,
+            "target_object": "Demand_Merge_Suggestion",
+            "type": "String"
+          },
+          {
+            "description": "建议结论：可合并/需拆分/待计划员确认。",
+            "name": "suggestion_type",
+            "required": true,
+            "target_object": "Demand_Merge_Suggestion",
+            "type": "String"
+          },
+          {
+            "description": "合并数量。",
+            "name": "merged_quantity",
+            "required": false,
+            "target_object": "Demand_Merge_Suggestion",
+            "type": "Float"
+          },
+          {
+            "description": "合并匹配度。",
+            "name": "merge_score",
+            "required": false,
+            "target_object": "Demand_Merge_Suggestion",
+            "type": "Float"
+          }
+        ],
+        "source_action": "analyzeDemandMerge",
+        "state_mutations": [
+          {
+            "impacted_properties": [
+              "merge_group_id",
+              "suggestion_type",
+              "max_date_gap_days",
+              "merge_score",
+              "merge_reason",
+              "merged_quantity",
+              "weighted_unit_price",
+              "merged_amount",
+              "merged_required_date",
+              "suggestion_status"
+            ],
+            "mutation_type": "CREATE_OR_MODIFY",
+            "target_object": "Demand_Merge_Suggestion"
+          }
+        ]
+      },
+      "producers": [
+        {
+          "id": "analyzeDemandMerge",
+          "type": "Action"
+        }
+      ],
+      "provenance": "extracted",
+      "subscribers": [
+        {
+          "id": "verifyInventoryAvailability",
+          "type": "Action"
+        },
+        {
+          "id": "procurement-digital-employee-operations",
+          "type": "Workflow"
+        }
+      ]
+    },
+    {
+      "description": "检出差异超限的组合，需拆分为独立计划：合不了的单不硬合，避免排期与到货节奏失真。",
+      "event_version": "1.0.0",
+      "name": "DEMAND_SPLIT_REQUIRED",
+      "payload": {
+        "event_data": [
+          {
+            "description": "需拆分的合并建议标识。",
+            "name": "merge_suggestion_id",
+            "required": true,
+            "target_object": "Demand_Merge_Suggestion",
+            "type": "String"
+          },
+          {
+            "description": "组内需求日期最大差值。",
+            "name": "max_date_gap_days",
+            "required": true,
+            "target_object": "Demand_Merge_Suggestion",
+            "type": "Float"
+          },
+          {
+            "description": "待拆分的计划行。",
+            "name": "plan_line_id",
+            "required": true,
+            "target_object": "Procurement_Plan_Line",
+            "type": "String"
+          },
+          {
+            "description": "拆分理由。",
+            "name": "split_reason",
+            "required": true,
+            "type": "String"
+          }
+        ],
+        "source_action": "analyzeDemandMerge",
+        "state_mutations": []
+      },
+      "producers": [
+        {
+          "id": "analyzeDemandMerge",
+          "type": "Action"
+        }
+      ],
+      "provenance": "extracted",
+      "subscribers": [
+        {
+          "id": "splitOversizedDemand",
+          "type": "Action"
+        },
+        {
+          "id": "procurement-digital-employee-operations",
+          "type": "Workflow"
+        }
+      ]
+    },
+    {
+      "description": "计划员确认拆分，独立计划行已就绪：拆分落到单据上并留下确认痕迹，下轮扫描不会又合回去。",
+      "event_version": "1.0.0",
+      "name": "DEMAND_SPLIT_CONFIRMED",
+      "payload": {
+        "event_data": [
+          {
+            "description": "已拆分的合并建议。",
+            "name": "merge_suggestion_id",
+            "required": true,
+            "target_object": "Demand_Merge_Suggestion",
+            "type": "String"
+          },
+          {
+            "description": "拆出的独立计划行条数。",
+            "name": "split_line_count",
+            "required": true,
+            "type": "Integer"
+          },
+          {
+            "description": "确认人（计划员）。",
+            "name": "confirmed_by",
+            "required": true,
+            "target_object": "Demand_Merge_Suggestion",
+            "type": "String"
+          },
+          {
+            "description": "确认时间。",
+            "name": "confirmed_at",
+            "required": true,
+            "target_object": "Demand_Merge_Suggestion",
+            "type": "Timestamp"
+          }
+        ],
+        "source_action": "splitOversizedDemand",
+        "state_mutations": [
+          {
+            "impacted_properties": [
+              "is_split",
+              "source_object_type",
+              "source_object_line_id",
+              "merge_group_id"
+            ],
+            "mutation_type": "CREATE_OR_MODIFY",
+            "target_object": "Procurement_Plan_Line"
+          },
+          {
+            "impacted_properties": [
+              "suggestion_status",
+              "confirmed_by",
+              "confirmed_at"
+            ],
+            "mutation_type": "MODIFY",
+            "target_object": "Demand_Merge_Suggestion"
+          }
+        ]
+      },
+      "producers": [
+        {
+          "id": "splitOversizedDemand",
+          "type": "Action"
+        }
+      ],
+      "provenance": "extracted",
+      "subscribers": [
+        {
+          "id": "verifyInventoryAvailability",
+          "type": "Action"
+        },
+        {
+          "id": "procurement-digital-employee-operations",
+          "type": "Workflow"
+        }
+      ]
+    },
+    {
+      "description": "库存校验完成：可用量、缺口量、建议采购批量一次算清，跨系统查库存的活彻底归零。",
+      "event_version": "1.0.0",
+      "name": "INVENTORY_AVAILABILITY_VERIFIED",
+      "payload": {
+        "event_data": [
+          {
+            "description": "库存校验结论标识。",
+            "name": "stock_check_id",
+            "required": true,
+            "target_object": "Stock_Check_Result",
+            "type": "String"
+          },
+          {
+            "description": "校验结论：可调度/需采购/触及安全库存。",
+            "name": "stock_check_flag",
+            "required": true,
+            "target_object": "Stock_Check_Result",
+            "type": "String"
+          },
+          {
+            "description": "可用量。",
+            "name": "available_quantity",
+            "required": true,
+            "target_object": "Stock_Check_Result",
+            "type": "Float"
+          },
+          {
+            "description": "缺口量。",
+            "name": "shortage_quantity",
+            "required": false,
+            "target_object": "Stock_Check_Result",
+            "type": "Float"
+          },
+          {
+            "description": "校验时点。",
+            "name": "checked_at",
+            "required": true,
+            "target_object": "Stock_Check_Result",
+            "type": "Timestamp"
+          }
+        ],
+        "source_action": "verifyInventoryAvailability",
+        "state_mutations": [
+          {
+            "impacted_properties": [
+              "stock_check_flag",
+              "onhand_total_quantity",
+              "reserved_total_quantity",
+              "available_quantity",
+              "safety_stock_breached",
+              "shortage_quantity",
+              "suggested_purchase_quantity",
+              "checked_at"
+            ],
+            "mutation_type": "CREATE",
+            "target_object": "Stock_Check_Result"
+          }
+        ]
+      },
+      "producers": [
+        {
+          "id": "verifyInventoryAvailability",
+          "type": "Action"
+        }
+      ],
+      "provenance": "extracted",
+      "subscribers": [
+        {
+          "id": "procurement-digital-employee-operations",
+          "type": "Workflow"
+        }
+      ]
+    },
+    {
+      "description": "库存已达上限且非紧急，判为可调度：硬拦截不建采购计划，直接转调拨顶上需求。",
+      "event_version": "1.0.0",
+      "name": "STOCK_SUFFICIENT_FOR_DEMAND",
+      "payload": {
+        "event_data": [
+          {
+            "description": "判为可调度的库存校验结论。",
+            "name": "stock_check_id",
+            "required": true,
+            "target_object": "Stock_Check_Result",
+            "type": "String"
+          },
+          {
+            "description": "不再新购的计划行。",
+            "name": "plan_line_id",
+            "required": true,
+            "target_object": "Procurement_Plan_Line",
+            "type": "String"
+          },
+          {
+            "description": "物料编码。",
+            "name": "material_code",
+            "required": true,
+            "target_object": "Stock_Check_Result",
+            "type": "String"
+          },
+          {
+            "description": "现有量合计。",
+            "name": "onhand_total_quantity",
+            "required": true,
+            "target_object": "Stock_Check_Result",
+            "type": "Float"
+          }
+        ],
+        "source_action": "verifyInventoryAvailability",
+        "state_mutations": []
+      },
+      "producers": [
+        {
+          "id": "verifyInventoryAvailability",
+          "type": "Action"
+        }
+      ],
+      "provenance": "extracted",
+      "subscribers": [
+        {
+          "id": "createInventoryTransferOrder",
+          "type": "Action"
+        },
+        {
+          "id": "procurement-digital-employee-operations",
+          "type": "Workflow"
+        }
+      ]
+    },
+    {
+      "description": "库存不足以覆盖需求，确认需要采购：进入倒排工期，采购路径正式起算。",
+      "event_version": "1.0.0",
+      "name": "PURCHASE_REQUIRED_CONFIRMED",
+      "payload": {
+        "event_data": [
+          {
+            "description": "判为需采购的库存校验结论。",
+            "name": "stock_check_id",
+            "required": true,
+            "target_object": "Stock_Check_Result",
+            "type": "String"
+          },
+          {
+            "description": "需采购的计划行。",
+            "name": "plan_line_id",
+            "required": true,
+            "target_object": "Procurement_Plan_Line",
+            "type": "String"
+          },
+          {
+            "description": "缺口量。",
+            "name": "shortage_quantity",
+            "required": true,
+            "target_object": "Stock_Check_Result",
+            "type": "Float"
+          },
+          {
+            "description": "建议采购批量。",
+            "name": "suggested_purchase_quantity",
+            "required": false,
+            "target_object": "Stock_Check_Result",
+            "type": "Float"
+          }
+        ],
+        "source_action": "verifyInventoryAvailability",
+        "state_mutations": [
+          {
+            "impacted_properties": [
+              "task_type",
+              "assigned_role",
+              "task_summary",
+              "task_status",
+              "created_at"
+            ],
+            "mutation_type": "CREATE",
+            "target_object": "Digital_Employee_Task"
+          }
+        ]
+      },
+      "producers": [
+        {
+          "id": "verifyInventoryAvailability",
+          "type": "Action"
+        }
+      ],
+      "provenance": "extracted",
+      "subscribers": [
+        {
+          "id": "derivePurchaseSchedule",
+          "type": "Action"
+        },
+        {
+          "id": "procurement-digital-employee-operations",
+          "type": "Workflow"
+        }
+      ]
+    },
+    {
+      "description": "调拨申请单已生成、取得 ERP 正式单号：这条需求不进采购执行计划，采购路径到此结束。",
+      "event_version": "1.0.0",
+      "name": "INVENTORY_TRANSFER_ORDER_CREATED",
+      "payload": {
+        "event_data": [
+          {
+            "description": "调拨申请标识。",
+            "name": "transfer_request_id",
+            "required": true,
+            "target_object": "Stock_Transfer_Request",
+            "type": "String"
+          },
+          {
+            "description": "调拨单号。",
+            "name": "transfer_no",
+            "required": true,
+            "target_object": "Stock_Transfer_Request",
+            "type": "String"
+          },
+          {
+            "description": "调拨缘由：库存可调度。",
+            "name": "transfer_reason",
+            "required": true,
+            "target_object": "Stock_Transfer_Request",
+            "type": "String"
+          },
+          {
+            "description": "调拨数量。",
+            "name": "transfer_quantity",
+            "required": true,
+            "target_object": "Stock_Transfer_Request",
+            "type": "Float"
+          },
+          {
+            "description": "预计到货日期。",
+            "name": "expected_arrival_date",
+            "required": false,
+            "target_object": "Stock_Transfer_Request",
+            "type": "Date"
+          }
+        ],
+        "source_action": "createInventoryTransferOrder",
+        "state_mutations": [
+          {
+            "impacted_properties": [
+              "transfer_no",
+              "material_code",
+              "transfer_quantity",
+              "source_warehouse",
+              "target_warehouse",
+              "request_status",
+              "created_at",
+              "expected_arrival_date",
+              "transfer_reason"
+            ],
+            "mutation_type": "CREATE",
+            "target_object": "Stock_Transfer_Request"
+          }
+        ]
+      },
+      "producers": [
+        {
+          "id": "createInventoryTransferOrder",
+          "type": "Action"
+        }
+      ],
+      "provenance": "extracted",
+      "subscribers": [
+        {
+          "id": "procurement-digital-employee-operations",
+          "type": "Workflow"
+        }
+      ]
+    },
+    {
+      "description": "倒排工期完成：立项到合同签订各节点计划时间全部算出，口径统一、排期差错归零。",
+      "event_version": "1.0.0",
+      "name": "PURCHASE_SCHEDULE_DERIVED",
+      "payload": {
+        "event_data": [
+          {
+            "description": "倒排计划标识。",
+            "name": "schedule_plan_id",
+            "required": true,
+            "target_object": "Backward_Schedule_Plan",
+            "type": "String"
+          },
+          {
+            "description": "采购总周期天数。",
+            "name": "total_cycle_days",
+            "required": true,
+            "target_object": "Backward_Schedule_Plan",
+            "type": "Float"
+          },
+          {
+            "description": "是否存在时间冲突。",
+            "name": "time_conflict",
+            "required": true,
+            "target_object": "Backward_Schedule_Plan",
+            "type": "Boolean"
+          },
+          {
+            "description": "是否走紧急绿色通道。",
+            "name": "green_channel",
+            "required": false,
+            "target_object": "Backward_Schedule_Plan",
+            "type": "Boolean"
+          },
+          {
+            "description": "生成的阶段节点计划条数。",
+            "name": "stage_count",
+            "required": false,
+            "type": "Integer"
+          }
+        ],
+        "source_action": "derivePurchaseSchedule",
+        "state_mutations": [
+          {
+            "impacted_properties": [
+              "total_cycle_days",
+              "earliest_start_date",
+              "time_conflict",
+              "conflict_gap_days",
+              "adjust_scheme",
+              "green_channel",
+              "scheduled_at",
+              "schedule_date_basis"
+            ],
+            "mutation_type": "CREATE",
+            "target_object": "Backward_Schedule_Plan"
+          },
+          {
+            "impacted_properties": [
+              "stage_node",
+              "stage_sequence",
+              "standard_cycle_days",
+              "applied_cycle_days",
+              "planned_start_date",
+              "planned_finish_date",
+              "derived_by_formula"
+            ],
+            "mutation_type": "CREATE",
+            "target_object": "Backward_Schedule_Stage"
+          }
+        ]
+      },
+      "producers": [
+        {
+          "id": "derivePurchaseSchedule",
+          "type": "Action"
+        }
+      ],
+      "provenance": "extracted",
+      "subscribers": [
+        {
+          "id": "generateExecutionPlanDraft",
+          "type": "Action"
+        },
+        {
+          "id": "procurement-digital-employee-operations",
+          "type": "Workflow"
+        }
+      ]
+    },
+    {
+      "description": "倒排后发现赶不上需求到货日期：时间冲突在计划编制当天就暴露，而不是执行阶段被动赶工。",
+      "event_version": "1.0.0",
+      "name": "SCHEDULE_TIME_CONFLICT_DETECTED",
+      "payload": {
+        "event_data": [
+          {
+            "description": "发生冲突的倒排计划。",
+            "name": "schedule_plan_id",
+            "required": true,
+            "target_object": "Backward_Schedule_Plan",
+            "type": "String"
+          },
+          {
+            "description": "冲突缺口天数。",
+            "name": "conflict_gap_days",
+            "required": true,
+            "target_object": "Backward_Schedule_Plan",
+            "type": "Float"
+          },
+          {
+            "description": "推荐调整方案：缩短周期/调整需求日期/拆分批次。",
+            "name": "adjust_scheme",
+            "required": true,
+            "target_object": "Backward_Schedule_Plan",
+            "type": "String"
+          },
+          {
+            "description": "是否已升级采购部门领导。",
+            "name": "escalated_to_leader",
+            "required": false,
+            "target_object": "Backward_Schedule_Plan",
+            "type": "Boolean"
+          }
+        ],
+        "source_action": "derivePurchaseSchedule",
+        "state_mutations": [
+          {
+            "impacted_properties": [
+              "task_type",
+              "assigned_role",
+              "task_summary",
+              "task_status",
+              "created_at"
+            ],
+            "mutation_type": "CREATE",
+            "target_object": "Digital_Employee_Task"
+          }
+        ]
+      },
+      "producers": [
+        {
+          "id": "derivePurchaseSchedule",
+          "type": "Action"
+        }
+      ],
+      "provenance": "extracted",
+      "subscribers": [
+        {
+          "id": "procurement-digital-employee-operations",
+          "type": "Workflow"
+        }
+      ]
+    },
+    {
+      "description": "执行计划草稿已生成并写入来源需求行映射：一单一档、来源可溯，计划员只需确认。",
+      "event_version": "1.0.0",
+      "name": "EXECUTION_PLAN_DRAFT_GENERATED",
+      "payload": {
+        "event_data": [
+          {
+            "description": "执行计划头标识。",
+            "name": "plan_id",
+            "required": true,
+            "target_object": "Procurement_Plan",
+            "type": "String"
+          },
+          {
+            "description": "执行计划编号。",
+            "name": "plan_no",
+            "required": true,
+            "target_object": "Procurement_Plan",
+            "type": "String"
+          },
+          {
+            "description": "草稿计划行条数。",
+            "name": "draft_line_count",
+            "required": true,
+            "type": "Integer"
+          },
+          {
+            "description": "对应的合并组编号。",
+            "name": "merge_group_id",
+            "required": false,
+            "target_object": "Demand_Merge_Suggestion",
+            "type": "String"
+          },
+          {
+            "description": "来源行映射是否已落库。",
+            "name": "source_mapping_written",
+            "required": true,
+            "target_object": "Demand_Merge_Suggestion",
+            "type": "Boolean"
+          }
+        ],
+        "source_action": "generateExecutionPlanDraft",
+        "state_mutations": [
+          {
+            "impacted_properties": [
+              "plan_no",
+              "plan_category",
+              "plan_status",
+              "business_type",
+              "management_unit"
+            ],
+            "mutation_type": "CREATE_OR_MODIFY",
+            "target_object": "Procurement_Plan"
+          },
+          {
+            "impacted_properties": [
+              "is_execution_plan_draft",
+              "merge_group_id",
+              "quantity",
+              "unit_price",
+              "required_arrival_date",
+              "line_status",
+              "source_object_line_id"
+            ],
+            "mutation_type": "CREATE_OR_MODIFY",
+            "target_object": "Procurement_Plan_Line"
+          },
+          {
+            "impacted_properties": [
+              "source_plan_line_ids",
+              "relation_record_id",
+              "source_mapping_written",
+              "suggestion_status"
+            ],
+            "mutation_type": "MODIFY",
+            "target_object": "Demand_Merge_Suggestion"
+          }
+        ]
+      },
+      "producers": [
+        {
+          "id": "generateExecutionPlanDraft",
+          "type": "Action"
+        }
+      ],
+      "provenance": "extracted",
+      "subscribers": [
+        {
+          "id": "auditAnnualPlanCompliance",
+          "type": "Action"
+        },
+        {
+          "id": "procurement-digital-employee-operations",
+          "type": "Workflow"
+        }
+      ]
+    },
+    {
+      "description": "四类校验跑完并汇成结构化审核意见：审核人从逐项翻数据变成看结论做判断。",
+      "event_version": "1.0.0",
+      "name": "ANNUAL_PLAN_AUDITED",
+      "payload": {
+        "event_data": [
+          {
+            "description": "审核意见标识。",
+            "name": "audit_opinion_id",
+            "required": true,
+            "target_object": "Plan_Audit_Opinion",
+            "type": "String"
+          },
+          {
+            "description": "审核结论：通过/预警/拦截。",
+            "name": "audit_result",
+            "required": true,
+            "target_object": "Plan_Audit_Opinion",
+            "type": "String"
+          },
+          {
+            "description": "是否存在拦截项。",
+            "name": "intercept",
+            "required": true,
+            "target_object": "Plan_Audit_Opinion",
+            "type": "Boolean"
+          },
+          {
+            "description": "审核明细条数。",
+            "name": "finding_count",
+            "required": true,
+            "target_object": "Plan_Audit_Opinion",
+            "type": "Integer"
+          },
+          {
+            "description": "审核时点。",
+            "name": "audited_at",
+            "required": true,
+            "target_object": "Plan_Audit_Opinion",
+            "type": "Timestamp"
+          }
+        ],
+        "source_action": "auditAnnualPlanCompliance",
+        "state_mutations": [
+          {
+            "impacted_properties": [
+              "audit_result",
+              "intercept",
+              "finding_count",
+              "price_curve",
+              "price_curve_attached",
+              "rectify_advice",
+              "audited_at",
+              "opinion_status"
+            ],
+            "mutation_type": "CREATE",
+            "target_object": "Plan_Audit_Opinion"
+          },
+          {
+            "impacted_properties": [
+              "check_item",
+              "conclusion",
+              "hit_data",
+              "threshold_value",
+              "actual_value",
+              "price_deviation_ratio",
+              "duplicate_plan_no",
+              "duplicate_gap_days",
+              "suggested_central_level",
+              "attachment_complete",
+              "rectify_advice"
+            ],
+            "mutation_type": "CREATE",
+            "target_object": "Plan_Audit_Finding"
+          }
+        ]
+      },
+      "producers": [
+        {
+          "id": "auditAnnualPlanCompliance",
+          "type": "Action"
+        }
+      ],
+      "provenance": "extracted",
+      "subscribers": [
+        {
+          "id": "recommendPackagingScheme",
+          "type": "Action"
+        },
+        {
+          "id": "procurement-digital-employee-operations",
+          "type": "Workflow"
+        }
+      ]
+    },
+    {
+      "description": "审核命中硬拦截：应集采未集采、技术附件缺失等问题在提交瞬间 100% 拦下，不再流到审批之后。",
+      "event_version": "1.0.0",
+      "name": "PLAN_AUDIT_INTERCEPTED",
+      "payload": {
+        "event_data": [
+          {
+            "description": "含拦截项的审核意见。",
+            "name": "audit_opinion_id",
+            "required": true,
+            "target_object": "Plan_Audit_Opinion",
+            "type": "String"
+          },
+          {
+            "description": "被拦截的计划行。",
+            "name": "plan_line_id",
+            "required": true,
+            "target_object": "Procurement_Plan_Line",
+            "type": "String"
+          },
+          {
+            "description": "拦截项清单。",
+            "name": "intercept_items",
+            "required": true,
+            "type": "String"
+          },
+          {
+            "description": "整改建议。",
+            "name": "rectify_advice",
+            "required": false,
+            "target_object": "Plan_Audit_Opinion",
+            "type": "String"
+          }
+        ],
+        "source_action": "auditAnnualPlanCompliance",
+        "state_mutations": []
+      },
+      "producers": [
+        {
+          "id": "auditAnnualPlanCompliance",
+          "type": "Action"
+        }
+      ],
+      "provenance": "extracted",
+      "subscribers": [
+        {
+          "id": "returnPlanForRectification",
+          "type": "Action"
+        },
+        {
+          "id": "procurement-digital-employee-operations",
+          "type": "Workflow"
+        }
+      ]
+    },
+    {
+      "description": "已退回需求申请人整改，并开放不按集采采购原因录入入口：豁免可以有，无据可查不行。",
+      "event_version": "1.0.0",
+      "name": "PLAN_RETURNED_FOR_RECTIFICATION",
+      "payload": {
+        "event_data": [
+          {
+            "description": "退回的审核意见。",
+            "name": "audit_opinion_id",
+            "required": true,
+            "target_object": "Plan_Audit_Opinion",
+            "type": "String"
+          },
+          {
+            "description": "整改退回待办标识。",
+            "name": "task_id",
+            "required": true,
+            "target_object": "Digital_Employee_Task",
+            "type": "String"
+          },
+          {
+            "description": "承接角色：需求申请人。",
+            "name": "assigned_role",
+            "required": true,
+            "target_object": "Digital_Employee_Task",
+            "type": "String"
+          },
+          {
+            "description": "退回时间。",
+            "name": "returned_at",
+            "required": true,
+            "type": "Timestamp"
+          }
+        ],
+        "source_action": "returnPlanForRectification",
+        "state_mutations": [
+          {
+            "impacted_properties": [
+              "opinion_status",
+              "rectify_advice"
+            ],
+            "mutation_type": "MODIFY",
+            "target_object": "Plan_Audit_Opinion"
+          },
+          {
+            "impacted_properties": [
+              "task_type",
+              "assigned_role",
+              "assignee",
+              "task_summary",
+              "task_status",
+              "created_at"
+            ],
+            "mutation_type": "CREATE",
+            "target_object": "Digital_Employee_Task"
+          }
+        ]
+      },
+      "producers": [
+        {
+          "id": "returnPlanForRectification",
+          "type": "Action"
+        }
+      ],
+      "provenance": "extracted",
+      "subscribers": [
+        {
+          "id": "procurement-digital-employee-operations",
+          "type": "Workflow"
+        }
+      ]
+    },
+    {
+      "description": "申请人整改完毕或已说明不按集采原因，回流复核：整改内容重新跑一遍四类校验。",
+      "event_version": "1.0.0",
+      "name": "PLAN_RECTIFICATION_SUBMITTED",
+      "payload": {
+        "event_data": [
+          {
+            "description": "待复核的审核意见。",
+            "name": "audit_opinion_id",
+            "required": true,
+            "target_object": "Plan_Audit_Opinion",
+            "type": "String"
+          },
+          {
+            "description": "已完成的待办。",
+            "name": "task_id",
+            "required": true,
+            "target_object": "Digital_Employee_Task",
+            "type": "String"
+          },
+          {
+            "description": "申请人录入的不按集采采购原因。",
+            "name": "non_central_reason",
+            "required": false,
+            "target_object": "Plan_Audit_Finding",
+            "type": "String"
+          },
+          {
+            "description": "整改回流时间。",
+            "name": "rectified_at",
+            "required": true,
+            "target_object": "Plan_Audit_Opinion",
+            "type": "Timestamp"
+          }
+        ],
+        "source_action": "returnPlanForRectification",
+        "state_mutations": [
+          {
+            "impacted_properties": [
+              "task_status",
+              "completed_at",
+              "response_note"
+            ],
+            "mutation_type": "MODIFY",
+            "target_object": "Digital_Employee_Task"
+          },
+          {
+            "impacted_properties": [
+              "non_central_reason",
+              "non_central_reason_provided",
+              "attachment_complete"
+            ],
+            "mutation_type": "MODIFY",
+            "target_object": "Plan_Audit_Finding"
+          }
+        ]
+      },
+      "producers": [
+        {
+          "id": "returnPlanForRectification",
+          "type": "Action"
+        }
+      ],
+      "provenance": "extracted",
+      "subscribers": [
+        {
+          "id": "auditAnnualPlanCompliance",
+          "type": "Action"
+        },
+        {
+          "id": "procurement-digital-employee-operations",
+          "type": "Workflow"
+        }
+      ]
+    },
+    {
+      "description": "2-3 套组包方案连同匹配置信度一并给出：组包从凭经验变成有依据、可比较、可复用。",
+      "event_version": "1.0.0",
+      "name": "PACKAGING_SCHEME_RECOMMENDED",
+      "payload": {
+        "event_data": [
+          {
+            "description": "方案标识。",
+            "name": "package_scheme_id",
+            "required": true,
+            "target_object": "Package_Scheme",
+            "type": "String"
+          },
+          {
+            "description": "方案编号。",
+            "name": "scheme_no",
+            "required": true,
+            "target_object": "Package_Scheme",
+            "type": "String"
+          },
+          {
+            "description": "匹配度评分。",
+            "name": "match_score",
+            "required": true,
+            "target_object": "Package_Scheme",
+            "type": "Float"
+          },
+          {
+            "description": "本批次候选方案数。",
+            "name": "sibling_scheme_count",
+            "required": true,
+            "target_object": "Package_Scheme",
+            "type": "Integer"
+          },
+          {
+            "description": "是否推荐方案。",
+            "name": "is_recommended",
+            "required": true,
+            "target_object": "Package_Scheme",
+            "type": "Boolean"
+          }
+        ],
+        "source_action": "recommendPackagingScheme",
+        "state_mutations": [
+          {
+            "impacted_properties": [
+              "scheme_no",
+              "match_score",
+              "line_count",
+              "region_similarity",
+              "delivery_overlap_rate",
+              "delivery_span_days",
+              "mixed_type_detected",
+              "split_advice",
+              "is_recommended",
+              "sibling_scheme_count",
+              "scheme_status",
+              "generated_at"
+            ],
+            "mutation_type": "CREATE",
+            "target_object": "Package_Scheme"
+          },
+          {
+            "impacted_properties": [
+              "check_item",
+              "conclusion",
+              "detected_types",
+              "delivery_span_days",
+              "threshold_value",
+              "split_advice"
+            ],
+            "mutation_type": "CREATE",
+            "target_object": "Packaging_Compliance_Finding"
+          }
+        ]
+      },
+      "producers": [
+        {
+          "id": "recommendPackagingScheme",
+          "type": "Action"
+        }
+      ],
+      "provenance": "extracted",
+      "subscribers": [
+        {
+          "id": "annotateFrameAndCentralPurchase",
+          "type": "Action"
+        },
+        {
+          "id": "procurement-digital-employee-operations",
+          "type": "Workflow"
+        }
+      ]
+    },
+    {
+      "description": "组包合规校验命中：类型混包硬拦截、交货跨度超限、或识别到特殊采购方式，方案不能就这么走下去。",
+      "event_version": "1.0.0",
+      "name": "PACKAGING_COMPLIANCE_VIOLATED",
+      "payload": {
+        "event_data": [
+          {
+            "description": "合规结论标识。",
+            "name": "pkg_finding_id",
+            "required": true,
+            "target_object": "Packaging_Compliance_Finding",
+            "type": "String"
+          },
+          {
+            "description": "被拦截或预警的方案。",
+            "name": "package_scheme_id",
+            "required": true,
+            "target_object": "Package_Scheme",
+            "type": "String"
+          },
+          {
+            "description": "命中的校验项。",
+            "name": "check_item",
+            "required": true,
+            "target_object": "Packaging_Compliance_Finding",
+            "type": "String"
+          },
+          {
+            "description": "结论：软预警/硬拦截。",
+            "name": "conclusion",
+            "required": true,
+            "target_object": "Packaging_Compliance_Finding",
+            "type": "String"
+          }
+        ],
+        "source_action": "recommendPackagingScheme",
+        "state_mutations": []
+      },
+      "producers": [
+        {
+          "id": "recommendPackagingScheme",
+          "type": "Action"
+        }
+      ],
+      "provenance": "extracted",
+      "subscribers": [
+        {
+          "id": "raisePackagingComplianceAlert",
+          "type": "Action"
+        },
+        {
+          "id": "procurement-digital-employee-operations",
+          "type": "Workflow"
+        }
+      ]
+    },
+    {
+      "description": "框架协议命中与集采层级标注完成、采购包行已生成：框架利用率与集采覆盖率不再靠人记。",
+      "event_version": "1.0.0",
+      "name": "FRAME_AND_CENTRAL_ANNOTATED",
+      "payload": {
+        "event_data": [
+          {
+            "description": "完成标注的方案。",
+            "name": "package_scheme_id",
+            "required": true,
+            "target_object": "Package_Scheme",
+            "type": "String"
+          },
+          {
+            "description": "是否命中框架协议。",
+            "name": "frame_hit",
+            "required": true,
+            "target_object": "Package_Scheme",
+            "type": "Boolean"
+          },
+          {
+            "description": "命中的协议编号。",
+            "name": "frame_agreement_no",
+            "required": false,
+            "target_object": "Package_Scheme",
+            "type": "String"
+          },
+          {
+            "description": "集采级别标注。",
+            "name": "central_level",
+            "required": true,
+            "target_object": "Package_Scheme",
+            "type": "String"
+          },
+          {
+            "description": "匹配到的审批流程模板。",
+            "name": "approve_flow_code",
+            "required": false,
+            "target_object": "Package_Scheme",
+            "type": "String"
+          },
+          {
+            "description": "生成的采购包。",
+            "name": "package_id",
+            "required": false,
+            "target_object": "Sourcing_Package",
+            "type": "String"
+          }
+        ],
+        "source_action": "annotateFrameAndCentralPurchase",
+        "state_mutations": [
+          {
+            "impacted_properties": [
+              "frame_hit",
+              "frame_agreement_no",
+              "frame_quota_sufficient",
+              "central_level",
+              "central_pattern",
+              "approve_flow_code",
+              "special_sourcing_method"
+            ],
+            "mutation_type": "MODIFY",
+            "target_object": "Package_Scheme"
+          },
+          {
+            "impacted_properties": [
+              "frame_agreement_id",
+              "frame_agreement_item_id",
+              "frame_agreement_no",
+              "frame_hit",
+              "plan_line_id"
+            ],
+            "mutation_type": "CREATE_OR_MODIFY",
+            "target_object": "Sourcing_Package_Line"
+          },
+          {
+            "impacted_properties": [
+              "central_purchase_level",
+              "central_purchase_pattern",
+              "approve_flow_code",
+              "scenario_code"
+            ],
+            "mutation_type": "CREATE_OR_MODIFY",
+            "target_object": "Sourcing_Package"
+          }
+        ]
+      },
+      "producers": [
+        {
+          "id": "annotateFrameAndCentralPurchase",
+          "type": "Action"
+        }
+      ],
+      "provenance": "extracted",
+      "subscribers": [
+        {
+          "id": "confirmPlanAndPackage",
+          "type": "Action"
+        },
+        {
+          "id": "procurement-digital-employee-operations",
+          "type": "Workflow"
+        }
+      ]
+    },
+    {
+      "description": "组包预警已推送：混包退回、跨度给拆包建议、特殊采购挂补充说明待办，调整后回组包重算。",
+      "event_version": "1.0.0",
+      "name": "PACKAGING_ALERT_RAISED",
+      "payload": {
+        "event_data": [
+          {
+            "description": "合规结论标识。",
+            "name": "pkg_finding_id",
+            "required": true,
+            "target_object": "Packaging_Compliance_Finding",
+            "type": "String"
+          },
+          {
+            "description": "相关方案。",
+            "name": "package_scheme_id",
+            "required": true,
+            "target_object": "Package_Scheme",
+            "type": "String"
+          },
+          {
+            "description": "生成的调整或补充说明待办。",
+            "name": "task_id",
+            "required": false,
+            "target_object": "Digital_Employee_Task",
+            "type": "String"
+          },
+          {
+            "description": "调整建议。",
+            "name": "rectify_advice",
+            "required": true,
+            "target_object": "Packaging_Compliance_Finding",
+            "type": "String"
+          }
+        ],
+        "source_action": "raisePackagingComplianceAlert",
+        "state_mutations": [
+          {
+            "impacted_properties": [
+              "scheme_status",
+              "split_advice"
+            ],
+            "mutation_type": "MODIFY",
+            "target_object": "Package_Scheme"
+          },
+          {
+            "impacted_properties": [
+              "conclusion",
+              "split_advice",
+              "supplement_task_created",
+              "rectify_advice"
+            ],
+            "mutation_type": "MODIFY",
+            "target_object": "Packaging_Compliance_Finding"
+          }
+        ]
+      },
+      "producers": [
+        {
+          "id": "raisePackagingComplianceAlert",
+          "type": "Action"
+        }
+      ],
+      "provenance": "extracted",
+      "subscribers": [
+        {
+          "id": "recommendPackagingScheme",
+          "type": "Action"
+        },
+        {
+          "id": "procurement-digital-employee-operations",
+          "type": "Workflow"
+        }
+      ]
+    },
+    {
+      "description": "计划员确认执行计划草稿并选定组包方案：关键单据的这一章必须由人来盖。",
+      "event_version": "1.0.0",
+      "name": "PLAN_AND_PACKAGE_CONFIRMED",
+      "payload": {
+        "event_data": [
+          {
+            "description": "被选定的方案。",
+            "name": "package_scheme_id",
+            "required": true,
+            "target_object": "Package_Scheme",
+            "type": "String"
+          },
+          {
+            "description": "确认的执行计划行。",
+            "name": "plan_line_id",
+            "required": true,
+            "target_object": "Procurement_Plan_Line",
+            "type": "String"
+          },
+          {
+            "description": "选定人（计划员）。",
+            "name": "selected_by",
+            "required": true,
+            "target_object": "Package_Scheme",
+            "type": "String"
+          },
+          {
+            "description": "选定时间。",
+            "name": "selected_at",
+            "required": true,
+            "target_object": "Package_Scheme",
+            "type": "Timestamp"
+          }
+        ],
+        "source_action": "confirmPlanAndPackage",
+        "state_mutations": [
+          {
+            "impacted_properties": [
+              "scheme_status",
+              "selected_by",
+              "selected_at"
+            ],
+            "mutation_type": "MODIFY",
+            "target_object": "Package_Scheme"
+          },
+          {
+            "impacted_properties": [
+              "draft_confirmed_by",
+              "draft_confirmed_at",
+              "line_status"
+            ],
+            "mutation_type": "MODIFY",
+            "target_object": "Procurement_Plan_Line"
+          },
+          {
+            "impacted_properties": [
+              "task_status",
+              "completed_at",
+              "response_note"
+            ],
+            "mutation_type": "MODIFY",
+            "target_object": "Digital_Employee_Task"
+          }
+        ]
+      },
+      "producers": [
+        {
+          "id": "confirmPlanAndPackage",
+          "type": "Action"
+        }
+      ],
+      "provenance": "extracted",
+      "subscribers": [
+        {
+          "id": "submitPlanForApproval",
+          "type": "Action"
+        },
+        {
+          "id": "procurement-digital-employee-operations",
+          "type": "Workflow"
+        }
+      ]
+    },
+    {
+      "description": "计划员驳回并给出原因：原因回流数字员工优化合并与组包规则，闭环才谈得上「越用越准」。",
+      "event_version": "1.0.0",
+      "name": "PLAN_AND_PACKAGE_REJECTED",
+      "payload": {
+        "event_data": [
+          {
+            "description": "被驳回的方案。",
+            "name": "package_scheme_id",
+            "required": true,
+            "target_object": "Package_Scheme",
+            "type": "String"
+          },
+          {
+            "description": "驳回原因。",
+            "name": "rejection_reason",
+            "required": true,
+            "target_object": "Package_Scheme",
+            "type": "String"
+          },
+          {
+            "description": "驳回人（计划员）。",
+            "name": "rejected_by",
+            "required": true,
+            "type": "String"
+          },
+          {
+            "description": "驳回时间。",
+            "name": "rejected_at",
+            "required": true,
+            "type": "Timestamp"
+          }
+        ],
+        "source_action": "confirmPlanAndPackage",
+        "state_mutations": [
+          {
+            "impacted_properties": [
+              "scheme_status",
+              "rejection_reason"
+            ],
+            "mutation_type": "MODIFY",
+            "target_object": "Package_Scheme"
+          },
+          {
+            "impacted_properties": [
+              "task_status",
+              "rejection_reason",
+              "completed_at"
+            ],
+            "mutation_type": "MODIFY",
+            "target_object": "Digital_Employee_Task"
+          }
+        ]
+      },
+      "producers": [
+        {
+          "id": "confirmPlanAndPackage",
+          "type": "Action"
+        }
+      ],
+      "provenance": "extracted",
+      "subscribers": [
+        {
+          "id": "recommendPackagingScheme",
+          "type": "Action"
+        },
+        {
+          "id": "procurement-digital-employee-operations",
+          "type": "Workflow"
+        }
+      ]
+    },
+    {
+      "description": "执行计划与采购包已提交审批、全过程留痕封存：本轮作业从扫描到确认全程可追溯。",
+      "event_version": "1.0.0",
+      "name": "PLAN_SUBMITTED_FOR_APPROVAL",
+      "payload": {
+        "event_data": [
+          {
+            "description": "提交审批的执行计划。",
+            "name": "plan_id",
+            "required": true,
+            "target_object": "Procurement_Plan",
+            "type": "String"
+          },
+          {
+            "description": "提交审批的采购包。",
+            "name": "package_id",
+            "required": true,
+            "target_object": "Sourcing_Package",
+            "type": "String"
+          },
+          {
+            "description": "发起的审批流程模板。",
+            "name": "approve_flow_code",
+            "required": false,
+            "target_object": "Sourcing_Package",
+            "type": "String"
+          },
+          {
+            "description": "提交时间。",
+            "name": "submitted_at",
+            "required": true,
+            "target_object": "Procurement_Plan",
+            "type": "Timestamp"
+          },
+          {
+            "description": "作业留痕是否已完成完备性核对并封存。",
+            "name": "trace_sealed",
+            "required": true,
+            "target_object": "Digital_Employee_Operation_Log",
+            "type": "Boolean"
+          }
+        ],
+        "source_action": "submitPlanForApproval",
+        "state_mutations": [
+          {
+            "impacted_properties": [
+              "plan_status",
+              "submitted_at"
+            ],
+            "mutation_type": "MODIFY",
+            "target_object": "Procurement_Plan"
+          },
+          {
+            "impacted_properties": [
+              "package_status",
+              "approve_flow_code",
+              "packaged_at"
+            ],
+            "mutation_type": "MODIFY",
+            "target_object": "Sourcing_Package"
+          },
+          {
+            "impacted_properties": [
+              "operation_type",
+              "occurred_at",
+              "output_digest",
+              "auditable"
+            ],
+            "mutation_type": "CREATE_OR_MODIFY",
+            "target_object": "Digital_Employee_Operation_Log"
+          }
+        ]
+      },
+      "producers": [
+        {
+          "id": "submitPlanForApproval",
+          "type": "Action"
+        }
+      ],
+      "provenance": "extracted",
+      "subscribers": [
+        {
+          "id": "procurement-digital-employee-operations",
+          "type": "Workflow"
+        }
+      ]
+    }
+  ],
+  "metadata": {
+    "artifact_count": 46,
+    "content_hash": "sha256:c2d53cccd24278a7142b80feec0b126d0e437cdc85106837be7cf8b13cfad8b8",
+    "family": "events",
+    "package_hash": "sha256:9448c2143a31df36f05ff16430b9e223f9bf615a696689bbfa8d0c769362df07",
+    "package_id": "procurement-hc-formal",
+    "release": "0.1.8",
+    "schema_bundle_version": "3.2.0",
+    "source_filename": "events_0.1.8.json",
+    "staged_by": "scripts/stage-procurement-hc-formal-ontology.mjs"
+  }
+}

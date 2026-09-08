@@ -1,0 +1,70 @@
+{
+  "rows": [
+    {
+      "CREATION_DATE": "2026-08-03",
+      "IS_CANCELLED": "N",
+      "ITEM_CODE": "M-CT-110",
+      "MANAGEMENT_UNIT": "华东检修分公司",
+      "PO_HEADER_ID": "PO-2026-20487",
+      "PO_LINE_ID": "POL-2026-20487-01",
+      "QUANTITY": 30,
+      "UNIT_CODE": "001",
+      "UNIT_PRICE": 57500
+    },
+    {
+      "CREATION_DATE": "2026-05-14",
+      "IS_CANCELLED": "N",
+      "ITEM_CODE": "M-CT-110",
+      "MANAGEMENT_UNIT": "华东检修分公司",
+      "PO_HEADER_ID": "PO-2026-19902",
+      "PO_LINE_ID": "POL-2026-19902-02",
+      "QUANTITY": 12,
+      "UNIT_CODE": "001",
+      "UNIT_PRICE": 56000
+    },
+    {
+      "CREATION_DATE": "2026-02-09",
+      "IS_CANCELLED": "N",
+      "ITEM_CODE": "M-CT-110",
+      "MANAGEMENT_UNIT": "华东检修分公司",
+      "PO_HEADER_ID": "PO-2026-18771",
+      "PO_LINE_ID": "POL-2026-18771-01",
+      "QUANTITY": 20,
+      "UNIT_CODE": "001",
+      "UNIT_PRICE": 55000
+    },
+    {
+      "CREATION_DATE": "2026-03-30",
+      "IS_CANCELLED": "N",
+      "ITEM_CODE": "M-BRK-126",
+      "MANAGEMENT_UNIT": "华东检修分公司",
+      "PO_HEADER_ID": "PO-2026-19310",
+      "PO_LINE_ID": "POL-2026-19310-03",
+      "QUANTITY": 6,
+      "UNIT_CODE": "001",
+      "UNIT_PRICE": 372000
+    },
+    {
+      "CREATION_DATE": "2025-11-12",
+      "IS_CANCELLED": "N",
+      "ITEM_CODE": "M-BRK-126",
+      "MANAGEMENT_UNIT": "华东检修分公司",
+      "PO_HEADER_ID": "PO-2025-17206",
+      "PO_LINE_ID": "POL-2025-17206-01",
+      "QUANTITY": 8,
+      "UNIT_CODE": "001",
+      "UNIT_PRICE": 365000
+    },
+    {
+      "CREATION_DATE": "2026-03-02",
+      "IS_CANCELLED": "N",
+      "ITEM_CODE": "M-CBL-YJV",
+      "MANAGEMENT_UNIT": "华东检修分公司",
+      "PO_HEADER_ID": "PO-2026-19044",
+      "PO_LINE_ID": "POL-2026-19044-02",
+      "QUANTITY": 4000,
+      "UNIT_CODE": "001",
+      "UNIT_PRICE": 315
+    }
+  ]
+}

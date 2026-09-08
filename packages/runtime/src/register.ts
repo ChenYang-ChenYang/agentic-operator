@@ -111,6 +111,7 @@ import {
   type RuntimeInputBindingIssue,
 } from "./input-bindings";
 import {
+  actionErrorFacts,
   classifyActionFailure,
   failureForDisposition,
   isNonRetriableFailure,
@@ -165,7 +166,7 @@ import type {
   TenantRegistry,
   ToolDescriptor,
 } from "@agentic/agent-kit";
-import type { InngestFunction } from "inngest";
+import { StepError, type InngestFunction } from "inngest";
 import { getRuntimeMetrics } from "./llm-host";
 import { createMemoryHandle } from "./memory";
 import { runWithTraceContext } from "./trace-context";
@@ -1270,13 +1271,22 @@ export function registerAgent(
             "run.cancel",
             eventAdapter,
           ) as `${string}/${string}`,
-          if: `${cancelSubjectExpr} == ${triggerSubjectExpr}`,
+          // Precise first: the cancel route names the run's trigger event id
+          // (unique per delivery, carried on every trigger as
+          // `__triggerEventId`) and the agent (one function out of a fan-out).
+          // The subject match survives only for legacy senders that carry no
+          // trigger id, and only for a NON-null subject — `null == null` used
+          // to cancel every subject-less in-flight run of the function
+          // (2026-09-07: cancelling a zombie killed a live audit run).
+          if:
+            `(async.data.triggerEventId != null && async.data.triggerEventId == event.data.__triggerEventId && async.data.agent == ${JSON.stringify(agent.name)})` +
+            ` || (async.data.triggerEventId == null && ${cancelSubjectExpr} != null && ${cancelSubjectExpr} == ${triggerSubjectExpr})`,
         },
       ],
       // v4: triggers moved into opts (was a separate 2nd arg in v3)
       triggers,
     },
-    async ({ event, step, logger }) => {
+    async ({ event, step, logger, attempt }) => {
       // #COMMS — rehydrate content-addressed blob refs so this run's handlers see REAL values (the
       // wire/storage stayed small; the active run resolves on demand). No-op when there are no refs.
       // Async resolution: local fs first, then the shared backend (#SCALE-BLOB) — so on a multi-
@@ -4324,6 +4334,34 @@ export function registerAgent(
           try {
             stepOutcome = resolveActionFailureOutcome(action, stepErr);
           } catch (controlFlowError) {
+            // #RUN-FINALIZE — a step failure that leaves this handler must
+            // leave the run row truthful too. Under the real SDK a failing
+            // `step.run` ends the invocation on every attempt that still has
+            // retries left; user code only sees the failure once the step has
+            // exhausted them, as a `StepError` (verified live 2026-09-07: four
+            // step.fail lines, then a fifth invocation that surfaced the
+            // StepError with `attempt` still 0 — the function-level counter
+            // never moves for step retries). A terminal (NonRetriable)
+            // failure never comes back either. The `attempt >= retries` test
+            // covers harnesses whose fake step.run rethrows raw errors. Before
+            // this the row stayed `running` until the next bootstrap
+            // reconciled it as orphaned: an operator watched a deterministic
+            // HTTP 400 "run" for six minutes and had to cancel it by hand.
+            const terminal = isNonRetriableFailure(controlFlowError);
+            const stepRetriesExhausted =
+              stepErr instanceof StepError ||
+              (stepErr instanceof Error && stepErr.name === "StepError");
+            const attemptsExhausted =
+              typeof attempt === "number" && attempt >= functionRetries(agent);
+            if (terminal || stepRetriesExhausted || attemptsExhausted) {
+              const facts = actionErrorFacts(stepErr);
+              await failRun(
+                runId,
+                `${action.name}: ${facts.message}`,
+                startedAt,
+                facts.code ?? facts.kind,
+              );
+            }
             await emitCompensation(
               controlFlowError instanceof Error
                 ? controlFlowError.message

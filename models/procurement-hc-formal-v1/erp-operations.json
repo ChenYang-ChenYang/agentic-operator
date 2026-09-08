@@ -1,0 +1,443 @@
+[
+  {
+    "entity": "dev_adjustment_option_t",
+    "kind": "write",
+    "method": "POST",
+    "operation_id": "approveAdjustmentOption",
+    "path": "/metaerp/openapi/v1/approveAdjustmentOption"
+  },
+  {
+    "entity": "emg_chain_stage_progress_t",
+    "kind": "write",
+    "method": "POST",
+    "operation_id": "changePbp",
+    "path": "/metaerp/openapi/v1/changePbp"
+  },
+  {
+    "entity": "ss_pbp_line_t",
+    "kind": "write",
+    "method": "POST",
+    "operation_id": "changePbpLine",
+    "path": "/metaerp/openapi/v1/changePbpLine"
+  },
+  {
+    "entity": "dev_deviation_alert_t",
+    "kind": "write",
+    "method": "POST",
+    "operation_id": "closeBlueAlert",
+    "path": "/metaerp/openapi/v1/closeBlueAlert"
+  },
+  {
+    "entity": "ss_pbp_header_t",
+    "kind": "write",
+    "method": "POST",
+    "operation_id": "createPbp",
+    "path": "/metaerp/openapi/v1/createPbp"
+  },
+  {
+    "entity": "ss_proc_package_header_t",
+    "kind": "write",
+    "method": "POST",
+    "operation_id": "createProcPackageLines",
+    "path": "/metaerp/openapi/v1/createProcPackageLines"
+  },
+  {
+    "entity": "dev_rule_review_item_t",
+    "kind": "write",
+    "method": "POST",
+    "operation_id": "createReviewItem",
+    "path": "/metaerp/openapi/v1/createReviewItem"
+  },
+  {
+    "entity": "inv_transaction_order_t",
+    "kind": "write",
+    "method": "POST",
+    "operation_id": "createTransactionOrder",
+    "path": "/metaerp/openapi/v1/createTransactionOrder"
+  },
+  {
+    "entity": "dev_deviation_alert_t",
+    "kind": "write",
+    "method": "POST",
+    "operation_id": "escalateAlert",
+    "path": "/metaerp/openapi/v1/escalateAlert"
+  },
+  {
+    "entity": "dev_deviation_alert_t",
+    "kind": "write",
+    "method": "POST",
+    "operation_id": "pushAlert",
+    "path": "/metaerp/openapi/v1/pushAlert"
+  },
+  {
+    "entity": "de_digital_employee_task_t",
+    "kind": "write",
+    "method": "POST",
+    "operation_id": "pushTask",
+    "path": "/metaerp/openapi/v1/pushTask"
+  },
+  {
+    "entity": "ac_header_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "queryAcceptHeader",
+    "path": "/metaerp/openapi/v1/queryAcceptHeader"
+  },
+  {
+    "entity": "ac_transaction_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "queryAcceptTransaction",
+    "path": "/metaerp/openapi/v1/queryAcceptTransaction"
+  },
+  {
+    "entity": "dev_adjustment_option_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "queryAdjustmentOptions",
+    "path": "/metaerp/openapi/v1/queryAdjustmentOptions"
+  },
+  {
+    "entity": "dev_alert_handling_record_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "queryAlertHandlingRecords",
+    "path": "/metaerp/openapi/v1/queryAlertHandlingRecords"
+  },
+  {
+    "entity": "cfg_alert_threshold_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "queryAlertThresholdConfig",
+    "path": "/metaerp/openapi/v1/queryAlertThresholdConfig"
+  },
+  {
+    "entity": "ss_pbp_rel_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "queryAllPbpLinePage",
+    "path": "/metaerp/openapi/v1/queryAllPbpLinePage"
+  },
+  {
+    "entity": "cfg_audit_threshold_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "queryAuditThresholdConfig",
+    "path": "/metaerp/openapi/v1/queryAuditThresholdConfig"
+  },
+  {
+    "entity": "ss_bid_header_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "queryAwardList",
+    "path": "/metaerp/openapi/v1/queryAwardList"
+  },
+  {
+    "entity": "de_backward_schedule_plan_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "queryBackwardSchedulePlans",
+    "path": "/metaerp/openapi/v1/queryBackwardSchedulePlans"
+  },
+  {
+    "entity": "de_backward_schedule_stage_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "queryBackwardScheduleStages",
+    "path": "/metaerp/openapi/v1/queryBackwardScheduleStages"
+  },
+  {
+    "entity": "cfg_central_purchase_catalog_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "queryCentralCatalogConfig",
+    "path": "/metaerp/openapi/v1/queryCentralCatalogConfig"
+  },
+  {
+    "entity": "emg_chain_stage_progress_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "queryChainStageProgress",
+    "path": "/metaerp/openapi/v1/queryChainStageProgress"
+  },
+  {
+    "entity": "clm_contract_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "queryContract",
+    "path": "/metaerp/openapi/v1/queryContract"
+  },
+  {
+    "entity": "de_demand_merge_suggestion_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "queryDemandMergeSuggestions",
+    "path": "/metaerp/openapi/v1/queryDemandMergeSuggestions"
+  },
+  {
+    "entity": "dev_deviation_alert_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "queryDeviationAlerts",
+    "path": "/metaerp/openapi/v1/queryDeviationAlerts"
+  },
+  {
+    "entity": "de_digital_employee_task_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "queryDigitalEmployeeTasks",
+    "path": "/metaerp/openapi/v1/queryDigitalEmployeeTasks"
+  },
+  {
+    "entity": "dev_execution_deviation_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "queryExecutionDeviations",
+    "path": "/metaerp/openapi/v1/queryExecutionDeviations"
+  },
+  {
+    "entity": "stat_historical_on_time_rate_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "queryHistoricalOnTimeRate",
+    "path": "/metaerp/openapi/v1/queryHistoricalOnTimeRate"
+  },
+  {
+    "entity": "inv_item_min_max_level_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "queryItemMinMaxLevel",
+    "path": "/metaerp/openapi/v1/queryItemMinMaxLevel"
+  },
+  {
+    "entity": "inv_onhand_quantity_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "queryOnhandQuantity",
+    "path": "/metaerp/openapi/v1/queryOnhandQuantity"
+  },
+  {
+    "entity": "ss_pbp_header_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "queryOpenPbpHeader",
+    "path": "/metaerp/openapi/v1/queryOpenPbpHeader"
+  },
+  {
+    "entity": "ss_pbp_line_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "queryOpenPbpLine",
+    "path": "/metaerp/openapi/v1/queryOpenPbpLine"
+  },
+  {
+    "entity": "de_operation_log_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "queryOperationLogs",
+    "path": "/metaerp/openapi/v1/queryOperationLogs"
+  },
+  {
+    "entity": "de_package_scheme_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "queryPackageSchemes",
+    "path": "/metaerp/openapi/v1/queryPackageSchemes"
+  },
+  {
+    "entity": "de_packaging_compliance_finding_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "queryPackagingComplianceFindings",
+    "path": "/metaerp/openapi/v1/queryPackagingComplianceFindings"
+  },
+  {
+    "entity": "ss_pbp_header_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "queryPbpHeader",
+    "path": "/metaerp/openapi/v1/queryPbpHeader"
+  },
+  {
+    "entity": "ss_pbp_line_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "queryPbpLine",
+    "path": "/metaerp/openapi/v1/queryPbpLine"
+  },
+  {
+    "entity": "de_plan_audit_finding_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "queryPlanAuditFindings",
+    "path": "/metaerp/openapi/v1/queryPlanAuditFindings"
+  },
+  {
+    "entity": "de_plan_audit_opinion_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "queryPlanAuditOpinions",
+    "path": "/metaerp/openapi/v1/queryPlanAuditOpinions"
+  },
+  {
+    "entity": "po_header_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "queryPoHeader",
+    "path": "/metaerp/openapi/v1/queryPoHeader"
+  },
+  {
+    "entity": "po_line_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "queryPoLine",
+    "path": "/metaerp/openapi/v1/queryPoLine"
+  },
+  {
+    "entity": "po_line_shipment_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "queryPoLineShipment",
+    "path": "/metaerp/openapi/v1/queryPoLineShipment"
+  },
+  {
+    "entity": "pr_header_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "queryPr",
+    "path": "/metaerp/openapi/v1/queryPr"
+  },
+  {
+    "entity": "dev_probability_assessment_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "queryProbabilityAssessments",
+    "path": "/metaerp/openapi/v1/queryProbabilityAssessments"
+  },
+  {
+    "entity": "ss_proc_package_header_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "queryProcPackageLineExecuteMode",
+    "path": "/metaerp/openapi/v1/queryProcPackageLineExecuteMode"
+  },
+  {
+    "entity": "ss_proc_package_line_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "queryProcPackageLines",
+    "path": "/metaerp/openapi/v1/queryProcPackageLines"
+  },
+  {
+    "entity": "emg_procurement_chain_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "queryProcurementChains",
+    "path": "/metaerp/openapi/v1/queryProcurementChains"
+  },
+  {
+    "entity": "cfg_purchase_category_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "queryPurchaseCategory",
+    "path": "/metaerp/openapi/v1/queryPurchaseCategory"
+  },
+  {
+    "entity": "inv_reservation_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "queryReservation",
+    "path": "/metaerp/openapi/v1/queryReservation"
+  },
+  {
+    "entity": "ss_rfx_header_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "queryRfxList",
+    "path": "/metaerp/openapi/v1/queryRfxList"
+  },
+  {
+    "entity": "dev_rule_review_item_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "queryRuleReviewItems",
+    "path": "/metaerp/openapi/v1/queryRuleReviewItems"
+  },
+  {
+    "entity": "ss_spa_line_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "querySpaLine",
+    "path": "/metaerp/openapi/v1/querySpaLine"
+  },
+  {
+    "entity": "ss_spa_header_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "querySpaList",
+    "path": "/metaerp/openapi/v1/querySpaList"
+  },
+  {
+    "entity": "cfg_stage_cycle_standard_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "queryStageCycleConfig",
+    "path": "/metaerp/openapi/v1/queryStageCycleConfig"
+  },
+  {
+    "entity": "de_stock_check_result_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "queryStockCheckResults",
+    "path": "/metaerp/openapi/v1/queryStockCheckResults"
+  },
+  {
+    "entity": "inv_transaction_order_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "queryTransactionOrders",
+    "path": "/metaerp/openapi/v1/queryTransactionOrders"
+  },
+  {
+    "entity": "inv_transferable_stock_t",
+    "kind": "query",
+    "method": "POST",
+    "operation_id": "queryTransferableStock",
+    "path": "/metaerp/openapi/v1/queryTransferableStock"
+  },
+  {
+    "entity": "de_demand_merge_suggestion_t",
+    "kind": "write",
+    "method": "POST",
+    "operation_id": "splitDemandLine",
+    "path": "/metaerp/openapi/v1/splitDemandLine"
+  },
+  {
+    "entity": "ss_pbp_header_t",
+    "kind": "write",
+    "method": "POST",
+    "operation_id": "submitApproval",
+    "path": "/metaerp/openapi/v1/submitApproval"
+  },
+  {
+    "entity": "inv_transaction_order_t",
+    "kind": "write",
+    "method": "POST",
+    "operation_id": "updateTransactionOrder",
+    "path": "/metaerp/openapi/v1/updateTransactionOrder"
+  },
+  {
+    "entity": "dev_alert_handling_record_t",
+    "kind": "write",
+    "method": "POST",
+    "operation_id": "writeEventLog",
+    "path": "/metaerp/openapi/v1/writeEventLog"
+  },
+  {
+    "entity": "de_package_scheme_t",
+    "kind": "write",
+    "method": "POST",
+    "operation_id": "writeOperationLog",
+    "path": "/metaerp/openapi/v1/writeOperationLog"
+  }
+]

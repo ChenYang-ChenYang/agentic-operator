@@ -966,6 +966,19 @@ export async function bootstrapTenant(spec: {
         .from(agents)
         .where(eq(agents.id, agentId))
         .all()[0]!;
+    } else if (
+      a.title &&
+      a.title !== agentRow.title &&
+      agentRow.title === agentRow.name
+    ) {
+      // The row still carries the manifest-name default (no operator ever
+      // renamed it via PATCH /v1/agents), so a recompiled manifest's display
+      // title is the better default. An operator-authored title is left alone.
+      db.update(agents)
+        .set({ title: a.title, updatedAt: new Date() })
+        .where(eq(agents.id, agentRow.id))
+        .run();
+      agentRow = { ...agentRow, title: a.title };
     }
 
     const existingAv = db

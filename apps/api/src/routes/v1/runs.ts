@@ -387,7 +387,7 @@ export async function runsRoutes(app: FastifyInstance) {
       // signal; for code agents the cooperative poll handles termination
       // and we skip the Inngest send (no manifest fn to cancel).
       const agentRow = db
-        .select({ kind: agents.kind })
+        .select({ kind: agents.kind, name: agents.name })
         .from(agents)
         .where(eq(agents.id, run.agentId))
         .all()[0];
@@ -406,6 +406,14 @@ export async function runsRoutes(app: FastifyInstance) {
             ) as `${string}/${string}`,
             data: {
               runId: run.id,
+              // Precise target for the function's cancelOn: the trigger
+              // event id is unique per delivery and the agent name picks the
+              // one function among a fan-out. Subject alone was the key until
+              // 2026-09-07, and a null subject matched EVERY in-flight run of
+              // the function (`null == null`): cancelling one zombie killed an
+              // unrelated live run mid-chain.
+              agent: agentRow?.name ?? null,
+              triggerEventId: run.triggerEventId ?? null,
               subject: run.subject ?? null,
               ...(auth.tenantSlug === "zhaopin"
                 ? { entity_id: run.subject ?? run.id }

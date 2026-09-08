@@ -25,7 +25,8 @@ import {
   ViewHeader,
 } from "@/app/portal/components";
 import { fmtAgo } from "@/lib/format";
-import { useAgents, type AgentListRow } from "@/lib/hooks/useAgents";
+import { useAgents, useDag, type AgentListRow } from "@/lib/hooks/useAgents";
+import { agentDisplayTitle } from "@/lib/agent-title";
 import { useRuns } from "@/lib/hooks/useRuns";
 import { useTenant } from "@/app/portal/lib/use-tenant";
 import { useI18n } from "@/app/portal/lib/preferences-context";
@@ -37,8 +38,26 @@ import { buildAgentStats, type AgentStatsSnapshot } from "@/lib/agent-stats";
 export default function AgentsPage() {
   const router = useRouter();
   const tenant = useTenant();
-  const { t } = useI18n();
+  const { t, language } = useI18n();
   const agentsQuery = useAgents();
+  // The list rows come from the agents table (one title); the live manifest
+  // carries the per-language titles, so borrow them by manifest name.
+  const dagQuery = useDag();
+  const titleI18nByName = useMemo(
+    () =>
+      new Map(
+        (dagQuery.data?.agents ?? []).map((agent) => [
+          agent.name,
+          agent.titleI18n ?? null,
+        ]),
+      ),
+    [dagQuery.data],
+  );
+  const displayTitle = (a: AgentListRow): string =>
+    agentDisplayTitle(
+      { name: a.name, title: a.title, titleI18n: titleI18nByName.get(a.name) ?? null },
+      language,
+    );
   const runsQuery = useRuns({ limit: 200 });
   const agents = agentsQuery.data ?? [];
   const runs = runsQuery.data ?? [];
@@ -57,7 +76,7 @@ export default function AgentsPage() {
     if (actorFilter !== "all" && a.actor !== actorFilter) return false;
     if (
       query &&
-      !(a.title ?? a.name).toLowerCase().includes(query.toLowerCase()) &&
+      !displayTitle(a).toLowerCase().includes(query.toLowerCase()) &&
       !a.name.toLowerCase().includes(query.toLowerCase())
     ) {
       return false;
@@ -208,6 +227,7 @@ export default function AgentsPage() {
                 statsReady={statsReady}
                 runSampleReady={runSampleReady}
                 onPick={openAgent}
+                displayTitle={displayTitle}
               />
             )}
           </div>
@@ -233,12 +253,15 @@ function AgentsGrid({
   statsReady,
   runSampleReady,
   onPick,
+  displayTitle,
 }: {
   agents: AgentListRow[];
   stats: Map<string, AgentStatsSnapshot>;
   statsReady: boolean;
   runSampleReady: boolean;
   onPick: (kebabId: string) => void;
+  /** Language-aware title (the row itself only carries the stored one). */
+  displayTitle: (a: AgentListRow) => string;
 }) {
   const { language, t } = useI18n();
   return (
@@ -337,7 +360,7 @@ function AgentsGrid({
                 wordBreak: "break-word",
               }}
             >
-              {a.title ?? a.name}
+              {displayTitle(a)}
             </div>
             <div
               style={{

@@ -6070,6 +6070,16 @@ export const zh = {
     unpublishedChanges: "未发布更改",
     run: "运行",
     runWorkflow: "运行工作流",
+    erpBannerTitle: "Meta ERP 接口不可达",
+    erpUnreachable:
+      "{env} → {url} 连不上（{error}）。涉及 ERP 读写的智能体（{agents}）会先重试，用尽后以失败结束并在画布上标红。",
+    erpNotConfigured:
+      "环境变量 {env} 未设置，{agents} 的 ERP 调用会直接失败。",
+    erpBannerHint:
+      "请检查 VPN、代理绕过规则和接口地址后重新探测；已失败的运行可在右侧面板重放（Replay）。",
+    erpRecheck: "重新探测",
+    erpChecking: "探测中…",
+    erpAgentsMore: " 等 {count} 个",
     help: "帮助",
     closeEditor: "关闭编辑器",
     validating: "正在验证…",

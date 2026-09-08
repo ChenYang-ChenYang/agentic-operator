@@ -12,6 +12,7 @@ import {
 import { fmtAgo } from "@/lib/format";
 import { useI18n } from "@/app/portal/lib/preferences-context";
 import { useAgent, type DagAgent } from "@/lib/hooks/useAgents";
+import { agentDisplayTitle } from "@/lib/agent-title";
 import { useEvents, type EventRow } from "@/lib/hooks/useEvents";
 import { WORKFLOW_AGENT_DRAG_TYPE } from "./canvas-interactions";
 import type { WorkflowDraft } from "./draft";
@@ -244,7 +245,7 @@ export function AgentInspector({
   canResize: boolean;
   workflowLabel: string;
 }) {
-  const { t } = useI18n();
+  const { t, language } = useI18n();
   // Complete workflow definitions are authoritative. Only fetch the live
   // AgentDetail as a compatibility fallback for an older DAG projection that
   // does not yet carry its source definition.
@@ -301,7 +302,7 @@ export function AgentInspector({
               lineHeight: 1.3,
             }}
           >
-            {agent.title}
+            {agentDisplayTitle(agent, language)}
           </div>
         </div>
         <Button small icon="x" tone="ghost" onClick={onClose} />
@@ -390,7 +391,7 @@ export function AgentInspector({
             </summary>
             <pre
               aria-label={t("inspectors.completeSettingsFor", {
-                title: agent.title,
+                title: agentDisplayTitle(agent, language),
               })}
               style={{
                 margin: 0,
@@ -570,7 +571,7 @@ function NodeList({
   agents: DagAgent[];
   onPick: (id: string) => void;
 }) {
-  const { t } = useI18n();
+  const { t, language } = useI18n();
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
@@ -604,7 +605,7 @@ function NodeList({
               whiteSpace: "nowrap",
             }}
           >
-            {a.title}
+            {agentDisplayTitle(a, language)}
           </span>
         </button>
       ))}

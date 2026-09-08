@@ -1,0 +1,31 @@
+{
+  "rows": [
+    {
+      "INVENTORY_ORGANIZATION": "ORG-HD",
+      "IS_ENABLED": "Y",
+      "MAINTAINER": "库存计划员",
+      "MATERIAL_CODE": "M-CT-110",
+      "MAX_STOCK_QUANTITY": 40,
+      "MIN_MAX_LEVEL_ID": "MML-HD-CT",
+      "SAFETY_STOCK_QUANTITY": 4
+    },
+    {
+      "INVENTORY_ORGANIZATION": "ORG-HD",
+      "IS_ENABLED": "Y",
+      "MAINTAINER": "库存计划员",
+      "MATERIAL_CODE": "M-CBL-YJV",
+      "MAX_STOCK_QUANTITY": 4000,
+      "MIN_MAX_LEVEL_ID": "MML-HD-CBL",
+      "SAFETY_STOCK_QUANTITY": 800
+    },
+    {
+      "INVENTORY_ORGANIZATION": "ORG-HD",
+      "IS_ENABLED": "Y",
+      "MAINTAINER": "库存计划员",
+      "MATERIAL_CODE": "M-BRK-126",
+      "MAX_STOCK_QUANTITY": 6,
+      "MIN_MAX_LEVEL_ID": "MML-HD-BRK",
+      "SAFETY_STOCK_QUANTITY": 1
+    }
+  ]
+}

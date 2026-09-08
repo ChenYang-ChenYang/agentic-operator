@@ -1,0 +1,108 @@
+{
+  "rows": [
+    {
+      "ALERT_LEVEL": "软预警",
+      "AUDIT_THRESHOLD_ID": "ATH-PRICE-SOFT",
+      "DISABLE_DATE": "2099-12-31",
+      "EFFECTIVE_DATE": "2026-01-01",
+      "EXEMPTION": "",
+      "IS_ENABLED": "Y",
+      "MAINTAINER": "集采管理岗",
+      "MANAGEMENT_UNIT": "全集团",
+      "RULE_KEY": "price_deviation_soft",
+      "RULE_NAME": "价格偏差软预警阈值",
+      "THRESHOLD_VALUE": 0.2
+    },
+    {
+      "ALERT_LEVEL": "升级",
+      "AUDIT_THRESHOLD_ID": "ATH-PRICE-ESC",
+      "DISABLE_DATE": "2099-12-31",
+      "EFFECTIVE_DATE": "2026-01-01",
+      "EXEMPTION": "",
+      "IS_ENABLED": "Y",
+      "MAINTAINER": "集采管理岗",
+      "MANAGEMENT_UNIT": "全集团",
+      "RULE_KEY": "price_deviation_escalate",
+      "RULE_NAME": "价格偏差升级阈值",
+      "THRESHOLD_VALUE": 0.5
+    },
+    {
+      "ALERT_LEVEL": "软预警",
+      "AUDIT_THRESHOLD_ID": "ATH-DUP-WINDOW",
+      "DISABLE_DATE": "2099-12-31",
+      "EFFECTIVE_DATE": "2026-01-01",
+      "EXEMPTION": "",
+      "IS_ENABLED": "Y",
+      "MAINTAINER": "集采管理岗",
+      "MANAGEMENT_UNIT": "全集团",
+      "RULE_KEY": "duplicate_window_days",
+      "RULE_NAME": "重复申报查重窗口",
+      "THRESHOLD_VALUE": 30
+    },
+    {
+      "ALERT_LEVEL": "提示",
+      "AUDIT_THRESHOLD_ID": "ATH-MERGE-GAP",
+      "DISABLE_DATE": "2099-12-31",
+      "EFFECTIVE_DATE": "2026-01-01",
+      "EXEMPTION": "",
+      "IS_ENABLED": "Y",
+      "MAINTAINER": "集采管理岗",
+      "MANAGEMENT_UNIT": "全集团",
+      "RULE_KEY": "merge_date_gap_days",
+      "RULE_NAME": "需求合并日期差上限",
+      "THRESHOLD_VALUE": 30
+    },
+    {
+      "ALERT_LEVEL": "提示",
+      "AUDIT_THRESHOLD_ID": "ATH-SPLIT-GAP",
+      "DISABLE_DATE": "2099-12-31",
+      "EFFECTIVE_DATE": "2026-01-01",
+      "EXEMPTION": "",
+      "IS_ENABLED": "Y",
+      "MAINTAINER": "集采管理岗",
+      "MANAGEMENT_UNIT": "全集团",
+      "RULE_KEY": "split_date_gap_days",
+      "RULE_NAME": "需求拆分日期差下限",
+      "THRESHOLD_VALUE": 60
+    },
+    {
+      "ALERT_LEVEL": "拆包建议",
+      "AUDIT_THRESHOLD_ID": "ATH-PKG-SPAN",
+      "DISABLE_DATE": "2099-12-31",
+      "EFFECTIVE_DATE": "2026-01-01",
+      "EXEMPTION": "",
+      "IS_ENABLED": "Y",
+      "MAINTAINER": "集采管理岗",
+      "MANAGEMENT_UNIT": "全集团",
+      "RULE_KEY": "delivery_span_days",
+      "RULE_NAME": "组包交货跨度上限",
+      "THRESHOLD_VALUE": 90
+    },
+    {
+      "ALERT_LEVEL": "提示",
+      "AUDIT_THRESHOLD_ID": "ATH-PKG-OVERLAP",
+      "DISABLE_DATE": "2099-12-31",
+      "EFFECTIVE_DATE": "2026-01-01",
+      "EXEMPTION": "",
+      "IS_ENABLED": "Y",
+      "MAINTAINER": "集采管理岗",
+      "MANAGEMENT_UNIT": "全集团",
+      "RULE_KEY": "delivery_overlap_rate",
+      "RULE_NAME": "交付周期重叠度下限",
+      "THRESHOLD_VALUE": 0.7
+    },
+    {
+      "ALERT_LEVEL": "软预警",
+      "AUDIT_THRESHOLD_ID": "ATH-PRICE-OLD",
+      "DISABLE_DATE": "2025-12-31",
+      "EFFECTIVE_DATE": "2025-01-01",
+      "EXEMPTION": "",
+      "IS_ENABLED": "N",
+      "MAINTAINER": "集采管理岗",
+      "MANAGEMENT_UNIT": "全集团",
+      "RULE_KEY": "price_deviation_soft",
+      "RULE_NAME": "价格偏差软预警阈值（旧）",
+      "THRESHOLD_VALUE": 0.3
+    }
+  ]
+}

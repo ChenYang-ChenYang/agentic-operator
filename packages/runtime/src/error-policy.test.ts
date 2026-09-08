@@ -161,3 +161,80 @@ describe("manifest error-policy schema", () => {
     expect(() => AgentSchema.parse({ ...base, triggered_event: ["REQUEST_ACCEPTED"] })).toThrow(/undeclared event/i);
   });
 });
+
+/**
+ * The ladder the ontology compiler puts on every Meta ERP write step
+ * (packages/ontology-compiler/src/compile.ts METAERP_WRITE_ERROR_POLICY).
+ * Pinned here because the runtime is what interprets it: a drift in either
+ * the compiler's rule text or the facts the tool errors carry would silently
+ * bring back the 2026-09-07 behaviour (HTTP 400 retried 4× over six minutes).
+ */
+describe("compiled Meta ERP write ladder", () => {
+  const erpLadder: RuntimeErrorPolicyRule[] = [
+    { when: "kind == integration_unreachable || code == integration_unreachable", do: "retry" },
+    { when: "status >= 400 && status < 500", do: "terminal" },
+    { default: "retry" },
+  ];
+
+  it("is valid predicate DSL and a valid manifest ladder", () => {
+    for (const rule of erpLadder) {
+      if ("when" in rule && rule.when) expect(validateErrorPredicateSyntax(rule.when)).toBeNull();
+    }
+    expect(
+      ActionSchema.parse({
+        order: "1",
+        name: "metaerp.invoke",
+        type: "tool",
+        allowed_tools: ["metaerp.invoke"],
+        tool_arguments: { payload: { from: "event.data" } },
+        on_error: erpLadder,
+      }).on_error,
+    ).toEqual(erpLadder);
+  });
+
+  it("treats an HTTP 4xx from the ERP as terminal — the payload is wrong, retrying cannot fix it", () => {
+    // Exactly the message metaerp.invoke throws (status is parsed from `HTTP 400`).
+    const failure = new Error(
+      "metaerp.invoke: 'createPbp' returned HTTP 400 — {\"ok\":false,\"error\":\"createPbp: at least one plan line is required\"}",
+    );
+    expect(actionErrorFacts(failure).status).toBe(400);
+    const resolution = classifyActionFailure({ policy: erpLadder, failure });
+    expect(resolution).toMatchObject({ disposition: "terminal", matchedRule: 1 });
+    expect(failureForDisposition(resolution, failure)?.name).toBe("NonRetriableError");
+  });
+
+  it("retries an unreachable ERP (typed error AND message-prefix fallback) and 5xx", () => {
+    const typed = Object.assign(
+      new Error("integration_unreachable: Meta ERP 接口不可达（METAERP_BASE_URL=http://localhost:3620）— fetch failed: ECONNREFUSED"),
+      { code: "integration_unreachable", kind: "integration_unreachable" },
+    );
+    expect(classifyActionFailure({ policy: erpLadder, failure: typed })).toMatchObject({
+      disposition: "retry",
+      matchedRule: 0,
+    });
+    // Only the message survives a step boundary: the `<kind>:` prefix still matches rule 0.
+    const serialized = new Error(typed.message);
+    expect(actionErrorFacts(serialized).kind).toBe("integration_unreachable");
+    expect(classifyActionFailure({ policy: erpLadder, failure: serialized })).toMatchObject({
+      disposition: "retry",
+      matchedRule: 0,
+    });
+    expect(
+      classifyActionFailure({
+        policy: erpLadder,
+        failure: new Error("metaerp.invoke: 'createPbp' returned HTTP 503 — upstream unavailable"),
+      }),
+    ).toMatchObject({ disposition: "retry", matchedRule: 2 });
+  });
+
+  it("keeps a blocking outcome (control.fail) terminal under the legacy string policy and readable as facts", () => {
+    const failure = Object.assign(
+      new Error("blocked_outcome: 无法获取业务类型【物资】的阶段周期配置，根据BR-PLAN-01不予推算。"),
+      { code: "schedule_blocked", kind: "blocked_outcome" },
+    );
+    const facts = actionErrorFacts(failure);
+    expect(facts).toMatchObject({ code: "schedule_blocked", kind: "blocked_outcome" });
+    expect(classifyActionFailure({ policy: "terminal", failure })).toMatchObject({ disposition: "terminal" });
+    expect(actionErrorFacts(new Error(failure.message)).kind).toBe("blocked_outcome");
+  });
+});
