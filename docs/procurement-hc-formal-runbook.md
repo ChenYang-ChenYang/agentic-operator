@@ -130,6 +130,19 @@ overlay 的 `titles` 表把它们逐个声明成 `{zh, en}`，编译器据 `titl
    `StepError`）先把 `runs` 行写成 `failed` 并带真实原因，再抛出——不再留下「running」僵尸。
    注意 Inngest 的函数级 `attempt` 计数不随步骤重试增长，不能用它判断「最后一次」。
 
+**scan_date 照抄门**（2026-09-08 静态审计后加）：九个带 scan_date 契约的分析 agent 各带一条
+`scan_date_mismatch` 阻断结论——触发事件带 scan_date 而分析输出的 scan_date 与之不同（或缺失）时，
+运行失败而不是用错的「今天」继续算偏差；触发事件不带 scan_date（ERP 状态变更、计划审批等入口）时不判。
+起因是一次活体运行里模型把数据同步日期 2026-08-19 当成了 scan_date。
+
+**已知本体缺口 BR-CLOSE-01**：`closeDeviationHandling` 的规则「偏差未消除则不予闭环」绑定为
+validation 阶段，编译器只把 precondition 编成闸门，且这个写动作没有可以重算偏差的分析步——
+上游三条分支的事件都不带 `deviation_eliminated`，闭环写入会照做。要落实它需要编译器支持
+「先分析再写」形态（同样阻碍 annotateFrameAndCentralPurchase 接真 ERP）。overlay 里原先挂在这个
+写动作上的 output_contract 是死配置，已删除，编译器现在拒绝给 external 动作声明契约。
+同类：`auditAnnualPlanCompliance`/`recommendPackagingScheme` 的 BR2-THRESH-01（阈值必须取自配置）
+只以提示词义务形式存在，确定性落实要读工具账本。
+
 **取消必须精确**：`POST /v1/runs/:id/cancel` 现在发出 `{runId, agent, triggerEventId, subject}`，
 函数的 `cancelOn` 先按「触发事件 id + agent 名」精确匹配；只有不带 triggerEventId 的旧发送方
 才退回 subject 匹配，且 subject 为 null 时不匹配。之前只按 subject 匹配，而本体编译的 agent 没有

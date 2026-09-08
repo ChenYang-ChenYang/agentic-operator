@@ -13,11 +13,41 @@
         "type": "logic"
       },
       {
+        "condition": "event.data.scan_date && lastResult.scan_date != event.data.scan_date",
+        "description": "分析结果是否报告了阻断性结论「scan_date_mismatch」。",
+        "name": "blocked-when:scan_date_mismatch",
+        "order": "2",
+        "result_key": "blocked-when-scan_date_mismatch",
+        "type": "condition"
+      },
+      {
+        "allowed_tools": [
+          "control.fail"
+        ],
+        "depends_on": [
+          "blocked-when-scan_date_mismatch"
+        ],
+        "description": "阻断性结论「scan_date_mismatch」成立：以分析给出的原因终止运行，不发射任何事件。",
+        "name": "control.fail",
+        "on_error": "terminal",
+        "order": "3",
+        "result_key": "blocked-scan_date_mismatch",
+        "tool_arguments": {
+          "code": {
+            "const": "scan_date_mismatch"
+          },
+          "message": {
+            "const": "分析输出的 scan_date 与触发事件的 scan_date 不一致（契约要求原样照抄，它决定「今天」的口径）；拒绝以错误的业务日期继续。"
+          }
+        },
+        "type": "tool"
+      },
+      {
         "description": "发射事件 CHAIN_PROGRESS_SYNCED（无条件）。",
         "emit_event": "CHAIN_PROGRESS_SYNCED",
         "emit_payload_from": "results.collectChainExecutionData",
         "name": "emit:CHAIN_PROGRESS_SYNCED",
-        "order": "2",
+        "order": "4",
         "result_key": "emit-CHAIN_PROGRESS_SYNCED",
         "type": "emit"
       }
@@ -189,6 +219,17 @@
         },
         "name": "metaerp.invoke",
         "side_effect": "read"
+      },
+      {
+        "config": {},
+        "description": "以声明的原因终止本次运行（分析结果报告了阻断性结论时由工作流自动调用，不由模型调用）。",
+        "execution_policy": {
+          "effect_scope": "none",
+          "operation": "compute",
+          "sandbox_policy": "pure"
+        },
+        "name": "control.fail",
+        "side_effect": "read"
       }
     ],
     "trigger": [
@@ -244,11 +285,41 @@
         "type": "tool"
       },
       {
+        "condition": "event.data.scan_date && lastResult.scan_date != event.data.scan_date",
+        "description": "分析结果是否报告了阻断性结论「scan_date_mismatch」。",
+        "name": "blocked-when:scan_date_mismatch",
+        "order": "4",
+        "result_key": "blocked-when-scan_date_mismatch",
+        "type": "condition"
+      },
+      {
+        "allowed_tools": [
+          "control.fail"
+        ],
+        "depends_on": [
+          "blocked-when-scan_date_mismatch"
+        ],
+        "description": "阻断性结论「scan_date_mismatch」成立：以分析给出的原因终止运行，不发射任何事件。",
+        "name": "control.fail",
+        "on_error": "terminal",
+        "order": "5",
+        "result_key": "blocked-scan_date_mismatch",
+        "tool_arguments": {
+          "code": {
+            "const": "scan_date_mismatch"
+          },
+          "message": {
+            "const": "分析输出的 scan_date 与触发事件的 scan_date 不一致（契约要求原样照抄，它决定「今天」的口径）；拒绝以错误的业务日期继续。"
+          }
+        },
+        "type": "tool"
+      },
+      {
         "description": "发射事件 EXECUTION_DEVIATION_CALCULATED（无条件）。",
         "emit_event": "EXECUTION_DEVIATION_CALCULATED",
         "emit_payload_from": "results.calculateExecutionDeviation",
         "name": "emit:EXECUTION_DEVIATION_CALCULATED",
-        "order": "4",
+        "order": "6",
         "result_key": "emit-EXECUTION_DEVIATION_CALCULATED",
         "type": "emit"
       },
@@ -256,7 +327,7 @@
         "condition": "lastResult.deviation_found == true",
         "description": "事件 DEVIATION_DETECTED 的发射条件。",
         "name": "emit-when:DEVIATION_DETECTED",
-        "order": "5",
+        "order": "7",
         "result_key": "emit-when-DEVIATION_DETECTED",
         "type": "condition"
       },
@@ -268,7 +339,7 @@
         "emit_event": "DEVIATION_DETECTED",
         "emit_payload_from": "results.calculateExecutionDeviation",
         "name": "emit:DEVIATION_DETECTED",
-        "order": "6",
+        "order": "8",
         "result_key": "emit-DEVIATION_DETECTED",
         "type": "emit"
       },
@@ -276,7 +347,7 @@
         "condition": "lastResult.deviation_found == false",
         "description": "事件 NO_DEVIATION_CONFIRMED 的发射条件。",
         "name": "emit-when:NO_DEVIATION_CONFIRMED",
-        "order": "7",
+        "order": "9",
         "result_key": "emit-when-NO_DEVIATION_CONFIRMED",
         "type": "condition"
       },
@@ -288,7 +359,7 @@
         "emit_event": "NO_DEVIATION_CONFIRMED",
         "emit_payload_from": "results.calculateExecutionDeviation",
         "name": "emit:NO_DEVIATION_CONFIRMED",
-        "order": "8",
+        "order": "10",
         "result_key": "emit-NO_DEVIATION_CONFIRMED",
         "type": "emit"
       },
@@ -323,7 +394,7 @@
         },
         "description": "规则拦截或条件未命中时抑制隐式 triggered_event[0] 发射（显式 emit 已记录则本步为空操作）。",
         "name": "suppress-implicit-emit",
-        "order": "9",
+        "order": "11",
         "result_key": "suppress-implicit-emit",
         "type": "decision"
       }
@@ -532,11 +603,41 @@
         "type": "logic"
       },
       {
+        "condition": "event.data.scan_date && lastResult.scan_date != event.data.scan_date",
+        "description": "分析结果是否报告了阻断性结论「scan_date_mismatch」。",
+        "name": "blocked-when:scan_date_mismatch",
+        "order": "2",
+        "result_key": "blocked-when-scan_date_mismatch",
+        "type": "condition"
+      },
+      {
+        "allowed_tools": [
+          "control.fail"
+        ],
+        "depends_on": [
+          "blocked-when-scan_date_mismatch"
+        ],
+        "description": "阻断性结论「scan_date_mismatch」成立：以分析给出的原因终止运行，不发射任何事件。",
+        "name": "control.fail",
+        "on_error": "terminal",
+        "order": "3",
+        "result_key": "blocked-scan_date_mismatch",
+        "tool_arguments": {
+          "code": {
+            "const": "scan_date_mismatch"
+          },
+          "message": {
+            "const": "分析输出的 scan_date 与触发事件的 scan_date 不一致（契约要求原样照抄，它决定「今天」的口径）；拒绝以错误的业务日期继续。"
+          }
+        },
+        "type": "tool"
+      },
+      {
         "description": "发射事件 ON_TIME_PROBABILITY_SCORED（无条件）。",
         "emit_event": "ON_TIME_PROBABILITY_SCORED",
         "emit_payload_from": "results.scoreOnTimeProbability",
         "name": "emit:ON_TIME_PROBABILITY_SCORED",
-        "order": "2",
+        "order": "4",
         "result_key": "emit-ON_TIME_PROBABILITY_SCORED",
         "type": "emit"
       }
@@ -642,6 +743,17 @@
           "type": "object"
         },
         "name": "metaerp.invoke",
+        "side_effect": "read"
+      },
+      {
+        "config": {},
+        "description": "以声明的原因终止本次运行（分析结果报告了阻断性结论时由工作流自动调用，不由模型调用）。",
+        "execution_policy": {
+          "effect_scope": "none",
+          "operation": "compute",
+          "sandbox_policy": "pure"
+        },
+        "name": "control.fail",
         "side_effect": "read"
       }
     ],
@@ -3081,11 +3193,41 @@
         "type": "logic"
       },
       {
+        "condition": "event.data.scan_date && lastResult.scan_date != event.data.scan_date",
+        "description": "分析结果是否报告了阻断性结论「scan_date_mismatch」。",
+        "name": "blocked-when:scan_date_mismatch",
+        "order": "2",
+        "result_key": "blocked-when-scan_date_mismatch",
+        "type": "condition"
+      },
+      {
+        "allowed_tools": [
+          "control.fail"
+        ],
+        "depends_on": [
+          "blocked-when-scan_date_mismatch"
+        ],
+        "description": "阻断性结论「scan_date_mismatch」成立：以分析给出的原因终止运行，不发射任何事件。",
+        "name": "control.fail",
+        "on_error": "terminal",
+        "order": "3",
+        "result_key": "blocked-scan_date_mismatch",
+        "tool_arguments": {
+          "code": {
+            "const": "scan_date_mismatch"
+          },
+          "message": {
+            "const": "分析输出的 scan_date 与触发事件的 scan_date 不一致（契约要求原样照抄，它决定「今天」的口径）；拒绝以错误的业务日期继续。"
+          }
+        },
+        "type": "tool"
+      },
+      {
         "description": "发射事件 APPROVED_DEMAND_PLAN_SCANNED（无条件）。",
         "emit_event": "APPROVED_DEMAND_PLAN_SCANNED",
         "emit_payload_from": "results.scanApprovedDemandPlan",
         "name": "emit:APPROVED_DEMAND_PLAN_SCANNED",
-        "order": "2",
+        "order": "4",
         "result_key": "emit-APPROVED_DEMAND_PLAN_SCANNED",
         "type": "emit"
       }
@@ -3217,6 +3359,17 @@
         },
         "name": "metaerp.invoke",
         "side_effect": "read"
+      },
+      {
+        "config": {},
+        "description": "以声明的原因终止本次运行（分析结果报告了阻断性结论时由工作流自动调用，不由模型调用）。",
+        "execution_policy": {
+          "effect_scope": "none",
+          "operation": "compute",
+          "sandbox_policy": "pure"
+        },
+        "name": "control.fail",
+        "side_effect": "read"
       }
     ],
     "trigger": [
@@ -3239,10 +3392,40 @@
         "type": "logic"
       },
       {
+        "condition": "event.data.scan_date && lastResult.scan_date != event.data.scan_date",
+        "description": "分析结果是否报告了阻断性结论「scan_date_mismatch」。",
+        "name": "blocked-when:scan_date_mismatch",
+        "order": "2",
+        "result_key": "blocked-when-scan_date_mismatch",
+        "type": "condition"
+      },
+      {
+        "allowed_tools": [
+          "control.fail"
+        ],
+        "depends_on": [
+          "blocked-when-scan_date_mismatch"
+        ],
+        "description": "阻断性结论「scan_date_mismatch」成立：以分析给出的原因终止运行，不发射任何事件。",
+        "name": "control.fail",
+        "on_error": "terminal",
+        "order": "3",
+        "result_key": "blocked-scan_date_mismatch",
+        "tool_arguments": {
+          "code": {
+            "const": "scan_date_mismatch"
+          },
+          "message": {
+            "const": "分析输出的 scan_date 与触发事件的 scan_date 不一致（契约要求原样照抄，它决定「今天」的口径）；拒绝以错误的业务日期继续。"
+          }
+        },
+        "type": "tool"
+      },
+      {
         "condition": "lastResult.merge_ready == true",
         "description": "事件 DEMAND_MERGE_ANALYZED 的发射条件。",
         "name": "emit-when:DEMAND_MERGE_ANALYZED",
-        "order": "2",
+        "order": "4",
         "result_key": "emit-when-DEMAND_MERGE_ANALYZED",
         "type": "condition"
       },
@@ -3254,7 +3437,7 @@
         "emit_event": "DEMAND_MERGE_ANALYZED",
         "emit_payload_from": "results.analyzeDemandMerge",
         "name": "emit:DEMAND_MERGE_ANALYZED",
-        "order": "3",
+        "order": "5",
         "result_key": "emit-DEMAND_MERGE_ANALYZED",
         "type": "emit"
       },
@@ -3262,7 +3445,7 @@
         "condition": "lastResult.split_required == true",
         "description": "事件 DEMAND_SPLIT_REQUIRED 的发射条件。",
         "name": "emit-when:DEMAND_SPLIT_REQUIRED",
-        "order": "4",
+        "order": "6",
         "result_key": "emit-when-DEMAND_SPLIT_REQUIRED",
         "type": "condition"
       },
@@ -3274,7 +3457,7 @@
         "emit_event": "DEMAND_SPLIT_REQUIRED",
         "emit_payload_from": "results.analyzeDemandMerge.split_request",
         "name": "emit:DEMAND_SPLIT_REQUIRED",
-        "order": "5",
+        "order": "7",
         "result_key": "emit-DEMAND_SPLIT_REQUIRED",
         "type": "emit"
       },
@@ -3309,7 +3492,7 @@
         },
         "description": "规则拦截或条件未命中时抑制隐式 triggered_event[0] 发射（显式 emit 已记录则本步为空操作）。",
         "name": "suppress-implicit-emit",
-        "order": "6",
+        "order": "8",
         "result_key": "suppress-implicit-emit",
         "type": "decision"
       }
@@ -3381,7 +3564,19 @@
       "en": "Analyze Demand Merge",
       "zh": "需求合并分析"
     },
-    "tool_use": [],
+    "tool_use": [
+      {
+        "config": {},
+        "description": "以声明的原因终止本次运行（分析结果报告了阻断性结论时由工作流自动调用，不由模型调用）。",
+        "execution_policy": {
+          "effect_scope": "none",
+          "operation": "compute",
+          "sandbox_policy": "pure"
+        },
+        "name": "control.fail",
+        "side_effect": "read"
+      }
+    ],
     "trigger": [
       "APPROVED_DEMAND_PLAN_SCANNED"
     ],
@@ -3626,11 +3821,41 @@
         "type": "logic"
       },
       {
+        "condition": "event.data.scan_date && lastResult.scan_date != event.data.scan_date",
+        "description": "分析结果是否报告了阻断性结论「scan_date_mismatch」。",
+        "name": "blocked-when:scan_date_mismatch",
+        "order": "2",
+        "result_key": "blocked-when-scan_date_mismatch",
+        "type": "condition"
+      },
+      {
+        "allowed_tools": [
+          "control.fail"
+        ],
+        "depends_on": [
+          "blocked-when-scan_date_mismatch"
+        ],
+        "description": "阻断性结论「scan_date_mismatch」成立：以分析给出的原因终止运行，不发射任何事件。",
+        "name": "control.fail",
+        "on_error": "terminal",
+        "order": "3",
+        "result_key": "blocked-scan_date_mismatch",
+        "tool_arguments": {
+          "code": {
+            "const": "scan_date_mismatch"
+          },
+          "message": {
+            "const": "分析输出的 scan_date 与触发事件的 scan_date 不一致（契约要求原样照抄，它决定「今天」的口径）；拒绝以错误的业务日期继续。"
+          }
+        },
+        "type": "tool"
+      },
+      {
         "description": "发射事件 INVENTORY_AVAILABILITY_VERIFIED（无条件）。",
         "emit_event": "INVENTORY_AVAILABILITY_VERIFIED",
         "emit_payload_from": "results.verifyInventoryAvailability",
         "name": "emit:INVENTORY_AVAILABILITY_VERIFIED",
-        "order": "2",
+        "order": "4",
         "result_key": "emit-INVENTORY_AVAILABILITY_VERIFIED",
         "type": "emit"
       },
@@ -3638,7 +3863,7 @@
         "condition": "lastResult.transfer_required == true",
         "description": "事件 STOCK_SUFFICIENT_FOR_DEMAND 的发射条件。",
         "name": "emit-when:STOCK_SUFFICIENT_FOR_DEMAND",
-        "order": "3",
+        "order": "5",
         "result_key": "emit-when-STOCK_SUFFICIENT_FOR_DEMAND",
         "type": "condition"
       },
@@ -3650,7 +3875,7 @@
         "emit_event": "STOCK_SUFFICIENT_FOR_DEMAND",
         "emit_payload_from": "results.verifyInventoryAvailability.transfer_context",
         "name": "emit:STOCK_SUFFICIENT_FOR_DEMAND",
-        "order": "4",
+        "order": "6",
         "result_key": "emit-STOCK_SUFFICIENT_FOR_DEMAND",
         "type": "emit"
       },
@@ -3658,7 +3883,7 @@
         "condition": "lastResult.purchase_required == true",
         "description": "事件 PURCHASE_REQUIRED_CONFIRMED 的发射条件。",
         "name": "emit-when:PURCHASE_REQUIRED_CONFIRMED",
-        "order": "5",
+        "order": "7",
         "result_key": "emit-when-PURCHASE_REQUIRED_CONFIRMED",
         "type": "condition"
       },
@@ -3670,7 +3895,7 @@
         "emit_event": "PURCHASE_REQUIRED_CONFIRMED",
         "emit_payload_from": "results.verifyInventoryAvailability",
         "name": "emit:PURCHASE_REQUIRED_CONFIRMED",
-        "order": "6",
+        "order": "8",
         "result_key": "emit-PURCHASE_REQUIRED_CONFIRMED",
         "type": "emit"
       },
@@ -3705,7 +3930,7 @@
         },
         "description": "规则拦截或条件未命中时抑制隐式 triggered_event[0] 发射（显式 emit 已记录则本步为空操作）。",
         "name": "suppress-implicit-emit",
-        "order": "7",
+        "order": "9",
         "result_key": "suppress-implicit-emit",
         "type": "decision"
       }
@@ -3847,6 +4072,17 @@
           "type": "object"
         },
         "name": "metaerp.invoke",
+        "side_effect": "read"
+      },
+      {
+        "config": {},
+        "description": "以声明的原因终止本次运行（分析结果报告了阻断性结论时由工作流自动调用，不由模型调用）。",
+        "execution_policy": {
+          "effect_scope": "none",
+          "operation": "compute",
+          "sandbox_policy": "pure"
+        },
+        "name": "control.fail",
         "side_effect": "read"
       }
     ],
@@ -4086,11 +4322,41 @@
         "type": "tool"
       },
       {
+        "condition": "event.data.scan_date && lastResult.scan_date != event.data.scan_date",
+        "description": "分析结果是否报告了阻断性结论「scan_date_mismatch」。",
+        "name": "blocked-when:scan_date_mismatch",
+        "order": "4",
+        "result_key": "blocked-when-scan_date_mismatch",
+        "type": "condition"
+      },
+      {
+        "allowed_tools": [
+          "control.fail"
+        ],
+        "depends_on": [
+          "blocked-when-scan_date_mismatch"
+        ],
+        "description": "阻断性结论「scan_date_mismatch」成立：以分析给出的原因终止运行，不发射任何事件。",
+        "name": "control.fail",
+        "on_error": "terminal",
+        "order": "5",
+        "result_key": "blocked-scan_date_mismatch",
+        "tool_arguments": {
+          "code": {
+            "const": "scan_date_mismatch"
+          },
+          "message": {
+            "const": "分析输出的 scan_date 与触发事件的 scan_date 不一致（契约要求原样照抄，它决定「今天」的口径）；拒绝以错误的业务日期继续。"
+          }
+        },
+        "type": "tool"
+      },
+      {
         "description": "发射事件 PURCHASE_SCHEDULE_DERIVED（无条件）。",
         "emit_event": "PURCHASE_SCHEDULE_DERIVED",
         "emit_payload_from": "results.derivePurchaseSchedule",
         "name": "emit:PURCHASE_SCHEDULE_DERIVED",
-        "order": "4",
+        "order": "6",
         "result_key": "emit-PURCHASE_SCHEDULE_DERIVED",
         "type": "emit"
       },
@@ -4098,7 +4364,7 @@
         "condition": "lastResult.time_conflict == true",
         "description": "事件 SCHEDULE_TIME_CONFLICT_DETECTED 的发射条件。",
         "name": "emit-when:SCHEDULE_TIME_CONFLICT_DETECTED",
-        "order": "5",
+        "order": "7",
         "result_key": "emit-when-SCHEDULE_TIME_CONFLICT_DETECTED",
         "type": "condition"
       },
@@ -4110,7 +4376,7 @@
         "emit_event": "SCHEDULE_TIME_CONFLICT_DETECTED",
         "emit_payload_from": "results.derivePurchaseSchedule.conflict_context",
         "name": "emit:SCHEDULE_TIME_CONFLICT_DETECTED",
-        "order": "6",
+        "order": "8",
         "result_key": "emit-SCHEDULE_TIME_CONFLICT_DETECTED",
         "type": "emit"
       },
@@ -4145,7 +4411,7 @@
         },
         "description": "规则拦截或条件未命中时抑制隐式 triggered_event[0] 发射（显式 emit 已记录则本步为空操作）。",
         "name": "suppress-implicit-emit",
-        "order": "7",
+        "order": "9",
         "result_key": "suppress-implicit-emit",
         "type": "decision"
       }
@@ -4436,10 +4702,40 @@
         "type": "logic"
       },
       {
+        "condition": "event.data.scan_date && lastResult.scan_date != event.data.scan_date",
+        "description": "分析结果是否报告了阻断性结论「scan_date_mismatch」。",
+        "name": "blocked-when:scan_date_mismatch",
+        "order": "2",
+        "result_key": "blocked-when-scan_date_mismatch",
+        "type": "condition"
+      },
+      {
+        "allowed_tools": [
+          "control.fail"
+        ],
+        "depends_on": [
+          "blocked-when-scan_date_mismatch"
+        ],
+        "description": "阻断性结论「scan_date_mismatch」成立：以分析给出的原因终止运行，不发射任何事件。",
+        "name": "control.fail",
+        "on_error": "terminal",
+        "order": "3",
+        "result_key": "blocked-scan_date_mismatch",
+        "tool_arguments": {
+          "code": {
+            "const": "scan_date_mismatch"
+          },
+          "message": {
+            "const": "分析输出的 scan_date 与触发事件的 scan_date 不一致（契约要求原样照抄，它决定「今天」的口径）；拒绝以错误的业务日期继续。"
+          }
+        },
+        "type": "tool"
+      },
+      {
         "condition": "lastResult.intercept == false",
         "description": "事件 ANNUAL_PLAN_AUDITED 的发射条件。",
         "name": "emit-when:ANNUAL_PLAN_AUDITED",
-        "order": "2",
+        "order": "4",
         "result_key": "emit-when-ANNUAL_PLAN_AUDITED",
         "type": "condition"
       },
@@ -4451,7 +4747,7 @@
         "emit_event": "ANNUAL_PLAN_AUDITED",
         "emit_payload_from": "results.auditAnnualPlanCompliance",
         "name": "emit:ANNUAL_PLAN_AUDITED",
-        "order": "3",
+        "order": "5",
         "result_key": "emit-ANNUAL_PLAN_AUDITED",
         "type": "emit"
       },
@@ -4459,7 +4755,7 @@
         "condition": "lastResult.intercept == true",
         "description": "事件 PLAN_AUDIT_INTERCEPTED 的发射条件。",
         "name": "emit-when:PLAN_AUDIT_INTERCEPTED",
-        "order": "4",
+        "order": "6",
         "result_key": "emit-when-PLAN_AUDIT_INTERCEPTED",
         "type": "condition"
       },
@@ -4471,7 +4767,7 @@
         "emit_event": "PLAN_AUDIT_INTERCEPTED",
         "emit_payload_from": "results.auditAnnualPlanCompliance.intercept_context",
         "name": "emit:PLAN_AUDIT_INTERCEPTED",
-        "order": "5",
+        "order": "7",
         "result_key": "emit-PLAN_AUDIT_INTERCEPTED",
         "type": "emit"
       },
@@ -4506,7 +4802,7 @@
         },
         "description": "规则拦截或条件未命中时抑制隐式 triggered_event[0] 发射（显式 emit 已记录则本步为空操作）。",
         "name": "suppress-implicit-emit",
-        "order": "6",
+        "order": "8",
         "result_key": "suppress-implicit-emit",
         "type": "decision"
       }
@@ -4685,6 +4981,17 @@
           "type": "object"
         },
         "name": "metaerp.invoke",
+        "side_effect": "read"
+      },
+      {
+        "config": {},
+        "description": "以声明的原因终止本次运行（分析结果报告了阻断性结论时由工作流自动调用，不由模型调用）。",
+        "execution_policy": {
+          "effect_scope": "none",
+          "operation": "compute",
+          "sandbox_policy": "pure"
+        },
+        "name": "control.fail",
         "side_effect": "read"
       }
     ],
@@ -4954,10 +5261,40 @@
         "type": "logic"
       },
       {
+        "condition": "event.data.scan_date && lastResult.scan_date != event.data.scan_date",
+        "description": "分析结果是否报告了阻断性结论「scan_date_mismatch」。",
+        "name": "blocked-when:scan_date_mismatch",
+        "order": "2",
+        "result_key": "blocked-when-scan_date_mismatch",
+        "type": "condition"
+      },
+      {
+        "allowed_tools": [
+          "control.fail"
+        ],
+        "depends_on": [
+          "blocked-when-scan_date_mismatch"
+        ],
+        "description": "阻断性结论「scan_date_mismatch」成立：以分析给出的原因终止运行，不发射任何事件。",
+        "name": "control.fail",
+        "on_error": "terminal",
+        "order": "3",
+        "result_key": "blocked-scan_date_mismatch",
+        "tool_arguments": {
+          "code": {
+            "const": "scan_date_mismatch"
+          },
+          "message": {
+            "const": "分析输出的 scan_date 与触发事件的 scan_date 不一致（契约要求原样照抄，它决定「今天」的口径）；拒绝以错误的业务日期继续。"
+          }
+        },
+        "type": "tool"
+      },
+      {
         "condition": "lastResult.compliance_violated == false",
         "description": "事件 PACKAGING_SCHEME_RECOMMENDED 的发射条件。",
         "name": "emit-when:PACKAGING_SCHEME_RECOMMENDED",
-        "order": "2",
+        "order": "4",
         "result_key": "emit-when-PACKAGING_SCHEME_RECOMMENDED",
         "type": "condition"
       },
@@ -4969,7 +5306,7 @@
         "emit_event": "PACKAGING_SCHEME_RECOMMENDED",
         "emit_payload_from": "results.recommendPackagingScheme",
         "name": "emit:PACKAGING_SCHEME_RECOMMENDED",
-        "order": "3",
+        "order": "5",
         "result_key": "emit-PACKAGING_SCHEME_RECOMMENDED",
         "type": "emit"
       },
@@ -4977,7 +5314,7 @@
         "condition": "lastResult.compliance_violated == true",
         "description": "事件 PACKAGING_COMPLIANCE_VIOLATED 的发射条件。",
         "name": "emit-when:PACKAGING_COMPLIANCE_VIOLATED",
-        "order": "4",
+        "order": "6",
         "result_key": "emit-when-PACKAGING_COMPLIANCE_VIOLATED",
         "type": "condition"
       },
@@ -4989,7 +5326,7 @@
         "emit_event": "PACKAGING_COMPLIANCE_VIOLATED",
         "emit_payload_from": "results.recommendPackagingScheme.violation_context",
         "name": "emit:PACKAGING_COMPLIANCE_VIOLATED",
-        "order": "5",
+        "order": "7",
         "result_key": "emit-PACKAGING_COMPLIANCE_VIOLATED",
         "type": "emit"
       },
@@ -5024,7 +5361,7 @@
         },
         "description": "规则拦截或条件未命中时抑制隐式 triggered_event[0] 发射（显式 emit 已记录则本步为空操作）。",
         "name": "suppress-implicit-emit",
-        "order": "6",
+        "order": "8",
         "result_key": "suppress-implicit-emit",
         "type": "decision"
       }
@@ -5206,6 +5543,17 @@
           "type": "object"
         },
         "name": "metaerp.invoke",
+        "side_effect": "read"
+      },
+      {
+        "config": {},
+        "description": "以声明的原因终止本次运行（分析结果报告了阻断性结论时由工作流自动调用，不由模型调用）。",
+        "execution_policy": {
+          "effect_scope": "none",
+          "operation": "compute",
+          "sandbox_policy": "pure"
+        },
+        "name": "control.fail",
         "side_effect": "read"
       }
     ],

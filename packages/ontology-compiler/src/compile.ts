@@ -1086,6 +1086,20 @@ export function compile(
     }
   }
 
+  // An output contract only shapes an analysis prompt. On an external (write)
+  // action it is dead configuration that reads like an enforced rule — the
+  // 2026-09-08 audit found BR-CLOSE-01 living in exactly such an entry.
+  for (const actionId of Object.keys(overlay.output_contracts ?? {})) {
+    const action = model.actions.find((candidate) => candidate.id === actionId);
+    if (!action) fail(`overlay output_contracts references unknown action ${actionId}`);
+    if (action!.implementation?.kind === "external") {
+      fail(
+        `overlay output_contracts["${actionId}"] targets an external action, which has no analysis ` +
+          `step to honour it — a rule stated there is not enforced by anything`,
+      );
+    }
+  }
+
   // A blocking outcome that is silently dropped would let the success event
   // fire on a blocked analysis — the exact defect it exists to prevent.
   for (const [actionId, outcomes] of Object.entries(overlay.blocking_outcomes ?? {})) {
