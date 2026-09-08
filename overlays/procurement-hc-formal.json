@@ -7,6 +7,11 @@
         "when": "lastResult.blocking_note || !lastResult.draft_request || lastResult.stage_count == 0",
         "code": "schedule_blocked",
         "message_from": "lastResult.blocking_note"
+      },
+      {
+        "when": "event.data.scan_date && lastResult.scan_date != event.data.scan_date",
+        "code": "scan_date_mismatch",
+        "message": "分析输出的 scan_date 与触发事件的 scan_date 不一致（契约要求原样照抄，它决定「今天」的口径）；拒绝以错误的业务日期继续。"
       }
     ],
     "calculateExecutionDeviation": [
@@ -14,6 +19,60 @@
         "when": "lastResult.blocking_note",
         "code": "deviation_calc_blocked",
         "message_from": "lastResult.blocking_note"
+      },
+      {
+        "when": "event.data.scan_date && lastResult.scan_date != event.data.scan_date",
+        "code": "scan_date_mismatch",
+        "message": "分析输出的 scan_date 与触发事件的 scan_date 不一致（契约要求原样照抄，它决定「今天」的口径）；拒绝以错误的业务日期继续。"
+      }
+    ],
+    "collectChainExecutionData": [
+      {
+        "when": "event.data.scan_date && lastResult.scan_date != event.data.scan_date",
+        "code": "scan_date_mismatch",
+        "message": "分析输出的 scan_date 与触发事件的 scan_date 不一致（契约要求原样照抄，它决定「今天」的口径）；拒绝以错误的业务日期继续。"
+      }
+    ],
+    "scoreOnTimeProbability": [
+      {
+        "when": "event.data.scan_date && lastResult.scan_date != event.data.scan_date",
+        "code": "scan_date_mismatch",
+        "message": "分析输出的 scan_date 与触发事件的 scan_date 不一致（契约要求原样照抄，它决定「今天」的口径）；拒绝以错误的业务日期继续。"
+      }
+    ],
+    "scanApprovedDemandPlan": [
+      {
+        "when": "event.data.scan_date && lastResult.scan_date != event.data.scan_date",
+        "code": "scan_date_mismatch",
+        "message": "分析输出的 scan_date 与触发事件的 scan_date 不一致（契约要求原样照抄，它决定「今天」的口径）；拒绝以错误的业务日期继续。"
+      }
+    ],
+    "analyzeDemandMerge": [
+      {
+        "when": "event.data.scan_date && lastResult.scan_date != event.data.scan_date",
+        "code": "scan_date_mismatch",
+        "message": "分析输出的 scan_date 与触发事件的 scan_date 不一致（契约要求原样照抄，它决定「今天」的口径）；拒绝以错误的业务日期继续。"
+      }
+    ],
+    "verifyInventoryAvailability": [
+      {
+        "when": "event.data.scan_date && lastResult.scan_date != event.data.scan_date",
+        "code": "scan_date_mismatch",
+        "message": "分析输出的 scan_date 与触发事件的 scan_date 不一致（契约要求原样照抄，它决定「今天」的口径）；拒绝以错误的业务日期继续。"
+      }
+    ],
+    "auditAnnualPlanCompliance": [
+      {
+        "when": "event.data.scan_date && lastResult.scan_date != event.data.scan_date",
+        "code": "scan_date_mismatch",
+        "message": "分析输出的 scan_date 与触发事件的 scan_date 不一致（契约要求原样照抄，它决定「今天」的口径）；拒绝以错误的业务日期继续。"
+      }
+    ],
+    "recommendPackagingScheme": [
+      {
+        "when": "event.data.scan_date && lastResult.scan_date != event.data.scan_date",
+        "code": "scan_date_mismatch",
+        "message": "分析输出的 scan_date 与触发事件的 scan_date 不一致（契约要求原样照抄，它决定「今天」的口径）；拒绝以错误的业务日期继续。"
       }
     ]
   },
@@ -1008,11 +1067,6 @@
         "transfer_source": "方案③的调拨来源，取自 queryTransferableStock：{warehouse_id, warehouse_name, item_code, available_qty, transfer_lead_days, transfer_quantity}。无可调库存时给出 {transfer_quantity: 0} 并在该方案的 feasibility_note 说明。",
         "alert_context": "原样透传预警上下文：{alert_id, chain_id, deviation_id, alert_level, notified_role}。",
         "_parallel_tool_calls": "【并发取数（硬性）】本步需要的查询彼此独立，请在**同一轮**里一次性发出全部 metaerp.invoke 调用：queryStageCycleConfig、queryTransferableStock。本字段只是取数纪律说明，输出 JSON 里填一句确认语即可。"
-      }
-    },
-    "closeDeviationHandling": {
-      "fields": {
-        "closure_context": "闭环上下文：{alert_id, deviation_id, chain_id, deviation_eliminated:boolean, verification_result:'属实'|'误报', closed_at}。deviation_eliminated 为 false 时不得闭环，退回重新生成调整方案（BR-CLOSE-01）。"
       }
     },
     "scanApprovedDemandPlan": {

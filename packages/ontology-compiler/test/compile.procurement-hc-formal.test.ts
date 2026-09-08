@@ -159,12 +159,18 @@ describe("ontology-compiler golden compile (procurement-hc-formal@0.1.8)", () =>
 
   it("compiles the read-only analysis agents with query* tools only (compiler drops non-query op ids)", () => {
     const verify = agentById(result.workflow, "verifyInventoryAvailability");
-    expect(verify.tool_use).toHaveLength(1);
-    const enumOps = (verify.tool_use[0]!.input_schema as { properties: { operation: { enum: string[] } } })
+    // One merged metaerp.invoke entry (plus the compiler's own control.fail
+    // for the scan_date blocking outcome — not an ERP binding).
+    const erpEntries = verify.tool_use.filter((entry) => entry.name === "metaerp.invoke");
+    expect(erpEntries).toHaveLength(1);
+    expect(verify.tool_use.map((entry) => entry.name)).toEqual(["metaerp.invoke", "control.fail"]);
+    const enumOps = (erpEntries[0]!.input_schema as { properties: { operation: { enum: string[] } } })
       .properties.operation.enum;
     expect(enumOps).toEqual(["queryOnhandQuantity", "queryReservation", "queryItemMinMaxLevel"]);
     expect(stepNames(verify)).toEqual([
       "analyze",
+      "blocked-when:scan_date_mismatch",
+      "control.fail",
       "emit:INVENTORY_AVAILABILITY_VERIFIED",
       "emit-when:STOCK_SUFFICIENT_FOR_DEMAND",
       "emit:STOCK_SUFFICIENT_FOR_DEMAND",
@@ -183,7 +189,9 @@ describe("ontology-compiler golden compile (procurement-hc-formal@0.1.8)", () =>
     expect(step(audit, "emit-when:PLAN_AUDIT_INTERCEPTED").condition).toBe("lastResult.intercept == true");
 
     // Pure-reasoning actions (typescript modules this repo does not ship) carry no ERP tool at all.
-    expect(agentById(result.workflow, "analyzeDemandMerge").tool_use).toEqual([]);
+    // Pure reasoning: no ERP binding at all (its only tool is the compiler's
+    // control.fail for the scan_date blocking outcome).
+    expect(agentById(result.workflow, "analyzeDemandMerge").tool_use.filter((e) => e.name === "metaerp.invoke")).toEqual([]);
     expect(step(agentById(result.workflow, "analyzeDemandMerge"), "emit:DEMAND_SPLIT_REQUIRED").emit_payload_from).toBe(
       "results.analyzeDemandMerge.split_request",
     );
@@ -374,6 +382,8 @@ describe("ontology-compiler golden compile (procurement-hc-formal@0.1.8)", () =>
       "analyze",
       "blocked-when:schedule_blocked",
       "control.fail",
+      "blocked-when:scan_date_mismatch",
+      "control.fail",
       "emit:PURCHASE_SCHEDULE_DERIVED",
       "emit-when:SCHEDULE_TIME_CONFLICT_DETECTED",
       "emit:SCHEDULE_TIME_CONFLICT_DETECTED",
@@ -402,8 +412,10 @@ describe("ontology-compiler golden compile (procurement-hc-formal@0.1.8)", () =>
     expect(stepNames(agentById(result.workflow, "calculateExecutionDeviation"))).toContain(
       "blocked-when:deviation_calc_blocked",
     );
-    // Agents without declared blocking outcomes are untouched.
-    expect(agentById(result.workflow, "scanApprovedDemandPlan").tool_use.some((e) => e.name === "control.fail")).toBe(false);
+    // Agents without declared blocking outcomes are untouched (archiving has
+    // no scan_date contract and no other blocking outcome).
+    expect(agentById(result.workflow, "archiveDeviationMonitoring").tool_use.some((e) => e.name === "control.fail")).toBe(false);
+    expect(agentById(result.workflow, "generateExecutionPlanDraft").tool_use.some((e) => e.name === "control.fail")).toBe(false);
   });
 
   it("blocking conditions fire on the exact JSON the model reported in the failed live run, and stay quiet on a derived schedule", () => {
